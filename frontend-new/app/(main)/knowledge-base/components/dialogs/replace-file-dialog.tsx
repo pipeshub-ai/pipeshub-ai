@@ -6,7 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
-import { KnowledgeBaseApi } from '../../api';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // File type to MIME type mapping
 const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
@@ -27,9 +27,6 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   MARKDOWN: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
   MDX: ['text/mdx', 'text/markdown', 'text/plain'],
 };
-
-const DEFAULT_MAX_FILE_SIZE_MB = 30;
-const DEFAULT_MAX_FILE_SIZE_BYTES = DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024;
 
 interface ReplaceFileDialogProps {
   open: boolean;
@@ -57,10 +54,8 @@ export function ReplaceFileDialog({
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCurrentFileHovered, setIsCurrentFileHovered] = useState(false);
   const [isReplacementFileHovered, setIsReplacementFileHovered] = useState(false);
-  const [maxFileSizeBytes, setMaxFileSizeBytes] = useState(DEFAULT_MAX_FILE_SIZE_BYTES);
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
   const inputRef = useRef<HTMLInputElement>(null);
-
-  const maxFileSizeMB = Math.round(maxFileSizeBytes / (1024 * 1024));
 
   // Get accepted MIME types based on current file type
   const fileType = item?.extension?.toUpperCase() || 'PDF';
@@ -76,22 +71,6 @@ export function ReplaceFileDialog({
     },
     [acceptedMimeTypes, fileType]
   );
-  // Fetch upload limits from server
-  useEffect(() => {
-    let mounted = true;
-    KnowledgeBaseApi.getUploadLimits()
-      .then((resp) => {
-        const s = Number(resp?.maxFileSizeBytes);
-        if (mounted && Number.isFinite(s) && s > 0) {
-          setMaxFileSizeBytes(s);
-        }
-      })
-      .catch(() => {
-        // fallback to default silently
-      });
-    return () => { mounted = false; };
-  }, []);
-
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {

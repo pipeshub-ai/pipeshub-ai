@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
-import { KnowledgeBaseApi } from '../../api';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // Supported file types
 const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX', 'MD', 'MDX'];
@@ -34,9 +34,6 @@ const SUPPORTED_MIME_TYPES = [
 const SUPPORTED_EXTENSIONS = [
   'txt', 'pdf', 'doc', 'docx', 'png', 'jpeg', 'jpg', 'svg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx', 'md', 'markdown', 'mdx',
 ];
-const DEFAULT_MAX_FILE_SIZE_MB = 30;
-const DEFAULT_MAX_FILE_SIZE_BYTES = DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024;
-
 function isSupportedFile(file: File): boolean {
   if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
@@ -400,25 +397,7 @@ export function UploadDataSidebar({
 }: UploadDataSidebarProps) {
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
-  const [maxFileSizeBytes, setMaxFileSizeBytes] = useState(DEFAULT_MAX_FILE_SIZE_BYTES);
-
-  // Fetch upload limits from server
-  useEffect(() => {
-    let mounted = true;
-    KnowledgeBaseApi.getUploadLimits()
-      .then((resp) => {
-        const s = Number(resp?.maxFileSizeBytes);
-        if (mounted && Number.isFinite(s) && s > 0) {
-          setMaxFileSizeBytes(s);
-        }
-      })
-      .catch(() => {
-        // fallback to default silently
-      });
-    return () => { mounted = false; };
-  }, []);
-
-  const maxFileSizeMB = Math.round(maxFileSizeBytes / (1024 * 1024));
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   const handleAddFiles = useCallback((items: UploadFileItem[]) => {
     setFileItems((prev) => [...prev, ...items]);

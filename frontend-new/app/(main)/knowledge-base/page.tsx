@@ -25,7 +25,7 @@ import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 // import KnowledgeBaseSidebar from './sidebar';
-import { useKnowledgeBaseStore } from './store';
+import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -57,6 +57,7 @@ import {
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
@@ -429,7 +430,6 @@ function KnowledgeBasePageContent() {
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         // Use toast rather than overwriting the table error state
-        const { toast } = await import('@/lib/store/toast-store');
         toast.error('Failed to load sidebar', {
           description: 'Could not load app sections. Please refresh the page.',
         });
@@ -588,7 +588,7 @@ function KnowledgeBasePageContent() {
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
-    if (isAllRecordsMode && allRecordsPagination.limit !== 50) {
+    if (isAllRecordsMode && allRecordsPagination.limit !== DEFAULT_PAGE_SIZE) {
       fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
     }
   }, [allRecordsPagination.limit]);
@@ -612,6 +612,15 @@ function KnowledgeBasePageContent() {
     // Apply client-side filters (size, date) since API may not support them
     return applyClientSideFilters(transformed, allRecordsFilter);
   }, [isAllRecordsMode, allRecordsTableData, appNodes, appChildrenCache, allRecordsFilter]);
+
+  // Shared 403 handler: clears stale table state, notifies user, refreshes the
+  // sidebar tree, and navigates away from the now-inaccessible collection.
+  const handleAccessRevoked = useCallback(async () => {
+    clearTableData();
+    toast.error('You no longer have access to this collection');
+    await refreshKbTree();
+    router.push('/knowledge-base');
+  }, [clearTableData, refreshKbTree, router]);
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
@@ -780,12 +789,7 @@ function KnowledgeBasePageContent() {
         // ProcessedError from apiClient interceptor has statusCode (not response.status)
         const status = (error as { statusCode?: number })?.statusCode;
         if (status === 403) {
-          // Access revoked — clear state, notify, and navigate to KB root
-          const { toast } = await import('@/lib/store/toast-store');
-          clearTableData();
-          toast.error('You no longer have access to this collection');
-          await refreshKbTree();
-          router.push('/knowledge-base');
+          await handleAccessRevoked();
         } else {
           console.error('Failed to fetch table data:', error);
           setTableDataError('Failed to load items. Please try again.');
@@ -808,8 +812,7 @@ function KnowledgeBasePageContent() {
       cacheNodeChildren,
       addNodes,
       setCategorizedNodes,
-      clearTableData,
-      router,
+      handleAccessRevoked,
     ]
   );
 
@@ -962,11 +965,6 @@ function KnowledgeBasePageContent() {
     router.push(`/knowledge-base?${urlParams.toString()}`);
   }, [router]);
 
-  // Handle navigation back to home
-  const _handleHome = useCallback(() => {
-    router.push('/');
-  }, [router]);
-
   // Handle find - opens search bar
   const handleFind = useCallback(() => {
     setIsSearchOpen(true);
@@ -1084,12 +1082,6 @@ function KnowledgeBasePageContent() {
     }
   }, [tableData]);
 
-  // Handle add from sidebar PRIVATE section - always creates root collection
-  const _handleAddPrivateCollection = useCallback(() => {
-    setCreateFolderContext({ type: 'collection' });
-    setIsCreateFolderDialogOpen(true);
-  }, []);
-
   // Handle create folder submission
   const handleCreateFolderSubmit = useCallback(
     async (name: string, description: string) => {
@@ -1114,8 +1106,7 @@ function KnowledgeBasePageContent() {
           );
 
           // Show success toast
-          const { toast } = await import('@/lib/store/toast-store');
-          toast.success('Folder created successfully', {
+            toast.success('Folder created successfully', {
             description: `"${name.trim()}" has been created`,
           });
 
@@ -1156,7 +1147,6 @@ function KnowledgeBasePageContent() {
         setIsCreatingFolder(false);
 
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to create folder', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1359,6 +1349,12 @@ function KnowledgeBasePageContent() {
     return createKBShareAdapter(nodeId);
   }, [selectedNode?.nodeId, selectedNode?.nodeType]);
 
+  // Share controls are owner-only for collections.
+  const isSelectedKbOwner = !isAllRecordsMode && tableData?.permissions?.role === 'OWNER';
+  const canManageSelectedKbSharing = !!shareAdapter && isSelectedKbOwner;
+  const canEditSelectedNode = !isAllRecordsMode && tableData?.permissions?.canEdit !== false;
+  const canDeleteSelectedNode = !isAllRecordsMode && tableData?.permissions?.canDelete !== false;
+
   // Whether the selected KB is in the private section (no shared members to fetch)
   // TODO - consider using a json map ds instead of an array for more efficient lookups as the number of nodes grows
   const isSelectedKbPrivate = useMemo(() => {
@@ -1368,14 +1364,20 @@ function KnowledgeBasePageContent() {
   }, [selectedNode?.nodeId, selectedNode?.nodeType, categorizedNodes]);
 
   const handleShare = useCallback(() => {
-    if (!shareAdapter) return;
+    if (!canManageSelectedKbSharing) return;
     setIsShareSidebarOpen(true);
-  }, [shareAdapter]);
+  }, [canManageSelectedKbSharing]);
+
+  useEffect(() => {
+    if (!canManageSelectedKbSharing && isShareSidebarOpen) {
+      setIsShareSidebarOpen(false);
+    }
+  }, [canManageSelectedKbSharing, isShareSidebarOpen]);
 
   // Load shared members whenever the selected KB changes.
   // If we get a 403, access was revoked — navigate the user away.
   useEffect(() => {
-    if (!shareAdapter || isSelectedKbPrivate) {
+    if (!canManageSelectedKbSharing || isSelectedKbPrivate) {
       setSharedMembers([]);
       return;
     }
@@ -1388,14 +1390,10 @@ function KnowledgeBasePageContent() {
       // ProcessedError from apiClient interceptor has statusCode (not response.status)
       const status = (error as { statusCode?: number })?.statusCode;
       if (status === 403) {
-        const { toast } = await import('@/lib/store/toast-store');
-        clearTableData();
-        toast.error('You no longer have access to this collection');
-        await refreshKbTree();
-        router.push('/knowledge-base');
+        await handleAccessRevoked();
       }
     });
-  }, [shareAdapter, isSelectedKbPrivate, clearTableData, router]);
+  }, [canManageSelectedKbSharing, isSelectedKbPrivate, handleAccessRevoked, shareAdapter]);
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -1557,7 +1555,6 @@ function KnowledgeBasePageContent() {
     item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
     newName: string
   ) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     try {
       const isHub = 'nodeType' in item && 'origin' in item;
@@ -1566,12 +1563,12 @@ function KnowledgeBasePageContent() {
         const hubItem = item as KnowledgeHubNode;
         if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup') {
           if (!selectedKbId) throw new Error('No collection context for rename');
-          if (hubItem.id === selectedKbId) {
-            // Root KB collection — use KB rename API
-            await KnowledgeBaseApi.renameKnowledgeBase(hubItem.id, newName);
-          } else {
-            await KnowledgeBaseApi.renameFolder(selectedKbId, hubItem.id, newName);
-          }
+          await KnowledgeBaseApi.renameNode({
+            nodeId: hubItem.id,
+            newName,
+            nodeType: hubItem.nodeType,
+            rootKbId: selectedKbId,
+          });
         } else if (hubItem.nodeType === 'record') {
           await KnowledgeBaseApi.renameRecord(hubItem.id, newName);
         }
@@ -1605,17 +1602,16 @@ function KnowledgeBasePageContent() {
     nodeType: string,
     newName: string
   ) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     try {
       if (nodeType === 'folder' || nodeType === 'recordGroup') {
         if (!selectedKbId) throw new Error('No collection context for rename');
-        if (nodeId === selectedKbId) {
-          // Root KB collection — use KB rename API
-          await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-        } else {
-          await KnowledgeBaseApi.renameFolder(selectedKbId, nodeId, newName);
-        }
+        await KnowledgeBaseApi.renameNode({
+          nodeId,
+          newName,
+          nodeType,
+          rootKbId: selectedKbId,
+        });
       }
 
       toast.success('Renamed successfully', {
@@ -1656,7 +1652,6 @@ function KnowledgeBasePageContent() {
 
   // Handle reindex - directly reindexes the item with loading/success/error toasts
   const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     const toastId = toast.loading('Re-indexing...', {
       description: `Collection ${item.name} is getting re-indexed. This may take a few seconds`,
@@ -1723,7 +1718,6 @@ function KnowledgeBasePageContent() {
         );
 
         // Show success toast
-        const { toast } = await import('@/lib/store/toast-store');
         toast.success('Item moved successfully', {
           description: `"${itemToMove.name}" has been moved`,
         });
@@ -1739,7 +1733,6 @@ function KnowledgeBasePageContent() {
         console.error('Failed to move item:', error);
 
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to move item', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1774,7 +1767,6 @@ function KnowledgeBasePageContent() {
         );
 
         // Show success toast
-        const { toast } = await import('@/lib/store/toast-store');
         toast.success('File replaced successfully', {
           description: `"${item.name}" has been replaced with "${newFile.name}"`,
         });
@@ -1789,7 +1781,6 @@ function KnowledgeBasePageContent() {
         console.error('Failed to replace file:', error);
         
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1803,7 +1794,6 @@ function KnowledgeBasePageContent() {
 
   // Handle download
   const handleDownload = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
-    const { toast } = await import('@/lib/store/toast-store');
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.id, item.name);
     } catch (error: unknown) {
@@ -1824,93 +1814,16 @@ function KnowledgeBasePageContent() {
   // Sidebar Action Handlers
   // ========================================
 
-  // Helper to find a node in categorized trees
-  const findNodeInTrees = useCallback((nodeId: string): EnhancedFolderTreeNode | null => {
-    if (!categorizedNodes) return null;
-    const searchTree = (nodes: EnhancedFolderTreeNode[]): EnhancedFolderTreeNode | null => {
-      for (const node of nodes) {
-        if (node.id === nodeId) return node;
-        const found = searchTree(node.children as EnhancedFolderTreeNode[]);
-        if (found) return found;
-      }
-      return null;
-    };
-    return searchTree(categorizedNodes.shared) || searchTree(categorizedNodes.private);
-  }, [categorizedNodes]);
-
-  // Sidebar: Reindex handler
-  const _handleSidebarReindex = useCallback((nodeId: string) => {
-    const node = findNodeInTrees(nodeId);
-    if (node) {
-      handleReindexClick({ id: node.id, name: node.name, nodeType: node.nodeType } as KnowledgeHubNode);
-    }
-  }, [findNodeInTrees, handleReindexClick]);
-
-  // Helper: find node and its root KB ancestor in categorized trees
-  const findNodeRootKb = useCallback((nodeId: string): string | null => {
-    if (!categorizedNodes) return null;
-    const searchTree = (nodes: EnhancedFolderTreeNode[], rootKbId: string | null): string | null => {
-      for (const node of nodes) {
-        if (node.id === nodeId) return rootKbId;
-        if (node.children?.length) {
-          const found = searchTree(node.children as EnhancedFolderTreeNode[], rootKbId ?? node.id);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return searchTree(categorizedNodes.shared, null) || searchTree(categorizedNodes.private, null);
-  }, [categorizedNodes]);
-
-  // Sidebar: Rename handler
-  const _handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
-    const { toast } = await import('@/lib/store/toast-store');
-    try {
-      const node = findNodeInTrees(nodeId);
-      if (node?.nodeType === 'folder') {
-        const rootKbId = findNodeRootKb(nodeId);
-        if (rootKbId) {
-          await KnowledgeBaseApi.renameFolder(rootKbId, nodeId, newName);
-          toast.success('Folder renamed successfully');
-        }
-      } else {
-        await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-        toast.success('Collection renamed successfully');
-      }
-      await refreshData();
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || 'Failed to rename');
-      throw error;
-    }
-  }, [refreshData, findNodeInTrees, findNodeRootKb]);
-
-  // Sidebar: Delete handler
-  const _handleSidebarDelete = useCallback((nodeId: string) => {
-    const node = findNodeInTrees(nodeId);
-    if (node) {
-      const rootKbId = findNodeRootKb(nodeId);
-      setItemToDelete({
-        id: node.id,
-        name: node.name,
-        nodeType: node.nodeType,
-        rootKbId: rootKbId ?? undefined,
-      });
-      setIsDeleteDialogOpen(true);
-    }
-  }, [findNodeInTrees, findNodeRootKb]);
-
   // Sidebar: Delete confirm handler
   const handleSidebarDeleteConfirm = useCallback(async () => {
     if (!itemToDelete) return;
     setIsDeleting(true);
-    const { toast } = await import('@/lib/store/toast-store');
     try {
-      if (itemToDelete.nodeType === 'folder' && itemToDelete.rootKbId) {
-        await KnowledgeBaseApi.deleteFolder(itemToDelete.rootKbId, itemToDelete.id);
-      } else {
-        await KnowledgeBaseApi.deleteKnowledgeBase(itemToDelete.id);
-      }
+      await KnowledgeBaseApi.deleteNode({
+        nodeId: itemToDelete.id,
+        nodeType: itemToDelete.nodeType,
+        rootKbId: itemToDelete.rootKbId,
+      });
       toast.success(`"${itemToDelete.name}" deleted successfully`);
       setIsDeleteDialogOpen(false);
 
@@ -2074,7 +1987,7 @@ function KnowledgeBasePageContent() {
               // Collections mode only props
               onCreateFolder={handleCreateFolder}
               onUpload={handleUpload}
-              onShare={shareAdapter ? handleShare : undefined}
+              onShare={canManageSelectedKbSharing ? handleShare : undefined}
               sharedMembers={sharedMembers}
               onRename={
                 !isAllRecordsMode && tableData?.permissions?.canEdit !== false
@@ -2136,14 +2049,14 @@ function KnowledgeBasePageContent() {
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
           onRename={
-            !isAllRecordsMode && tableData?.permissions?.canEdit !== false
+            canEditSelectedNode
               ? handleRename
               : undefined
           }
           onReindex={handleReindexClick}
-          onReplace={isAllRecordsMode ? undefined : (item) => handleReplaceClick(item as KnowledgeHubNode)}
-          onMove={isAllRecordsMode ? undefined : handleMoveClick}
-          onDelete={isAllRecordsMode ? undefined : handleDelete}
+          onReplace={canEditSelectedNode ? (item) => handleReplaceClick(item as KnowledgeHubNode) : undefined}
+          onMove={canEditSelectedNode ? handleMoveClick : undefined}
+          onDelete={canDeleteSelectedNode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
           onUpload={isAllRecordsMode ? undefined : handleUpload}
@@ -2311,7 +2224,7 @@ function KnowledgeBasePageContent() {
       />
 
       {/* Share Sidebar */}
-      {shareAdapter && (
+      {canManageSelectedKbSharing && shareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
           onOpenChange={setIsShareSidebarOpen}

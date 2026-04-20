@@ -5,6 +5,13 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import { categorizeNode, mergeChildrenIntoTree } from './utils/tree-builder';
+
+/**
+ * Default page size for KB and all-records pagination. Shared across store
+ * initial state and page-level effects so they stay in sync.
+ */
+export const DEFAULT_PAGE_SIZE = 50;
+
 import type {
   KnowledgeBase,
   KnowledgeBaseItem,
@@ -294,7 +301,7 @@ const initialState: KnowledgeBaseState = {
   selectedNode: null,
   collectionsPagination: {
     page: 1,
-    limit: 50,
+    limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
     totalPages: 0,
     hasNext: false,
@@ -320,7 +327,7 @@ const initialState: KnowledgeBaseState = {
   allRecordsSearchQuery: '',
   allRecordsPagination: {
     page: 1,
-    limit: 50,
+    limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
     totalPages: 0,
     hasNext: false,
