@@ -81,6 +81,12 @@ export interface FilePreviewProps {
     url: string;
     type: string;
     size?: number;
+    /**
+     * In-memory file data. Used by renderers that work better with a raw
+     * Blob/ArrayBuffer than a blob URL (e.g. DOCX via `docx-preview`), which
+     * avoids an unnecessary re-`fetch` on a `URL.createObjectURL` blob URL.
+     */
+    blob?: Blob;
   };
   
   /** Initially active tab */
@@ -97,6 +103,13 @@ export interface FilePreviewProps {
 
   /** Loading state */
   isLoading?: boolean;
+
+  /**
+   * Error from the upstream stream/fetch (e.g. `streamRecord` failure).
+   * When set and `isLoading` is false, preview shells render an inline error
+   * card instead of the file renderer — avoids a silent blank panel.
+   */
+  error?: string;
   
   /** Record details from API */
   recordDetails?: RecordDetailsResponse;
@@ -143,6 +156,12 @@ export interface FilePreviewRendererProps {
   fileUrl: string;
   fileName: string;
   fileType: string;
+  /**
+   * Optional in-memory Blob for the file. When provided, renderers that can
+   * consume binary data directly (e.g. DOCX) use it instead of re-fetching
+   * the `fileUrl`.
+   */
+  fileBlob?: Blob;
   pagination?: PaginationControls;
   /** Bounding box for highlighting in PDF (normalized 0-1 coordinates) */
   highlightBox?: Array<{ x: number; y: number }>;

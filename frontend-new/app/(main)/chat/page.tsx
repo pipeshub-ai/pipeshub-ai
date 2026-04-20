@@ -917,10 +917,12 @@ function ChatContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}
@@ -942,10 +944,12 @@ function ChatContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}

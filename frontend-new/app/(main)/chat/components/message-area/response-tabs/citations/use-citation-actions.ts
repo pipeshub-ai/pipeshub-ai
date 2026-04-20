@@ -13,6 +13,10 @@ const PPT_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ];
 
+/** OOXML Word MIME type (.docx). */
+const DOCX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 /**
  * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
  * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
@@ -23,6 +27,20 @@ function isPresentationFile(mimeType?: string, fileName?: string): boolean {
   if (fileName) {
     const ext = fileName.split('.').pop()?.toLowerCase();
     if (ext === 'ppt' || ext === 'pptx') return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a file is an OOXML Word doc (.docx). DOCX is rendered client-side
+ * by `docx-preview` directly from the in-memory Blob, so we skip `createObjectURL`
+ * and the extra `fetch` round-trip the DOCX renderer would otherwise perform.
+ */
+function isDocxFile(mimeType?: string, fileName?: string): boolean {
+  if (mimeType === DOCX_MIME_TYPE) return true;
+  if (fileName) {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'docx') return true;
   }
   return false;
 }
@@ -141,15 +159,34 @@ export function useCitationActions(): CitationCallbacks {
           KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions),
         ]);
 
-        // 3. Create object URL from blob
-        const url = URL.createObjectURL(blob);
+        // 3. Build the preview-state payload.
+        // For DOCX we pass the Blob straight through to `DocxRenderer`
+        // (it calls `blob.arrayBuffer()` and hands the buffer to
+        // `docx-preview.renderAsync`), so no blob URL is needed. For every
+        // other renderer we still materialise a blob URL the way we used to.
+        const resolvedType = recordDetails.record.mimeType || citation.extension || '';
+        const isDocx = isDocxFile(resolvedType, citation.recordName);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
 
-        // 4. Update state with actual file URL and record details
+        console.debug('[useCitationActions] stream complete', {
+          recordId: citation.recordId,
+          recordName: citation.recordName,
+          citationMime: citation.mimeType,
+          citationExt: citation.extension,
+          recordMime: recordDetails.record.mimeType,
+          resolvedType,
+          isDocx,
+          blobSize: blob.size,
+          blobType: blob.type,
+        });
+
+        // 4. Update state with actual file URL and/or blob and record details
         setPreviewFile({
           id: citation.recordId,
           name: citation.recordName,
           url,
-          type: recordDetails.record.mimeType || citation.extension || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,

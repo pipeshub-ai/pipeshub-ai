@@ -66,6 +66,10 @@ const PPT_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ];
 
+/** OOXML Word MIME type (.docx). */
+const DOCX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 /**
  * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
  * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
@@ -76,6 +80,22 @@ function isPresentationFile(mimeType?: string, fileName?: string): boolean {
   if (fileName) {
     const ext = fileName.split('.').pop()?.toLowerCase();
     if (ext === 'ppt' || ext === 'pptx') return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a file is an OOXML Word doc (.docx). DOCX is rendered
+ * client-side by `docx-preview` straight from the in-memory Blob, so we skip
+ * `URL.createObjectURL` and the extra `fetch` round-trip the renderer would
+ * otherwise perform (that round-trip was the root cause of the blank DOCX
+ * preview in the chat citation flow).
+ */
+function isDocxFile(mimeType?: string, fileName?: string): boolean {
+  if (mimeType === DOCX_MIME_TYPE) return true;
+  if (fileName) {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'docx') return true;
   }
   return false;
 }
@@ -404,6 +424,8 @@ function KnowledgeBasePageContent() {
     id: string;
     name: string;
     url: string;
+    /** Raw Blob — populated for DOCX so `DocxRenderer` can skip the blob-URL round-trip. */
+    blob?: Blob;
     type: string;
     size?: number;
     isLoading?: boolean;
@@ -1425,15 +1447,19 @@ function KnowledgeBasePageContent() {
           KnowledgeBaseApi.streamRecord(item.id, streamOptions),
         ]);
 
-        // 3. Create object URL from blob
-        const url = URL.createObjectURL(blob);
+        // 3. For DOCX we hand the Blob straight through to DocxRenderer.
+        //    All other renderers still expect a URL.
+        const resolvedType = recordDetails.record.mimeType || item.extension || '';
+        const isDocx = isDocxFile(resolvedType, item.name);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
 
-        // 4. Update state with actual file URL
+        // 4. Update state with actual file URL and/or Blob
         setPreviewFile({
           id: item.id,
           name: item.name,
           url,
-          type: recordDetails.record.mimeType || item.extension || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
@@ -1471,13 +1497,18 @@ function KnowledgeBasePageContent() {
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
         ]);
-        const url = URL.createObjectURL(blob);
-        
+
+        // DOCX uses the Blob directly; other types stay on URLs.
+        const resolvedType = recordDetails.record.mimeType || item.fileType || '';
+        const isDocx = isDocxFile(resolvedType, item.name);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
+
         setPreviewFile({
           id: item.id,
           name: item.name,
           url,
-          type: recordDetails.record.mimeType || item.fileType || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
@@ -2189,15 +2220,17 @@ function KnowledgeBasePageContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
-              // Clean up blob URL
+              // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
               if (previewFile.url && previewFile.url.startsWith('blob:')) {
                 URL.revokeObjectURL(previewFile.url);
               }
@@ -2215,13 +2248,15 @@ function KnowledgeBasePageContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           onClose={() => {
-            // Clean up blob URL
+            // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
             if (previewFile.url && previewFile.url.startsWith('blob:')) {
               URL.revokeObjectURL(previewFile.url);
             }

@@ -22,7 +22,9 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   PPTX: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
   CSV: ['text/csv'],
   JSON: ['application/json'],
-  MD: ['text/markdown'],
+  MD: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
+  MARKDOWN: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
+  MDX: ['text/mdx', 'text/markdown', 'text/plain'],
 };
 
 const MAX_FILE_SIZE_MB = 30;
@@ -60,6 +62,17 @@ export function ReplaceFileDialog({
   const fileType = item?.extension?.toUpperCase() || 'PDF';
   const acceptedMimeTypes = FILE_TYPE_MIME_MAP[fileType] || FILE_TYPE_MIME_MAP['PDF'];
 
+  // Some browsers/OSes report an empty MIME for uncommon text formats (e.g. .md, .mdx),
+  // so fall back to matching the file extension against the item's extension when needed.
+  const isAcceptedFile = useCallback(
+    (file: File): boolean => {
+      if (acceptedMimeTypes.includes(file.type)) return true;
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      return ext === fileType.toLowerCase();
+    },
+    [acceptedMimeTypes, fileType]
+  );
+
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
@@ -89,12 +102,12 @@ export function ReplaceFileDialog({
       const files = e.dataTransfer.files;
       if (files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && acceptedMimeTypes.includes(file.type)) {
+        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
     },
-    [acceptedMimeTypes]
+    [isAcceptedFile]
   );
 
   const handleClick = useCallback(() => {
@@ -106,13 +119,13 @@ export function ReplaceFileDialog({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && acceptedMimeTypes.includes(file.type)) {
+        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
       e.target.value = '';
     },
-    [acceptedMimeTypes]
+    [isAcceptedFile]
   );
 
   const handleSave = useCallback(() => {
@@ -416,7 +429,7 @@ export function ReplaceFileDialog({
                     ref={inputRef}
                     type="file"
                     style={{ display: 'none' }}
-                    accept={acceptedMimeTypes.join(',')}
+                    accept={[...acceptedMimeTypes, `.${fileType.toLowerCase()}`].join(',')}
                     onChange={handleInputChange}
                   />
                   <Flex direction="column" align="center" gap="1">
