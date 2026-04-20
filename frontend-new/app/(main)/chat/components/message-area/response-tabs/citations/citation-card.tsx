@@ -131,7 +131,7 @@ export function ReferenceCard({
                   variant="outline"
                   color="gray"
                   onClick={handleOpenInSource}
-                  style={{ cursor: 'pointer', whiteSpace: 'nowrap', border : `0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
+                  style={{ cursor: 'pointer', whiteSpace: 'nowrap', border :`0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
                 >
                   {openInLabel}
                 </Button>
