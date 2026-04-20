@@ -251,6 +251,29 @@ export class Application {
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
 
+      // OAuth callback slug rewrites — the Next.js static export emits a single
+      // index.html for the slug-less page, but IdPs redirect to per-slug URLs
+      // (e.g. /toolsets/oauth/callback/Gmail) for redirect-URI parity with the
+      // legacy SPA. Map those back to the real file BEFORE the SPA fallback so
+      // the callback page actually loads (otherwise the wildcard sends the root
+      // index.html which hydrates as `/` and redirects the popup to /chat).
+      this.app.get(
+        ['/toolsets/oauth/callback/:slug', '/toolsets/oauth/callback/:slug/'],
+        (_req, res) => {
+          res.sendFile(
+            path.join(__dirname, 'public', 'toolsets', 'oauth', 'callback', 'index.html'),
+          );
+        },
+      );
+      this.app.get(
+        ['/connectors/oauth/callback/:slug', '/connectors/oauth/callback/:slug/'],
+        (_req, res) => {
+          res.sendFile(
+            path.join(__dirname, 'public', 'connectors', 'oauth', 'callback', 'index.html'),
+          );
+        },
+      );
+
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
       // SPA fallback route\
