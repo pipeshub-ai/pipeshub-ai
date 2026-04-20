@@ -19,6 +19,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
@@ -358,7 +359,17 @@ class UploadFileToChannelInput(BaseModel):
             app_description="Slack OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg")
+        .add_documentation_link(DocumentationLink(
+            "Slack Bot Token Setup",
+            "https://docs.slack.dev/authentication/tokens#bot",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/slack/slack",
+            "pipeshub",
+    )))\
     .build_decorator()
 class Slack:
     """Slack tool exposed to the agents using SlackDataSource"""

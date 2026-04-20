@@ -469,26 +469,29 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
             icon_path="/assets/icons/connectors/outlook.svg",
             app_group="Microsoft 365",
             app_description="Microsoft Outlook OAuth application for agent integration",
-            documentation_links=[
-                DocumentationLink(
+        )
+    ])\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg")
+        .add_documentation_link(DocumentationLink(
                     title="Create an Azure App Registration",
                     url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
                     doc_type="setup",
-                ),
-                DocumentationLink(
+        ))
+        .add_documentation_link(DocumentationLink(
                     title="Microsoft Graph Mail & Calendar permissions",
                     url="https://learn.microsoft.com/en-us/graph/permissions-reference",
                     doc_type="reference",
-                ),
-                DocumentationLink(
+        ))
+        .add_documentation_link(DocumentationLink(
                     title="Configure OAuth 2.0 redirect URIs",
                     url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
                     doc_type="setup",
-                ),
-            ],
-        )
-    ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg"))\
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/overview",
+            doc_type="pipeshub",
+    )))\
     .build_decorator()
 class Outlook:
     """Microsoft Outlook toolset for email and calendar operations.

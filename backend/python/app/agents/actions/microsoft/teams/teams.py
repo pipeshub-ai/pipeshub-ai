@@ -660,27 +660,30 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
             ],
             icon_path="/assets/icons/connectors/teams.svg",
             app_group="Microsoft 365",
-            app_description="Microsoft Teams OAuth application for agent integration",
-            documentation_links=[
-                DocumentationLink(
+            app_description="Microsoft Teams OAuth application for agent integration"
+        )
+    ])\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/teams.svg")
+        .add_documentation_link(DocumentationLink(
                     title="Create an Azure App Registration",
                     url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
                     doc_type="setup",
-                ),
-                DocumentationLink(
+        ))
+        .add_documentation_link(DocumentationLink(
                     title="Microsoft Graph Teams permissions reference",
                     url="https://learn.microsoft.com/en-us/graph/permissions-reference",
                     doc_type="reference",
-                ),
-                DocumentationLink(
+        ))
+        .add_documentation_link(DocumentationLink(
                     title="Configure OAuth 2.0 redirect URIs",
                     url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
                     doc_type="setup",
-                ),
-            ],
-        )
-    ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/teams.svg"))\
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/overview",
+            doc_type="pipeshub",
+    )))\
     .build_decorator()
 class Teams:
     """Microsoft Teams toolset for messaging and team collaboration operations."""

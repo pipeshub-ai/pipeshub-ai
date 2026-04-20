@@ -1,4 +1,8 @@
-import type { AuthSchemaField, ConnectorAuthConfig } from '@/app/(main)/workspace/connectors/types';
+import type {
+  AuthSchemaField,
+  ConnectorAuthConfig,
+  DocumentationLink,
+} from '@/app/(main)/workspace/connectors/types';
 import type { ToolsetOauthConfigListRow } from '@/app/(main)/toolsets/api';
 
 export function toolsetSchemaRoot(raw: unknown): Record<string, unknown> | null {
@@ -7,6 +11,45 @@ export function toolsetSchemaRoot(raw: unknown): Record<string, unknown> | null 
   const t = r.toolset;
   if (t && typeof t === 'object') return t as Record<string, unknown>;
   return r;
+}
+
+const DOC_LINK_TYPES: DocumentationLink['type'][] = ['setup', 'api', 'connector', 'pipeshub'];
+
+function normalizeDocumentationLinks(v: unknown): DocumentationLink[] {
+  if (!Array.isArray(v) || v.length === 0) return [];
+  const out: DocumentationLink[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const title = o.title;
+    const url = o.url;
+    if (typeof title !== 'string' || typeof url !== 'string') continue;
+    const rawType = o.type;
+    let typeStr = typeof rawType === 'string' ? rawType : 'setup';
+    if (typeStr === 'reference') typeStr = 'setup';
+    const type = (DOC_LINK_TYPES.includes(typeStr as DocumentationLink['type'])
+      ? typeStr
+      : 'setup') as DocumentationLink['type'];
+    out.push({ title, url, type });
+  }
+  return out;
+}
+
+/** Reads `toolset.documentationLinks` or `toolset.config.documentationLinks` from a schema API payload. */
+export function documentationLinksFromToolsetSchema(raw: unknown): DocumentationLink[] {
+  const root = toolsetSchemaRoot(raw);
+  if (!root) return [];
+  const fromTop = normalizeDocumentationLinks(root.documentationLinks);
+  if (fromTop.length) return fromTop;
+  const cfg = root.config as Record<string, unknown> | undefined;
+  return normalizeDocumentationLinks(cfg?.documentationLinks);
+}
+
+export function primaryHttpDocumentationUrl(
+  links: readonly Pick<DocumentationLink, 'url'>[] | undefined
+): string {
+  const url = links?.[0]?.url;
+  return typeof url === 'string' && url.startsWith('http') ? url : '';
 }
 
 export function getToolsetAuthConfigFromSchema(raw: unknown): ConnectorAuthConfig | null {

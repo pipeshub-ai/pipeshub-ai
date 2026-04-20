@@ -18,7 +18,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -149,7 +149,17 @@ class SearchContentInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg")
+        .add_documentation_link(DocumentationLink(
+            "Confluence Cloud OAuth Setup",
+            "https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/confluence/confluence",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Confluence:
     """Confluence tool exposed to the agents using ConfluenceDataSource"""
