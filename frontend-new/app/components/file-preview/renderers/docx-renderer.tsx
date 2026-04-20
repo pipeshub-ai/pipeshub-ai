@@ -79,19 +79,10 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
             throw new Error('Received an empty file from the server.');
           }
           arrayBuffer = await fileBlob.arrayBuffer();
-          console.debug('[DocxRenderer] using in-memory Blob', {
-            size: fileBlob.size,
-            type: fileBlob.type,
-            byteLength: arrayBuffer.byteLength,
-          });
         } else {
           const response = await fetch(fileUrl);
           if (!response.ok) throw new Error('Failed to fetch document');
           arrayBuffer = await response.arrayBuffer();
-          console.debug('[DocxRenderer] fetched via URL', {
-            url: fileUrl,
-            byteLength: arrayBuffer.byteLength,
-          });
         }
 
         if (!arrayBuffer || arrayBuffer.byteLength === 0) {
@@ -116,10 +107,6 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
         // etc.) show a concrete error instead of a blank pane.
         const container = containerRef.current;
         const renderedNodes = container.childElementCount;
-        console.debug('[DocxRenderer] renderAsync complete', {
-          childElementCount: renderedNodes,
-          innerHTMLLength: container.innerHTML.length,
-        });
         if (renderedNodes === 0) {
           throw new Error(
             'Unable to render this document. It may not be a valid .docx file (legacy .doc files are not supported).'

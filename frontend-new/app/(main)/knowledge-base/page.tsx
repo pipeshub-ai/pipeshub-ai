@@ -58,47 +58,8 @@ import {
 import { getIsAllRecordsMode } from './utils/nav';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
+import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-
-/** MIME types for PowerPoint presentation files (.ppt, .pptx) */
-const PPT_MIME_TYPES = [
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-];
-
-/** OOXML Word MIME type (.docx). */
-const DOCX_MIME_TYPE =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-/**
- * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
- * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
- * on the streaming API before they can be previewed in the browser.
- */
-function isPresentationFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType && PPT_MIME_TYPES.includes(mimeType)) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'ppt' || ext === 'pptx') return true;
-  }
-  return false;
-}
-
-/**
- * Checks whether a file is an OOXML Word doc (.docx). DOCX is rendered
- * client-side by `docx-preview` straight from the in-memory Blob, so we skip
- * `URL.createObjectURL` and the extra `fetch` round-trip the renderer would
- * otherwise perform (that round-trip was the root cause of the blank DOCX
- * preview in the chat citation flow).
- */
-function isDocxFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType === DOCX_MIME_TYPE) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'docx') return true;
-  }
-  return false;
-}
 
 function KnowledgeBasePageContent() {
   const router = useRouter();

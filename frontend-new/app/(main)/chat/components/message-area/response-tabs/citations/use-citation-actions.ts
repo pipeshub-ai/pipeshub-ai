@@ -6,44 +6,7 @@ import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
-
-/** MIME types for PowerPoint presentation files (.ppt, .pptx) */
-const PPT_MIME_TYPES = [
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-];
-
-/** OOXML Word MIME type (.docx). */
-const DOCX_MIME_TYPE =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-/**
- * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
- * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
- * on the streaming API before they can be previewed in the browser.
- */
-function isPresentationFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType && PPT_MIME_TYPES.includes(mimeType)) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'ppt' || ext === 'pptx') return true;
-  }
-  return false;
-}
-
-/**
- * Checks whether a file is an OOXML Word doc (.docx). DOCX is rendered client-side
- * by `docx-preview` directly from the in-memory Blob, so we skip `createObjectURL`
- * and the extra `fetch` round-trip the DOCX renderer would otherwise perform.
- */
-function isDocxFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType === DOCX_MIME_TYPE) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'docx') return true;
-  }
-  return false;
-}
+import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
 
 /**
  * Hook that provides citation interaction callbacks:
@@ -165,20 +128,13 @@ export function useCitationActions(): CitationCallbacks {
         // `docx-preview.renderAsync`), so no blob URL is needed. For every
         // other renderer we still materialise a blob URL the way we used to.
         const resolvedType = recordDetails.record.mimeType || citation.extension || '';
-        const isDocx = isDocxFile(resolvedType, citation.recordName);
+        // Detect DOCX from the real MIME / file name only — `resolvedType` may
+        // fall back to `citation.extension` (e.g. the bare string "docx"),
+        // which isn't a valid MIME and would bypass the strict MIME check.
+        const isDocx =
+          isDocxFile(recordDetails.record.mimeType, citation.recordName) ||
+          citation.extension?.toLowerCase() === 'docx';
         const url = isDocx ? '' : URL.createObjectURL(blob);
-
-        console.debug('[useCitationActions] stream complete', {
-          recordId: citation.recordId,
-          recordName: citation.recordName,
-          citationMime: citation.mimeType,
-          citationExt: citation.extension,
-          recordMime: recordDetails.record.mimeType,
-          resolvedType,
-          isDocx,
-          blobSize: blob.size,
-          blobType: blob.type,
-        });
 
         // 4. Update state with actual file URL and/or blob and record details
         setPreviewFile({
