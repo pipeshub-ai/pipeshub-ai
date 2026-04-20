@@ -1,0 +1,97 @@
+## ---------------------------------------------------------------------------
+## Org Auth Config API – Response Schemas
+## ---------------------------------------------------------------------------
+## contains all response schemas for /api/v1/orgAuthConfig routes.
+##
+## Usage:
+##   schemas = load_yaml_schemas("response-validation/schemas/auth/orgAuthConfig-response-schemas.yaml")
+##   assert_response_matches_schema(body, schemas["GetAuthMethodsResponse"])
+## ---------------------------------------------------------------------------
+
+# Reusable anchor – a single auth method entry (e.g. { type: "password" })
+_auth_method_entry: &auth_method_entry
+  type:
+    type: string
+    required: true
+    enum:
+      - samlSso
+      - otp
+      - password
+      - google
+      - microsoft
+      - azureAd
+      - oauth
+
+# Reusable anchor – a single auth step
+_auth_step_fields: &auth_step_fields
+  order:
+    type: integer
+    required: true
+  allowedMethods:
+    type: array
+    required: true
+    items:
+      type: object
+      properties:
+        <<: *auth_method_entry
+
+schemas:
+
+  # ==================================================================
+  # GET /api/v1/orgAuthConfig/authMethods
+  # ==================================================================
+  - name: GetAuthMethodsResponse
+    description: "GET /api/v1/orgAuthConfig/authMethods — getAuthMethod"
+    path: /api/v1/orgAuthConfig/authMethods
+    method: GET
+    fields:
+      authMethods:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *auth_step_fields
+
+  # ==================================================================
+  # POST /api/v1/orgAuthConfig (setup — already configured)
+  # ==================================================================
+  - name: SetUpAuthConfigAlreadyDoneResponse
+    description: "POST /api/v1/orgAuthConfig — setUpAuthConfig (already configured)"
+    path: /api/v1/orgAuthConfig
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/orgAuthConfig (setup — newly created)
+  # ==================================================================
+  - name: SetUpAuthConfigCreatedResponse
+    description: "POST /api/v1/orgAuthConfig — setUpAuthConfig (newly created)"
+    path: /api/v1/orgAuthConfig
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/orgAuthConfig/updateAuthMethod
+  # ==================================================================
+  - name: UpdateAuthMethodResponse
+    description: "POST /api/v1/orgAuthConfig/updateAuthMethod — updateAuthMethod"
+    path: /api/v1/orgAuthConfig/updateAuthMethod
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+      authMethod:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *auth_step_fields
