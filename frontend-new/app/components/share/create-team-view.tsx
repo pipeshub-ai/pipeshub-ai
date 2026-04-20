@@ -101,10 +101,17 @@ export function CreateTeamView({
 
     setIsCreating(true);
     try {
+      // The teams endpoint expects graph UUIDs. Some adapters (e.g. chat) expose
+      // users keyed by MongoDB ObjectID in `id`, so resolve each selection to its
+      // UUID from the source list before building the payload.
+      const usersById = new Map(allUsers.map((u) => [u.id, u]));
       const payload: CreateTeamPayload = {
         name: teamName.trim(),
         description: teamDescription.trim(),
-        userRoles: selectedUserIds.map((userId) => ({ userId, role: 'MEMBER' })),
+        userRoles: selectedUserIds.map((selectedId) => ({
+          userId: usersById.get(selectedId)?.uuid ?? selectedId,
+          role: 'MEMBER',
+        })),
       };
       await ShareCommonApi.createTeam(payload);
       toast.success('Team created', { description: `"${teamName.trim()}" team has been created` });

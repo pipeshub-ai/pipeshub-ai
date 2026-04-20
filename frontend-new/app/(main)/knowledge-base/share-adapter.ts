@@ -79,6 +79,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
       return {
         users: result.users.map((u) => ({
           id: u.id,
+          uuid: u.id,
           name: u.name ?? u.email ?? '',
           email: u.email,
           avatarUrl: undefined,
