@@ -2735,23 +2735,25 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        is_service_account = agent.get("isServiceAccount", False)
+
         if is_service_account:
-            agent, enriched_user_info, perm = await _load_service_account_agent_for_chat(
-                agent_id, org_key, services["graph_provider"], logger
+            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                agent, graph_provider, logger
             )
+            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
             if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
                 raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -2909,7 +2911,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
@@ -2922,21 +2923,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            is_service_account = False
 
         else:
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+            is_service_account = agent.get("isServiceAccount", False)
+
             if is_service_account:
-                agent, enriched_user_info, perm = await _load_service_account_agent_for_chat(
-                    agent_id, org_key, services["graph_provider"], logger
+                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                    agent, graph_provider, logger
                 )
+                perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+                logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
-                    raise AgentNotFoundError(agent_id)
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent:
                     raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
