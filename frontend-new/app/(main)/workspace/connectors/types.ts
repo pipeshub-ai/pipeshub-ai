@@ -333,7 +333,7 @@ export interface PanelFormData {
 // Panel tab + view types
 // ========================================
 
-export type PanelTab = 'authenticate' | 'configure';
+export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
 
