@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 
 const PAGE_SIZE = 20;
 
@@ -208,16 +209,18 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
     )?.filter(Boolean),
     ...(() => {
       const raw = inst.documentationLinks ?? inst.documentation_links;
-      if (!Array.isArray(raw) || raw.length === 0) return {};
-      return { documentationLinks: raw as DocumentationLink[] };
+      const documentationLinks = normalizeDocumentationLinks(raw);
+      if (documentationLinks.length === 0) return {};
+      return { documentationLinks };
     })(),
   };
 }
 
 function mapRegistryRow(row: Record<string, unknown>): RegistryToolsetRow {
   const rawLinks = row.documentationLinks ?? row.documentation_links;
-  const documentationLinks =
-    Array.isArray(rawLinks) && rawLinks.length > 0 ? (rawLinks as DocumentationLink[]) : undefined;
+  const documentationLinks = normalizeDocumentationLinks(rawLinks);
+  const documentationLinksOut =
+    documentationLinks.length > 0 ? documentationLinks : undefined;
   return {
     name: (row.name as string) || '',
     displayName: (row.displayName as string) || (row.name as string) || '',
@@ -230,7 +233,7 @@ function mapRegistryRow(row: Record<string, unknown>): RegistryToolsetRow {
       (row.supported_auth_types as string[] | undefined) ??
       [],
     toolCount: (row.toolCount as number) ?? 0,
-    ...(documentationLinks ? { documentationLinks } : {}),
+    ...(documentationLinksOut ? { documentationLinks: documentationLinksOut } : {}),
   };
 }
 

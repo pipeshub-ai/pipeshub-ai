@@ -19,6 +19,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
   WorkspaceRightPanel,
@@ -384,16 +385,15 @@ export function ActionSetupPanel({
     toolsetType,
   ]);
 
-  const docLinksFromRegistry = useMemo((): DocumentationLink[] => {
-    const raw = registryRow?.documentationLinks;
-    return Array.isArray(raw) && raw.length ? raw : [];
-  }, [registryRow?.documentationLinks]);
+  const docLinksFromRegistry = useMemo(
+    (): DocumentationLink[] => normalizeDocumentationLinks(registryRow?.documentationLinks),
+    [registryRow?.documentationLinks]
+  );
 
   const docLinks = useMemo(() => {
     const fromSchema = documentationLinksFromToolsetSchema(schemaRaw);
-    const merged = fromSchema.length ? fromSchema : docLinksFromRegistry;
-    // Same pairing as connectors: setup + Pipeshub (toolsets do not add sync/indexing doc links).
-    return merged.slice(0, 4);
+    // Schema path is normalized; registry rows from my-toolsets are normalized in toolsets/api mappers.
+    return fromSchema.length ? fromSchema : docLinksFromRegistry;
   }, [schemaRaw, docLinksFromRegistry]);
 
   const docUrl = useMemo(() => primaryHttpDocumentationUrl(docLinks), [docLinks]);

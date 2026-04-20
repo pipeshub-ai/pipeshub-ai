@@ -361,15 +361,15 @@ class UploadFileToChannelInput(BaseModel):
     ])\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg")
         .add_documentation_link(DocumentationLink(
-            "Slack Bot Token Setup",
-            "https://docs.slack.dev/authentication/tokens#bot",
-            "setup",
+            title="Slack Bot Token Setup",
+            url="https://docs.slack.dev/authentication/tokens#bot",
+            doc_type="setup",
         ))
         .add_documentation_link(DocumentationLink(
-            "Pipeshub Documentation",
-            "https://docs.pipeshub.com/toolsets/slack/slack",
-            "pipeshub",
-    )))\
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/slack/slack",
+            doc_type="pipeshub",
+        )))\
     .build_decorator()
 class Slack:
     """Slack tool exposed to the agents using SlackDataSource"""
