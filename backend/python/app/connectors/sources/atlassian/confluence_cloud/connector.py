@@ -125,7 +125,17 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             ),
             fields=[
                 CommonFields.client_id("Atlassian OAuth App"),
-                CommonFields.client_secret("Atlassian OAuth App")
+                CommonFields.client_secret("Atlassian OAuth App"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL to use. Must match the Confluence site you want to sync.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
             icon_path="/assets/icons/connectors/confluence.svg",
             app_group="Atlassian",
