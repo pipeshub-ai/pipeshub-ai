@@ -365,7 +365,7 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>()(
                 g.conversations.push(conv);
               }
             }
-            g.hasMore = result.pagination.hasNextPage === true;
+            g.pagination = result.pagination;
             g.isLoadingMore = false;
           });
         } catch {
@@ -382,7 +382,7 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>()(
             const group = state.agentGroups.find((g) => g.agentKey === agentKey);
             if (group) {
               group.conversations = group.conversations.filter((c) => c.id !== id);
-              group.totalCount = Math.max(0, group.totalCount - 1);
+              group.pagination.totalCount = Math.max(0, group.pagination.totalCount - 1);
             }
           } else {
             state.conversations = state.conversations.filter((c) => c.id !== id);

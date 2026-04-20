@@ -6930,7 +6930,9 @@ export const listAllAgentsArchivedConversationsGrouped = async (
 
     const aggregationResult = await AgentConversation.aggregate([
       { $match: filter },
-      { $sort: { updatedAt: -1 as const } },
+      // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+      // so that the initial 5 chats here align with page 1 of the per-agent pagination
+      { $sort: { lastActivityAt: -1 as const } },
       // Exclude heavy fields before grouping
       { $project: { __v: 0, messages: 0 } },
       {
@@ -6938,11 +6940,11 @@ export const listAllAgentsArchivedConversationsGrouped = async (
           _id: '$agentKey',
           conversations: { $push: '$$ROOT' },
           totalCount: { $sum: 1 },
-          latestUpdatedAt: { $first: '$updatedAt' },
+          latestActivity: { $first: '$lastActivityAt' },
         },
       },
       // Sort agent groups by most recent activity
-      { $sort: { latestUpdatedAt: -1 as const } },
+      { $sort: { latestActivity: -1 as const } },
       {
         $facet: {
           metadata: [{ $count: 'totalAgentCount' }],
@@ -6954,7 +6956,6 @@ export const listAllAgentsArchivedConversationsGrouped = async (
                 agentKey: '$_id',
                 conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
                 totalCount: 1,
-                hasMore: { $gt: ['$totalCount', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
               },
             },
           ],
@@ -6973,8 +6974,7 @@ export const listAllAgentsArchivedConversationsGrouped = async (
         archivedAt: c.updatedAt,
         archivedBy: c.archivedBy,
       })),
-      totalCount: g.totalCount,
-      hasMore: g.hasMore,
+      pagination: buildPaginationMetadata(g.totalCount, 1, AGENT_ARCHIVES_INITIAL_CHAT_LIMIT),
     }));
 
     logger.debug('Successfully fetched grouped archived agent conversations', {

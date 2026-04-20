@@ -177,7 +177,7 @@ function AgentGroupSection({
           {displayName}
         </Text>
         <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
-          {group.totalCount}
+          {group.pagination.totalCount}
         </Text>
       </button>
 
@@ -212,7 +212,7 @@ function AgentGroupSection({
             );
           })}
 
-          {group.hasMore && (
+          {group.pagination.hasNextPage && (
             <LoadMoreButton
               isLoading={group.isLoadingMore}
               label={t('workspace.archivedChats.moreChats')}

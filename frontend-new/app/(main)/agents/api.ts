@@ -435,8 +435,14 @@ export const AgentsApi = {
     groups: Array<{
       agentKey: string;
       conversations: Conversation[];
-      totalCount: number;
-      hasMore: boolean;
+      pagination: {
+        page: number;
+        limit: number;
+        totalCount: number;
+        totalPages: number;
+        hasNextPage: boolean;
+        hasPrevPage: boolean;
+      };
     }>;
     agentPagination: {
       page: number;
@@ -455,8 +461,14 @@ export const AgentsApi = {
       groups: Array<{
         agentKey: string;
         conversations: ReturnType<typeof mapApiConversationToConversation>[];
-        totalCount: number;
-        hasMore: boolean;
+        pagination: {
+          page: number;
+          limit: number;
+          totalCount: number;
+          totalPages: number;
+          hasNextPage: boolean;
+          hasPrevPage: boolean;
+        };
       }>;
       agentPagination: {
         page: number;
@@ -472,8 +484,7 @@ export const AgentsApi = {
       groups: (data?.groups ?? []).map((g) => ({
         agentKey: g.agentKey,
         conversations: g.conversations.map((c: any) => mapApiConversationToConversation(c)),
-        totalCount: g.totalCount,
-        hasMore: g.hasMore,
+        pagination: g.pagination,
       })),
       agentPagination: data?.agentPagination ?? {
         page: 1, limit: 5, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false,
