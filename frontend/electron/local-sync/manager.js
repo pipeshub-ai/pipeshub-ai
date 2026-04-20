@@ -47,6 +47,29 @@ function loadWatcherStateFiles(baseDir, connectorId) {
   }
 }
 
+/** Matches [ConnectorFsWatcher.applyFilters](watcher.js) for files. */
+function fileMatchesAllowedExtensions(relPath, extSet) {
+  if (!extSet || extSet.size === 0) return true;
+  const ext = path.extname(relPath).replace(/^\./, '').toLowerCase();
+  if (!ext) return true;
+  return extSet.has(ext);
+}
+
+function allowedExtensionSetFromMeta(meta) {
+  const allowed = meta && meta.allowedExtensions;
+  if (!Array.isArray(allowed) || allowed.length === 0) return null;
+  return new Set(allowed.map((e) => String(e).toLowerCase().replace(/^\./, '')));
+}
+
+/** Collects file paths referenced by a single journal/replay event (non-directory). */
+function addKnownFilePathsFromEvent(ev, knownPaths) {
+  if (!ev || ev.isDirectory) return;
+  if (ev.path) knownPaths.add(ev.path);
+  if (ev.oldPath && (ev.type === 'RENAMED' || ev.type === 'MOVED')) {
+    knownPaths.add(ev.oldPath);
+  }
+}
+
 class LocalSyncManager {
   constructor({ app, onStatusChange }) {
     this.app = app;
@@ -260,11 +283,15 @@ class LocalSyncManager {
     const rootPath = path.resolve(meta.rootPath);
     if (!fs.existsSync(rootPath)) return;
 
-    const scan = await scanSyncRoot(rootPath, { includeSubfolders: true });
+    const includeSubfolders = meta.includeSubfolders !== false;
+    const extSet = allowedExtensionSetFromMeta(meta);
+
+    const scan = await scanSyncRoot(rootPath, { includeSubfolders });
     const currentFiles = new Set();
     const events = [];
     for (const [relPath, entry] of scan) {
       if (entry.isDirectory) continue;
+      if (!fileMatchesAllowedExtensions(relPath, extSet)) continue;
       currentFiles.add(relPath);
       events.push({
         type: 'CREATED',
@@ -277,7 +304,8 @@ class LocalSyncManager {
 
     // Collect every file path the backend might have a record for: union of
     // watcher state + all paths ever referenced in journal CREATED/MODIFIED/
-    // RENAMED-to events. Then DELETE any that aren't currently on disk.
+    // RENAMED/MOVED (including batch-level directory expansions). Then DELETE
+    // any that aren't currently on disk (for allowed extensions / scan depth).
     const knownPaths = new Set();
 
     const oldFiles = loadWatcherStateFiles(this.baseDir, connectorId);
@@ -290,11 +318,16 @@ class LocalSyncManager {
     for (const batch of journalBatches) {
       for (const ev of (batch.events || [])) {
         if (ev.isDirectory) continue;
-        if (ev.path) knownPaths.add(ev.path);
+        addKnownFilePathsFromEvent(ev, knownPaths);
         if (ev.replayEvents) {
           for (const re of ev.replayEvents) {
-            if (!re.isDirectory && re.path) knownPaths.add(re.path);
+            addKnownFilePathsFromEvent(re, knownPaths);
           }
+        }
+      }
+      if (Array.isArray(batch.replayEvents)) {
+        for (const re of batch.replayEvents) {
+          addKnownFilePathsFromEvent(re, knownPaths);
         }
       }
     }

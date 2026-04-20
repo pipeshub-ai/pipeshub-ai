@@ -93,6 +93,15 @@ export class LocalFsWatcherRegistry {
     });
   }
 
+  hasActiveWatcher(orgId: string, connectorId: string): boolean {
+    const o = String(orgId ?? '').trim();
+    const c = connectorId.trim();
+    if (!o || !c) {
+      return false;
+    }
+    return this.watchers.has(this.toKey(o, c));
+  }
+
   async dispatch(
     request: LocalFsResyncDispatchRequest,
     timeoutMs = DEFAULT_RESYNC_TIMEOUT_MS,

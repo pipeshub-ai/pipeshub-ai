@@ -4,7 +4,8 @@ import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
-import { ICrawlingTaskService } from './task/crawling_task_service';
+import { CrawlingResult, ICrawlingTaskService } from './task/crawling_task_service';
+import { isLocalFsConnector } from '../../knowledge_base/services/local_fs_resync_dispatcher';
 
 @injectable()
 export class CrawlingWorkerService {
@@ -38,16 +39,21 @@ export class CrawlingWorkerService {
     this.logger.info('CrawlingWorkerService initialized');
   }
 
-  private async processJob(job: Job<CrawlingJobData>): Promise<void> {
-    const {  orgId, userId, scheduleConfig, connector, connectorId } = job.data;
+  private async processJob(job: Job<CrawlingJobData>): Promise<CrawlingResult> {
+    const { orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
-    this.logger.info('Processing crawling job', {
+    const processingMeta = {
       jobId: job.id,
       connector,
       connectorId,
       orgId,
       userId,
-    });
+    };
+    if (isLocalFsConnector(connector)) {
+      this.logger.debug('Processing crawling job', processingMeta);
+    } else {
+      this.logger.info('Processing crawling job', processingMeta);
+    }
 
     try {
       // Update job progress
@@ -66,13 +72,23 @@ export class CrawlingWorkerService {
 
       await job.updateProgress(100);
 
-      this.logger.info('Crawling job completed successfully', {
-        jobId: job.id,
-        connector,
-        connectorId,
-        orgId,
-        result,
-      });
+      if (result?.skipped) {
+        this.logger.debug('Crawling job completed (skipped — nothing to do)', {
+          jobId: job.id,
+          connector,
+          connectorId,
+          orgId,
+        });
+      } else {
+        this.logger.info('Crawling job completed successfully', {
+          jobId: job.id,
+          connector,
+          connectorId,
+          orgId,
+          result,
+        });
+      }
+      return result;
     } catch (error) {
       this.logger.error('Crawling job failed', {
         jobId: job.id,
@@ -87,11 +103,20 @@ export class CrawlingWorkerService {
 
   private setupWorkerListeners(): void {
     this.worker.on('completed', (job: Job) => {
-      this.logger.info('Job completed', {
-        jobId: job.id,
-        connector: job.data.connector,
-        connectorId: job.data.connectorId,
-      });
+      const ret = job.returnvalue as CrawlingResult | undefined;
+      if (ret?.skipped) {
+        this.logger.debug('Job completed', {
+          jobId: job.id,
+          connector: job.data.connector,
+          connectorId: job.data.connectorId,
+        });
+      } else {
+        this.logger.info('Job completed', {
+          jobId: job.id,
+          connector: job.data.connector,
+          connectorId: job.data.connectorId,
+        });
+      }
     });
 
     this.worker.on('failed', (job: Job | undefined, err: Error) => {

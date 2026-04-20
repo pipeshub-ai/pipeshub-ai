@@ -16,6 +16,7 @@ import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import { useAuthStore } from '@/lib/store/auth-store';
 import {
+  buildLocalFsWatcherOptionsFromConnectorConfig,
   buildLocalSyncScheduleFromConnectorConfig,
   extractLocalFsRootPath,
   startElectronLocalSync,
@@ -143,6 +144,7 @@ function TeamConnectorsPageContent() {
         connectorName: instance.name,
         rootPath,
         accessToken,
+        ...buildLocalFsWatcherOptionsFromConnectorConfig(config),
         ...buildLocalSyncScheduleFromConnectorConfig(config, instance.type),
       });
       await replayElectronLocalSync(instance._key);
