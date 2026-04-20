@@ -250,16 +250,16 @@ export function AllRecordsMode({
                   {t('sidebar.seeMoreConnectors')}
                 </Text>
               </div>
-               <IconButton
+              <IconButton
                 variant="soft"
                 size="1"
                 style={{ cursor: 'pointer', padding: '0px' }}
                 onClick={(e) => {
-                e.stopPropagation();
+                  e.stopPropagation();
                 }}
               >
                 <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-               </IconButton>
+              </IconButton>
             </Button>
           </Flex>
         </Box>

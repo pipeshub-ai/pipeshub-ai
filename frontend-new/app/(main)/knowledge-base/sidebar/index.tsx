@@ -6,6 +6,7 @@ import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
@@ -151,8 +152,6 @@ function KBSidebarContent({
     setAllRecordsSidebarSelection,
     toggleSection,
   } = useKnowledgeBaseStore();
-
-  const connectorsBasePath = isAdmin ? '/workspace/connectors/team' : '/workspace/connectors/personal';
 
   // Local state for secondary panel (replaces store-based MoreCollections)
   const [isSecondaryPanelOpen, setIsSecondaryPanelOpen] = useState(false);
@@ -474,9 +473,9 @@ function KBSidebarContent({
           onNodeExpand={onNodeExpand}
           kbSharedTree={sharedTree}
           kbPrivateTree={privateTree}
-          onNavigateToConnectors={() => router.push(`${connectorsBasePath}/`)}
+          onNavigateToConnectors={() => router.push(buildConnectorsUrl(isAdmin))}
           onNavigateToConnector={(connectorTypeParam) =>
-            router.push(`${connectorsBasePath}/?connectorType=${encodeURIComponent(connectorTypeParam)}`)
+            router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
           }
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
