@@ -85,12 +85,12 @@ async def fetch_toolset_oauth_config_by_id(
                 return oauth_cfg
 
         if logger:
-            logger.warning(f"Toolset OAuth config {oauth_config_id} not found for toolset type {toolset_type}")
+            logger.warning("Requested toolset OAuth config was not found")
         return None
 
-    except Exception as e:
+    except Exception:
         if logger:
-            logger.error(f"Error fetching toolset OAuth config {oauth_config_id} for toolset type {toolset_type}: {e}", exc_info=True)
+            logger.error("Error fetching toolset OAuth config")
         return None
 
 
@@ -161,10 +161,10 @@ async def fetch_oauth_config_by_id(
 
         # OAuth config not found
         if logger:
-            logger.warning(f"OAuth config {oauth_config_id} not found for connector type {connector_type}")
+            logger.warning("Requested OAuth config was not found")
         return None
 
-    except Exception as e:
+    except Exception:
         if logger:
-            logger.error(f"Error fetching OAuth config {oauth_config_id} for connector type {connector_type}: {e}", exc_info=True)
+            logger.error("Error fetching OAuth config")
         return None
