@@ -890,12 +890,25 @@ function UsersPageContent() {
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: showComingSoon,
+            onClick: () => setRemoveTarget(user),
           },
         ];
       } else if (isPendingExpired) {
-        // TODO: Handle expired invite — e.g. Resend Invite, Cancel Invite
-        actions = [];
+        // Expired invite — same as pending: resend or cancel
+        actions = [
+          {
+            icon: 'send',
+            label: t('workspace.users.actions.resendInvite'),
+            onClick: () => handleResendInvite(user),
+          },
+          {
+            icon: 'cancel_schedule_send',
+            label: t('workspace.users.actions.cancelInvite'),
+            variant: 'danger' as const,
+            separatorBefore: true,
+            onClick: () => setRemoveTarget(user),
+          },
+        ];
       } else if (isDeactivated) {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];

@@ -525,7 +525,8 @@
         "unblockConfirmAction": "Desbloquear",
         "unblockSuccess": "Usuario desbloqueado correctamente",
         "unblockError": "No se pudo desbloquear al usuario",
-        "unblocking": "Desbloqueando…"
+        "unblocking": "Desbloqueando…",
+        "edit": "Editar"
       },
       "profile": {
         "title": "Perfil",
@@ -904,14 +905,41 @@
       "actionSetDefault": "Establecer como predeterminado",
       "actionDelete": "Eliminar",
       "capabilities": {
-        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "Para LLM" },
-        "embedding": { "label": "Embedding", "badge": "Embedding", "sectionTab": "Para embedding" },
-        "image_generation": { "label": "Generación de imágenes", "badge": "Imagen", "sectionTab": "Para generación de imágenes" },
-        "reasoning": { "label": "Razonamiento", "badge": "Razonamiento" },
-        "ocr": { "label": "OCR", "badge": "" },
-        "tts": { "label": "Texto a voz", "badge": "" },
-        "stt": { "label": "Voz a texto", "badge": "" },
-        "video": { "label": "Vídeo", "badge": "Multimodal" }
+        "text_generation": {
+          "label": "LLM",
+          "badge": "LLM",
+          "sectionTab": "Para LLM"
+        },
+        "embedding": {
+          "label": "Embedding",
+          "badge": "Embedding",
+          "sectionTab": "Para embedding"
+        },
+        "image_generation": {
+          "label": "Generación de imágenes",
+          "badge": "Imagen",
+          "sectionTab": "Para generación de imágenes"
+        },
+        "reasoning": {
+          "label": "Razonamiento",
+          "badge": "Razonamiento"
+        },
+        "ocr": {
+          "label": "OCR",
+          "badge": ""
+        },
+        "tts": {
+          "label": "Texto a voz",
+          "badge": ""
+        },
+        "stt": {
+          "label": "Voz a texto",
+          "badge": ""
+        },
+        "video": {
+          "label": "Vídeo",
+          "badge": "Multimodal"
+        }
       }
     },
     "filters": {
@@ -976,7 +1004,7 @@
         "my": "Mis acciones",
         "browse": "Explorar catálogo"
       },
-      "personalAdminHint": "Los administradores gestionan el catálogo de la organización en Espacio de trabajo \u2192 Acciones.",
+      "personalAdminHint": "Los administradores gestionan el catálogo de la organización en Espacio de trabajo → Acciones.",
       "cta": {
         "setup": "Preparar",
         "configure": "Configurar",
@@ -985,7 +1013,7 @@
         "notConfigured": "No configurada"
       },
       "trailingYourActions": "Sus acciones",
-      "loading": "Cargando acciones\u2026",
+      "loading": "Cargando acciones…",
       "loadError": "No se pudieron cargar las acciones. Inténtelo de nuevo.",
       "empty": "Ninguna acción coincide con sus filtros.",
       "createSuccess": "Instancia de acción creada.",
@@ -1006,7 +1034,7 @@
       "oauthAppLabel": "Aplicación OAuth",
       "oauthAppNew": "Crear nueva aplicación OAuth",
       "linkedOAuthAppHeading": "Aplicación OAuth seleccionada",
-      "linkedOAuthAppHint": "Esta instancia usará las credenciales guardadas a continuación. Para introducir otras credenciales de cliente, elija \u201cCrear nueva aplicación OAuth\u201d.",
+      "linkedOAuthAppHint": "Esta instancia usará las credenciales guardadas a continuación. Para introducir otras credenciales de cliente, elija “Crear nueva aplicación OAuth”.",
       "linkedOAuthSecretStored": "Almacenado (oculto)",
       "oauthClientId": "ID de cliente",
       "oauthClientSecret": "Secreto de cliente",
@@ -1035,8 +1063,8 @@
         "empty": "Aún no hay instancias para esta acción.",
         "instancesHeading": "Instancias ({{count}})",
         "refresh": "Actualizar lista",
-        "refreshingList": "Actualizando lista\u2026",
-        "searchInstances": "Buscar instancias\u2026",
+        "refreshingList": "Actualizando lista…",
+        "searchInstances": "Buscar instancias…",
         "teamInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Las acciones autenticadas pueden añadirse a sus agentes.",
         "personalInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Una vez autenticado, puede usar estas acciones en sus agentes.",
         "instanceTabs": {
@@ -1074,7 +1102,7 @@
         "dangerZone": "Zona de peligro",
         "deleteInstance": "Eliminar instancia",
         "deleteDescription": "Eliminar permanentemente esta instancia de {{name}} de la organización.",
-        "deleteConfirmTitle": "\u00bfEliminar esta instancia?",
+        "deleteConfirmTitle": "¿Eliminar esta instancia?",
         "deleteConfirmBody": "Esto elimina la instancia de la organización. Los usuarios ya no podrán autenticarse contra ella. No se puede deshacer.",
         "deleteSuccess": "Instancia eliminada.",
         "saveSuccess": "Cambios guardados.",
@@ -1110,17 +1138,17 @@
     "serviceAccountBadge": "Agente de servicio",
     "serviceAccountBadgeTooltip": "Este agente de servicio usa credenciales de conjunto de herramientas dedicadas y acceso al conocimiento en toda la organización para quien lo use.",
     "convertToServiceAccount": "Convertir a agente de servicio",
-    "convertToServiceAccountTooltip": "Convertir permanentemente \u2014 credenciales de conjunto de herramientas dedicadas y acceso al conocimiento de toda la organización. No se puede deshacer.",
+    "convertToServiceAccountTooltip": "Convertir permanentemente — credenciales de conjunto de herramientas dedicadas y acceso al conocimiento de toda la organización. No se puede deshacer.",
     "convertToServiceAccountTooltipNewAgent": "Crea este agente como agente de servicio con conjuntos de herramientas a nivel de agente y conocimiento en toda la organización.",
     "createAsServiceAccount": "Agente de servicio",
     "createAsServiceAccountTooltip": "Crear como agente de servicio con sus propias credenciales de conjunto de herramientas y acceso completo al conocimiento.",
-    "agentActionsMenuAria": "Men\u00fa del agente",
+    "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
     "shareWithOrg": "Compartir con todos",
     "shareWithOrgTooltip": "Compartir este agente con todos en su organización.",
     "serviceAccountShareTooltip": "Los agentes de servicio siempre se comparten con la organización.",
-    "saving": "Guardando\u2026",
+    "saving": "Guardando…",
     "saveChanges": "Guardar cambios",
     "createAgent": "Crear agente",
     "nameRequired": "El nombre es obligatorio",
@@ -1203,30 +1231,30 @@
     "svcAcctToolsetsNote2Create": "No agregue conjuntos de herramientas que requieran inicio de sesión por usuario hasta que esté listo para proporcionar credenciales a nivel de agente en la paleta.",
     "svcAcctConvertTitle": "Convertir a agente de servicio",
     "svcAcctCreateTitle": "Crear agente de servicio",
-    "svcAcctConvertDesc": "Este agente pasar\u00e1 a ser un agente de servicio compartido: disponible en toda la organizaci\u00f3n, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
-    "svcAcctCreateDesc": "Crear\u00e1 un agente de servicio compartido: disponible en toda la organizaci\u00f3n, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
+    "svcAcctConvertDesc": "Este agente pasará a ser un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
+    "svcAcctCreateDesc": "Creará un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
     "svcAcctConvertLabel": "Convertir a agente de servicio",
     "svcAcctCreateLabel": "Crear agente de servicio",
-    "svcAcctConvertBusy": "Convirtiendo\u2026",
-    "svcAcctCreateBusy": "Creando agente\u2026",
+    "svcAcctConvertBusy": "Convirtiendo…",
+    "svcAcctCreateBusy": "Creando agente…",
     "svcAcctAgentLabel": "Agente",
     "svcAcctUnnamed": "(sin nombre)",
     "svcAcctKnowledgeTitle": "Fuentes de conocimiento",
-    "svcAcctKnowledgeNote1": "Solo se utilizan las fuentes de conocimiento que conecte en el constructor, no todo el espacio de trabajo. La b\u00fasqueda y las respuestas aplican sus permisos como la persona que guard\u00f3 este agente.",
-    "svcAcctKnowledgeNote2": "Los usuarios de su organizaci\u00f3n pueden ver respuestas basadas en contenido al que usted puede acceder en esas fuentes, aunque ellos no tengan acceso a ese contenido por s\u00ed mismos.",
+    "svcAcctKnowledgeNote1": "Solo se utilizan las fuentes de conocimiento que conecte en el constructor, no todo el espacio de trabajo. La búsqueda y las respuestas aplican sus permisos como la persona que guardó este agente.",
+    "svcAcctKnowledgeNote2": "Los usuarios de su organización pueden ver respuestas basadas en contenido al que usted puede acceder en esas fuentes, aunque ellos no tengan acceso a ese contenido por sí mismos.",
     "svcAcctToolsetsTitle": "Los conjuntos usan las credenciales del agente",
-    "svcAcctToolsetsNote1": "Este agente guarda sus propias credenciales para cada conjunto del flujo. Cuando alguien chatea con el agente, las llamadas a herramientas se ejecutan en nombre del agente con esas credenciales almacenadas, no con el inicio de sesi\u00f3n personal del visitante. Use el icono de llave en la paleta izquierda para conectar o actualizar las credenciales de cada conjunto cuando termine aqu\u00ed.",
-    "svcAcctToolsetsNote2Convert": "Antes de convertir, elimine del lienzo los nodos de conjuntos que a\u00fan usen inicio de sesi\u00f3n por usuario. Vuelva a a\u00f1adirlos y guarde las credenciales de este agente con el icono de llave.",
-    "svcAcctOrgTitle": "Acceso en toda la organizaci\u00f3n",
-    "svcAcctOrgDesc": "Cualquier persona de su organizaci\u00f3n puede encontrar, abrir y ejecutar este agente. No existe una copia privada independiente.",
+    "svcAcctToolsetsNote1": "Este agente guarda sus propias credenciales para cada conjunto del flujo. Cuando alguien chatea con el agente, las llamadas a herramientas se ejecutan en nombre del agente con esas credenciales almacenadas, no con el inicio de sesión personal del visitante. Use el icono de llave en la paleta izquierda para conectar o actualizar las credenciales de cada conjunto cuando termine aquí.",
+    "svcAcctToolsetsNote2Convert": "Antes de convertir, elimine del lienzo los nodos de conjuntos que aún usen inicio de sesión por usuario. Vuelva a añadirlos y guarde las credenciales de este agente con el icono de llave.",
+    "svcAcctOrgTitle": "Acceso en toda la organización",
+    "svcAcctOrgDesc": "Cualquier persona de su organización puede encontrar, abrir y ejecutar este agente. No existe una copia privada independiente.",
     "svcAcctRemoveToolsetsTitle": "Elimine primero los nodos de conjunto de herramientas del lienzo",
-    "svcAcctRemoveToolsetsDesc": "Los nodos de conjunto de herramientas en el flujo siguen usando credenciales por usuario, incompatibles con un agente de servicio. Elim\u00ednelos del lienzo y, a continuaci\u00f3n, {{action}} el agente. Vuelva a a\u00f1adir los conjuntos y configure credenciales a nivel de agente con el icono de llave en la paleta.",
+    "svcAcctRemoveToolsetsDesc": "Los nodos de conjunto de herramientas en el flujo siguen usando credenciales por usuario, incompatibles con un agente de servicio. Elimínelos del lienzo y, a continuación, {{action}} el agente. Vuelva a añadir los conjuntos y configure credenciales a nivel de agente con el icono de llave en la paleta.",
     "svcAcctConvertAction": "convierta",
     "svcAcctCreateAction": "cree",
     "svcAcctConfirmTitle": "Confirme para continuar",
-    "svcAcctAckKnowledge": "Entiendo qu\u00e9 conocimiento aplica, que la b\u00fasqueda usa mis permisos como la persona que guard\u00f3 este agente y que los usuarios de mi organizaci\u00f3n pueden ver respuestas basadas en contenido al que yo podr\u00eda acceder en esas fuentes.",
-    "svcAcctAckToolsets": "Entiendo que los conjuntos usan las credenciales guardadas para este agente (el icono de llave en la paleta) y que quien usa el agente no ejecuta los conjuntos con su propio inicio de sesi\u00f3n personal.",
-    "svcAcctAckOrg": "Entiendo que este agente estar\u00e1 disponible para todas las personas de mi organizaci\u00f3n.",
+    "svcAcctAckKnowledge": "Entiendo qué conocimiento aplica, que la búsqueda usa mis permisos como la persona que guardó este agente y que los usuarios de mi organización pueden ver respuestas basadas en contenido al que yo podría acceder en esas fuentes.",
+    "svcAcctAckToolsets": "Entiendo que los conjuntos usan las credenciales guardadas para este agente (el icono de llave en la paleta) y que quien usa el agente no ejecuta los conjuntos con su propio inicio de sesión personal.",
+    "svcAcctAckOrg": "Entiendo que este agente estará disponible para todas las personas de mi organización.",
     "svcAcctCheckboxHintConvert": "Seleccione las tres casillas para convertir.",
     "svcAcctCheckboxHintCreate": "Seleccione las tres casillas para crear.",
     "toolsetCredentialsTitle": "Credenciales del conjunto de herramientas del agente",
@@ -1252,7 +1280,7 @@
     "disconnectOAuthDesc": "Esto finaliza la sesión OAuth de {{name}} en este agente. El conjunto de herramientas sigue en el agente, pero no estará autenticado hasta que vuelva a iniciar sesión.",
     "disconnectOAuthProgress": "Desconectando…",
     "removeCredentials": "Eliminar credenciales",
-    "savingCredentials": "Guardando\u2026",
+    "savingCredentials": "Guardando…",
     "updateCredentials": "Guardar cambios",
     "saveCredentials": "Guardar credenciales",
     "noCredentialsRequired": "No se requieren credenciales para este conjunto de herramientas.",

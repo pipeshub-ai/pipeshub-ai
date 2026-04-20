@@ -57,8 +57,12 @@ export function useProfilePage() {
       setUserId(uid);
 
       // Email from JWT (fast), refreshed via API below
+      setEmailLoading(true);
       const emailFromToken = getUserEmailFromToken();
-      if (emailFromToken) setEmail(emailFromToken);
+      if (emailFromToken) {
+        setEmail(emailFromToken);
+        setEmailLoading(false);
+      }
 
       if (!uid) {
         setLoading(false);

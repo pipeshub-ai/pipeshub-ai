@@ -525,7 +525,8 @@
         "unblockConfirmAction": "अनब्लॉक करें",
         "unblockSuccess": "उपयोगकर्ता सफलतापूर्वक अनब्लॉक किया गया",
         "unblockError": "उपयोगकर्ता को अनब्लॉक करने में विफल",
-        "unblocking": "अनब्लॉक हो रहा है…"
+        "unblocking": "अनब्लॉक हो रहा है…",
+        "edit": "संपादित करें"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -904,14 +905,41 @@
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
       "actionDelete": "हटाएँ",
       "capabilities": {
-        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "LLM के लिए" },
-        "embedding": { "label": "एम्बेडिंग", "badge": "एम्बेडिंग", "sectionTab": "एम्बेडिंग के लिए" },
-        "image_generation": { "label": "इमेज जनरेशन", "badge": "इमेज", "sectionTab": "इमेज जनरेशन के लिए" },
-        "reasoning": { "label": "रीज़निंग", "badge": "रीज़निंग" },
-        "ocr": { "label": "OCR", "badge": "" },
-        "tts": { "label": "टेक्स्ट टू स्पीच", "badge": "" },
-        "stt": { "label": "स्पीच टू टेक्स्ट", "badge": "" },
-        "video": { "label": "वीडियो", "badge": "मल्टीमॉडल" }
+        "text_generation": {
+          "label": "LLM",
+          "badge": "LLM",
+          "sectionTab": "LLM के लिए"
+        },
+        "embedding": {
+          "label": "एम्बेडिंग",
+          "badge": "एम्बेडिंग",
+          "sectionTab": "एम्बेडिंग के लिए"
+        },
+        "image_generation": {
+          "label": "इमेज जनरेशन",
+          "badge": "इमेज",
+          "sectionTab": "इमेज जनरेशन के लिए"
+        },
+        "reasoning": {
+          "label": "रीज़निंग",
+          "badge": "रीज़निंग"
+        },
+        "ocr": {
+          "label": "OCR",
+          "badge": ""
+        },
+        "tts": {
+          "label": "टेक्स्ट टू स्पीच",
+          "badge": ""
+        },
+        "stt": {
+          "label": "स्पीच टू टेक्स्ट",
+          "badge": ""
+        },
+        "video": {
+          "label": "वीडियो",
+          "badge": "मल्टीमॉडल"
+        }
       }
     },
     "filters": {
@@ -976,7 +1004,7 @@
         "my": "मेरी कार्रवाइयाँ",
         "browse": "कैटलॉग ब्राउज़ करें"
       },
-      "personalAdminHint": "व्यवस्थापक संगठन कैटलॉग वर्कस्पेस \u2192 कार्रवाइयों के अंतर्गत प्रबंधित करते हैं।",
+      "personalAdminHint": "व्यवस्थापक संगठन कैटलॉग वर्कस्पेस → कार्रवाइयों के अंतर्गत प्रबंधित करते हैं।",
       "cta": {
         "setup": "सेटअप",
         "configure": "कॉन्फ़िगर करें",
@@ -985,7 +1013,7 @@
         "notConfigured": "कॉन्फ़िगर नहीं"
       },
       "trailingYourActions": "आपकी कार्रवाइयाँ",
-      "loading": "कार्रवाइयाँ लोड हो रही हैं\u2026",
+      "loading": "कार्रवाइयाँ लोड हो रही हैं…",
       "loadError": "कार्रवाइयाँ लोड नहीं हो सकीं। पुनः प्रयास करें।",
       "empty": "आपके फ़िल्टर से कोई कार्रवाई मेल नहीं खाती।",
       "createSuccess": "कार्रवाई इंस्टेंस बनाया गया।",
@@ -1006,12 +1034,12 @@
       "oauthAppLabel": "OAuth अनुप्रयोग",
       "oauthAppNew": "नया OAuth ऐप बनाएँ",
       "linkedOAuthAppHeading": "चयनित OAuth अनुप्रयोग",
-      "linkedOAuthAppHint": "यह इंस्टेंस नीचे सहेजे गए क्रेडेंशियल का उपयोग करेगा। भिन्न क्लाइंट क्रेडेंशियल दर्ज करने के लिए \u201cनया OAuth ऐप बनाएँ\u201d चुनें।",
+      "linkedOAuthAppHint": "यह इंस्टेंस नीचे सहेजे गए क्रेडेंशियल का उपयोग करेगा। भिन्न क्लाइंट क्रेडेंशियल दर्ज करने के लिए “नया OAuth ऐप बनाएँ” चुनें।",
       "linkedOAuthSecretStored": "सहेजा गया (छिपा हुआ)",
       "oauthClientId": "क्लाइंट ID",
       "oauthClientSecret": "क्लाइंट सीक्रेट",
       "availableActions": "उपलब्ध कार्रवाइयाँ",
-      "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर \u201cआपकी कार्रवाइयों\u201d से साइन इन कर सकते हैं।",
+      "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर “आपकी कार्रवाइयों” से साइन इन कर सकते हैं।",
       "postCreateAuth": {
         "title": "कार्रवाई इंस्टेंस सेट है और प्रमाणीकरण आवश्यक है",
         "body": "टूलसेट उपयोग शुरू करने से पहले प्रत्येक उपयोगकर्ता को अपनी ओर से प्रमाणित होना होगा।",
@@ -1035,8 +1063,8 @@
         "empty": "इस कार्रवाई के लिए अभी तक कोई इंस्टेंस नहीं।",
         "instancesHeading": "इंस्टेंस ({{count}})",
         "refresh": "सूची ताज़ा करें",
-        "refreshingList": "सूची अपडेट हो रही है\u2026",
-        "searchInstances": "इंस्टेंस खोजें\u2026",
+        "refreshingList": "सूची अपडेट हो रही है…",
+        "searchInstances": "इंस्टेंस खोजें…",
         "teamInstanceInfo": "अपने संगठन की कार्रवाई इंस्टेंस के विरुद्ध प्रमाणित करें। प्रमाणित कार्रवाइयों को आपके एजेंटों में जोड़ा जा सकता है।",
         "personalInstanceInfo": "अपने संगठन की कार्रवाई इंस्टेंस के विरुद्ध प्रमाणित करें। एक बार प्रमाणित होने के बाद, आप इन कार्रवाइयों को अपने एजेंटों में उपयोग कर सकते हैं।",
         "instanceTabs": {
@@ -1110,7 +1138,7 @@
     "serviceAccountBadge": "सर्विस एजेंट",
     "serviceAccountBadgeTooltip": "यह सर्विस एजेंट समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच का उपयोग करता है।",
     "convertToServiceAccount": "सर्विस एजेंट में बदलें",
-    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें \u2014 समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
+    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें — समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
     "convertToServiceAccountTooltipNewAgent": "इस एजेंट को सर्विस एजेंट के रूप में बनाता है: एजेंट-स्तरीय टूलसेट और संगठन-व्यापी ज्ञान।",
     "createAsServiceAccount": "सर्विस एजेंट",
     "createAsServiceAccountTooltip": "अपने टूलसेट क्रेडेंशियल और पूर्ण ज्ञान पहुंच के साथ सर्विस एजेंट के रूप में बनाएं।",
@@ -1120,7 +1148,7 @@
     "shareWithOrg": "सभी के साथ साझा करें",
     "shareWithOrgTooltip": "इस एजेंट को अपने संगठन में सभी के साथ साझा करें।",
     "serviceAccountShareTooltip": "सर्विस एजेंट हमेशा संगठन के साथ साझा किए जाते हैं।",
-    "saving": "सहेजा जा रहा है\u2026",
+    "saving": "सहेजा जा रहा है…",
     "saveChanges": "परिवर्तन सहेजें",
     "createAgent": "एजेंट बनाएं",
     "nameRequired": "नाम आवश्यक है",
@@ -1207,8 +1235,8 @@
     "svcAcctCreateDesc": "आप एक साझा सर्विस एजेंट बना रहे हैं: पूरे संगठन में उपलब्ध, प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं।",
     "svcAcctConvertLabel": "सर्विस एजेंट में बदलें",
     "svcAcctCreateLabel": "सर्विस एजेंट बनाएं",
-    "svcAcctConvertBusy": "बदला जा रहा है\u2026",
-    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है\u2026",
+    "svcAcctConvertBusy": "बदला जा रहा है…",
+    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है…",
     "svcAcctAgentLabel": "एजेंट",
     "svcAcctUnnamed": "(अनाम)",
     "svcAcctKnowledgeTitle": "ज्ञान स्रोत",
@@ -1252,7 +1280,7 @@
     "disconnectOAuthDesc": "यह इस एजेंट पर {{name}} के लिए OAuth सत्र समाप्त करता है। टूलसेट एजेंट पर बना रहता है, लेकिन जब तक आप फिर से साइन इन नहीं करते, तब तक प्रमाणित नहीं होगा।",
     "disconnectOAuthProgress": "डिस्कनेक्ट हो रहा है…",
     "removeCredentials": "क्रेडेंशियल हटाएं",
-    "savingCredentials": "सहेजा जा रहा है\u2026",
+    "savingCredentials": "सहेजा जा रहा है…",
     "updateCredentials": "परिवर्तन सहेजें",
     "saveCredentials": "क्रेडेंशियल सहेजें",
     "noCredentialsRequired": "इस टूलसेट के लिए कोई क्रेडेंशियल आवश्यक नहीं हैं।",
