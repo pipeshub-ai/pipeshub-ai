@@ -705,17 +705,9 @@ export function FiltersSection() {
 
     const { formData: fd } = useConnectorsStore.getState();
     const seedSync = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
-      fields.map((f) => f.name).filter((name) => {
-        const field = fields.find((ff) => ff.name === name);
-        return field ? isMeaningfulCommitted(field, vals[name]) : false;
-      });
+      fields.filter((f) => isMeaningfulCommitted(f, vals[f.name])).map((f) => f.name);
     const seedIndexingActive = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
-      fields
-        .map((f) => f.name)
-        .filter((name) => {
-          const raw = vals[name];
-          return hasActiveFilterRow(raw);
-        });
+      fields.filter((f) => hasActiveFilterRow(vals[f.name])).map((f) => f.name);
 
     setActiveSync(seedSync(syncFields, fd.filters.sync));
     setActiveIndexing(seedIndexingActive(indexingFields, fd.filters.indexing));
