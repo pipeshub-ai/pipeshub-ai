@@ -1,0 +1,44 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── 1. Build ────────────────────────────────────────────────────────────────
+  build:
+    uses: this-is-the-plan/nextjs-ci-cd/.github/workflows/build.yml@main
+    with:
+      node-version: '22'
+      build-command: 'npm run build'
+      next-public-api-base-url: 'https://demo.pipeshub.com'
+      # dist-path: 'out'                 # default
+
+  # ── 2. Test ─────────────────────────────────────────────────────────────────
+  test:
+    uses: this-is-the-plan/nextjs-ci-cd/.github/workflows/test.yml@main
+    with:
+      node-version: '22'
+      pass-with-no-tests: true
+
+  # ── 3. Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    uses: this-is-the-plan/nextjs-ci-cd/.github/workflows/lint.yml@main
+    with:
+      node-version: '22'
+
+  # ── 4. Deploy ───────────────────────────────────────────────────────────────
+  # Only runs on pushes to main or development — not on PRs.
+  # AWS credentials come from this repo's GitHub secrets via `secrets: inherit`.
+  deploy:
+    needs: build
+    if: github.event_name == 'push'
+    uses: this-is-the-plan/nextjs-ci-cd/.github/workflows/deploy.yml@main
+    secrets: inherit
+    with:
+      s3-bucket: 'pipeshub-ui.kagha.ai'
+      aws-region: us-east-1
+      # s3-prefix: ''                    # optional sub-folder inside bucket
+      # dist-path: 'out'                 # default
