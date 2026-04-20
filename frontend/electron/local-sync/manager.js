@@ -3,7 +3,7 @@ const path = require('path');
 const { safeStorage } = require('electron');
 const { ConnectorFsWatcher } = require('./watcher');
 const { LocalSyncJournal } = require('./journal');
-const { dispatchFileEventBatch } = require('./dispatcher');
+const { dispatchFileEventBatch: defaultDispatchFileEventBatch } = require('./dispatcher');
 const { expandWatchEventsForReplay } = require('./replayer');
 const { connectorFileSegment, scanSyncRoot } = require('./watcher-state');
 const { scheduleCrawlingManagerJob, unscheduleCrawlingManagerJob } = require('./backend-client');
@@ -71,9 +71,10 @@ function addKnownFilePathsFromEvent(ev, knownPaths) {
 }
 
 class LocalSyncManager {
-  constructor({ app, onStatusChange }) {
+  constructor({ app, onStatusChange, dispatchFileEventBatch } = {}) {
     this.app = app;
     this.onStatusChange = onStatusChange;
+    this.dispatchFileEventBatch = dispatchFileEventBatch || defaultDispatchFileEventBatch;
     this.baseDir = path.join(this.app.getPath('userData'), 'local-sync-journal');
     this.journal = new LocalSyncJournal(this.baseDir);
     this.runtimes = new Map();
@@ -82,6 +83,8 @@ class LocalSyncManager {
     // app launch before the window mounts the connector UI.
     this.retryTimers = new Map();
     this.retryAttempts = new Map();
+    /** @type {Map<string, Promise<void>>} */
+    this.fullSyncInFlight = new Map();
   }
 
   async init() {
@@ -108,20 +111,9 @@ class LocalSyncManager {
         console.warn(`[local-sync:${connectorId}] startup full-sync failed:`, err.message || err);
         this.armRetry(connectorId);
       });
-      // If a connector was set up with SCHEDULED strategy in a prior session,
-      // restart its desktop-side timer without a full watcher restart. The
-      // watcher itself is only restarted when the renderer calls start() again.
-      const meta = this.journal.getMeta(connectorId);
-      if (meta && meta.syncStrategy === 'SCHEDULED' && meta.scheduledConfig) {
-        const interval = Math.max(1, Number(meta.scheduledConfig.intervalMinutes || 0));
-        if (interval) {
-          // Fire a one-shot tick so pending work is replayed promptly on relaunch,
-          // then settle into the regular cadence.
-          this.runScheduledTick(connectorId).catch(() => { /* ignore */ });
-          // Note: the timer lives on a runtime that start() will create. If the
-          // renderer hasn't called start() yet, replay covered the gap.
-        }
-      }
+      // SCHEDULED strategy: the periodic timer lives on a runtime that the
+      // renderer's start() will create. Replay + triggerBackendFullSync above
+      // already covered the relaunch gap.
     }
   }
 
@@ -207,7 +199,7 @@ class LocalSyncManager {
       this.journal.appendBatch(connectorId, { batchId, timestamp, events, source, replayEvents });
       this.emitStatus(connectorId);
       try {
-        await dispatchFileEventBatch({
+        await this.dispatchFileEventBatch({
           apiBaseUrl: runtime.apiBaseUrl,
           accessToken: runtime.accessToken,
           connectorId,
@@ -215,7 +207,13 @@ class LocalSyncManager {
         });
         this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
         runtime.lastError = null;
-        this.cancelRetry(connectorId);
+        // Only cancel retry if no other failed/pending batches remain — a live
+        // success here doesn't mean the journal is drained. Cancelling
+        // unconditionally would strand prior failed batches until next failure
+        // or app restart.
+        if (this.journal.getPendingOrFailedBatches(connectorId).length === 0) {
+          this.cancelRetry(connectorId);
+        }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         this.journal.updateBatchStatus(connectorId, batchId, 'failed', { lastError: msg });
@@ -249,6 +247,9 @@ class LocalSyncManager {
     // of journal history.
     this.triggerBackendFullSync(connectorId).catch((err) => {
       console.warn(`[local-sync:${connectorId}] backend full-sync trigger failed:`, err.message || err);
+      const rt = this.runtimes.get(connectorId);
+      if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
+      this.armRetry(connectorId);
     });
 
     // Scheduled-sync tick (desktop-side mirror of the backend cron job).
@@ -274,7 +275,21 @@ class LocalSyncManager {
   // deterministic hash of connector + relative path), so this is safe to
   // call on every restart — it brings the backend in sync with actual disk
   // state without relying on replaying historical journal events.
+  /**
+   * Coalesces concurrent full-syncs (e.g. init + start) into one in-flight run per connector.
+   */
   async triggerBackendFullSync(connectorId) {
+    if (!connectorId) return;
+    let p = this.fullSyncInFlight.get(connectorId);
+    if (p) return p;
+    p = this._triggerBackendFullSyncBody(connectorId).finally(() => {
+      this.fullSyncInFlight.delete(connectorId);
+    });
+    this.fullSyncInFlight.set(connectorId, p);
+    return p;
+  }
+
+  async _triggerBackendFullSyncBody(connectorId) {
     const meta = this.journal.getMeta(connectorId);
     if (!meta || !meta.rootPath || !meta.apiBaseUrl) return;
     const token = decryptToken(meta.accessTokenEnc) || meta.accessToken;
@@ -345,9 +360,28 @@ class LocalSyncManager {
 
     if (events.length === 0) return;
 
-    // Mark all existing pending/failed journal batches as synced — the full
-    // scan supersedes any stale incremental events.
     const pending = this.journal.getPendingOrFailedBatches(connectorId);
+    const batchSize = 50;
+    try {
+      for (let i = 0; i < events.length; i += batchSize) {
+        const chunk = events.slice(i, i + batchSize);
+        const batchId = `fullsync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await this.dispatchFileEventBatch({
+          apiBaseUrl: meta.apiBaseUrl,
+          accessToken: token,
+          connectorId,
+          batchId,
+          timestamp: Date.now(),
+          events: chunk,
+        });
+      }
+    } catch (err) {
+      const rt = this.runtimes.get(connectorId);
+      if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+
+    // Only after all chunks succeed: mark stale incremental batches superseded.
     for (const batch of pending) {
       this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
     }
@@ -355,27 +389,22 @@ class LocalSyncManager {
       console.log(`[local-sync:${connectorId}] full-sync: marked ${pending.length} stale journal batch(es) as synced`);
     }
 
-    const batchSize = 50;
-    for (let i = 0; i < events.length; i += batchSize) {
-      const chunk = events.slice(i, i + batchSize);
-      const batchId = `fullsync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await dispatchFileEventBatch({
-        apiBaseUrl: meta.apiBaseUrl,
-        accessToken: token,
-        connectorId,
-        batchId,
-        timestamp: Date.now(),
-        events: chunk,
-      });
-    }
     this.cancelRetry(connectorId);
     console.log(`[local-sync:${connectorId}] backend full-sync: sent ${events.length} file(s)`);
   }
 
-  // Self-scheduling retry: when a dispatch fails (network down, server 5xx
-  // after dispatcher max attempts), re-run replay() with exponential backoff
-  // until the journal clears. Keyed on connectorId so it works both while the
-  // watcher is running AND during pre-start() startup recovery.
+  /**
+   * Replay pending/failed journal batches, then run a backend full-sync reconcile.
+   * Used by the retry timer so recovery works when only full-sync fails with an empty journal.
+   */
+  async runRecoveryTick(connectorId) {
+    await this.replay(connectorId);
+    await this.triggerBackendFullSync(connectorId);
+  }
+
+  // Self-scheduling retry: when dispatch or full-sync fails, re-run replay then
+  // triggerBackendFullSync with exponential backoff. Keyed on connectorId so it
+  // works both while the watcher is running AND during pre-start() startup recovery.
   armRetry(connectorId) {
     if (!connectorId || this.retryTimers.has(connectorId)) return;
     const attempt = this.retryAttempts.get(connectorId) || 0;
@@ -383,7 +412,7 @@ class LocalSyncManager {
     this.retryAttempts.set(connectorId, attempt + 1);
     const timer = setTimeout(() => {
       this.retryTimers.delete(connectorId);
-      this.replay(connectorId)
+      this.runRecoveryTick(connectorId)
         .then(() => { this.retryAttempts.delete(connectorId); })
         .catch(() => { this.armRetry(connectorId); });
     }, delay);
@@ -411,13 +440,16 @@ class LocalSyncManager {
 
   async stop(connectorId) {
     if (!connectorId) return null;
+    // Always cancel any armed retry — init() can arm one before any runtime
+    // exists (offline recovery before renderer calls start()), and stop()
+    // must drain it whether or not a runtime is registered.
+    this.cancelRetry(connectorId);
     const runtime = this.runtimes.get(connectorId);
     if (!runtime) return this.getStatus(connectorId);
     if (runtime.scheduleTimer) {
       clearInterval(runtime.scheduleTimer);
       runtime.scheduleTimer = null;
     }
-    this.cancelRetry(connectorId);
     if (runtime.watcher) {
       try { await runtime.watcher.stop(); } catch { /* ignore */ }
     }
@@ -534,7 +566,7 @@ class LocalSyncManager {
       }
 
       try {
-        await dispatchFileEventBatch({
+        await this.dispatchFileEventBatch({
           apiBaseUrl: meta.apiBaseUrl,
           accessToken: token,
           connectorId,
