@@ -80,12 +80,6 @@ export function useProfilePage() {
 
         setLoading(false);
 
-        // Fetch email from API in background
-        setEmailLoading(true);
-        ProfileApi.getUserEmail(uid)
-          .then((apiEmail) => { if (apiEmail) setEmail(apiEmail); })
-          .finally(() => setEmailLoading(false));
-
         // Fetch groups + derive role from group membership (best-effort, non-blocking)
         getUserGroupsForProfile(uid).then((allGroups) => {
           // Exclude system groups (admin, everyone) from the badge display
