@@ -149,19 +149,19 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
             const overallHealthy =
               infraData?.status === 'healthy' && servicesData?.status === 'healthy';
 
+            set((state) => {
+              state.backgroundCheckFailed = !overallHealthy;
+              state.infraServices = infraData?.services ?? null;
+              state.appServices = servicesData?.services ?? null;
+              state.infraServiceNames = infraData?.serviceNames ?? null;
+              state.lastChecked = Date.now();
+            });
+
             if (overallHealthy) {
-              set((state) => {
-                state.backgroundCheckFailed = false;
-                state.lastChecked = Date.now();
-              });
               try {
                 localStorage.setItem(CACHE_KEY, 'true');
               } catch {}
             } else {
-              set((state) => {
-                state.backgroundCheckFailed = true;
-                state.lastChecked = Date.now();
-              });
               try {
                 localStorage.removeItem(CACHE_KEY);
               } catch {}

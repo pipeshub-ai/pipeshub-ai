@@ -6,9 +6,47 @@ import {
   useServicesHealthStore,
   isCachedHealthy,
   selectBackgroundCheckFailed,
+  selectAppServices,
+  selectInfraServices,
+  selectInfraServiceNames,
+  type AppServices,
+  type InfraServices,
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
 import { LoadingScreen } from './auth-guard';
+
+const APP_SERVICE_LABELS: Record<string, string> = {
+  query: 'Query Service',
+  connector: 'Connector Service',
+  indexing: 'Indexing Service',
+  docling: 'Docling Service',
+};
+
+function getUnhealthyServiceNames(
+  appServices: AppServices | null,
+  infraServices: InfraServices | null,
+  infraServiceNames: Record<string, string> | null,
+): string[] {
+  const names: string[] = [];
+
+  if (appServices) {
+    for (const [key, status] of Object.entries(appServices)) {
+      if (status === 'unhealthy') {
+        names.push(APP_SERVICE_LABELS[key] || key);
+      }
+    }
+  }
+
+  if (infraServices) {
+    for (const [key, status] of Object.entries(infraServices)) {
+      if (status === 'unhealthy') {
+        names.push(infraServiceNames?.[key] || key);
+      }
+    }
+  }
+
+  return names;
+}
 
 /**
  * Blocks rendering of the authenticated app until critical services
@@ -36,6 +74,9 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
+  const appServices = useServicesHealthStore(selectAppServices);
+  const infraServices = useServicesHealthStore(selectInfraServices);
+  const infraServiceNames = useServicesHealthStore(selectInfraServiceNames);
 
   const toastIdRef = useRef<string | null>(null);
   const hasCheckedCache = useRef(false);
@@ -65,22 +106,32 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!cachedHealthy.current) return;
 
-    if (backgroundCheckFailed && toastIdRef.current === null) {
-      toastIdRef.current = toast.warning(
-        'Some services appear to be unavailable. Your session may be affected.',
-        {
-          duration: null,
-          action: {
-            label: 'View status',
-            onClick: () => router.push('/workspace/services'),
+    if (backgroundCheckFailed) {
+      const unhealthy = getUnhealthyServiceNames(appServices, infraServices, infraServiceNames);
+      const description = unhealthy.length > 0
+        ? `Affected: ${unhealthy.join(', ')}`
+        : undefined;
+
+      if (toastIdRef.current === null) {
+        toastIdRef.current = toast.warning(
+          'Some services are unavailable',
+          {
+            description,
+            duration: null,
+            action: {
+              label: 'View status',
+              onClick: () => router.push('/workspace/services'),
+            },
           },
-        },
-      );
-    } else if (!backgroundCheckFailed && toastIdRef.current !== null) {
+        );
+      } else {
+        toast.update(toastIdRef.current, { description });
+      }
+    } else if (toastIdRef.current !== null) {
       toast.dismiss(toastIdRef.current);
       toastIdRef.current = null;
     }
-  }, [backgroundCheckFailed, router]);
+  }, [backgroundCheckFailed, appServices, infraServices, infraServiceNames, router]);
 
   // ── Non-cached path: blocking poll + toasts ───────────────────────────────
   useEffect(() => {
@@ -112,15 +163,21 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
       toast.update(toastIdRef.current, {
         variant: 'success',
         title: 'Services are healthy',
+        description: undefined,
       });
       toastIdRef.current = null;
     } else if (healthy === false && toastIdRef.current) {
+      const unhealthy = getUnhealthyServiceNames(appServices, infraServices, infraServiceNames);
+      const description = unhealthy.length > 0
+        ? `Affected: ${unhealthy.join(', ')}`
+        : undefined;
       toast.update(toastIdRef.current, {
         variant: 'loading',
         title: 'Waiting for services to become ready…',
+        description,
       });
     }
-  }, [healthy]);
+  }, [healthy, appServices, infraServices, infraServiceNames]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
