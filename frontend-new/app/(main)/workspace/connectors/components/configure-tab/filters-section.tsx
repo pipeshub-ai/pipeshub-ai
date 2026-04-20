@@ -624,7 +624,7 @@ function FilterCategoryBlock({
   const addField = (fieldName: string) => {
     const field = fields.find((f) => f.name === fieldName);
     if (!field) return;
-    setActiveFieldNames((prev) => Array.from(new Set([...prev, fieldName])));
+    setActiveFieldNames((prev) => [...prev, fieldName]);
     const row = getRow(field, undefined);
     onChange(section, field.name, {
       operator: row.operator,

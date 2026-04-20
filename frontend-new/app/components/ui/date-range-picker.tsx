@@ -351,21 +351,10 @@ export function DateRangePicker({
     if (selectedDateType === 'between') {
       if (!selectedStart || !selectedEnd) return;
       onApply(selectedStart, selectedEnd, selectedDateType);
-      setIsOpen(false);
-      return;
-    }
-    const boundary =
-      selectedDateType === 'before' ? selectedStart || selectedEnd : selectedStart || selectedEnd;
-    if (!boundary) return;
-    if (selectedDateType === 'before') {
-      onApply(boundary, undefined, 'before');
     } else {
-      const out =
-        selectedDateType === 'after' || selectedDateType === 'on'
-          ? selectedStart || selectedEnd
-          : boundary;
-      if (!out) return;
-      onApply(out, undefined, selectedDateType);
+      const boundary = selectedStart || selectedEnd;
+      if (!boundary) return;
+      onApply(boundary, undefined, selectedDateType);
     }
     setIsOpen(false);
   };
@@ -539,7 +528,7 @@ export function DateRangePicker({
 
   const triggerField = (
     <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
-      <Popover.Trigger asChild>
+      <Popover.Trigger>
         <Button
           type="button"
           variant="outline"

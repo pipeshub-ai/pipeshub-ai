@@ -223,7 +223,7 @@ export function FilterDropdown({
     >
       {triggerLayout === 'simple' ? (
         <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
-          <Popover.Trigger asChild>
+          <Popover.Trigger>
             <Button
               variant="outline"
               color="gray"
