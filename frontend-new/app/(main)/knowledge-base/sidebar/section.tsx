@@ -109,7 +109,7 @@ export function AppSection({
       </Flex>
 
       {/* Children — same tree structure as Collections */}
-      <Box className="no-scrollbar" style={{ overflowX: 'auto', marginTop: '4px' }}>
+      <Box className="no-scrollbar" style={{ overflow: 'hidden', marginTop: '4px' }}>
       <Flex direction="column" gap="0">
         {isLoading ? (
           <Flex align="center" gap="2" style={{ padding: '8px 24px' }}>

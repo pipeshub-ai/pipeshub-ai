@@ -22,6 +22,7 @@ export function FilePreviewMobile({
   initialPage,
   highlightBox,
   citations,
+  initialCitationId,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
@@ -77,6 +78,7 @@ export function FilePreviewMobile({
     onPageChange: handlePageChange,
     initialHighlightBox: highlightBox,
     initialPage,
+    initialCitationId,
   });
 
   // Auto-scroll active citation into view in bottom sheet

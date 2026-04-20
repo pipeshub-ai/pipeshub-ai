@@ -22,6 +22,7 @@ export function FilePreviewFullscreen({
   initialPage,
   highlightBox,
   citations,
+  initialCitationId,
 }: FilePreviewProps) {
   const hasCitations = citations && citations.length > 0;
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
@@ -73,6 +74,7 @@ export function FilePreviewFullscreen({
     onPageChange: handlePageChange,
     initialHighlightBox: highlightBox,
     initialPage,
+    initialCitationId,
   });
 
   // Create pagination controls object

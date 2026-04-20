@@ -46,16 +46,23 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'XLS', 'XLSX', 'PNG', 'JPEG', 'JPG'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
 const ACCEPTED_MIME_TYPES = {
   'text/plain': 'TXT',
   'application/pdf': 'PDF',
+  'application/msword': 'DOC',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
   'application/vnd.ms-excel': 'XLS',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
+  'text/csv': 'CSV',
+  'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
+  'image/svg+xml': 'SVG',
 };
+// Extension fallback for files that arrive without a recognisable MIME type
+// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
+const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -65,7 +72,9 @@ function formatFileSize(bytes: number): string {
 
 function isFileTypeSupported(file: File): boolean {
   const mimeType = file.type;
-  return Object.keys(ACCEPTED_MIME_TYPES).includes(mimeType);
+  if (Object.keys(ACCEPTED_MIME_TYPES).includes(mimeType)) return true;
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
 export function ChatInput({
@@ -713,7 +722,10 @@ export function ChatInput({
         ref={fileInputRef}
         type="file"
         multiple
-        accept={Object.keys(ACCEPTED_MIME_TYPES).join(',')}
+        accept={[
+          ...Object.keys(ACCEPTED_MIME_TYPES),
+          ...ACCEPTED_EXTENSIONS.map((e) => `.${e}`),
+        ].join(',')}
         onChange={handleFileSelect}
         style={{ display: 'none' }}
       />
