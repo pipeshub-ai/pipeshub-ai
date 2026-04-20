@@ -76,7 +76,24 @@ export function InstanceManagementPanel() {
         typeof data._key === 'string' &&
         typeof data.type === 'string'
       ) {
-        upsertConnectorInstance(data as unknown as Connector);
+        const { activeConnectors, selectedInstance: currentSelected } =
+          useConnectorsStore.getState();
+        const prev =
+          currentSelected?._key === data._key
+            ? currentSelected
+            : activeConnectors.find((c) => c._key === data._key);
+        if (prev) {
+          const nextStatusRaw = data.status;
+          let status: Connector['status'] = prev.status ?? null;
+          if (
+            nextStatusRaw === 'DELETING' ||
+            nextStatusRaw === 'SYNCING' ||
+            nextStatusRaw === null
+          ) {
+            status = nextStatusRaw as Connector['status'];
+          }
+          upsertConnectorInstance({ ...prev, status });
+        }
       }
       removeConnectorInstanceCaches(id);
       addToast({
