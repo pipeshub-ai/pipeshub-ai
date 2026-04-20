@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ProfileApi } from '../api';
 import { validatePassword } from '@/lib/utils/validators';
 
@@ -32,6 +33,7 @@ export interface UseChangePasswordOptions {
 // ========================================
 
 export function useChangePassword({ onOpenChange, onSuccess }: UseChangePasswordOptions) {
+  const { t } = useTranslation();
   const [view, setView] = useState<DialogView>('form');
   const [form, setForm] = useState<FormState>({
     currentPassword: '',
@@ -42,9 +44,7 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [apiErrorMessage, setApiErrorMessage] = useState<string>(
-    'Could not update your password. Please try again.'
-  );
+  const [apiErrorMessage, setApiErrorMessage] = useState<string>('');
 
   const resetForm = useCallback(() => {
     setForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -52,7 +52,7 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
     setShowNewPassword(false);
     setShowConfirmPassword(false);
     setView('form');
-    setApiErrorMessage('Could not update your password. Please try again.');
+    setApiErrorMessage('');
   }, []);
 
   const handleClose = useCallback(() => {
@@ -76,20 +76,20 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
     const newErrors: FormErrors = {};
 
     if (!form.currentPassword) {
-      newErrors.currentPassword = 'Current password is required';
+      newErrors.currentPassword = t('workspace.profile.changePassword.currentRequired');
     }
 
     if (!form.newPassword) {
-      newErrors.newPassword = 'New password is required';
+      newErrors.newPassword = t('workspace.profile.changePassword.newRequired');
     } else {
       const pwError = validatePassword(form.newPassword);
       if (pwError) newErrors.newPassword = pwError;
     }
 
     if (!form.confirmPassword) {
-      newErrors.confirmPassword = 'Please confirm your new password';
+      newErrors.confirmPassword = t('workspace.profile.changePassword.confirmRequired');
     } else if (form.confirmPassword !== form.newPassword) {
-      newErrors.confirmPassword = "This doesn't match with your new password";
+      newErrors.confirmPassword = t('workspace.profile.changePassword.mismatchError');
     }
 
     setErrors(newErrors);
@@ -114,7 +114,7 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
       const message =
         data?.error?.message ??
         data?.message ??
-        'Could not update your password. Please try again.';
+        t('workspace.profile.changePassword.defaultError');
       setApiErrorMessage(message);
       setView('error');
     } finally {

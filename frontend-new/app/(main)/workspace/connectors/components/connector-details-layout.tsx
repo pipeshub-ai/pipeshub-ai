@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Heading, Text, Button } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -59,6 +60,7 @@ export function ConnectorDetailsLayout({
   onStartSync,
   onInstanceChevron,
 }: ConnectorDetailsLayoutProps) {
+  const { t } = useTranslation();
   const connectorName = connector?.name ?? '';
 
   return (
@@ -146,7 +148,7 @@ export function ConnectorDetailsLayout({
             style={{ cursor: 'pointer' }}
           >
             <MaterialIcon name="add" size={16} color="white" />
-            Add Another Instance
+            {t('workspace.connectors.addInstance')}
           </Button>
         </Flex>
       </Flex>
@@ -154,7 +156,7 @@ export function ConnectorDetailsLayout({
       {/* ── Instance list ── */}
       {isLoading ? (
         <Flex align="center" justify="center" style={{ flex: 1 }}>
-          <LottieLoader variant="loader" size={48} showLabel label="Loading instances…" />
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.loadingInstances')} />
         </Flex>
       ) : instances.length === 0 ? (
         <Flex
@@ -166,7 +168,7 @@ export function ConnectorDetailsLayout({
         >
           <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            No instances configured yet
+            {t('workspace.connectors.noInstances')}
           </Text>
         </Flex>
       ) : (

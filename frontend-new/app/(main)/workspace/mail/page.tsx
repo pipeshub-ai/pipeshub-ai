@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -24,6 +25,7 @@ import type { SmtpConfig } from './types';
 // ============================================================
 
 export default function MailPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -75,8 +77,8 @@ export default function MailPage() {
     setIsConfigured(!!config?.host && !!config?.fromEmail);
     addToast({
       variant: 'success',
-      title: 'SMTP configuration saved',
-      description: 'Your email server settings have been updated',
+      title: t('workspace.mail.toasts.saved'),
+      description: t('workspace.mail.toasts.savedDescription'),
     });
   }, [addToast]);
 
@@ -102,10 +104,10 @@ export default function MailPage() {
         <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Mail Settings
+              {t('workspace.mail.title')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Email server configuration for OTP and notifications
+              {t('workspace.mail.subtitle')}
             </Text>
           </Box>
 
@@ -119,7 +121,7 @@ export default function MailPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -136,13 +138,13 @@ export default function MailPage() {
           {/* Section header */}
           <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-              Server Configuration
+              {t('workspace.mail.serverConfig')}
             </Text>
             <Text
               size="1"
               style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
-              Configure email and other server settings for authentication
+              {t('workspace.mail.serverConfigDescription')}
             </Text>
           </Box>
 
@@ -180,7 +182,7 @@ export default function MailPage() {
                     weight="medium"
                     style={{ color: 'var(--slate-12)', display: 'block' }}
                   >
-                    SMTP
+                    {t('workspace.mail.smtp')}
                   </Text>
                   <Text
                     size="1"
@@ -194,7 +196,7 @@ export default function MailPage() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Email server configuration for OTP and notifications
+                    {t('workspace.mail.subtitle')}
                   </Text>
                 </Box>
 
@@ -205,7 +207,7 @@ export default function MailPage() {
                   size="1"
                   style={{ flexShrink: 0 }}
                 >
-                  {isConfigured ? 'Configured' : 'Not Configured'}
+                  {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
                 </Badge>
 
                 {/* Settings / configure button */}

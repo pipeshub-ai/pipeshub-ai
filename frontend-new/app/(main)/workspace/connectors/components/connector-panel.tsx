@@ -2,6 +2,7 @@
 
 import React, { useEffect, useCallback } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
@@ -25,6 +26,7 @@ import type { PanelTab } from '../types';
 export function ConnectorPanel() {
   const router = useRouter();
   const pathname = usePathname();
+  const { t } = useTranslation();
   const {
     isPanelOpen,
     panelConnector,
@@ -91,7 +93,7 @@ export function ConnectorPanel() {
           setIsLoadingConfig(false);
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to load connector configuration';
+        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.configLoadError');
         setSchemaError(message);
       } finally {
         setIsLoadingSchema(false);
@@ -107,7 +109,7 @@ export function ConnectorPanel() {
     if (isCreateMode) {
       // Create mode: POST /connectors
       if (!instanceName.trim()) {
-        setInstanceNameError('Instance name is required');
+        setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
         return;
       }
 
@@ -139,7 +141,7 @@ export function ConnectorPanel() {
         // Move to configure tab
         setPanelActiveTab('configure');
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to create connector';
+        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.createError');
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -158,7 +160,7 @@ export function ConnectorPanel() {
         // Move to configure tab
         setPanelActiveTab('configure');
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to save auth configuration';
+        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.authSaveError');
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -238,7 +240,7 @@ export function ConnectorPanel() {
         );
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to save configuration';
+      const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.configSaveError');
       setSaveError(message);
     } finally {
       setIsSavingConfig(false);
@@ -277,6 +279,15 @@ export function ConnectorPanel() {
     onNext: handleSaveAuth,
     onBack: () => setPanelActiveTab('authenticate'),
     onSave: handleSaveConfig,
+    labels: {
+      next: t('common.next'),
+      fillRequired: t('workspace.aiModels.configFillRequiredTooltip'),
+      cancel: t('action.cancel'),
+      authFirst: t('workspace.connectors.tooltips.authFirst'),
+      loadingConfig: t('workspace.connectors.loadingConfig'),
+      saveConfig: t('workspace.connectors.saveConfig'),
+      back: t('common.back'),
+    },
   });
 
   // ── Header ───────────────────────────────────────────────────
@@ -316,7 +327,7 @@ export function ConnectorPanel() {
       onOpenChange={(open) => {
         if (!open) closePanel();
       }}
-      title={`${connectorTypeName} Configuration`}
+      title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
       headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
@@ -334,7 +345,7 @@ export function ConnectorPanel() {
           justify="center"
           style={{ height: 200 }}
         >
-          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.loadingConfig')} />
         </Flex>
       ) : panelView === 'select-records' ? (
         <SelectRecordsPage />
@@ -344,14 +355,14 @@ export function ConnectorPanel() {
           {isCreateMode && connectorSchema && (
             <Box style={{ marginBottom: 16 }}>
               <FormField
-                label="Instance Name"
+                label={t('workspace.actions.instanceName')}
                 error={instanceNameError ?? undefined}
               >
                 <input
                   type="text"
                   value={instanceName}
                   onChange={(e) => setInstanceName(e.target.value)}
-                  placeholder={`e.g. My ${connectorTypeName}`}
+                  placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
                   style={{
                     height: 32,
                     width: '100%',
@@ -386,14 +397,14 @@ export function ConnectorPanel() {
               }}
             >
               <Tabs.Trigger value="authenticate">
-                Authenticate Instance
+                {t('workspace.connectors.tabs.authenticate')}
               </Tabs.Trigger>
               <Tabs.Trigger
                 value="configure"
                 disabled={!connectorConfig}
                 style={!connectorConfig ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
-                Configure Records
+                {t('workspace.connectors.tabs.configureRecords')}
               </Tabs.Trigger>
             </Tabs.List>
 
@@ -444,6 +455,7 @@ function getFooterConfig({
   onNext,
   onBack,
   onSave,
+  labels,
 }: {
   panelView: string;
   panelActiveTab: PanelTab;
@@ -457,6 +469,15 @@ function getFooterConfig({
   onNext: () => void;
   onBack: () => void;
   onSave: () => void;
+  labels: {
+    next: string;
+    fillRequired: string;
+    cancel: string;
+    authFirst: string;
+    loadingConfig: string;
+    saveConfig: string;
+    back: string;
+  };
 }): FooterConfig {
   if (panelView === 'select-records') {
     // Footer is hidden for select-records (handled inside that component)
@@ -470,31 +491,31 @@ function getFooterConfig({
 
   if (panelActiveTab === 'authenticate') {
     return {
-      primaryLabel: 'Next →',
+      primaryLabel: labels.next,
       primaryDisabled: !areRequiredAuthFieldsFilled || isSavingAuth,
       primaryLoading: isSavingAuth,
       primaryTooltip: !areRequiredAuthFieldsFilled
-        ? 'Fill in all required fields to continue'
+        ? labels.fillRequired
         : undefined,
       onPrimary: onNext,
-      secondaryLabel: 'Cancel',
+      secondaryLabel: labels.cancel,
     };
   }
 
   // configure tab
   const configTooltip = !hasConnectorId
-    ? 'Complete authentication first to save configuration'
+    ? labels.authFirst
     : isLoadingSchema || isLoadingConfig
-    ? 'Loading configuration…'
+    ? labels.loadingConfig
     : undefined;
 
   return {
-    primaryLabel: 'Save Configuration',
+    primaryLabel: labels.saveConfig,
     primaryDisabled: !hasConnectorId || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,
-    secondaryLabel: '← Back',
+    secondaryLabel: labels.back,
     onSecondary: onBack,
   };
 }

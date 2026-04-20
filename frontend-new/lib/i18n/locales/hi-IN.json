@@ -904,14 +904,41 @@
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
       "actionDelete": "हटाएँ",
       "capabilities": {
-        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "LLM के लिए" },
-        "embedding": { "label": "एम्बेडिंग", "badge": "एम्बेडिंग", "sectionTab": "एम्बेडिंग के लिए" },
-        "image_generation": { "label": "इमेज जनरेशन", "badge": "इमेज", "sectionTab": "इमेज जनरेशन के लिए" },
-        "reasoning": { "label": "रीज़निंग", "badge": "रीज़निंग" },
-        "ocr": { "label": "OCR", "badge": "" },
-        "tts": { "label": "टेक्स्ट टू स्पीच", "badge": "" },
-        "stt": { "label": "स्पीच टू टेक्स्ट", "badge": "" },
-        "video": { "label": "वीडियो", "badge": "मल्टीमॉडल" }
+        "text_generation": {
+          "label": "LLM",
+          "badge": "LLM",
+          "sectionTab": "LLM के लिए"
+        },
+        "embedding": {
+          "label": "एम्बेडिंग",
+          "badge": "एम्बेडिंग",
+          "sectionTab": "एम्बेडिंग के लिए"
+        },
+        "image_generation": {
+          "label": "इमेज जनरेशन",
+          "badge": "इमेज",
+          "sectionTab": "इमेज जनरेशन के लिए"
+        },
+        "reasoning": {
+          "label": "रीज़निंग",
+          "badge": "रीज़निंग"
+        },
+        "ocr": {
+          "label": "OCR",
+          "badge": ""
+        },
+        "tts": {
+          "label": "टेक्स्ट टू स्पीच",
+          "badge": ""
+        },
+        "stt": {
+          "label": "स्पीच टू टेक्स्ट",
+          "badge": ""
+        },
+        "video": {
+          "label": "वीडियो",
+          "badge": "मल्टीमॉडल"
+        }
       }
     },
     "filters": {
@@ -976,7 +1003,7 @@
         "my": "मेरी कार्रवाइयाँ",
         "browse": "कैटलॉग ब्राउज़ करें"
       },
-      "personalAdminHint": "व्यवस्थापक संगठन कैटलॉग वर्कस्पेस \u2192 कार्रवाइयों के अंतर्गत प्रबंधित करते हैं।",
+      "personalAdminHint": "व्यवस्थापक संगठन कैटलॉग वर्कस्पेस → कार्रवाइयों के अंतर्गत प्रबंधित करते हैं।",
       "cta": {
         "setup": "सेटअप",
         "configure": "कॉन्फ़िगर करें",
@@ -985,7 +1012,7 @@
         "notConfigured": "कॉन्फ़िगर नहीं"
       },
       "trailingYourActions": "आपकी कार्रवाइयाँ",
-      "loading": "कार्रवाइयाँ लोड हो रही हैं\u2026",
+      "loading": "कार्रवाइयाँ लोड हो रही हैं…",
       "loadError": "कार्रवाइयाँ लोड नहीं हो सकीं। पुनः प्रयास करें।",
       "empty": "आपके फ़िल्टर से कोई कार्रवाई मेल नहीं खाती।",
       "createSuccess": "कार्रवाई इंस्टेंस बनाया गया।",
@@ -1006,12 +1033,12 @@
       "oauthAppLabel": "OAuth अनुप्रयोग",
       "oauthAppNew": "नया OAuth ऐप बनाएँ",
       "linkedOAuthAppHeading": "चयनित OAuth अनुप्रयोग",
-      "linkedOAuthAppHint": "यह इंस्टेंस नीचे सहेजे गए क्रेडेंशियल का उपयोग करेगा। भिन्न क्लाइंट क्रेडेंशियल दर्ज करने के लिए \u201cनया OAuth ऐप बनाएँ\u201d चुनें।",
+      "linkedOAuthAppHint": "यह इंस्टेंस नीचे सहेजे गए क्रेडेंशियल का उपयोग करेगा। भिन्न क्लाइंट क्रेडेंशियल दर्ज करने के लिए “नया OAuth ऐप बनाएँ” चुनें।",
       "linkedOAuthSecretStored": "सहेजा गया (छिपा हुआ)",
       "oauthClientId": "क्लाइंट ID",
       "oauthClientSecret": "क्लाइंट सीक्रेट",
       "availableActions": "उपलब्ध कार्रवाइयाँ",
-      "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर \u201cआपकी कार्रवाइयों\u201d से साइन इन कर सकते हैं।",
+      "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर “आपकी कार्रवाइयों” से साइन इन कर सकते हैं।",
       "postCreateAuth": {
         "title": "कार्रवाई इंस्टेंस सेट है और प्रमाणीकरण आवश्यक है",
         "body": "टूलसेट उपयोग शुरू करने से पहले प्रत्येक उपयोगकर्ता को अपनी ओर से प्रमाणित होना होगा।",
@@ -1035,8 +1062,8 @@
         "empty": "इस कार्रवाई के लिए अभी तक कोई इंस्टेंस नहीं।",
         "instancesHeading": "इंस्टेंस ({{count}})",
         "refresh": "सूची ताज़ा करें",
-        "refreshingList": "सूची अपडेट हो रही है\u2026",
-        "searchInstances": "इंस्टेंस खोजें\u2026",
+        "refreshingList": "सूची अपडेट हो रही है…",
+        "searchInstances": "इंस्टेंस खोजें…",
         "teamInstanceInfo": "अपने संगठन की कार्रवाई इंस्टेंस के विरुद्ध प्रमाणित करें। प्रमाणित कार्रवाइयों को आपके एजेंटों में जोड़ा जा सकता है।",
         "personalInstanceInfo": "अपने संगठन की कार्रवाई इंस्टेंस के विरुद्ध प्रमाणित करें। एक बार प्रमाणित होने के बाद, आप इन कार्रवाइयों को अपने एजेंटों में उपयोग कर सकते हैं।",
         "instanceTabs": {
@@ -1098,6 +1125,486 @@
       "deleteSuccess": "सफलतापूर्वक हटाया गया",
       "deleteSuccessDescription": "आपकी चैट स्थायी रूप से हटा दी गई",
       "deleteError": "चैट हटाने में विफल"
+    },
+    "general": {
+      "subtitle": "Your company general information",
+      "companyProfile": "Company Profile",
+      "logoLabel": "Logo",
+      "logoDescription": "Recommended size is 256px by 256px",
+      "registeredName": "Registered Name",
+      "registeredNameDescription": "Legal name of the company",
+      "registeredNamePlaceholder": "eg: Paypal Co. LLC",
+      "displayName": "Display Name",
+      "displayNameDescription": "This is how your company name will be displayed",
+      "displayNamePlaceholder": "eg: Paypal",
+      "contactEmail": "Contact Email",
+      "contactEmailDescription": "Primary contact email from the company",
+      "contactEmailPlaceholder": "eg: elon@paypal.com",
+      "companyAddress": "Company Address",
+      "streetAddress": "Street Address",
+      "streetAddressDescription": "Company's location address",
+      "streetAddressPlaceholder": "Street Address",
+      "country": "Country",
+      "countryDescription": "Company's country",
+      "countryPlaceholder": "eg: United States",
+      "stateProvince": "State/Province",
+      "stateProvinceDescription": "Company's state or province",
+      "stateProvincePlaceholder": "eg: California",
+      "city": "City",
+      "cityDescription": "Company's city",
+      "cityPlaceholder": "eg: San Francisco",
+      "postalCode": "Zip/Postal Code",
+      "postalCodeDescription": "Write your company's postal code",
+      "postalCodePlaceholder": "eg: 94107",
+      "dataCollection": "Data Collection Settings",
+      "enableDataCollection": "Enable",
+      "dataCollectionDescription": "PipesHub collects and processes personal information for a variety of business purposes.",
+      "dataCollectionReason1": "To provide customer service and support for our products",
+      "dataCollectionReason2": "To send marketing communications",
+      "dataCollectionReason3": "To manage your subscription to newsletters or other updates",
+      "dataCollectionReason4": "For security and fraud prevention purposes",
+      "dataCollectionReason5": "To personalize your user experience",
+      "dataCollectionReason6": "To enhance and improve our products and services",
+      "manageSubtitle": "Manage your company profile",
+      "removeLogoAria": "Remove organization logo",
+      "toasts": {
+        "loadError": "Failed to load organization",
+        "loadErrorDescription": "Could not fetch your organization details",
+        "saveSuccess": "Company profile details saved",
+        "saveSuccessDescription": "You can also edit it in the future",
+        "saveError": "Failed to save",
+        "saveErrorDescription": "Could not update organization details",
+        "discardSuccess": "Discarded edits",
+        "discardSuccessDescription": "You can fill the input fields again",
+        "logoUpdated": "Logo updated",
+        "logoUpdatedDescription": "Your organization logo has been saved",
+        "logoUploadError": "Failed to upload logo",
+        "logoUploadErrorDescription": "Could not update the organization logo",
+        "logoRemoved": "Logo removed",
+        "logoRemovedDescription": "Your organization logo has been deleted",
+        "logoRemoveError": "Failed to remove logo",
+        "logoRemoveErrorDescription": "Could not delete the organization logo"
+      },
+      "errors": {
+        "invalidPostalCode": "Please add a valid postal code"
+      },
+      "discardDialog": {
+        "title": "Discard changes?",
+        "message": "If you discard, your edits won't be saved",
+        "confirm": "Discard",
+        "cancel": "Continue Editing"
+      }
+    },
+    "labs": {
+      "title": "Platform Configuration",
+      "subtitle": "Changes to platform settings affect all users and take effect immediately.",
+      "manageSubtitle": "Manage platform settings",
+      "fileUploadLimit": "File Upload Limit",
+      "fileUploadLimitLabel": "File Upload Limit",
+      "fileUploadLimitDescription": "Maximum file size for uploads",
+      "fileUploadLimitPlaceholder": "max. 1000",
+      "callout": "Changes apply immediately to all file uploads including Knowledge Hub and other backend-enforced uploads",
+      "toasts": {
+        "saveSuccess": "File upload limit saved",
+        "saveSuccessDescription": "You can change the limit in the future",
+        "saveError": "Failed updating labs settings",
+        "saveErrorDescription": "Some issue has occurred",
+        "discardSuccess": "Discarded edits",
+        "discardSuccessDescription": "Your changes have been reverted"
+      },
+      "errors": {
+        "fileSizeRequired": "Please enter a file size limit",
+        "fileSizeMax": "File size can't be > 1000 MB",
+        "fileSizeMin": "File size limit must be greater than 0"
+      },
+      "discardDialog": {
+        "title": "Discard changes?",
+        "message": "If you discard, your edits won't be saved",
+        "confirm": "Discard",
+        "cancel": "Continue Editing"
+      }
+    },
+    "authentication": {
+      "loading": "Loading authentication settings…",
+      "title": "Authentication Settings",
+      "subtitle": "Configure how users sign in to your application",
+      "methodsHeading": "Authentication Methods",
+      "methodsSubtitle": "Select the authentication method users will use to sign in",
+      "policyHeading": "Authentication Method Policy",
+      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
+      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
+      "loadingConfig": "Loading configuration…",
+      "toasts": {
+        "configureSuccess": "{{label}} Auth successfully configured!",
+        "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
+        "onlyOneActive": "Only one authentication method can be active at a time",
+        "saveSuccess": "Authentication settings saved",
+        "saveSuccessDescription": "Your changes have been applied successfully.",
+        "saveError": "Failed to save authentication settings"
+      },
+      "disabledReasons": {
+        "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
+        "notConfigured": "Configure this method first before enabling it.",
+        "anotherActive": "Disable the currently active method before enabling this one."
+      },
+      "badges": {
+        "configured": "Configured",
+        "notConfigured": "Not Configured"
+      },
+      "panels": {
+        "google": "Configure Google Authentication",
+        "microsoft": "Configure Microsoft Authentication",
+        "saml": "Configure SAML SSO",
+        "oauth2": "Configure OAuth 2.0"
+      },
+      "jit": {
+        "title": "Enable Just-In-Time (JIT) Provisioning",
+        "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      }
+    },
+    "connectors": {
+      "subtitle": "Connect and manage integrations with external services",
+      "loadingConfig": "Loading configuration…",
+      "loadingConnectors": "Loading connectors…",
+      "loadingInstances": "Loading instances…",
+      "emptyState": "No connectors found",
+      "noInstances": "No instances configured yet",
+      "addInstance": "Add Another Instance",
+      "saveConfig": "Save Configuration",
+      "configPanelTitle": "{{name}} Configuration",
+      "instance": "Instance",
+      "toasts": {
+        "loadError": "Failed to load connectors",
+        "syncStarted": "{{name}} is now syncing",
+        "syncStartedDescription": "Your records will be available shortly.",
+        "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
+        "syncError": "Failed to start sync",
+        "configLoadError": "Failed to load connector configuration",
+        "createError": "Failed to create connector",
+        "authSaveError": "Failed to save auth configuration",
+        "configSaveError": "Failed to save configuration"
+      },
+      "tabs": {
+        "authenticate": "Authenticate Instance",
+        "configureRecords": "Configure Records"
+      },
+      "tooltips": {
+        "authFirst": "Complete authentication first to save configuration"
+      },
+      "authCard": {
+        "title": "Authenticate {{name}} to Proceed",
+        "description": "Connect your {{name}} account to proceed with configuration",
+        "loading": "Authenticating...",
+        "successBadge": "{{name}} has been Authenticated",
+        "failureBadge": "Failed to Authenticate your {{name}}"
+      },
+      "successDialog": {
+        "title": "Instance is configured and ready to sync!",
+        "description": "You can start syncing your {{name}} data with Pipeshub now,",
+        "descriptionSuffix": "or choose to do it later from settings.",
+        "later": "I'll do it later",
+        "startSync": "Start Syncing Now"
+      },
+      "selectRecords": {
+        "title": "Select Records",
+        "loading": "Loading records…",
+        "emptyState": "No records available",
+        "addRecords": "Add Records"
+      },
+      "authTab": {
+        "methodLabel": "Authentication Method",
+        "methodPlaceholder": "Select auth type...",
+        "credentialsHeading": "{{name}} Credentials",
+        "noAuthRequired": "No authentication required for this connector"
+      },
+      "docSection": {
+        "title": "Setup Documentation",
+        "description": "Follow the guide to set up your connector"
+      },
+      "configTab": {
+        "additionalSettings": "Additional Settings",
+        "additionalSettingsDescription": "Configure connector-specific sync options",
+        "importDate": "Import start date",
+        "importDateDescription": "Choose the date from which messages are imported",
+        "importAllTime": "Import All Time Data",
+        "recordsToIndex": "Records to index",
+        "recordsDescription": "Choose which {{name}} records should be imported",
+        "selectRecords": "Select",
+        "syncSettings": "Sync settings",
+        "syncSettingsDescription": "Control how {{name}} data should be synchronized",
+        "syncStrategy": "Sync Strategy",
+        "syncStrategyPlaceholder": "Select sync strategy...",
+        "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
+        "syncInterval": "Sync Interval",
+        "syncIntervalPlaceholder": "Select interval...",
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+      },
+      "instancePanel": {
+        "overview": "Overview",
+        "settings": "Settings",
+        "manageConfig": "Manage Configuration"
+      },
+      "overview": {
+        "readyBanner": "Instance configured and ready to sync!",
+        "readyBannerSub": "Records are ready to be synced.",
+        "startSyncLoading": "Starting...",
+        "startSync": "Start Syncing Now",
+        "progressPercent": "{{n}}% Complete",
+        "recordsStatus": "Records Status",
+        "reindexFailed": "Reindex Failed",
+        "syncButton": "Sync",
+        "statTotal": "Total",
+        "statTotalSub": "Total records",
+        "statFailedSub": "Errors (API / permission issues)",
+        "statUnsupported": "Unsupported",
+        "statUnsupportedSub": "Can't be processed",
+        "statInProgressSub": "Still being indexed",
+        "statNotStarted": "Not Started",
+        "statNotStartedSub": "Queued for sync",
+        "recordsByType": "Records by Type",
+        "noRecordTypes": "No record types available",
+        "personalRecordsIndexed": "Personal Records Indexed"
+      },
+      "settingsTab": {
+        "enabledBy": "Enabled By",
+        "member": "Member",
+        "date": "Date",
+        "importDate": "Import start date",
+        "syncSettings": "Sync Settings",
+        "syncStrategy": "Sync Strategy",
+        "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
+        "syncInterval": "Sync Interval",
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+      },
+      "instanceCard": {
+        "authBannerTitle": "Authenticate Personal Account",
+        "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "syncStatus": {
+        "paused": "Sync Paused",
+        "preparing": "Preparing to Sync...",
+        "syncing": "Syncing Records...",
+        "synced": "Records Synced",
+        "failed": "Sync Failed"
+      }
+    },
+    "bots": {
+      "subtitle": "Configure bot credentials and optionally map each bot to an agent",
+      "loading": "Loading bots…",
+      "defaultAssistant": "Default Assistant",
+      "createBot": "Create Bot",
+      "emptyTitle": "No Bots",
+      "emptyDescription": "Setup your first Bot now",
+      "addBot": "Add a Bot",
+      "types": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "setupTypes": {
+        "slack": "Slack Bot Setup",
+        "discord": "Discord Bot Setup",
+        "telegram": "Telegram Bot Setup",
+        "github": "GitHub Bot Setup"
+      },
+      "toasts": {
+        "loadError": "Failed to load bot configurations",
+        "loadDataError": "Failed to load data",
+        "refreshed": "Refreshed",
+        "updated": "Slack Bot updated",
+        "updatedDescription": "Your slack bot {{name}} has been updated.",
+        "created": "Slack Bot created",
+        "createdDescription": "Your slack bot {{name}} is ready!",
+        "saveError": "Failed to save bot",
+        "saveErrorDescription": "Please check your credentials and try again.",
+        "deleted": "Slack Bot deleted",
+        "deletedDescription": "{{name}} has been removed.",
+        "deleteError": "Failed to delete bot"
+      },
+      "configPanel": {
+        "title": "Bot Configuration",
+        "selectBotSetup": "Select Bot Setup",
+        "editTitle": "Edit Slack Bot",
+        "createTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "tokenPlaceholder": "xoxb-...",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agentPlaceholder": "Select an agent",
+        "confirmDelete": "Confirm Delete",
+        "deleteBot": "Delete Bot"
+      }
+    },
+    "mail": {
+      "subtitle": "Email server configuration for OTP and notifications",
+      "serverConfiguration": "Server Configuration",
+      "serverConfigurationDescription": "Configure email and other server settings for authentication",
+      "smtpLabel": "SMTP",
+      "badges": {
+        "configured": "Configured",
+        "notConfigured": "Not Configured"
+      },
+      "errors": {
+        "hostRequired": "SMTP host is required",
+        "portRequired": "Port is required",
+        "portInvalid": "Enter a valid port (1–65535)",
+        "fromEmailRequired": "From email is required"
+      },
+      "configPanel": {
+        "title": "Configure SMTP Settings",
+        "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+        "hostLabel": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "hostPlaceholder": "email-smtp.ap-south-1.amazonaws.com",
+        "portLabel": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmailLabel": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "fromEmailPlaceholder": "noreply@yourcompany.com",
+        "usernameLabel": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "passwordLabel": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)",
+        "passwordPlaceholder": "••••••••••••••••••••"
+      }
+    },
+    "prompts": {
+      "label": "System Prompt",
+      "labelDescription": "Define the behaviour and personality of the AI assistant",
+      "title": "Custom System Prompt",
+      "subtitle": "Configure the custom system prompt for AI responses",
+      "fieldLabel": "Custom System Prompt",
+      "useDefault": "Use Default Prompt",
+      "placeholder": "Enter your custom system prompt here",
+      "helperText": "This prompt will be used across all AI chat interactions to guide the assistant's responses. Changes take effect immediately for new conversations.",
+      "calloutHeading": "Prompt Configuration",
+      "calloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs.",
+      "toasts": {
+        "saveSuccess": "Prompt saved",
+        "saveSuccessDescription": "The system prompt has been updated",
+        "saveError": "Failed to save prompt",
+        "discardSuccess": "Discarded changes",
+        "discardSuccessDescription": "Your edits have been reverted"
+      }
+    },
+    "webSearch": {
+      "loading": "Loading web search settings…",
+      "title": "Web Search Configuration",
+      "subtitle": "Configure web search providers for the chatbot to use when searching the web",
+      "methodsHeading": "Different Web Search Methods",
+      "methodsSubtitle": "Select the method users will use for web search",
+      "policyHeading": "Web Search Provider Policy",
+      "policyDescription": "Only one web search provider can be active at a time. To change it, please disable the current one and enable a different method.",
+      "verifyingConnection": "Verifying connection...",
+      "sendImages": "Send images to LLM",
+      "sendImagesDescription": "Control whether images are sent to the LLM during web search",
+      "toasts": {
+        "providerAdded": "{{label}} is added",
+        "providerAddedDescription": "Web search configured successfully. To use {{label}}, toggle off any other web search methods",
+        "onlyOneActive": "Only one web search provider can be active at a time",
+        "saveSuccess": "Web search settings saved",
+        "saveSuccessDescription": "Your changes have been applied successfully.",
+        "saveError": "Failed to save web search settings",
+        "imagesEnabled": "Images will be sent to LLM",
+        "imagesDisabled": "Images will not be sent to LLM",
+        "updateError": "Failed to update setting"
+      },
+      "disabledReasons": {
+        "notConfigured": "Configure this provider first before enabling it.",
+        "anotherActive": "Disable the currently active provider before enabling this one."
+      },
+      "badges": {
+        "default": "Default",
+        "configured": "Configured",
+        "notConfigured": "Not Configured"
+      }
+    },
+    "profile": {
+      "subtitle": "Manage all your personal profile details here",
+      "discardDialog": {
+        "title": "Discard changes?",
+        "message": "If you discard, your edits won't be saved",
+        "confirm": "Discard",
+        "cancel": "Continue Editing"
+      },
+      "general": {
+        "avatarLabel": "Your Display Picture",
+        "avatarDescription": "Recommended size is 256px by 256px",
+        "fullName": "Full Name",
+        "fullNameDescription": "Please write your full name",
+        "fullNamePlaceholder": "eg: John Doe",
+        "designation": "Designation",
+        "designationDescription": "Your job role in the company",
+        "designationPlaceholder": "eg: Co-Founder",
+        "companyEmail": "Company Email",
+        "companyEmailDescription": "Primary work email from the company"
+      },
+      "passwordSecurity": {
+        "title": "Password & Security",
+        "accountPassword": "Account Password",
+        "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
+        "changePassword": "Change Password"
+      },
+      "rolesPermissions": {
+        "title": "Roles & Permissions",
+        "roleDescription": "Your role on Pipeshub app",
+        "groupsDescription": "User groups you belong to",
+        "noGroups": "No user groups found"
+      },
+      "changeEmail": {
+        "title": "Change Email",
+        "description": "If you'd like to change the email address for your account, we'll send a verification link to your new company email account. This change will apply across all workspaces that you are a member of.",
+        "validityNote": "Please check if the new company email address is valid.",
+        "emailLabel": "Enter the new email address",
+        "emailPlaceholder": "eg: name@company.com",
+        "validating": "Validating…",
+        "validate": "Validate",
+        "validSuccess": "{{email}} is valid. Please proceed to receive the verification link.",
+        "sending": "Sending…",
+        "sendVerification": "Send verification link"
+      },
+      "changePassword": {
+        "title": "Change Password",
+        "currentPassword": "Current Password",
+        "currentPasswordPlaceholder": "Your current password",
+        "newPassword": "New Password",
+        "passwordRequirement": "Must have at least 8 characters with lowercase, uppercase, number and symbol",
+        "newPasswordPlaceholder": "Your new password",
+        "confirmPassword": "Confirm New Password",
+        "confirmPasswordPlaceholder": "Your new password",
+        "mismatchError": "This doesn't match with your new password",
+        "updateError": "Couldn't update your password",
+        "defaultError": "Could not update your password. Please try again.",
+        "currentRequired": "Current password is required",
+        "newRequired": "New password is required",
+        "confirmRequired": "Please confirm your new password"
+      },
+      "toasts": {
+        "loadError": "Failed to load profile",
+        "loadErrorDescription": "Could not fetch your profile details",
+        "saveSuccess": "Profile saved",
+        "saveSuccessDescription": "Your profile details have been updated",
+        "saveError": "Failed to save",
+        "saveErrorDescription": "Could not update your profile",
+        "passwordUpdated": "Password has been updated",
+        "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "emailVerificationSent": "Email Verification Link Sent",
+        "emailVerificationSentDescription": "You will be logged out when you verify the email",
+        "discardSuccess": "Discarded edits",
+        "discardSuccessDescription": "Your profile has been reset",
+        "avatarSaved": "Profile picture saved",
+        "avatarSavedDescription": "Your profile picture has been added",
+        "avatarUploadError": "Upload failed",
+        "avatarUploadErrorDescription": "Could not upload profile picture",
+        "avatarRemoved": "Profile picture removed",
+        "avatarRemovedDescription": "Your profile picture has been removed",
+        "avatarRemoveError": "Remove failed",
+        "avatarRemoveErrorDescription": "Could not remove profile picture"
+      },
+      "errors": {
+        "nameHtml": "Full name cannot contain HTML tags"
+      }
     }
   },
   "filePreview": {
@@ -1110,7 +1617,7 @@
     "serviceAccountBadge": "सर्विस एजेंट",
     "serviceAccountBadgeTooltip": "यह सर्विस एजेंट समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच का उपयोग करता है।",
     "convertToServiceAccount": "सर्विस एजेंट में बदलें",
-    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें \u2014 समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
+    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें — समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
     "convertToServiceAccountTooltipNewAgent": "इस एजेंट को सर्विस एजेंट के रूप में बनाता है: एजेंट-स्तरीय टूलसेट और संगठन-व्यापी ज्ञान।",
     "createAsServiceAccount": "सर्विस एजेंट",
     "createAsServiceAccountTooltip": "अपने टूलसेट क्रेडेंशियल और पूर्ण ज्ञान पहुंच के साथ सर्विस एजेंट के रूप में बनाएं।",
@@ -1120,7 +1627,7 @@
     "shareWithOrg": "सभी के साथ साझा करें",
     "shareWithOrgTooltip": "इस एजेंट को अपने संगठन में सभी के साथ साझा करें।",
     "serviceAccountShareTooltip": "सर्विस एजेंट हमेशा संगठन के साथ साझा किए जाते हैं।",
-    "saving": "सहेजा जा रहा है\u2026",
+    "saving": "सहेजा जा रहा है…",
     "saveChanges": "परिवर्तन सहेजें",
     "createAgent": "एजेंट बनाएं",
     "nameRequired": "नाम आवश्यक है",
@@ -1207,8 +1714,8 @@
     "svcAcctCreateDesc": "आप एक साझा सर्विस एजेंट बना रहे हैं: पूरे संगठन में उपलब्ध, प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं।",
     "svcAcctConvertLabel": "सर्विस एजेंट में बदलें",
     "svcAcctCreateLabel": "सर्विस एजेंट बनाएं",
-    "svcAcctConvertBusy": "बदला जा रहा है\u2026",
-    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है\u2026",
+    "svcAcctConvertBusy": "बदला जा रहा है…",
+    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है…",
     "svcAcctAgentLabel": "एजेंट",
     "svcAcctUnnamed": "(अनाम)",
     "svcAcctKnowledgeTitle": "ज्ञान स्रोत",
@@ -1252,7 +1759,7 @@
     "disconnectOAuthDesc": "यह इस एजेंट पर {{name}} के लिए OAuth सत्र समाप्त करता है। टूलसेट एजेंट पर बना रहता है, लेकिन जब तक आप फिर से साइन इन नहीं करते, तब तक प्रमाणित नहीं होगा।",
     "disconnectOAuthProgress": "डिस्कनेक्ट हो रहा है…",
     "removeCredentials": "क्रेडेंशियल हटाएं",
-    "savingCredentials": "सहेजा जा रहा है\u2026",
+    "savingCredentials": "सहेजा जा रहा है…",
     "updateCredentials": "परिवर्तन सहेजें",
     "saveCredentials": "क्रेडेंशियल सहेजें",
     "noCredentialsRequired": "इस टूलसेट के लिए कोई क्रेडेंशियल आवश्यक नहीं हैं।",

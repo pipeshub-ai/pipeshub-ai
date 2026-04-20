@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Avatar, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
@@ -21,6 +22,7 @@ interface SettingsTabProps {
 // ========================================
 
 export function SettingsTab({ instance, config }: SettingsTabProps) {
+  const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
   const syncInterval = getSyncIntervalLabel(config ?? undefined);
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
@@ -29,10 +31,10 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
       {/* ── Enabled By ── */}
-      <SectionCard title="Enabled By">
+      <SectionCard title={t('workspace.connectors.settingsTab.enabledBy')}>
         <Flex direction="column" gap="4">
           <InfoRow
-            label="Member"
+            label={t('workspace.connectors.settingsTab.member')}
             value={
               instance.enabledBy ? (
                 <Flex align="center" gap="2">
@@ -52,7 +54,7 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
             }
           />
           <InfoRow
-            label="Date"
+            label={t('workspace.connectors.settingsTab.date')}
             value={
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
                 {instance.createdAtTimestamp
@@ -69,7 +71,7 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
       </SectionCard>
 
       {/* ── Import start date ── */}
-      <SectionCard title="Import start date">
+      <SectionCard title={t('workspace.connectors.configTab.importDate')}>
         <ReadOnlyField
           value={
             importStartDate
@@ -85,18 +87,18 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
       </SectionCard>
 
       {/* ── Sync Settings ── */}
-      <SectionCard title="Sync Settings">
+      <SectionCard title={t('workspace.connectors.configTab.syncSettings')}>
         <Flex direction="column" gap="4">
           {/* Sync Strategy */}
           <Flex direction="column" gap="1">
             <Flex direction="column" gap="2">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                Sync Strategy
+                {t('workspace.connectors.configTab.syncStrategy')}
               </Text>
               <ReadOnlyField value={syncStrategy} />
             </Flex>
             <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
-              Choose how data will be synchronized from {instance.name}
+              {t('workspace.connectors.configTab.syncStrategyHelper', { name: instance.name })}
             </Text>
           </Flex>
 
@@ -105,12 +107,12 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
             <Flex direction="column" gap="1">
               <Flex direction="column" gap="2">
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                  Sync Interval
+                  {t('workspace.connectors.configTab.syncInterval')}
                 </Text>
                 <ReadOnlyField value={syncInterval} />
               </Flex>
               <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
-                Set how often {instance.name} data is refreshed
+                {t('workspace.connectors.configTab.syncIntervalHelper', { name: instance.name })}
               </Text>
             </Flex>
           )}

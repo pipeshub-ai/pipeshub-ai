@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -64,6 +65,7 @@ function deriveRecordsStatus(
 // ========================================
 
 export function OverviewTab({ instance, stats }: OverviewTabProps) {
+  const { t } = useTranslation();
   const router = useRouter();
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
@@ -133,10 +135,10 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Instance configured and ready to sync!
+              {t('workspace.connectors.overview.readyBanner')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              Records are ready to be synced.
+              {t('workspace.connectors.overview.readyBannerSub')}
             </Text>
           </Flex>
           <button
@@ -165,7 +167,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
             }}
           >
             <MaterialIcon name="sync" size={14} color="white" />
-            {isStartingSync ? 'Starting...' : 'Start Syncing Now'}
+            {isStartingSync ? t('workspace.connectors.overview.startSyncLoading') : t('workspace.connectors.overview.startSync')}
           </button>
         </Flex>
       )}
@@ -175,7 +177,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
         <Flex direction="column" gap="2">
           <Flex align="center" justify="between">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {instance.syncProgress.percentage ?? 0}% Complete
+              {t('workspace.connectors.overview.progressPercent', { n: instance.syncProgress.percentage ?? 0 })}
             </Text>
           </Flex>
           <Box
@@ -213,13 +215,13 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       >
         <Flex align="center" justify="between">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Records Status
+            {t('workspace.connectors.overview.recordsStatus')}
           </Text>
           <Flex align="center" gap="1">
             {isSyncFailed && (
-              <StatusActionButton label="Reindex Failed" icon="replay" />
+              <StatusActionButton label={t('workspace.connectors.overview.reindexFailed')} icon="replay" />
             )}
-            <StatusActionButton label="Sync" icon="sync" />
+            <StatusActionButton label={t('workspace.connectors.overview.syncButton')} icon="sync" />
           </Flex>
         </Flex>
 
@@ -228,15 +230,15 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           {/* Top row: Total + Failed */}
           <Flex gap="2" style={{ width: '100%' }}>
             <StatCard
-              label="Total"
+              label={t('workspace.connectors.overview.statTotal')}
               value={recordsStatus.total}
-              subtitle="Total records"
+              subtitle={t('workspace.connectors.overview.statTotalSub')}
               onClick={() => navigateToRecords()}
             />
             <StatCard
-              label="Failed"
+              label={t('status.failed')}
               value={recordsStatus.failed}
-              subtitle="Errors (API / permission issues)"
+              subtitle={t('workspace.connectors.overview.statFailedSub')}
               valueColor={recordsStatus.failed > 0 ? 'var(--red-11)' : undefined}
               onClick={() => navigateToRecords(['FAILED'])}
             />
@@ -244,21 +246,21 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           {/* Bottom row: Unsupported + In Progress + Not Started */}
           <Flex gap="2" style={{ width: '100%' }}>
             <StatCard
-              label="Unsupported"
+              label={t('workspace.connectors.overview.statUnsupported')}
               value={recordsStatus.unsupported}
-              subtitle="Can't be processed"
+              subtitle={t('workspace.connectors.overview.statUnsupportedSub')}
               onClick={() => navigateToRecords(['FILE_TYPE_NOT_SUPPORTED'])}
             />
             <StatCard
-              label="In Progress"
+              label={t('status.processing')}
               value={recordsStatus.inProgress}
-              subtitle="Still being indexed"
+              subtitle={t('workspace.connectors.overview.statInProgressSub')}
               onClick={() => navigateToRecords(['IN_PROGRESS'])}
             />
             <StatCard
-              label="Not Started"
+              label={t('workspace.connectors.overview.statNotStarted')}
               value={recordsStatus.notStarted}
-              subtitle="Queued for sync"
+              subtitle={t('workspace.connectors.overview.statNotStartedSub')}
               onClick={() => navigateToRecords(['NOT_STARTED'])}
             />
           </Flex>
@@ -269,7 +271,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       <Flex direction="column" gap="3">
         <Flex align="center" justify="between">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Records by Type
+            {t('workspace.connectors.overview.recordsByType')}
           </Text>
           <Badge variant="soft" color="gray" size="1">
             {byRecordType.length} Types
@@ -278,7 +280,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
 
         {byRecordType.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            No record types available
+            {t('workspace.connectors.overview.noRecordTypes')}
           </Text>
         ) : (
           <Flex direction="column" gap="1">
@@ -317,7 +319,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       >
         <Flex align="center" gap="2">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Personal Records Indexed
+            {t('workspace.connectors.overview.personalRecordsIndexed')}
           </Text>
           <MaterialIcon name="lock" size={14} color="var(--gray-9)" />
         </Flex>

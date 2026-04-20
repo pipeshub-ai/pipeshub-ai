@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Button, Badge, IconButton } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -54,6 +55,7 @@ export function AuthCard({
   onRetry,
   loading = false,
 }: AuthCardProps) {
+  const { t } = useTranslation();
   const config = stateConfig[state];
 
   return (
@@ -88,10 +90,10 @@ export function AuthCard({
         {/* Title + subtitle */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Authenticate {connectorName} to Proceed
+            {t('workspace.connectors.authCard.title', { name: connectorName })}
           </Text>
           <Text size="1" style={{ color: 'var(--gray-10)' }}>
-            Connect your {connectorName} account to proceed with configuration
+            {t('workspace.connectors.authCard.description', { name: connectorName })}
           </Text>
         </Flex>
       </Flex>
@@ -103,10 +105,10 @@ export function AuthCard({
           size="2"
           onClick={onAuthenticate}
           loading={loading}
-          loadingLabel="Authenticating..."
+          loadingLabel={t('workspace.connectors.authCard.loading')}
           style={{ width: '100%' }}
         >
-          {`Authenticate ${connectorName} to Proceed`}
+          {t('workspace.connectors.authCard.title', { name: connectorName })}
         </LoadingButton>
       )}
 
@@ -120,7 +122,7 @@ export function AuthCard({
             padding: '4px 8px',
           }}
         >
-          {connectorName} has been Authenticated
+          {t('workspace.connectors.authCard.successBadge', { name: connectorName })}
         </Badge>
       )}
 
@@ -134,7 +136,7 @@ export function AuthCard({
               padding: '4px 8px',
             }}
           >
-            Failed to Authenticate your {connectorName}
+            {t('workspace.connectors.authCard.failureBadge', { name: connectorName })}
           </Badge>
           {onRetry && (
             <IconButton

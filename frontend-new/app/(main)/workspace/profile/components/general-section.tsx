@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { AvatarUploadWidget } from '../../components';
@@ -47,13 +48,14 @@ export function GeneralSection({
   emailLoading,
   onEditEmailClick,
 }: GeneralSectionProps) {
+  const { t } = useTranslation();
   return (
-    <SettingsSection title="General">
+    <SettingsSection title={t('workspace.profile.general')}>
 
       {/* Your Display Picture */}
       <SettingsRow
-        label="Your Display Picture"
-        description="Recommended size is 256px by 256px"
+        label={t('workspace.profile.fields.displayPicture')}
+        description={t('workspace.profile.fields.displayPictureHint')}
       >
         <AvatarUploadWidget
           src={avatarUrl}
@@ -65,10 +67,10 @@ export function GeneralSection({
       </SettingsRow>
 
       {/* Full Name */}
-      <SettingsRow label="Full Name" description="Please write your full name">
+      <SettingsRow label={t('workspace.profile.fields.fullName')} description={t('workspace.profile.fields.fullNameHint')}>
         <Flex direction="column" gap="1">
           <TextField.Root
-            placeholder="eg: John Doe"
+            placeholder={t('workspace.profile.fields.fullNamePlaceholder')}
             value={fullName}
             onChange={(e) => onFullNameChange(e.target.value)}
             color={fullNameError ? 'red' : undefined}
@@ -82,9 +84,9 @@ export function GeneralSection({
       </SettingsRow>
 
       {/* Designation */}
-      <SettingsRow label="Designation" description="Your job role in the company">
+      <SettingsRow label={t('workspace.profile.fields.designation')} description={t('workspace.profile.fields.designationHint')}>
         <TextField.Root
-          placeholder="eg: Co-Founder"
+          placeholder={t('workspace.profile.fields.designationPlaceholder')}
           value={designation}
           onChange={(e) => onDesignationChange(e.target.value)}
         />
@@ -92,11 +94,11 @@ export function GeneralSection({
 
       {/* Company Email — read-only; Change Email logic ready but UI not implemented */}
       <SettingsRow
-        label="Company Email"
-        description="Primary work email from the company"
+        label={t('workspace.profile.fields.email')}
+        description={t('workspace.profile.fields.emailHint')}
       >
         <TextField.Root
-          value={emailLoading ? 'Loading…' : email}
+          value={emailLoading ? t('common.loading') : email}
           readOnly
           style={{ color: 'var(--gray-10)' }}
         >

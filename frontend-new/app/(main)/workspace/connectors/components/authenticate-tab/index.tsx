@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Select } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SchemaFormField } from '../schema-form-field';
@@ -29,6 +30,8 @@ export function AuthenticateTab() {
     setAuthFormValue,
     setSelectedAuthType,
   } = useConnectorsStore();
+
+  const { t } = useTranslation();
 
   if (!connectorSchema || !panelConnector) return null;
 
@@ -65,7 +68,7 @@ export function AuthenticateTab() {
       {showAuthTypeSelector && (
         <Flex direction="column" gap="2">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Authentication Method
+            {t('workspace.connectors.authTab.methodLabel')}
           </Text>
           <Select.Root
             value={selectedAuthType}
@@ -73,7 +76,7 @@ export function AuthenticateTab() {
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}
-              placeholder="Select auth type..."
+              placeholder={t('workspace.connectors.authTab.methodPlaceholder')}
             />
             <Select.Content>
               {supportedAuthTypes.map((type) => (
@@ -91,7 +94,7 @@ export function AuthenticateTab() {
         <Flex direction="column" gap="5">
           <Flex direction="column" gap="1">
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {formatAuthTypeName(selectedAuthType)} Credentials
+              {t('workspace.connectors.authTab.credentialsHeading', { name: formatAuthTypeName(selectedAuthType) })}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-10)' }}>
               Enter your {panelConnector.name} authentication details
@@ -142,7 +145,7 @@ export function AuthenticateTab() {
         >
           <MaterialIcon name="check_circle" size={16} color="var(--green-a11)" />
           <Text size="2" style={{ color: 'var(--green-a11)' }}>
-            No authentication required for this connector
+            {t('workspace.connectors.authTab.noAuthRequired')}
           </Text>
         </Flex>
       )}

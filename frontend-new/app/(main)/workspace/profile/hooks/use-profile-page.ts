@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -16,6 +17,7 @@ import { GROUP_TYPES, USER_ROLES } from '../../constants';
 // ========================================
 
 export function useProfilePage() {
+  const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const logout = useAuthStore((s) => s.logout);
   const router = useRouter();
@@ -100,8 +102,8 @@ export function useProfilePage() {
       } catch {
         addToast({
           variant: 'error',
-          title: 'Failed to load profile',
-          description: 'Could not fetch your profile details',
+          title: t('workspace.profile.toasts.loadError'),
+          description: t('workspace.profile.toasts.loadErrorDescription'),
         });
         setLoading(false);
       }
@@ -115,9 +117,9 @@ export function useProfilePage() {
   const validate = useCallback((): boolean => {
     const newErrors: { fullName?: string } = {};
     if (!form.fullName.trim()) {
-      newErrors.fullName = 'Full name is required';
+      newErrors.fullName = t('form.required');
     } else if (/[<>]/.test(form.fullName)) {
-      newErrors.fullName = 'Full name cannot contain HTML tags';
+      newErrors.fullName = t('workspace.profile.errors.nameHtml');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -133,14 +135,14 @@ export function useProfilePage() {
       markSaved();
       addToast({
         variant: 'success',
-        title: 'Profile saved',
-        description: 'Your profile details have been updated',
+        title: t('workspace.profile.toasts.saveSuccess'),
+        description: t('workspace.profile.toasts.saveSuccessDescription'),
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save',
-        description: 'Could not update your profile',
+        title: t('workspace.profile.toasts.saveError'),
+        description: t('workspace.profile.toasts.saveErrorDescription'),
       });
     }
   }, [form, userId, validate, markSaved, addToast]);
@@ -150,8 +152,8 @@ export function useProfilePage() {
   const handlePasswordChangeSuccess = useCallback(() => {
     addToast({
       variant: 'success',
-      title: 'Password has been updated',
-      description: "We'll log you out. Please login again...",
+      title: t('workspace.profile.toasts.passwordUpdated'),
+      description: t('workspace.profile.toasts.passwordUpdatedDescription'),
       duration: 4000,
     });
     // Give the user a moment to read the toast, then log out
@@ -165,8 +167,8 @@ export function useProfilePage() {
   const handleEmailVerificationSent = useCallback(() => {
     addToast({
       variant: 'success',
-      title: 'Email Verification Link Sent',
-      description: 'You will be logged out when you verify the email', 
+      title: t('workspace.profile.toasts.emailVerificationSent'),
+      description: t('workspace.profile.toasts.emailVerificationSentDescription'),
       duration: 5000,
     });
   }, [addToast]);
@@ -180,8 +182,8 @@ export function useProfilePage() {
     discardChanges();
     addToast({
       variant: 'success',
-      title: 'Discarded edits',
-      description: 'Your profile has been reset',
+      title: t('workspace.profile.toasts.discardSuccess'),
+      description: t('workspace.profile.toasts.discardSuccessDescription'),
     });
   }, [discardChanges, addToast]);
 
@@ -204,8 +206,8 @@ export function useProfilePage() {
         if (processedUrl) setAvatarUrl(processedUrl);
         addToast({
           variant: 'success',
-          title: 'Profile picture saved',
-          description: 'Your profile picture has been added',
+          title: t('workspace.profile.toasts.avatarSaved'),
+          description: t('workspace.profile.toasts.avatarSavedDescription'),
         });
       } catch (err: unknown) {
         URL.revokeObjectURL(previewUrl);
@@ -213,8 +215,8 @@ export function useProfilePage() {
         const errMessage = isProcessedError(err) ? err.message : undefined;
         addToast({
           variant: 'error',
-          title: 'Upload failed',
-          description: errMessage || 'Could not upload profile picture',
+          title: t('workspace.profile.toasts.avatarUploadError'),
+          description: errMessage || t('workspace.profile.toasts.avatarUploadErrorDescription'),
         });
       } finally {
         setAvatarUploading(false);
@@ -233,15 +235,15 @@ export function useProfilePage() {
       setAvatarUrl(null);
       addToast({
         variant: 'success',
-        title: 'Profile picture removed',
-        description: 'Your profile picture has been removed',
+        title: t('workspace.profile.toasts.avatarRemoved'),
+        description: t('workspace.profile.toasts.avatarRemovedDescription'),
       });
     } catch (err: unknown) {
       const errMessage = isProcessedError(err) ? err.message : undefined;
       addToast({
         variant: 'error',
-        title: 'Remove failed',
-        description: errMessage || 'Could not remove profile picture',
+        title: t('workspace.profile.toasts.avatarRemoveError'),
+        description: errMessage || t('workspace.profile.toasts.avatarRemoveErrorDescription'),
       });
     } finally {
       setAvatarUploading(false);
