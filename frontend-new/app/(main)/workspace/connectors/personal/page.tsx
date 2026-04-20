@@ -319,7 +319,6 @@ function PersonalConnectorsPageContent() {
         await startConnectorSync({
           _key: instance._key,
           type: instance.type,
-          isActive: instance.isActive,
         });
         addToast({
           variant: 'success',
