@@ -12,6 +12,44 @@ export interface CreateChatShareAdapterOptions {
   agentId?: string;
 }
 
+// Backend caps GET /api/v1/teams/:teamId/users at limit=100 per page.
+const TEAM_MEMBERS_PAGE_LIMIT = 100;
+// Safety cap — stops a runaway loop if totalCount is missing or wrong.
+const TEAM_MEMBERS_MAX_PAGES = 50;
+
+/**
+ * Fetch every MongoDB userId for a team by paging through the members endpoint.
+ * Returns the full set even for teams with more than one page of members.
+ */
+async function fetchAllTeamMemberIds(teamId: string): Promise<string[]> {
+  const collected: string[] = [];
+  let page = 1;
+
+  // First page also gives us totalCount so we know whether to keep going.
+  const first = await TeamsApi.getTeamUsers(teamId, {
+    page,
+    limit: TEAM_MEMBERS_PAGE_LIMIT,
+  });
+  for (const m of first.members) if (m.userId) collected.push(m.userId);
+
+  const totalPages = Math.min(
+    TEAM_MEMBERS_MAX_PAGES,
+    Math.max(1, Math.ceil((first.totalCount ?? collected.length) / TEAM_MEMBERS_PAGE_LIMIT))
+  );
+
+  while (page < totalPages) {
+    page += 1;
+    const next = await TeamsApi.getTeamUsers(teamId, {
+      page,
+      limit: TEAM_MEMBERS_PAGE_LIMIT,
+    });
+    if (next.members.length === 0) break;
+    for (const m of next.members) if (m.userId) collected.push(m.userId);
+  }
+
+  return collected;
+}
+
 /**
  * Creates a ShareAdapter for a Chat Conversation.
  * Simple share/unshare — no roles or teams.
@@ -107,27 +145,36 @@ export function createChatShareAdapter(
     },
 
     async share(submission: ShareSubmission): Promise<void> {
-      const userIds = [...submission.userIds];
+      // Use a Set so dedupe against both the initial userIds and members pulled
+      // from every selected team is O(1) per insertion.
+      const userIdsSet = new Set(submission.userIds);
 
-      // Expand team selections into individual MongoDB user IDs
+      // Expand team selections into individual MongoDB user IDs.
+      // NOTE: the chat /share endpoint doesn't accept teamIds yet, so this
+      // expansion is a frontend-side compatibility shim. Moving team expansion
+      // behind the share endpoint would make this both more consistent and
+      // avoid partial-share races — tracked as a backend follow-up.
       if (submission.teamIds && submission.teamIds.length > 0) {
         const teamMemberResults = await Promise.allSettled(
-          submission.teamIds.map((teamId) =>
-            TeamsApi.getTeamUsers(teamId, { limit: 500 })
-          )
+          submission.teamIds.map((teamId) => fetchAllTeamMemberIds(teamId))
         );
         for (const result of teamMemberResults) {
           if (result.status === 'fulfilled') {
-            for (const member of result.value.members) {
-              if (member.userId && !userIds.includes(member.userId)) {
-                userIds.push(member.userId);
-              }
+            for (const mongoUserId of result.value) {
+              userIdsSet.add(mongoUserId);
             }
+          } else {
+            // Log and continue: a single team failure shouldn't silently drop
+            // the entire share — the user still gets the members we could
+            // resolve from other teams and direct selections.
+            console.error('Failed to fetch members for a selected team:', result.reason);
           }
         }
       }
 
-      await apiClient.post(`${conversationBasePath}/share`, { userIds });
+      await apiClient.post(`${conversationBasePath}/share`, {
+        userIds: Array.from(userIdsSet),
+      });
     },
 
     async removeMember(memberId: string): Promise<void> {
