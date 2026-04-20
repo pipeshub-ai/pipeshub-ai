@@ -6,6 +6,10 @@ import { CONNECTOR_OAUTH_POST_MESSAGE } from '@/app/(main)/connectors/oauth/conn
 import { isConnectorConfigAuthenticated } from '../../utils/auth-helpers';
 
 // ── Constants — match toolset OAuth timing exactly ───────────────────
+/** Success screen on the OAuth callback popup before `window.close` (opener is notified immediately). */
+export const OAUTH_CALLBACK_SUCCESS_DISPLAY_MS = 900;
+/** Callback popup auto-close after an error so the window does not linger once the opener was notified. */
+export const OAUTH_CALLBACK_ERROR_AUTO_CLOSE_MS = 10_000;
 /** Poll interval for detecting popup closure (ms). */
 const OAUTH_POPUP_POLL_MS = 1000;
 /** Maximum poll count before giving up (300 × 1 s = 5 min cap). */
@@ -211,6 +215,7 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
       // All attempts exhausted — reset to allow retry.
       // Explicitly clear 'authenticating' authState so the button doesn't stay in
       // loading state after setIsAuthenticating(false).
+      // Poll was already cleared at the top of this handler; resetting the ref here only unlocks a later `startOAuthPopup`.
       oauthCompletionHandledRef.current = false;
       useConnectorsStore.getState().setAuthState('empty');
       useConnectorsStore.getState().bumpOAuthAuthorizeUiEpoch();

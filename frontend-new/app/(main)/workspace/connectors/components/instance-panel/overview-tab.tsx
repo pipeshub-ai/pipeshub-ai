@@ -110,7 +110,6 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       await ensureConnectorSyncActiveThenResync({
         _key: connectorId,
         type: instance.type,
-        isActive: instance.isActive,
       });
       addToast({ variant: 'success', title: 'Sync started successfully' });
       bumpCatalogRefresh();
@@ -119,14 +118,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
     } finally {
       setIsStartingSync(false);
     }
-  }, [
-    instance._key,
-    instance.type,
-    instance.isActive,
-    isStartingSync,
-    addToast,
-    bumpCatalogRefresh,
-  ]);
+  }, [instance._key, instance.type, isStartingSync, addToast, bumpCatalogRefresh]);
 
   const handleOverviewResync = useCallback(async () => {
     const connectorId = instance._key;

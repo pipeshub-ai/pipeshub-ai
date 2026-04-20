@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
   ConnectorListResponse,
@@ -270,7 +271,7 @@ export const ConnectorsApi = {
     state: string;
     oauthError: string | null;
     baseUrl: string;
-  }): Promise<{ success?: boolean; redirectUrl?: string; redirect_url?: string }> {
+  }): Promise<ConnectorOAuthCallbackRaw> {
     const query: Record<string, string> = {
       code: params.code,
       state: params.state,
@@ -279,11 +280,7 @@ export const ConnectorsApi = {
     if (params.oauthError) {
       query.error = params.oauthError;
     }
-    const { data } = await apiClient.get<{
-      success?: boolean;
-      redirectUrl?: string;
-      redirect_url?: string;
-    }>('/api/v1/connectors/oauth/callback', {
+    const { data } = await apiClient.get<ConnectorOAuthCallbackRaw>('/api/v1/connectors/oauth/callback', {
       params: query,
       suppressErrorToast: true,
     });

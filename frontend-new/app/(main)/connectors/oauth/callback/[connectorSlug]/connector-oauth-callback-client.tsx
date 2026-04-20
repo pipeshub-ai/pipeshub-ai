@@ -10,6 +10,10 @@ import {
   postConnectorOAuthErrorToOpener,
   postConnectorOAuthSuccessToOpener,
 } from '../../connector-oauth-window-messages';
+import { parseConnectorOAuthCallbackPayload } from '../../connector-oauth-callback-response';
+import {
+  OAUTH_CALLBACK_SUCCESS_DISPLAY_MS,
+} from '@/app/(main)/workspace/connectors/components/authenticate-tab/use-connector-oauth-popup';
 
 function userFacingCallbackError(e: unknown, fallback: string): string {
   if (isProcessedError(e)) return e.message;
@@ -86,11 +90,7 @@ export function ConnectorOAuthCallbackClient() {
           baseUrl: window.location.origin,
         });
 
-        const redirectUrl = data.redirectUrl || data.redirect_url;
-        const ok = Boolean(data?.success) || Boolean(redirectUrl);
-        if (!ok) {
-          throw new Error('The server did not confirm OAuth completion.');
-        }
+        const { redirectUrl } = parseConnectorOAuthCallbackPayload(data);
 
         const connectorId = connectorIdFromRedirect(redirectUrl);
         // Notify opener immediately so the workspace panel can refetch while persistence catches up
@@ -101,7 +101,7 @@ export function ConnectorOAuthCallbackClient() {
         setMessage('Authentication complete. You can close this window.');
         setTimeout(() => {
           closeWindow();
-        }, 900);
+        }, OAUTH_CALLBACK_SUCCESS_DISPLAY_MS);
       } catch (e) {
         const detail = userFacingCallbackError(e, 'OAuth authentication failed.');
         setStatus('error');

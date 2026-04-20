@@ -22,8 +22,10 @@ export function postConnectorOAuthSuccessToOpener(connectorId: string | null): v
       { type: CONNECTOR_OAUTH_POST_MESSAGE.SUCCESS, connectorId },
       origin
     );
-  } catch {
-    /* ignore */
+  } catch (e) {
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('[connector-oauth] postMessage success failed', e);
+    }
   }
 }
 
@@ -35,7 +37,9 @@ export function postConnectorOAuthErrorToOpener(error: string): void {
       { type: CONNECTOR_OAUTH_POST_MESSAGE.ERROR, error },
       origin
     );
-  } catch {
-    /* ignore */
+  } catch (e) {
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('[connector-oauth] postMessage error failed', e);
+    }
   }
 }

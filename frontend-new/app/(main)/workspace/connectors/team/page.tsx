@@ -326,7 +326,6 @@ function TeamConnectorsPageContent() {
         await ensureConnectorSyncActiveThenResync({
           _key: instance._key,
           type: instance.type,
-          isActive: instance.isActive,
         });
         addToast({
           variant: 'success',
@@ -382,12 +381,7 @@ function TeamConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      const fresh = await ConnectorsApi.getConnectorInstance(instanceId);
-      await ensureConnectorSyncActiveThenResync({
-        _key: instanceId,
-        type: fresh.type,
-        isActive: fresh.isActive,
-      });
+      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
       addToast({
         variant: 'success',
         title: `Your ${connectorTypeInfo?.name ?? 'connector'} instance is now syncing`,

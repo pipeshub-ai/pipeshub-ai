@@ -198,7 +198,12 @@ export function ConnectorPanel() {
     }
   }, [panelActiveTab, showAuthorizeTab, setPanelActiveTab]);
 
-  // Do not stay on Configure when the instance is not authenticated (e.g. stale tab or API catch-up).
+  /**
+   * Do not stay on Configure when the instance is not authenticated (e.g. stale tab or API catch-up).
+   * `instanceAuthenticated` uses {@link isConnectorInstanceAuthenticatedForUi}: config-based inference and
+   * explicit `isAuthenticated:false` win over the catalog row so we do not bounce incorrectly during GET /config lag;
+   * see ordering documented on that helper before changing deps or tab logic here.
+   */
   useEffect(() => {
     if (!isPanelOpen || isLoading) return;
     if (panelActiveTab !== 'configure' || configureTabEnabled) return;

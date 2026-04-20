@@ -1,16 +1,19 @@
 import { ConnectorsApi } from '../api';
+import type { ConnectorInstance } from '../types';
 
 /**
  * Ensures sync is enabled for the instance, then kicks a normal resync job.
- * The toggle endpoint flips `isActive`; it must not be used as "start sync" when already active.
+ * Re-fetches the instance first so `isActive` is never taken from stale client state — the toggle
+ * endpoint flips `isActive` and would deactivate sync if called when the server already has sync on.
+ * `type` is optional when unknown to the caller; the fresh GET supplies it for resync.
  */
-export async function ensureConnectorSyncActiveThenResync(instance: {
-  _key: string;
-  type: string;
-  isActive: boolean;
-}): Promise<void> {
-  if (!instance.isActive) {
+export async function ensureConnectorSyncActiveThenResync(
+  instance: Pick<ConnectorInstance, '_key'> & Partial<Pick<ConnectorInstance, 'type'>>
+): Promise<void> {
+  const fresh = await ConnectorsApi.getConnectorInstance(instance._key);
+  if (!fresh.isActive) {
     await ConnectorsApi.toggleConnector(instance._key, 'sync');
   }
-  await ConnectorsApi.resyncConnector(instance._key, instance.type);
+  const connectorType = fresh.type || instance.type;
+  await ConnectorsApi.resyncConnector(instance._key, connectorType);
 }

@@ -2,19 +2,24 @@
 // Auth type helper utilities
 // ========================================
 
+function normalizeAuthTypeKey(authType: string): string {
+  return (authType || '').toUpperCase();
+}
+
 /** Check if auth type requires no authentication (skip auth card) */
 export function isNoneAuthType(authType: string): boolean {
-  return authType === 'NONE' || authType === '';
+  const u = normalizeAuthTypeKey(authType);
+  return u === 'NONE' || u === '';
 }
 
 /** Check if auth type uses OAuth redirect flow (show authenticate button) */
 export function isOAuthType(authType: string): boolean {
-  return ['OAUTH', 'OAUTH_ADMIN_CONSENT', 'OAUTH_CERTIFICATE'].includes(authType);
+  return ['OAUTH', 'OAUTH_ADMIN_CONSENT', 'OAUTH_CERTIFICATE'].includes(normalizeAuthTypeKey(authType));
 }
 
 /** Check if auth type uses credential fields (show form fields) */
 export function isCredentialAuthType(authType: string): boolean {
-  const upper = (authType || '').toUpperCase();
+  const upper = normalizeAuthTypeKey(authType);
   return [
     'API_TOKEN',
     'USERNAME_PASSWORD',
@@ -35,7 +40,10 @@ export function isConnectorAuthenticatedFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
-/** True when saved OAuth credentials look present under `config.auth` (some APIs lag top-level flags). */
+/**
+ * True when saved OAuth credentials look present under `config.auth` (some APIs lag top-level flags).
+ * Any non-empty string counts; we do not strip serialized placeholder literals (e.g. the string `"null"`).
+ */
 function oauthAuthCredentialsLookPresent(auth: unknown): boolean {
   if (!auth || typeof auth !== 'object') return false;
   const a = auth as Record<string, unknown>;
@@ -83,9 +91,10 @@ export function connectorConfigExplicitlyDeniesAuthentication(config: unknown): 
 }
 
 /**
- * Single source for OAuth / Configure gates: trust inferred auth from config (including nested
- * tokens), then an explicit "not authed" top-level flag over the list row, else list row while
- * config has no explicit outcome.
+ * Single source for OAuth / Configure gates. Order is load-bearing — do not reorder:
+ * 1) {@link isConnectorConfigAuthenticated} (flags + nested tokens),
+ * 2) {@link connectorConfigExplicitlyDeniesAuthentication} (stale list row must lose to explicit false),
+ * 3) list row when config has no explicit outcome.
  */
 export function isConnectorInstanceAuthenticatedForUi(
   panelConnectorId: string | null | undefined,

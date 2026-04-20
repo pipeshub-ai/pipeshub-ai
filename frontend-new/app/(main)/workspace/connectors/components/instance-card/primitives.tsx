@@ -6,6 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 
+/** Brief busy state after instance-card async actions so rapid double-clicks do not stack requests. */
+const INSTANCE_ACTION_BUTTON_BUSY_MS = 800;
+
 // ========================================
 // InfoRow
 // ========================================
@@ -265,7 +268,7 @@ export function ReindexFailedButton({
     } catch {
       addToast({ variant: 'error', title: 'Failed to reindex failed records' });
     } finally {
-      setTimeout(() => setBusy(false), 800);
+      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
     }
   };
 
@@ -308,7 +311,7 @@ export function ManualIndexButton({
     } catch {
       addToast({ variant: 'error', title: 'Failed to start manual index' });
     } finally {
-      setTimeout(() => setBusy(false), 800);
+      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
     }
   };
 
