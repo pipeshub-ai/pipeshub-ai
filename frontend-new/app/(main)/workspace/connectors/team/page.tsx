@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useCallback, useState, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
+import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -62,11 +63,20 @@ function TeamConnectorsPageContent() {
     setConnectorTypeInfo,
     setInstanceConfig,
     setInstanceStats,
+    upsertConnectorInstance,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    catalogRefreshToken,
+    bumpCatalogRefresh,
+    setSelectedScope,
   } = useConnectorsStore();
+
+  // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
+  useLayoutEffect(() => {
+    setSelectedScope('team');
+  }, [setSelectedScope]);
 
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
@@ -113,65 +123,103 @@ function TeamConnectorsPageContent() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, catalogRefreshToken]);
 
-  // ── Fetch instances when connectorType is present ───────────
-  // Filter active connectors by type client-side, then fetch config + stats per instance
+  /** Stable across upserts that only change fields on existing instances (same ids → same string). */
+  const instanceDetailKeys = useMemo(() => {
+    if (!connectorType) return '';
+    return activeConnectors
+      .filter((c) => c.type === connectorType && c._key)
+      .map((c) => c._key as string)
+      .sort()
+      .join('|');
+  }, [activeConnectors, connectorType]);
+
+  // ── Instance type page: keep list + header in sync (no loading) ──
   useEffect(() => {
     if (!connectorType) return;
 
-    // Prefer registry connector for type-level info (correct type name, not instance name)
     const registryInfo = registryConnectors.find((c) => c.type === connectorType) ?? null;
     const activeInfo = activeConnectors.find((c) => c.type === connectorType) ?? null;
     setConnectorTypeInfo(registryInfo ?? activeInfo);
 
-    // Filter active connectors by type
     const typeInstances = activeConnectors.filter(
       (c) => c.type === connectorType
     ) as ConnectorInstance[];
 
     setInstances(typeInstances);
-
-    // Fetch config and stats for each instance
-    const fetchInstanceDetails = async () => {
-      setIsLoadingInstances(true);
-      try {
-        const detailPromises = typeInstances.map(async (instance) => {
-          if (!instance._key) return;
-          const [configRes, statsRes] = await Promise.allSettled([
-            ConnectorsApi.getConnectorConfig(instance._key),
-            ConnectorsApi.getConnectorStats(instance._key),
-          ]);
-          if (configRes.status === 'fulfilled') {
-            setInstanceConfig(instance._key, configRes.value);
-          }
-          if (statsRes.status === 'fulfilled') {
-            setInstanceStats(instance._key, statsRes.value.data);
-          }
-        });
-        await Promise.allSettled(detailPromises);
-      } catch {
-        // Individual failures are handled per-instance above
-      } finally {
-        setIsLoadingInstances(false);
-      }
-    };
-
-    if (typeInstances.length > 0) {
-      fetchInstanceDetails();
-    } else {
-      setIsLoadingInstances(false);
-    }
   }, [
     connectorType,
     activeConnectors,
     registryConnectors,
     setConnectorTypeInfo,
-    setIsLoadingInstances,
     setInstances,
+  ]);
+
+  // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
+  useEffect(() => {
+    if (!connectorType) {
+      setIsLoadingInstances(false);
+      return;
+    }
+
+    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
+    if (instanceIds.length === 0) {
+      setIsLoadingInstances(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      setIsLoadingInstances(true);
+      try {
+        await Promise.allSettled(
+          instanceIds.map(async (id) => {
+            const [configRes, statsRes] = await Promise.allSettled([
+              ConnectorsApi.getConnectorConfig(id),
+              ConnectorsApi.getConnectorStats(id),
+            ]);
+            if (cancelled) return;
+            if (configRes.status === 'fulfilled') {
+              setInstanceConfig(id, configRes.value);
+            }
+            if (statsRes.status === 'fulfilled') {
+              setInstanceStats(id, statsRes.value.data);
+            }
+          })
+        );
+      } finally {
+        if (!cancelled) {
+          setIsLoadingInstances(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    connectorType,
+    catalogRefreshToken,
+    instanceDetailKeys,
+    setIsLoadingInstances,
     setInstanceConfig,
     setInstanceStats,
   ]);
+
+  const refreshConnectorRowQuiet = useCallback(
+    async (connectorId: string) => {
+      const fresh = await ConnectorsApi.getConnectorInstance(connectorId);
+      upsertConnectorInstance(fresh);
+      void ConnectorsApi.getConnectorStats(connectorId)
+        .then((res) => setInstanceStats(connectorId, res.data))
+        .catch(() => {});
+    },
+    [upsertConnectorInstance, setInstanceStats]
+  );
 
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
@@ -179,9 +227,20 @@ function TeamConnectorsPageContent() {
       // For active connectors (have _key), open in edit mode
       // For registry connectors (no _key), open in create mode
       const connectorId = connector._key;
-      openPanel(connector, connectorId);
+      openPanel(connector, connectorId, 'team');
     },
     [openPanel]
+  );
+
+  /** "+" on catalog cards must create a new instance, not edit whichever instance supplied `_key`. */
+  const handleAddInstanceFromCatalog = useCallback(
+    (connector: Connector) => {
+      const registry = registryConnectors.find((c) => c.type === connector.type);
+      const base = registry ?? connector;
+      const { _key: _omitInstanceKey, ...template } = base;
+      openPanel(template, undefined, 'team');
+    },
+    [registryConnectors, openPanel]
   );
 
   const handleCardClick = useCallback(
@@ -220,14 +279,17 @@ function TeamConnectorsPageContent() {
   const handleBackToList = useCallback(() => {
     setConnectorTypeInfo(null);
     clearInstanceData();
+    bumpCatalogRefresh();
     router.push('/workspace/connectors/team/');
-  }, [router, setConnectorTypeInfo, clearInstanceData]);
+  }, [router, setConnectorTypeInfo, clearInstanceData, bumpCatalogRefresh]);
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
-    // Open panel in create mode (no _key)
-    openPanel(connectorTypeInfo);
-  }, [connectorTypeInfo, openPanel]);
+    const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
+    const base = registry ?? connectorTypeInfo;
+    const { _key: _omitInstanceKey, ...template } = base;
+    openPanel(template, undefined, 'team');
+  }, [connectorTypeInfo, registryConnectors, openPanel]);
 
   const handleOpenDocs = useCallback(() => {
     // Try config.documentationLinks first, then fall back to connectorInfo
@@ -252,20 +314,18 @@ function TeamConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key) return;
       try {
-        await ConnectorsApi.startSync(instance._key);
+        await ensureConnectorSyncActiveThenResync({
+          _key: instance._key,
+          type: instance.type,
+          isActive: instance.isActive,
+        });
         addToast({
           variant: 'success',
           title: `${connectorTypeInfo?.name ?? 'Connector'} is now syncing`,
           description: 'Your records will be available shortly.',
           duration: 3000,
         });
-        // Re-fetch active connectors and instance details
-        try {
-          const activeRes = await ConnectorsApi.getActiveConnectors('team');
-          setActiveConnectors(activeRes.connectors);
-        } catch {
-          // Silently fail — the list will refresh on next navigation
-        }
+        await refreshConnectorRowQuiet(instance._key);
       } catch {
         addToast({
           variant: 'error',
@@ -273,7 +333,28 @@ function TeamConnectorsPageContent() {
         });
       }
     },
-    [connectorTypeInfo, addToast, setActiveConnectors]
+    [connectorTypeInfo, addToast, refreshConnectorRowQuiet]
+  );
+
+  const handleToggleSyncActive = useCallback(
+    async (instance: ConnectorInstance) => {
+      if (!instance._key) return;
+      try {
+        await ConnectorsApi.toggleConnector(instance._key, 'sync');
+        addToast({
+          variant: 'success',
+          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
+          duration: 2500,
+        });
+        await refreshConnectorRowQuiet(instance._key);
+      } catch {
+        addToast({
+          variant: 'error',
+          title: 'Could not update connector',
+        });
+      }
+    },
+    [addToast, refreshConnectorRowQuiet]
   );
 
   const handleInstanceChevron = useCallback(
@@ -291,7 +372,12 @@ function TeamConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await ConnectorsApi.startSync(instanceId);
+      const fresh = await ConnectorsApi.getConnectorInstance(instanceId);
+      await ensureConnectorSyncActiveThenResync({
+        _key: instanceId,
+        type: fresh.type,
+        isActive: fresh.isActive,
+      });
       addToast({
         variant: 'success',
         title: `Your ${connectorTypeInfo?.name ?? 'connector'} instance is now syncing`,
@@ -299,13 +385,7 @@ function TeamConnectorsPageContent() {
           'This may take a few minutes. You\'ll be notified when it\'s done.',
         duration: 3000,
       });
-      // Re-fetch active connectors to update the list
-      try {
-        const activeRes = await ConnectorsApi.getActiveConnectors('team');
-        setActiveConnectors(activeRes.connectors);
-      } catch {
-        // Silently fail
-      }
+      await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
@@ -316,7 +396,7 @@ function TeamConnectorsPageContent() {
     newlyConfiguredConnectorId,
     connectorTypeInfo,
     addToast,
-    setActiveConnectors,
+    refreshConnectorRowQuiet,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
   ]);
@@ -344,6 +424,7 @@ function TeamConnectorsPageContent() {
           onOpenDocs={handleOpenDocs}
           onManageInstance={handleManageInstance}
           onStartSync={handleStartSync}
+          onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
         />
         <ConnectorPanel />
@@ -377,6 +458,7 @@ function TeamConnectorsPageContent() {
         registryConnectors={registryConnectors}
         activeConnectors={activeConnectors}
         onSetup={handleSetup}
+        onAddInstance={handleAddInstanceFromCatalog}
         onCardClick={handleCardClick}
         isLoading={isLoading}
       />

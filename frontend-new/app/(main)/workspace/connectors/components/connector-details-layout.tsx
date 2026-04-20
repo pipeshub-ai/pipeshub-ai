@@ -36,6 +36,8 @@ interface ConnectorDetailsLayoutProps {
   onManageInstance: (instance: ConnectorInstance) => void;
   /** Start syncing an instance */
   onStartSync: (instance: ConnectorInstance) => void;
+  /** Enable / disable sync (POST …/toggle with type sync) */
+  onToggleSyncActive: (instance: ConnectorInstance) => void | Promise<void>;
   /** Open chevron → management panel */
   onInstanceChevron: (instance: ConnectorInstance) => void;
 }
@@ -57,6 +59,7 @@ export function ConnectorDetailsLayout({
   onOpenDocs,
   onManageInstance,
   onStartSync,
+  onToggleSyncActive,
   onInstanceChevron,
 }: ConnectorDetailsLayoutProps) {
   const connectorName = connector?.name ?? '';
@@ -173,13 +176,14 @@ export function ConnectorDetailsLayout({
         <Flex direction="column" gap="4">
           {instances.map((instance) => (
             <InstanceCard
-              key={instance._key}
+              key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
               instance={instance}
               scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               stats={instance._key ? instanceStats?.[instance._key] : undefined}
               onManage={onManageInstance}
               onStartSync={onStartSync}
+              onToggleSyncActive={onToggleSyncActive}
               onChevronClick={onInstanceChevron}
             />
           ))}

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Flex, Box, Text, Button, Popover, IconButton, Tabs } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -33,22 +33,26 @@ export interface DateRangePickerProps {
   onClear: () => void;
   /** Default tab to show when opening (optional) */
   defaultDateType?: DateFilterType;
+  /**
+   * When true, values use local `YYYY-MM-DDTHH:mm` and a time control is shown for each active boundary.
+   * Date-only `YYYY-MM-DD` props still work; time defaults to `00:00`.
+   */
+  withTime?: boolean;
+  /** Hide type tabs and keep this mode (e.g. connector filters where the operator is fixed). */
+  fixedDateType?: DateFilterType;
+  /** Portal container for popover content (e.g. nested panel) so the menu stacks correctly. */
+  portalContainer?: HTMLElement | null;
+  /**
+   * `toolbar`: multi-segment trigger when a value is set (e.g. users filters).
+   * `field`: one outline control, full width, value text + ellipsis (e.g. connector sync filters).
+   */
+  triggerVariant?: 'toolbar' | 'field';
+  /**
+   * When `triggerVariant` is `field` and there is a selection, show a Clear control under the trigger
+   * (same idea as `FilterDropdown` `summaryBelowTrigger`).
+   */
+  summaryBelowTrigger?: boolean;
 }
-
-/**
- * Format date string to display format (DD/MM/YY)
- * @param dateStr - ISO date string (YYYY-MM-DD)
- * @returns Formatted date string
- */
-const formatDateForDisplay = (dateStr: string): string => {
-  if (!dateStr) return '';
-  // Parse ISO date string directly (YYYY-MM-DD) to avoid timezone issues
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const displayDay = day.toString().padStart(2, '0');
-  const displayMonth = month.toString().padStart(2, '0');
-  const displayYear = year.toString().slice(-2);
-  return `${displayDay}/${displayMonth}/${displayYear}`;
-};
 
 /**
  * Format Date object to ISO date string (YYYY-MM-DD)
@@ -61,6 +65,47 @@ const formatDateForInput = (date: Date): string => {
   const day = date.getDate().toString().padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+/** Calendar / range comparisons use the date portion only. */
+function dateKey(iso: string | null): string {
+  if (!iso) return '';
+  return iso.slice(0, 10);
+}
+
+function parseDateTimeBoundary(s: string | undefined | null): { date: string; time: string } {
+  if (!s?.trim()) return { date: '', time: '00:00' };
+  const tIdx = s.indexOf('T');
+  if (tIdx >= 0) {
+    const date = s.slice(0, 10);
+    const rest = s.slice(tIdx + 1);
+    const hm = rest.slice(0, 5);
+    return { date, time: /^\d{2}:\d{2}$/.test(hm) ? hm : '00:00' };
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return { date: s, time: '00:00' };
+  return { date: '', time: '00:00' };
+}
+
+function mergeDateTime(dateYYYYMMDD: string, timeHHmm: string): string {
+  if (!dateYYYYMMDD) return '';
+  const t = (timeHHmm || '00:00').slice(0, 5);
+  return `${dateYYYYMMDD}T${t}`;
+}
+
+function formatBoundaryForDisplay(raw: string, withTime: boolean): string {
+  if (!raw) return '';
+  const d = dateKey(raw);
+  if (!d) return '';
+  const [year, month, day] = d.split('-').map(Number);
+  const displayDay = day.toString().padStart(2, '0');
+  const displayMonth = month.toString().padStart(2, '0');
+  const displayYear = year.toString().slice(-2);
+  const datePart = `${displayDay}/${displayMonth}/${displayYear}`;
+  if (withTime && raw.includes('T')) {
+    const { time } = parseDateTimeBoundary(raw);
+    return `${datePart} · ${time}`;
+  }
+  return datePart;
+}
 
 /**
  * Get number of days in a given month
@@ -135,23 +180,36 @@ export function DateRangePicker({
   onApply,
   onClear,
   defaultDateType = 'between',
+  withTime = false,
+  fixedDateType,
+  portalContainer,
+  triggerVariant = 'toolbar',
+  summaryBelowTrigger = false,
 }: DateRangePickerProps) {
+  const effectiveDateType = fixedDateType ?? dateType ?? defaultDateType;
+
   const [isOpen, setIsOpen] = useState(false);
+  const anchorForCalendar = (s?: string, e?: string) => (s || e || '').slice(0, 10);
   const [currentMonth, setCurrentMonth] = useState(() => {
-    if (startDate) return new Date(startDate).getMonth();
+    const a = anchorForCalendar(startDate, endDate);
+    if (a) return new Date(a).getMonth();
     return new Date().getMonth();
   });
   const [currentYear, setCurrentYear] = useState(() => {
-    if (startDate) return new Date(startDate).getFullYear();
+    const a = anchorForCalendar(startDate, endDate);
+    if (a) return new Date(a).getFullYear();
     return new Date().getFullYear();
   });
   const [selectedStart, setSelectedStart] = useState<string | null>(startDate || null);
   const [selectedEnd, setSelectedEnd] = useState<string | null>(endDate || null);
   const [isSelectingEnd, setIsSelectingEnd] = useState(false);
   const [hoveredDay, setHoveredDay] = useState<string | null>(null);
-  const [selectedDateType, setSelectedDateType] = useState<DateFilterType>(
-    dateType || defaultDateType
-  );
+  const [selectedDateType, setSelectedDateType] = useState<DateFilterType>(effectiveDateType);
+
+  useEffect(() => {
+    if (fixedDateType) setSelectedDateType(fixedDateType);
+    else if (dateType) setSelectedDateType(dateType);
+  }, [fixedDateType, dateType]);
 
   const hasSelection = dateType === 'between'
     ? !!startDate && !!endDate
@@ -224,22 +282,28 @@ export function DateRangePicker({
     const dateStr = formatDateForInput(new Date(currentYear, currentMonth, day));
 
     if (selectedDateType !== 'between') {
-      // Single date selection for 'on', 'before', 'after'
-      setSelectedStart(dateStr);
+      const prevSource =
+        selectedDateType === 'before' ? selectedStart || selectedEnd : selectedStart;
+      const { time: prevTime } = parseDateTimeBoundary(prevSource);
+      const merged = withTime ? mergeDateTime(dateStr, prevTime) : dateStr;
+      setSelectedStart(merged);
       setSelectedEnd(null);
     } else {
-      // Range selection for 'between'
       if (!selectedStart || !isSelectingEnd) {
-        setSelectedStart(dateStr);
+        const { time: startTime } = parseDateTimeBoundary(selectedStart);
+        const merged = withTime ? mergeDateTime(dateStr, startTime || '00:00') : dateStr;
+        setSelectedStart(merged);
         setSelectedEnd(null);
         setIsSelectingEnd(true);
       } else {
-        // Set end date, swap if needed
-        if (new Date(dateStr) < new Date(selectedStart)) {
+        const { time: endTime } = parseDateTimeBoundary(selectedEnd);
+        const endMerged = withTime ? mergeDateTime(dateStr, endTime || '00:00') : dateStr;
+        const startKey = dateKey(selectedStart);
+        if (dateStr < startKey) {
           setSelectedEnd(selectedStart);
-          setSelectedStart(dateStr);
+          setSelectedStart(endMerged);
         } else {
-          setSelectedEnd(dateStr);
+          setSelectedEnd(endMerged);
         }
         setIsSelectingEnd(false);
       }
@@ -259,34 +323,50 @@ export function DateRangePicker({
   // Check if a day is selected (start or end)
   const isDaySelected = (day: number): boolean => {
     const dateStr = formatDateForInput(new Date(currentYear, currentMonth, day));
-    return dateStr === selectedStart || dateStr === selectedEnd;
+    return dateStr === dateKey(selectedStart) || dateStr === dateKey(selectedEnd);
   };
 
   // Check if a day is within the selected range
   const isDayInRange = (day: number): boolean => {
     if (!selectedStart || !selectedEnd || selectedDateType !== 'between') return false;
     const dateStr = formatDateForInput(new Date(currentYear, currentMonth, day));
-    return dateStr > selectedStart && dateStr < selectedEnd;
+    const a = dateKey(selectedStart);
+    const b = dateKey(selectedEnd);
+    return dateStr > a && dateStr < b;
   };
 
   // Check if a day is within the hover preview range (between mode, selecting end date)
   const isDayInHoverRange = (day: number): boolean => {
     if (!selectedStart || !hoveredDay || !isSelectingEnd || selectedDateType !== 'between') return false;
     const dateStr = formatDateForInput(new Date(currentYear, currentMonth, day));
-    const rangeStart = selectedStart < hoveredDay ? selectedStart : hoveredDay;
-    const rangeEnd = selectedStart < hoveredDay ? hoveredDay : selectedStart;
+    const hk = dateKey(hoveredDay);
+    const sk = dateKey(selectedStart);
+    const rangeStart = sk < hk ? sk : hk;
+    const rangeEnd = sk < hk ? hk : sk;
     return dateStr >= rangeStart && dateStr <= rangeEnd;
   };
 
   // Handle apply button click
   const handleApply = () => {
-    if (!selectedStart) return;
-
-    if (selectedDateType === 'between' && (!selectedStart || !selectedEnd)) {
-      return; // Need both dates for range
+    if (selectedDateType === 'between') {
+      if (!selectedStart || !selectedEnd) return;
+      onApply(selectedStart, selectedEnd, selectedDateType);
+      setIsOpen(false);
+      return;
     }
-
-    onApply(selectedStart, selectedEnd || undefined, selectedDateType);
+    const boundary =
+      selectedDateType === 'before' ? selectedStart || selectedEnd : selectedStart || selectedEnd;
+    if (!boundary) return;
+    if (selectedDateType === 'before') {
+      onApply(boundary, undefined, 'before');
+    } else {
+      const out =
+        selectedDateType === 'after' || selectedDateType === 'on'
+          ? selectedStart || selectedEnd
+          : boundary;
+      if (!out) return;
+      onApply(out, undefined, selectedDateType);
+    }
     setIsOpen(false);
   };
 
@@ -301,128 +381,220 @@ export function DateRangePicker({
   // Get formatted date value for the applied chip
   const getDateValue = (): string => {
     if (dateType === 'before') {
-      return endDate ? formatDateForDisplay(endDate) : '';
+      return endDate ? formatBoundaryForDisplay(endDate, withTime) : '';
     }
     if (!startDate) return '';
-    const formattedStart = formatDateForDisplay(startDate);
+    const formattedStart = formatBoundaryForDisplay(startDate, withTime);
     if (dateType === 'between' && endDate) {
-      return `${formattedStart} · ${formatDateForDisplay(endDate)}`;
+      return `${formattedStart} · ${formatBoundaryForDisplay(endDate, withTime)}`;
     }
     return formattedStart;
   };
 
+  /** Single-line summary for field-style triggers (operator mode + stored value). */
+  const getFieldTriggerSummary = (): string => {
+    const valuePart = getDateValue();
+    if (!dateType) return valuePart;
+    const mode = DATE_TYPE_LABELS[dateType];
+    return valuePart ? `${mode} · ${valuePart}` : mode;
+  };
+
   // Check if Apply button should be disabled
-  const isApplyDisabled = selectedDateType === 'between'
-    ? !selectedStart || !selectedEnd
-    : !selectedStart;
+  const isApplyDisabled =
+    selectedDateType === 'between'
+      ? !selectedStart || !selectedEnd
+      : selectedDateType === 'before'
+        ? !(selectedStart || selectedEnd)
+        : !selectedStart;
 
   // Reset state when opening the popover
   const handleOpenChange = (open: boolean) => {
     if (open) {
-      setSelectedStart(startDate || null);
-      setSelectedEnd(endDate || null);
-      setSelectedDateType(dateType || defaultDateType);
+      let nextStart = startDate || null;
+      let nextEnd = endDate || null;
+      const eff = fixedDateType ?? dateType ?? defaultDateType;
+      if (eff === 'before' && nextEnd && !nextStart) {
+        nextStart = nextEnd;
+        nextEnd = null;
+      }
+      setSelectedStart(nextStart);
+      setSelectedEnd(nextEnd);
+      setSelectedDateType(fixedDateType ?? dateType ?? defaultDateType);
       setIsSelectingEnd(false);
-      if (startDate) {
-        setCurrentMonth(new Date(startDate).getMonth());
-        setCurrentYear(new Date(startDate).getFullYear());
+      const anchor = anchorForCalendar(nextStart ?? undefined, nextEnd ?? undefined);
+      if (anchor) {
+        const d = new Date(anchor);
+        setCurrentMonth(d.getMonth());
+        setCurrentYear(d.getFullYear());
       }
     }
     setIsOpen(open);
   };
 
-  return (
-    <Popover.Root open={isOpen} onOpenChange={handleOpenChange}>
-      <Popover.Trigger>
-        {hasSelection ? (
-          <Flex
-            align="center"
-            style={{
-              height: '26px',
-              border: '1px solid var(--gray-a7)',
-              borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--gray-a3)',
-              cursor: 'pointer',
-              overflow: 'hidden',
-            }}
-          >
-            {icon && (
-              <Flex
-                align="center"
-                justify="center"
-                style={{
-                  padding: '0 0 0 8px',
-                  height: '100%',
-                }}
-              >
-                <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
-              </Flex>
-            )}
-            <Flex
-              align="center"
-              style={{
-                padding: '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-              }}
-            >
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{label}</Text>
-            </Flex>
-            <Flex
-              align="center"
-              style={{
-                padding: '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-              }}
-            >
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                {dateType ? DATE_TYPE_LABELS[dateType].toLowerCase() : 'on'}
-              </Text>
-            </Flex>
-            <Flex
-              align="center"
-              style={{
-                padding: '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-              }}
-            >
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{getDateValue()}</Text>
-            </Flex>
+  const fieldClearRow = summaryBelowTrigger && hasSelection && (
+    <Flex justify="end" style={{ width: '100%' }}>
+      <Button
+        type="button"
+        variant="ghost"
+        color="gray"
+        size="1"
+        style={{ cursor: 'pointer' }}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleClear(e);
+        }}
+      >
+        Clear
+      </Button>
+    </Flex>
+  );
+
+  const triggerToolbar = (
+    <>
+      {hasSelection ? (
+        <Flex
+          align="center"
+          style={{
+            height: '26px',
+            border: '1px solid var(--gray-a7)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--gray-a3)',
+            cursor: 'pointer',
+            overflow: 'hidden',
+          }}
+        >
+          {icon && (
             <Flex
               align="center"
               justify="center"
-              onClick={handleClear}
               style={{
-                padding: '0 4px',
+                padding: '0 0 0 8px',
                 height: '100%',
-                cursor: 'pointer',
               }}
             >
-              <MaterialIcon name="close" size={16} color="var(--gray-11)" />
+              <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
             </Flex>
-          </Flex>
-        ) : (
-          <Button
-            variant="outline"
-            size="1"
-            radius="medium"
-            color="gray"
-            style={{ height: '24px', gap: '4px', cursor: 'pointer', borderRadius: 'var(--radius-2)' }}
+          )}
+          <Flex
+            align="center"
+            style={{
+              padding: '0 8px',
+              borderRight: '1px solid var(--gray-a7)',
+              height: '100%',
+            }}
           >
-            {icon && (
-              <MaterialIcon name={icon} size={14} color="var(--slate-11)" />
-            )}
-            <Text size="1">{label}</Text>
-          </Button>
-        )}
+            <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{label}</Text>
+          </Flex>
+          <Flex
+            align="center"
+            style={{
+              padding: '0 8px',
+              borderRight: '1px solid var(--gray-a7)',
+              height: '100%',
+            }}
+          >
+            <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+              {dateType ? DATE_TYPE_LABELS[dateType].toLowerCase() : 'on'}
+            </Text>
+          </Flex>
+          <Flex
+            align="center"
+            style={{
+              padding: '0 8px',
+              borderRight: '1px solid var(--gray-a7)',
+              height: '100%',
+            }}
+          >
+            <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{getDateValue()}</Text>
+          </Flex>
+          <Flex
+            align="center"
+            justify="center"
+            onClick={handleClear}
+            style={{
+              padding: '0 4px',
+              height: '100%',
+              cursor: 'pointer',
+            }}
+          >
+            <MaterialIcon name="close" size={16} color="var(--gray-11)" />
+          </Flex>
+        </Flex>
+      ) : (
+        <Button
+          variant="outline"
+          size="1"
+          radius="medium"
+          color="gray"
+          style={{ height: '24px', gap: '4px', cursor: 'pointer', borderRadius: 'var(--radius-2)' }}
+        >
+          {icon && (
+            <MaterialIcon name={icon} size={14} color="var(--slate-11)" />
+          )}
+          <Text size="1">{label}</Text>
+        </Button>
+      )}
+    </>
+  );
+
+  const triggerField = (
+    <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
+      <Popover.Trigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          color="gray"
+          size="2"
+          title={hasSelection ? getFieldTriggerSummary() : label}
+          aria-label={hasSelection ? getFieldTriggerSummary() : label}
+          style={{
+            minHeight: 32,
+            width: '100%',
+            minWidth: 0,
+            maxWidth: '100%',
+            gap: 8,
+            cursor: 'pointer',
+            borderRadius: 'var(--radius-2)',
+            justifyContent: 'flex-start',
+            alignItems: 'center',
+          }}
+        >
+          {icon && (
+            <MaterialIcon name={icon} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+          )}
+          <Box style={{ minWidth: 0, flex: 1, overflow: 'hidden', textAlign: 'left' }}>
+            <Text
+              size="2"
+              style={{
+                color: 'var(--gray-12)',
+                display: 'block',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {hasSelection ? getFieldTriggerSummary() : label}
+            </Text>
+          </Box>
+        </Button>
       </Popover.Trigger>
+      {summaryBelowTrigger && hasSelection ? fieldClearRow : null}
+    </Flex>
+  );
+
+  return (
+    <Popover.Root open={isOpen} onOpenChange={handleOpenChange}>
+      {triggerVariant === 'field' ? (
+        triggerField
+      ) : (
+        <Popover.Trigger>{triggerToolbar}</Popover.Trigger>
+      )}
 
       <Popover.Content
         side="bottom"
         align="start"
         sideOffset={4}
+        container={portalContainer ?? undefined}
         style={{
           padding: '8px',
           minWidth: '280px',
@@ -431,45 +603,42 @@ export function DateRangePicker({
           borderRadius: 'var(--radius-2)',
         }}
       >
-        {/* Tabs for date type selection */}
-        <Tabs.Root
-          value={selectedDateType}
-          onValueChange={handleDateTypeChange}
-        >
-          <Tabs.List
-            style={{
-              display: 'flex',
-              boxShadow: 'inset 0 -2px 0 0 var(--slate-6)',
-              marginBottom: '8px',
-              backgroundColor: 'transparent',
-            }}
-          >
-            {(['on', 'between', 'before', 'after'] as DateFilterType[]).map((type) => (
-              <Tabs.Trigger
-                key={type}
-                value={type}
-                style={{
-                  flex: 1,
-                  padding: '8px 4px',
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  borderBottom: selectedDateType === type
-                    ? '2px solid var(--accent-10)'
-                    : '2px solid transparent',
-                  marginBottom: '-2px',
-                  color: selectedDateType === type
-                    ? 'var(--slate-12)'
-                    : 'var(--slate-11)',
-                  fontWeight: selectedDateType === type ? '500' : '400',
-                  fontSize: '12px',
-                  cursor: 'pointer',
-                }}
-              >
-                {DATE_TYPE_LABELS[type]}
-              </Tabs.Trigger>
-            ))}
-          </Tabs.List>
-        </Tabs.Root>
+        {!fixedDateType ? (
+          <Tabs.Root value={selectedDateType} onValueChange={handleDateTypeChange}>
+            <Tabs.List
+              style={{
+                display: 'flex',
+                boxShadow: 'inset 0 -2px 0 0 var(--slate-6)',
+                marginBottom: '8px',
+                backgroundColor: 'transparent',
+              }}
+            >
+              {(['on', 'between', 'before', 'after'] as DateFilterType[]).map((type) => (
+                <Tabs.Trigger
+                  key={type}
+                  value={type}
+                  style={{
+                    flex: 1,
+                    padding: '8px 4px',
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    borderBottom:
+                      selectedDateType === type
+                        ? '2px solid var(--accent-10)'
+                        : '2px solid transparent',
+                    marginBottom: '-2px',
+                    color: selectedDateType === type ? 'var(--slate-12)' : 'var(--slate-11)',
+                    fontWeight: selectedDateType === type ? '500' : '400',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {DATE_TYPE_LABELS[type]}
+                </Tabs.Trigger>
+              ))}
+            </Tabs.List>
+          </Tabs.Root>
+        ) : null}
 
         {/* Date input display */}
         <Flex
@@ -479,25 +648,124 @@ export function DateRangePicker({
             padding: '8px 16px',
             backgroundColor: 'var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            marginBottom: '16px',
+            marginBottom: withTime ? '8px' : '16px',
             border: '1px solid var(--olive-4)',
           }}
         >
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
-            {selectedStart
-              ? selectedDateType === 'between' && selectedEnd
-                ? `${formatDateForDisplay(selectedStart)} - ${formatDateForDisplay(selectedEnd)}`
-                : selectedDateType === 'between' && isSelectingEnd && hoveredDay
-                ? `${formatDateForDisplay(selectedStart)} - ${formatDateForDisplay(hoveredDay)}`
-                : selectedDateType === 'between' && isSelectingEnd
-                ? `${formatDateForDisplay(selectedStart)} - End Date`
-                : formatDateForDisplay(selectedStart)
-              : selectedDateType === 'between'
-              ? 'Start Date - End Date'
-              : 'Pick a date'}
+            {(() => {
+              const primary = selectedStart || selectedEnd;
+              if (selectedDateType === 'between' && !primary) return 'Start Date - End Date';
+              if (!primary) return 'Pick a date';
+              if (selectedDateType === 'between' && selectedStart && selectedEnd) {
+                return `${formatBoundaryForDisplay(selectedStart, withTime)} - ${formatBoundaryForDisplay(selectedEnd, withTime)}`;
+              }
+              if (selectedDateType === 'between' && isSelectingEnd && hoveredDay) {
+                return `${formatBoundaryForDisplay(selectedStart!, withTime)} - ${formatBoundaryForDisplay(hoveredDay, withTime)}`;
+              }
+              if (selectedDateType === 'between' && isSelectingEnd) {
+                return `${formatBoundaryForDisplay(selectedStart!, withTime)} - End Date`;
+              }
+              return formatBoundaryForDisplay(primary, withTime);
+            })()}
           </Text>
           <MaterialIcon name="calendar_today" size={20} color="var(--slate-9)" />
         </Flex>
+
+        {withTime ? (
+          <Flex direction="column" gap="2" style={{ marginBottom: '12px' }}>
+            {selectedDateType === 'between' ? (
+              <Flex align="center" gap="3" wrap="wrap">
+                <Flex direction="column" gap="1" style={{ flex: '1 1 120px', minWidth: 0 }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                    Start time
+                  </Text>
+                  <input
+                    type="time"
+                    step={60}
+                    disabled={!selectedStart}
+                    value={parseDateTimeBoundary(selectedStart).time}
+                    onChange={(e) => {
+                      const { date } = parseDateTimeBoundary(selectedStart);
+                      if (!date) return;
+                      setSelectedStart(mergeDateTime(date, e.target.value));
+                    }}
+                    style={{
+                      height: 32,
+                      width: '100%',
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px solid var(--gray-a5)',
+                      fontSize: 14,
+                      boxSizing: 'border-box',
+                      backgroundColor: 'var(--color-surface)',
+                    }}
+                  />
+                </Flex>
+                <Flex direction="column" gap="1" style={{ flex: '1 1 120px', minWidth: 0 }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                    End time
+                  </Text>
+                  <input
+                    type="time"
+                    step={60}
+                    disabled={!selectedEnd}
+                    value={parseDateTimeBoundary(selectedEnd).time}
+                    onChange={(e) => {
+                      const { date } = parseDateTimeBoundary(selectedEnd);
+                      if (!date) return;
+                      setSelectedEnd(mergeDateTime(date, e.target.value));
+                    }}
+                    style={{
+                      height: 32,
+                      width: '100%',
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px solid var(--gray-a5)',
+                      fontSize: 14,
+                      boxSizing: 'border-box',
+                      backgroundColor: 'var(--color-surface)',
+                    }}
+                  />
+                </Flex>
+              </Flex>
+            ) : (
+              <Flex direction="column" gap="1" style={{ width: '100%' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                  Time
+                </Text>
+                <input
+                  type="time"
+                  step={60}
+                  disabled={!(selectedStart || selectedEnd)}
+                  value={parseDateTimeBoundary(selectedStart || selectedEnd).time}
+                  onChange={(e) => {
+                    const src = selectedStart || selectedEnd;
+                    const { date } = parseDateTimeBoundary(src);
+                    if (!date) return;
+                    const merged = mergeDateTime(date, e.target.value);
+                    if (selectedDateType === 'before') {
+                      setSelectedStart(merged);
+                      setSelectedEnd(null);
+                    } else {
+                      setSelectedStart(merged);
+                    }
+                  }}
+                  style={{
+                    height: 32,
+                    maxWidth: 200,
+                    padding: '4px 8px',
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px solid var(--gray-a5)',
+                    fontSize: 14,
+                    boxSizing: 'border-box',
+                    backgroundColor: 'var(--color-surface)',
+                  }}
+                />
+              </Flex>
+            )}
+          </Flex>
+        ) : null}
 
         {/* Calendar container */}
         <Box

@@ -41,6 +41,8 @@ interface ConnectorCatalogLayoutProps {
   activeConnectors: Connector[];
   /** Called when a connector Setup / Add button is clicked. */
   onSetup?: (connector: Connector) => void;
+  /** Called when "+" is used to add another instance (catalog active card). */
+  onAddInstance?: (connector: Connector) => void;
   /** Called when a connector card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
@@ -64,6 +66,7 @@ export function ConnectorCatalogLayout({
   registryConnectors,
   activeConnectors,
   onSetup,
+  onAddInstance,
   onCardClick,
   isLoading = false,
 }: ConnectorCatalogLayoutProps) {
@@ -247,6 +250,7 @@ export function ConnectorCatalogLayout({
               activeInstanceCount={activeCountByType[connector.type] ?? 0}
               inactiveInstanceCount={inactiveCountByType[connector.type] ?? 0}
               onSetup={onSetup}
+              onAddInstance={onAddInstance}
               onCardClick={onCardClick}
             />
           ))}

@@ -134,6 +134,33 @@ export const ConnectorsApi = {
 
   // ── OAuth ──
 
+  /** List saved OAuth app registrations for a connector type (same contract as legacy UI). */
+  async listOAuthConfigs(
+    connectorType: string,
+    page = 1,
+    limit = 100,
+    search?: string
+  ): Promise<{ oauthConfigs: unknown[]; pagination?: unknown }> {
+    const params: Record<string, string | number> = { page, limit };
+    if (search) params.search = search;
+    const { data } = await apiClient.get<{
+      oauthConfigs?: unknown[];
+      pagination?: unknown;
+    }>(`/api/v1/oauth/${encodeURIComponent(connectorType)}`, { params });
+    return {
+      oauthConfigs: data.oauthConfigs ?? [],
+      pagination: data.pagination,
+    };
+  },
+
+  /** Fetch one OAuth config by id (admin fallback when list entry has no embedded config). */
+  async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<Record<string, unknown>> {
+    const { data } = await apiClient.get<{ oauthConfig?: Record<string, unknown> }>(
+      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`
+    );
+    return (data.oauthConfig ?? {}) as Record<string, unknown>;
+  },
+
   /** Get OAuth authorization URL (opens in popup for user consent) */
   async getOAuthAuthorizationUrl(
     connectorId: string
@@ -201,16 +228,66 @@ export const ConnectorsApi = {
 
   // ── Reindex Failed ──
 
-  /** Resync records for a connector */
-  async resyncConnector(connectorId: string, connectorName: string) {
+  /**
+   * Resync records for a connector instance.
+   * `connectorType` must be the connector **type** (e.g. "Google Drive"), matching the legacy UI.
+   */
+  async resyncConnector(connectorId: string, connectorType: string, fullSync?: boolean) {
     const { data } = await apiClient.post(
       '/api/v1/knowledgeBase/resync/connector',
       {
-        connectorName,
+        connectorName: connectorType,
         connectorId,
+        ...(fullSync !== undefined ? { fullSync } : {}),
       }
     );
     return data;
+  },
+
+  /** Reindex failed (and optionally filtered) records for a connector */
+  async reindexFailedConnector(
+    connectorId: string,
+    app: string,
+    statusFilters?: string[]
+  ) {
+    const { data } = await apiClient.post(
+      '/api/v1/knowledgeBase/reindex-failed/connector',
+      {
+        app,
+        connectorId,
+        ...(statusFilters?.length ? { statusFilters } : {}),
+      }
+    );
+    return data;
+  },
+
+  /**
+   * Complete connector OAuth in a popup: forwards to Node, which proxies the connector service.
+   * Same contract as the legacy SPA `/connectors/oauth/callback/...` page.
+   */
+  async completeConnectorOAuthCallback(params: {
+    code: string;
+    state: string;
+    oauthError: string | null;
+    baseUrl: string;
+  }): Promise<{ success?: boolean; redirectUrl?: string; redirect_url?: string }> {
+    const query: Record<string, string> = {
+      code: params.code,
+      state: params.state,
+      baseUrl: params.baseUrl,
+    };
+    if (params.oauthError) {
+      query.error = params.oauthError;
+    }
+    const { data } = await apiClient.get<{
+      success?: boolean;
+      redirectUrl?: string;
+      redirect_url?: string;
+    }>('/api/v1/connectors/oauth/callback', {
+      params: query,
+      suppressErrorToast: true,
+    });
+    return data ?? {};
   },
 
   // ── Stats ──

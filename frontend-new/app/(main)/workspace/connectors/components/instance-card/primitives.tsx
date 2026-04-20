@@ -125,10 +125,11 @@ type SyncState = 'idle' | 'syncing' | 'failed';
 /** Self-contained button that triggers resync API and manages its own state */
 export function SyncButton({
   connectorId,
-  connectorName,
+  connectorType,
 }: {
   connectorId: string;
-  connectorName: string;
+  /** Registry connector type (e.g. "Google Drive"), not the instance display name */
+  connectorType: string;
 }) {
   const [state, setState] = useState<SyncState>('idle');
   const addToast = useToastStore((s) => s.addToast);
@@ -138,7 +139,7 @@ export function SyncButton({
     setState('syncing');
     addToast({ variant: 'success', title: 'Sync started' });
     try {
-      await ConnectorsApi.resyncConnector(connectorId, connectorName);
+      await ConnectorsApi.resyncConnector(connectorId, connectorType);
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
     } catch {
@@ -152,7 +153,7 @@ export function SyncButton({
     idle: {
       color: 'white',
       icon: 'sync' as const,
-      label: 'Start Sync',
+      label: 'Sync',
     },
     syncing: {
       color: 'var(--gray-a11)',
@@ -177,6 +178,151 @@ export function SyncButton({
     >
       <MaterialIcon name={config.icon} size={16} color={config.color} />
       {config.label}
+    </Button>
+  );
+}
+
+/** Full resync — parity with legacy "Full Sync" on connector stats card. */
+export function FullSyncButton({
+  connectorId,
+  connectorType,
+}: {
+  connectorId: string;
+  connectorType: string;
+}) {
+  const [state, setState] = useState<SyncState>('idle');
+  const addToast = useToastStore((s) => s.addToast);
+
+  const handleClick = async () => {
+    if (state === 'syncing') return;
+    setState('syncing');
+    addToast({ variant: 'success', title: 'Full sync started' });
+    try {
+      await ConnectorsApi.resyncConnector(connectorId, connectorType, true);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      setState('idle');
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      setState('failed');
+      addToast({ variant: 'error', title: 'Full sync failed' });
+    }
+  };
+
+  const config = {
+    idle: {
+      color: 'white',
+      icon: 'cloud_sync' as const,
+      label: 'Full sync',
+    },
+    syncing: {
+      color: 'var(--gray-a11)',
+      icon: 'cloud_sync' as const,
+      label: 'Full syncing…',
+    },
+    failed: {
+      color: 'white',
+      icon: 'cloud_sync' as const,
+      label: 'Full sync failed, retry',
+    },
+  }[state];
+
+  return (
+    <Button
+      variant={state === 'syncing' ? 'soft' : 'solid'}
+      color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'blue'}
+      size="1"
+      onClick={handleClick}
+      disabled={state === 'syncing'}
+      style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
+    >
+      <MaterialIcon name={config.icon} size={16} color={config.color} />
+      {config.label}
+    </Button>
+  );
+}
+
+/** Reindex failed records (parity with legacy connector stats card). */
+export function ReindexFailedButton({
+  connectorId,
+  connectorType,
+  failedCount,
+}: {
+  connectorId: string;
+  connectorType: string;
+  failedCount: number;
+}) {
+  const [busy, setBusy] = useState(false);
+  const addToast = useToastStore((s) => s.addToast);
+
+  if (failedCount <= 0) return null;
+
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType);
+      addToast({ variant: 'success', title: 'Reindexing failed records…' });
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to reindex failed records' });
+    } finally {
+      setTimeout(() => setBusy(false), 800);
+    }
+  };
+
+  return (
+    <Button
+      variant="soft"
+      color="orange"
+      size="1"
+      onClick={handleClick}
+      disabled={busy}
+      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
+    >
+      <MaterialIcon name="error_outline" size={16} color="var(--orange-11)" />
+      Retry failed ({failedCount})
+    </Button>
+  );
+}
+
+/** Index records stuck in AUTO_INDEX_OFF (manual sync path from legacy UI). */
+export function ManualIndexButton({
+  connectorId,
+  connectorType,
+  autoIndexOffCount,
+}: {
+  connectorId: string;
+  connectorType: string;
+  autoIndexOffCount: number;
+}) {
+  const [busy, setBusy] = useState(false);
+  const addToast = useToastStore((s) => s.addToast);
+
+  if (autoIndexOffCount <= 0) return null;
+
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType, ['AUTO_INDEX_OFF']);
+      addToast({ variant: 'success', title: 'Indexing manual-sync records…' });
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start manual index' });
+    } finally {
+      setTimeout(() => setBusy(false), 800);
+    }
+  };
+
+  return (
+    <Button
+      variant="soft"
+      color="gray"
+      size="1"
+      onClick={handleClick}
+      disabled={busy}
+      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
+    >
+      <MaterialIcon name="touch_app" size={16} color="var(--gray-11)" />
+      Manual index ({autoIndexOffCount})
     </Button>
   );
 }

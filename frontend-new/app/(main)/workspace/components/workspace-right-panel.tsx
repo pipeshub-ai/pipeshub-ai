@@ -1,10 +1,22 @@
 'use client';
 
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, {
+  createContext,
+  startTransition,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
-import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { Dialog, Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
+
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 // ========================================
@@ -51,6 +63,42 @@ interface WorkspaceRightPanelProps {
 }
 
 const TOAST_REGION_SELECTOR = '[data-ph-toast-region]';
+
+/**
+ * Portalled `Select` / popper content should use this node as `container` (see Radix Themes
+ * `Select.Content`) so menus stack above the drawer and receive clicks. {@link SchemaFormField}
+ * reads this automatically; other panels (e.g. workspace actions setup) should pass
+ * `container={useContext(WorkspaceRightPanelBodyPortalContext) ?? undefined}` on `Select.Content`.
+ *
+ * After OAuth, call {@link WorkspaceRightPanelBodyRefreshContextValue.requestRefresh} from
+ * {@link useWorkspaceRightPanelBodyRefresh} so the drawer body/footer pick up updated state.
+ */
+export const WorkspaceRightPanelBodyPortalContext = createContext<HTMLElement | null>(null);
+
+/**
+ * After OAuth (or similar) popups, bump this from {@link WorkspaceRightPanel} so nested
+ * content + footer re-commit inside `startTransition` — same idea as toolset
+ * `UserToolsetConfigDialog` calling `startTransition(onClose)` after verify.
+ */
+export type WorkspaceRightPanelBodyRefreshContextValue = {
+  requestRefresh: () => void;
+  /** Increments when {@link requestRefresh} runs; use in `key` to remount sensitive subtrees. */
+  refreshNonce: number;
+};
+
+export const WorkspaceRightPanelBodyRefreshContext =
+  createContext<WorkspaceRightPanelBodyRefreshContextValue | null>(null);
+
+const WORKSPACE_RIGHT_PANEL_BODY_REFRESH_NOOP: WorkspaceRightPanelBodyRefreshContextValue = {
+  requestRefresh: () => {},
+  refreshNonce: 0,
+};
+
+/** No-op when the tree is not under {@link WorkspaceRightPanel}. */
+export function useWorkspaceRightPanelBodyRefresh(): WorkspaceRightPanelBodyRefreshContextValue {
+  const v = useContext(WorkspaceRightPanelBodyRefreshContext);
+  return v ?? WORKSPACE_RIGHT_PANEL_BODY_REFRESH_NOOP;
+}
 
 function isInsideToastRegion(node: EventTarget | null | undefined): boolean {
   return node instanceof Element && Boolean(node.closest(TOAST_REGION_SELECTOR));
@@ -128,6 +176,25 @@ export function WorkspaceRightPanel({
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const [bodyPortalEl, setBodyPortalEl] = useState<HTMLElement | null>(null);
+  const [bodyRefreshNonce, setBodyRefreshNonce] = useState(0);
+
+  const requestBodyRefresh = useCallback(() => {
+    // Synchronous bump so the same task as Zustand updates can re-render footer + tab chrome.
+    // A deferred transition pass helps Radix nested layers flush after that paint.
+    setBodyRefreshNonce((n) => n + 1);
+    startTransition(() => {
+      setBodyRefreshNonce((n) => n + 1);
+    });
+  }, []);
+
+  const bodyRefreshApi = useMemo<WorkspaceRightPanelBodyRefreshContextValue>(
+    () => ({
+      requestRefresh: requestBodyRefresh,
+      refreshNonce: bodyRefreshNonce,
+    }),
+    [requestBodyRefresh, bodyRefreshNonce]
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -258,6 +325,7 @@ export function WorkspaceRightPanel({
         </Flex>
 
         <Box
+          ref={setBodyPortalEl}
           style={{
             flex: 1,
             overflow: 'auto',
@@ -266,7 +334,11 @@ export function WorkspaceRightPanel({
             minHeight: 0,
           }}
         >
-          {children}
+          <WorkspaceRightPanelBodyRefreshContext.Provider value={bodyRefreshApi}>
+            <WorkspaceRightPanelBodyPortalContext.Provider value={bodyPortalEl}>
+              {children}
+            </WorkspaceRightPanelBodyPortalContext.Provider>
+          </WorkspaceRightPanelBodyRefreshContext.Provider>
         </Box>
 
         {!hideFooter && (
