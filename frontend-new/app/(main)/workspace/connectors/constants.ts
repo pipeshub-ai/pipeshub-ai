@@ -1,4 +1,13 @@
 // ========================================
+// Connector instance operational status (backend + optimistic UI)
+// ========================================
+
+export const CONNECTOR_INSTANCE_STATUS = {
+  DELETING: 'DELETING',
+  SYNCING: 'SYNCING',
+} as const;
+
+// ========================================
 // Connector sync strategy display labels
 // ========================================
 

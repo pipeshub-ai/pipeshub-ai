@@ -17,6 +17,7 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import type { Connector, ConnectorInstance, PersonalFilterTab } from '../types';
 
 // ========================================
@@ -312,7 +313,7 @@ function PersonalConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === 'DELETING') return;
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
         await ensureConnectorSyncActiveThenResync({
           _key: instance._key,
@@ -337,7 +338,7 @@ function PersonalConnectorsPageContent() {
 
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === 'DELETING') return;
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
         addToast({

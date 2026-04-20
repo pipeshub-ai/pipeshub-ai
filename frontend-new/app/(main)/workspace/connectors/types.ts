@@ -42,7 +42,7 @@ export interface Connector {
   config?: Record<string, unknown>;
   /**
    * Transient operational status from the backend.
-   * Common values: `DELETING`, `SYNCING`. Other strings may appear before the UI is updated.
+   * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
   status?: string | null;
 }

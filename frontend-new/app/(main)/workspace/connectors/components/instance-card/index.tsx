@@ -27,6 +27,7 @@ import {
   getFailedRecords,
   getUnsupportedRecords,
 } from './utils';
+import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -136,11 +137,11 @@ export function InstanceCard({
     instance.supportsSync &&
     instance.isConfigured &&
     instance.isAuthenticated &&
-    instance.status !== 'DELETING';
+    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
   const syncToggleHelp: string | null =
-    instance.status === 'DELETING'
+    instance.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is being removed.'
       : !instance.isConfigured
         ? 'Finish configuration before you can enable sync.'
@@ -156,7 +157,7 @@ export function InstanceCard({
     instance.isActive &&
     instance.isConfigured &&
     instance.isAuthenticated &&
-    instance.status !== 'DELETING';
+    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const syncSwitchControl = (
     <Switch

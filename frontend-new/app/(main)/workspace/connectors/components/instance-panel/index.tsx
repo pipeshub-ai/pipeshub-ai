@@ -14,6 +14,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
+import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
@@ -175,16 +176,16 @@ export function InstanceManagementPanel() {
         : (instances.find((i) => i._key === pendingDeleteId) ?? selectedInstance);
 
   const removeConnectorDisabled =
-    selectedInstance.isActive || selectedInstance.status === 'DELETING';
+    selectedInstance.isActive || selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const removeConnectorDisabledReason =
-    selectedInstance.status === 'DELETING'
+    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is already being removed.'
       : selectedInstance.isActive
         ? 'Turn off sync before removing this connector.'
         : null;
 
-  const manageConfigDisabled = selectedInstance.status === 'DELETING';
+  const manageConfigDisabled = selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const titleNode =
     instances.length > 1 ? (

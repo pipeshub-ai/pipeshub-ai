@@ -1,4 +1,4 @@
-import { STRATEGY_LABELS, INTERVAL_LABELS } from '../../constants';
+import { STRATEGY_LABELS, INTERVAL_LABELS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -97,8 +97,8 @@ export function deriveSyncStatus(
   stats?: ConnectorStatsResponse['data'],
 ): InstanceSyncStatus {
   // 1. Backend-set hard states
-  if (instance.status === 'DELETING') return 'sync_disabled';
-  if (instance.status === 'SYNCING')  return 'syncing';
+  if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return 'sync_disabled';
+  if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) return 'syncing';
 
   // 2. Instance-level boolean state
   if (!instance.isActive) return 'sync_disabled';
