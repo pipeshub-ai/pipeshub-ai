@@ -62,14 +62,6 @@ function formatTimestamp(timestamp: number | undefined): string | undefined {
   return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function getCountByLabels(counts: KnowledgeHubApiResponse['counts'], labels: string[]): string | undefined {
-  if (!counts?.items) return undefined;
-  const total = counts.items
-    .filter(item => labels.some(l => item.label.toLowerCase().includes(l)))
-    .reduce((sum, item) => sum + item.count, 0);
-  return total > 0 ? total.toString() : '0';
-}
-
 export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDetailsSidebarProps) {
   const currentNode = tableData?.currentNode;
   const breadcrumbs = tableData?.breadcrumbs;
@@ -77,8 +69,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
   const counts = tableData?.counts;
 
   const originName = breadcrumbs && breadcrumbs.length > 0 ? breadcrumbs[0].name : undefined;
-  const collectionsCount = getCountByLabels(counts, ['folder', 'collection', 'kb']);
-  const filesCount = getCountByLabels(counts, ['file', 'record']);
+  const totalItems = counts?.total != null ? counts.total.toString() : undefined;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -183,8 +174,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
                   <DetailRow label="Record Type" value={formatNodeType(currentNode.nodeType)} />
                   <DetailRow label="Origin" value={originName} />
                   <DetailRow label="Indexing Status" value={currentNode.indexingStatus} />
-                  <DetailRow label="No. of Collections inside" value={collectionsCount} />
-                  <DetailRow label="No. of files inside" value={filesCount} />
+                  <DetailRow label="Total items" value={totalItems} />
                   <DetailRow label="Version" value={currentNode.version?.toString()} />
                   <DetailRow label="Created At" value={formatTimestamp(currentNode.createdAt)} />
                   <DetailRow label="Updated At" value={formatTimestamp(currentNode.updatedAt)} />

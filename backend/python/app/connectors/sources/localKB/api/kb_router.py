@@ -1342,6 +1342,7 @@ async def update_record(
             enriched_result = {
                 **result,
                 "fileUpdated": file_updated,
+                "timestamp": get_epoch_timestamp_in_ms(),
                 "location": location,
                 "kb": kb_info,
                 "userPermission": user_permission,
@@ -1357,6 +1358,7 @@ async def update_record(
             return {
                 **result,
                 "fileUpdated": body.get("fileMetadata") is not None,
+                "timestamp": get_epoch_timestamp_in_ms(),
                 "location": "kb_root",
                 "kb": {},
                 "userPermission": "NONE",

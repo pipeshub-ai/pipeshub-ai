@@ -56,6 +56,24 @@ export interface FilterDropdownProps {
   isLoadingMore?: boolean;
   /** Whether there are more options to load */
   hasMore?: boolean;
+  /** Portal container for the popover (e.g. modal body) so the menu stacks above overlays */
+  portalContainer?: HTMLElement | null;
+  /** Fired when the popover opens or closes (use to load the first page of server options). */
+  onPopoverOpenChange?: (open: boolean) => void;
+  /** Merged onto Popover.Content style (width, maxHeight, etc.) */
+  popoverContentStyle?: React.CSSProperties;
+  /**
+   * `segmented` (default): trigger shows label, "is any of", value chips, and clear — dense toolbar style.
+   * `simple`: single outline control + optional clear beside it; use when value chips are shown elsewhere (e.g. connector filter summaries).
+   */
+  triggerLayout?: 'segmented' | 'simple';
+  /** `title` / native tooltip on the trigger control (e.g. full phrase when `label` is shortened). */
+  triggerTitle?: string;
+  /**
+   * When `triggerLayout` is `simple`, show count badge + clear under the trigger instead of inside / beside it
+   * so the button stays one line and does not overflow narrow columns.
+   */
+  summaryBelowTrigger?: boolean;
 }
 
 /**
@@ -101,16 +119,23 @@ export function FilterDropdown({
   onSelectionChange,
   searchable = false,
   disabled = false,
-  pluralLabel,
+  pluralLabel: _pluralLabel,
   onSearch,
   onLoadMore,
   isLoadingMore = false,
   hasMore = false,
+  portalContainer,
+  onPopoverOpenChange,
+  popoverContentStyle,
+  triggerLayout = 'segmented',
+  triggerTitle,
+  summaryBelowTrigger = false,
 }: FilterDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevOpenRef = useRef(false);
 
   const hasSelection = selectedValues.length > 0;
   const isServerSearch = !!onSearch;
@@ -147,12 +172,13 @@ export function FilterDropdown({
     }
   }, [onLoadMore, hasMore, isLoadingMore]);
 
-  // Reset search when dropdown closes
+  // Reset search when dropdown closes (not on first mount — avoids spurious server fetches)
   useEffect(() => {
-    if (!isOpen) {
+    if (prevOpenRef.current && !isOpen) {
       setSearchQuery('');
       if (isServerSearch) onSearch!('');
     }
+    prevOpenRef.current = isOpen;
   }, [isOpen, isServerSearch, onSearch]);
 
   // Toggle option selection
@@ -170,128 +196,222 @@ export function FilterDropdown({
     onSelectionChange([]);
   };
 
+  const clearSelectionButton = () => (
+    <Button
+      type="button"
+      variant="ghost"
+      color="gray"
+      size="1"
+      style={{ cursor: 'pointer', flexShrink: 0 }}
+      onClick={clearSelection}
+    >
+      Clear
+    </Button>
+  );
+
   return (
-    <Popover.Root open={disabled ? false : isOpen} onOpenChange={disabled ? undefined : setIsOpen}>
-      <Popover.Trigger>
-        {hasSelection ? (
-          <Flex
-            align="center"
-            style={{
-              height: '26px',
-              border: '1px solid var(--gray-a7)',
-              borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--gray-a3)',
-              cursor: 'pointer',
-              overflow: 'hidden',
-            }}
-          >
-            {/* Segment 1: icon + label */}
-            <Flex
-              align="center"
+    <Popover.Root
+      open={disabled ? false : isOpen}
+      onOpenChange={
+        disabled
+          ? undefined
+          : (next) => {
+              setIsOpen(next);
+              onPopoverOpenChange?.(next);
+            }
+      }
+    >
+      {triggerLayout === 'simple' ? (
+        <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
+          <Popover.Trigger>
+            <Button
+              variant="outline"
+              color="gray"
+              size="2"
+              disabled={disabled}
+              title={triggerTitle ?? label}
+              aria-label={triggerTitle ?? label}
               style={{
-                padding: icon ? '0 8px 0 8px' : '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-                gap: '4px',
+                minHeight: 32,
+                width: '100%',
+                minWidth: 0,
+                maxWidth: '100%',
+                gap: 8,
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                borderRadius: 'var(--radius-2)',
+                opacity: disabled ? 0.5 : 1,
+                justifyContent: 'flex-start',
+                alignItems: 'center',
               }}
             >
               {icon && (
-                <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
+                <MaterialIcon name={icon} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
               )}
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                {label}
-              </Text>
-            </Flex>
-
-            {/* Segment 2: verb phrase */}
-            <Flex
-              align="center"
-              style={{
-                padding: '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-              }}
-            >
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                is any of
-              </Text>
-            </Flex>
-
-            {/* Segment 3: mini icons + count label */}
-            <Flex
-              align="center"
-              style={{
-                padding: '0 8px',
-                borderRight: '1px solid var(--gray-a7)',
-                height: '100%',
-                gap: '2px',
-              }}
-            >
-              {selectedValues.slice(0, 4).map((val) => {
-                const opt = options.find((o) => o.value === val);
-                if (!opt || !opt.icon) return null;
-                return (
-                  <MaterialIcon
-                    key={val}
-                    name={opt.icon}
-                    size={12}
-                    color="var(--gray-11)"
-                  />
-                );
-              })}
-              <Badge color="jade" variant="soft" size="1">
-                {selectedValues.length}
+              <Box style={{ minWidth: 0, flex: 1, overflow: 'hidden', textAlign: 'left' }}>
+                <Text
+                  size="2"
+                  style={{
+                    color: 'var(--gray-12)',
+                    display: 'block',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {label}
+                </Text>
+              </Box>
+              {!summaryBelowTrigger && hasSelection ? (
+                <Badge color="jade" variant="soft" size="1" radius="full" style={{ flexShrink: 0 }}>
+                  {selectedValues.length} selected
+                </Badge>
+              ) : null}
+            </Button>
+          </Popover.Trigger>
+          {summaryBelowTrigger && hasSelection ? (
+            <Flex align="center" gap="2" wrap="wrap" justify="between">
+              <Badge color="jade" variant="soft" size="1" radius="full">
+                {selectedValues.length} selected
               </Badge>
-              <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                {pluralLabel ?? `${label}s`}
-              </Text>
+              {clearSelectionButton()}
             </Flex>
-
-            {/* Segment 4: clear button */}
+          ) : !summaryBelowTrigger && hasSelection ? (
+            clearSelectionButton()
+          ) : null}
+        </Flex>
+      ) : (
+        <Popover.Trigger>
+          {hasSelection ? (
             <Flex
               align="center"
-              justify="center"
-              onClick={clearSelection}
+              wrap="wrap"
               style={{
-                padding: '0 4px',
-                height: '100%',
+                minHeight: 26,
+                border: '1px solid var(--gray-a7)',
+                borderRadius: 'var(--radius-2)',
+                backgroundColor: 'var(--gray-a3)',
                 cursor: 'pointer',
+                overflow: 'hidden',
+                maxWidth: '100%',
               }}
             >
-              <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+              {/* Segment 1: icon + label */}
+              <Flex
+                align="center"
+                style={{
+                  padding: icon ? '0 8px 0 8px' : '0 8px',
+                  borderRight: '1px solid var(--gray-a7)',
+                  alignSelf: 'stretch',
+                  minHeight: 26,
+                  gap: '4px',
+                }}
+              >
+                {icon && (
+                  <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
+                )}
+                <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+                  {label}
+                </Text>
+              </Flex>
+
+              {/* Segment 2: verb phrase */}
+              <Flex
+                align="center"
+                style={{
+                  padding: '0 8px',
+                  borderRight: '1px solid var(--gray-a7)',
+                  alignSelf: 'stretch',
+                }}
+              >
+                <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+                  is any of
+                </Text>
+              </Flex>
+
+              {/* Segment 3: one chip per selected value (label), legacy parity */}
+              <Flex
+                align="center"
+                wrap="wrap"
+                gap="2"
+                style={{
+                  padding: '4px 8px',
+                  borderRight: '1px solid var(--gray-a7)',
+                  flex: 1,
+                  minWidth: 0,
+                  alignSelf: 'stretch',
+                }}
+              >
+                {selectedValues.map((val) => {
+                  const opt = options.find((o) => o.value === val);
+                  const text = opt?.label ?? val;
+                  return (
+                    <Badge
+                      key={val}
+                      color="jade"
+                      variant="soft"
+                      size="1"
+                      title={text}
+                      style={{
+                        maxWidth: 220,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {text}
+                    </Badge>
+                  );
+                })}
+              </Flex>
+
+              {/* Segment 4: clear button */}
+              <Flex
+                align="center"
+                justify="center"
+                onClick={clearSelection}
+                style={{
+                  padding: '0 4px',
+                  alignSelf: 'stretch',
+                  minHeight: 26,
+                  cursor: 'pointer',
+                }}
+              >
+                <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+              </Flex>
             </Flex>
-          </Flex>
-        ) : (
-          <Button
-            variant="outline"
-            size="1"
-            radius="medium"
-            color="gray"
-            disabled={disabled}
-            style={{
-              height: '24px',
-              gap: '4px',
-              cursor: disabled ? 'not-allowed' : 'pointer',
-              borderRadius: 'var(--radius-2)',
-              opacity: disabled ? 0.5 : 1,
-            }}
-          >
-            {icon && (
-              <MaterialIcon
-                name={icon}
-                size={14}
-                color="var(--slate-11)"
-              />
-            )}
-            <Text size="1">{label}</Text>
-          </Button>
-        )}
-      </Popover.Trigger>
+          ) : (
+            <Button
+              variant="outline"
+              size="1"
+              radius="medium"
+              color="gray"
+              disabled={disabled}
+              style={{
+                height: '24px',
+                gap: '4px',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                borderRadius: 'var(--radius-2)',
+                opacity: disabled ? 0.5 : 1,
+              }}
+            >
+              {icon && (
+                <MaterialIcon
+                  name={icon}
+                  size={14}
+                  color="var(--slate-11)"
+                />
+              )}
+              <Text size="1">{label}</Text>
+            </Button>
+          )}
+        </Popover.Trigger>
+      )}
 
       <Popover.Content
         side="bottom"
         align="start"
         sideOffset={4}
+        container={portalContainer ?? undefined}
         style={{
           padding: '8px',
           minWidth: '180px',
@@ -299,7 +419,9 @@ export function FilterDropdown({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',
-          boxShadow: "0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--black-a3, rgba(0, 0, 0, 0.15))"
+          boxShadow:
+            '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--black-a3, rgba(0, 0, 0, 0.15))',
+          ...popoverContentStyle,
         }}
       >
         {/* Search input */}
@@ -346,7 +468,8 @@ export function FilterDropdown({
                 size="1"
                 checked={selectedValues.includes(option.value)}
                 onCheckedChange={() => toggleOption(option.value)}
-                style={{cursor:'pointer'}}
+                onClick={(e) => e.stopPropagation()}
+                style={{ cursor: 'pointer' }}
               />
               {option.customIcon ? (
                 option.customIcon

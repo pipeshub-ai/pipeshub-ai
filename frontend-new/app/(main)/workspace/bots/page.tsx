@@ -8,6 +8,7 @@ import { BotsApi } from './api';
 import { BotPageLayout, BotConfigPanel } from './components';
 import { useRouter } from 'next/navigation';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 
 
 // ========================================
@@ -72,7 +73,7 @@ export default function BotsPage() {
   }, [fetchData]);
 
   return (
-    <>
+    <ServiceGate services={['query']}>
       <BotPageLayout
         configs={slackBotConfigs}
         agents={agents}
@@ -82,6 +83,6 @@ export default function BotsPage() {
         onManage={(configId) => setEditingBot(configId)}
       />
       <BotConfigPanel />
-    </>
+    </ServiceGate>
   );
 }

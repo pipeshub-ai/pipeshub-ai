@@ -2,11 +2,13 @@
 
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { usePathname } from 'next/navigation';
 import { Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getConnectorIconPath } from '@/lib/utils/connector-icon-utils';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useConnectorsStore } from '../../store';
+import type { ConnectorScope } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 import type { InstancePanelTab } from '../../types';
@@ -16,6 +18,7 @@ import type { InstancePanelTab } from '../../types';
 // ========================================
 
 export function InstanceManagementPanel() {
+  const pathname = usePathname();
   const {
     isInstancePanelOpen,
     selectedInstance,
@@ -35,10 +38,13 @@ export function InstanceManagementPanel() {
 
   const handleManageConfiguration = useCallback(() => {
     if (!selectedInstance) return;
+    const scope: ConnectorScope = pathname.includes('/connectors/personal')
+      ? 'personal'
+      : 'team';
     // Open the connector configuration panel (reuse the setup panel)
     closeInstancePanel();
-    openPanel(selectedInstance, selectedInstance._key);
-  }, [selectedInstance, closeInstancePanel, openPanel]);
+    openPanel(selectedInstance, selectedInstance._key, scope);
+  }, [selectedInstance, closeInstancePanel, openPanel, pathname]);
 
   if (!selectedInstance) return null;
 

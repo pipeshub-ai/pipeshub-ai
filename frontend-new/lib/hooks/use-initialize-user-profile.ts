@@ -122,10 +122,12 @@ export function useInitializeUserProfile() {
         }
 
         const email = user?.email ?? null;
+        // Keep fullName strictly reflective of the backend — no email-prefix
+        // fallback, so the FullNameDialog gate in the layout can correctly detect
+        // users who haven't set a name yet.
         const fullName =
           user?.fullName ??
-          ([user?.firstName, user?.lastName].filter(Boolean).join(' ') || null) ??
-          (email ? email.split('@')[0] : null);
+          ([user?.firstName, user?.lastName].filter(Boolean).join(' ') || null);
 
         const resolvedProfile = {
           userId,

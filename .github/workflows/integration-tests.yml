@@ -307,7 +307,6 @@ jobs:
             PASS_RATE=0
           fi
 
-          # Determine trigger context from env vars only (no ${{ }} inlined).
           if [ "$EVENT_NAME" = "pull_request_target" ]; then
             TRIGGER_LABEL="PR #${PR_NUMBER_IN}"
             AUTHOR="$PR_LOGIN_IN"

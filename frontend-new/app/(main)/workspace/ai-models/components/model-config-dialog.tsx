@@ -358,6 +358,15 @@ function ModelConfigFormBody({
   if (fields.length === 0) {
     return (
       <Flex direction="column" gap="3">
+        {provider?.notice ? (
+          <Callout.Root color="amber" size="1" variant="surface">
+            <Callout.Text>
+              <Text size="2" style={{ color: 'var(--gray-12)' }}>
+                {provider.notice}
+              </Text>
+            </Callout.Text>
+          </Callout.Root>
+        ) : null}
         <Text size="2" style={{ color: 'var(--gray-10)', padding: 8 }}>
           {t('workspace.aiModels.configNoConfigRequired')}
         </Text>

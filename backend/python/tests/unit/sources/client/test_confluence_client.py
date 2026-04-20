@@ -232,19 +232,24 @@ class TestGetAccessibleResources:
 
 class TestGetCloudId:
     @pytest.mark.asyncio
-    @patch.object(ConfluenceClient, "get_accessible_resources")
-    async def test_returns_first_id(self, mock_res):
-        resource = MagicMock()
-        resource.id = "c-1"
-        mock_res.return_value = [resource]
-        assert await ConfluenceClient.get_cloud_id("tok") == "c-1"
+    @patch.object(ConfluenceClient, "get_accessible_resources", new_callable=AsyncMock)
+    async def test_matches_by_hostname(self, mock_res):
+        mock_res.return_value = [
+            AtlassianCloudResource(
+                id="c-1",
+                name="S",
+                url="https://acme.atlassian.net",
+                scopes=[],
+            ),
+        ]
+        assert await ConfluenceClient.get_cloud_id("tok", "https://acme.atlassian.net") == "c-1"
 
     @pytest.mark.asyncio
-    @patch.object(ConfluenceClient, "get_accessible_resources")
+    @patch.object(ConfluenceClient, "get_accessible_resources", new_callable=AsyncMock)
     async def test_no_resources_raises(self, mock_res):
         mock_res.return_value = []
-        with pytest.raises(Exception, match="No accessible resources"):
-            await ConfluenceClient.get_cloud_id("tok")
+        with pytest.raises(ValueError, match="No Atlassian Cloud sites"):
+            await ConfluenceClient.get_cloud_id("tok", "https://acme.atlassian.net")
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +260,10 @@ class TestGetCloudId:
 class TestGetConfluenceBaseUrl:
     @pytest.mark.asyncio
     @patch.object(ConfluenceClient, "get_cloud_id", new_callable=AsyncMock, return_value="c-1")
-    async def test_returns_correct_url(self, _):
-        url = await ConfluenceClient.get_confluence_base_url("tok")
+    async def test_returns_correct_url(self, mock_cid):
+        url = await ConfluenceClient.get_confluence_base_url("tok", "https://acme.atlassian.net")
         assert url == "https://api.atlassian.com/ex/confluence/c-1/wiki/api/v2"
+        mock_cid.assert_awaited_once_with("tok", "https://acme.atlassian.net")
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +302,11 @@ class TestBuildFromServices:
     async def test_bearer_token(self, _, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "BEARER_TOKEN", "bearerToken": "tok"},
+                "auth": {
+                    "authType": "BEARER_TOKEN",
+                    "bearerToken": "tok",
+                    "baseUrl": "https://acme.atlassian.net",
+                },
                 "credentials": {"x": "y"},
             }
         )
@@ -308,7 +318,7 @@ class TestBuildFromServices:
     async def test_oauth(self, _, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "OAUTH"},
+                "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
                 "credentials": {"access_token": "oauth-tok"},
             }
         )
@@ -386,7 +396,12 @@ class TestBuildFromToolset:
     @patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="http://base")
     async def test_bearer_token_success(self, _, logger):
         cc = await ConfluenceClient.build_from_toolset(
-            {"authType": "BEARER_TOKEN", "bearerToken": "tok", "credentials": {}},
+            {
+                "authType": "BEARER_TOKEN",
+                "bearerToken": "tok",
+                "auth": {"baseUrl": "https://acme.atlassian.net"},
+                "credentials": {},
+            },
             logger,
         )
         assert isinstance(cc, ConfluenceClient)
@@ -402,7 +417,11 @@ class TestBuildFromToolset:
     @patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="http://base")
     async def test_oauth_success(self, _, logger):
         cc = await ConfluenceClient.build_from_toolset(
-            {"authType": "OAUTH", "credentials": {"access_token": "tok"}},
+            {
+                "authType": "OAUTH",
+                "auth": {"baseUrl": "https://acme.atlassian.net"},
+                "credentials": {"access_token": "tok"},
+            },
             logger,
         )
         assert isinstance(cc, ConfluenceClient)
@@ -616,24 +635,29 @@ class TestConfluenceGetAccessibleResources:
 class TestConfluenceGetCloudId:
     @pytest.mark.asyncio
     async def test_success(self):
-        with patch.object(ConfluenceClient, "get_accessible_resources", return_value=[
-            AtlassianCloudResource(id="c1", name="Site", url="https://site.com", scopes=[]),
-        ]):
-            cloud_id = await ConfluenceClient.get_cloud_id("token")
+        with patch.object(
+            ConfluenceClient,
+            "get_accessible_resources",
+            new_callable=AsyncMock,
+            return_value=[
+                AtlassianCloudResource(id="c1", name="Site", url="https://site.com", scopes=[]),
+            ],
+        ):
+            cloud_id = await ConfluenceClient.get_cloud_id("token", "https://site.com")
             assert cloud_id == "c1"
 
     @pytest.mark.asyncio
     async def test_no_resources(self):
-        with patch.object(ConfluenceClient, "get_accessible_resources", return_value=[]):
-            with pytest.raises(Exception, match="No accessible resources"):
-                await ConfluenceClient.get_cloud_id("token")
+        with patch.object(ConfluenceClient, "get_accessible_resources", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(ValueError, match="No Atlassian Cloud sites"):
+                await ConfluenceClient.get_cloud_id("token", "https://site.com")
 
 
 class TestConfluenceGetBaseUrl:
     @pytest.mark.asyncio
     async def test_success(self):
-        with patch.object(ConfluenceClient, "get_cloud_id", return_value="cloud123"):
-            url = await ConfluenceClient.get_confluence_base_url("token")
+        with patch.object(ConfluenceClient, "get_cloud_id", new_callable=AsyncMock, return_value="cloud123"):
+            url = await ConfluenceClient.get_confluence_base_url("token", "https://site.com")
             assert url == "https://api.atlassian.com/ex/confluence/cloud123/wiki/api/v2"
 
 
@@ -684,9 +708,13 @@ class TestBuildFromServicesCoverage:
     async def test_bearer_token_auth(self, log):
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "BEARER_TOKEN", "bearerToken": "bearer_tok"},
+            "auth": {
+                "authType": "BEARER_TOKEN",
+                "bearerToken": "bearer_tok",
+                "baseUrl": "https://acme.atlassian.net",
+            },
         })
-        with patch.object(ConfluenceClient, "get_confluence_base_url", return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
+        with patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
             cc = await ConfluenceClient.build_from_services(log, config_service, "inst1")
             assert isinstance(cc.get_client(), ConfluenceRESTClientViaToken)
 
@@ -694,10 +722,10 @@ class TestBuildFromServicesCoverage:
     async def test_oauth_auth(self, log):
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         })
-        with patch.object(ConfluenceClient, "get_confluence_base_url", return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
+        with patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
             cc = await ConfluenceClient.build_from_services(log, config_service, "inst1")
             assert isinstance(cc.get_client(), ConfluenceRESTClientViaToken)
 
@@ -785,8 +813,12 @@ class TestBuildFromToolsetCoverage:
 
     @pytest.mark.asyncio
     async def test_bearer_token(self, log):
-        config = {"authType": "BEARER_TOKEN", "bearerToken": "tok123"}
-        with patch.object(ConfluenceClient, "get_confluence_base_url", return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
+        config = {
+            "authType": "BEARER_TOKEN",
+            "bearerToken": "tok123",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+        }
+        with patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
             cc = await ConfluenceClient.build_from_toolset(config, log)
             assert isinstance(cc.get_client(), ConfluenceRESTClientViaToken)
 
@@ -798,8 +830,12 @@ class TestBuildFromToolsetCoverage:
 
     @pytest.mark.asyncio
     async def test_oauth(self, log):
-        config = {"authType": "OAUTH", "credentials": {"access_token": "oauth_tok"}}
-        with patch.object(ConfluenceClient, "get_confluence_base_url", return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
+        config = {
+            "authType": "OAUTH",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+            "credentials": {"access_token": "oauth_tok"},
+        }
+        with patch.object(ConfluenceClient, "get_confluence_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/confluence/c1/wiki/api/v2"):
             cc = await ConfluenceClient.build_from_toolset(config, log)
             assert isinstance(cc.get_client(), ConfluenceRESTClientViaToken)
 

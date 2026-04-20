@@ -20,7 +20,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
     supportsTeams: true,
 
     async getSharedMembers(): Promise<SharedMember[]> {
-      const { data } = await apiClient.get(`${BASE}/${kbId}/permissions`);
+      const { data } = await apiClient.get(`${BASE}/${kbId}/permissions`, { suppressErrorToast: true });
       // Transform API response to SharedMember[]
       const permissions = Array.isArray(data) ? data : data.permissions ?? [];
       return permissions.map((p: Record<string, unknown>) => {

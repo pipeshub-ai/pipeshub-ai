@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useToastStore } from '@/lib/store/toast-store';
 import { WebSearchApi } from './api';
 import { WebSearchProviderRow, ConfigurePanel, SendImagesRow } from './components';
@@ -264,6 +265,7 @@ export default function WebSearchPage() {
 
   // ── Render ────────────────────────────────────────────────
   return (
+    <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
@@ -415,5 +417,6 @@ export default function WebSearchPage() {
         onSaveSuccess={handleConfigureSaveSuccess}
       />
     </Box>
+    </ServiceGate>
   );
 }

@@ -17,6 +17,8 @@ interface AuthCardProps {
   onAuthenticate: () => void;
   onRetry?: () => void;
   loading?: boolean;
+  /** When true, omit outer shell (use inside a parent olive card). */
+  embedded?: boolean;
 }
 
 // ========================================
@@ -54,6 +56,7 @@ export function AuthCard({
   onAuthenticate,
   onRetry,
   loading = false,
+  embedded = false,
 }: AuthCardProps) {
   const { t } = useTranslation();
   const config = stateConfig[state];
@@ -63,11 +66,19 @@ export function AuthCard({
       direction="column"
       gap="4"
       style={{
-        backgroundColor: 'var(--olive-2)',
-        border: '1px solid var(--olive-5)',
-        borderRadius: 'var(--radius-2)',
-        padding: 16,
         width: '100%',
+        ...(embedded
+          ? {
+              padding: 0,
+              backgroundColor: 'transparent',
+              border: 'none',
+            }
+          : {
+              padding: 16,
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-2)',
+            }),
       }}
     >
       {/* Icon + text */}

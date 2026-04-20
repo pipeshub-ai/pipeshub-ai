@@ -40,6 +40,7 @@ import {
 import { useToolsetOauthPopupFlow } from '../hooks/use-toolset-oauth-popup-flow';
 import {
   useWorkspaceDrawerNestedModalHost,
+  useWorkspaceRightPanelBodyRefresh,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 
@@ -87,6 +88,7 @@ export function UserToolsetConfigDialog({
   const [isAuthenticated, setIsAuthenticated] = useState(toolset.isAuthenticated ?? false);
 
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(embedded);
+  const drawerBodyRefresh = useWorkspaceRightPanelBodyRefresh();
 
   useEffect(() => {
     setIsAuthenticated(toolset.isAuthenticated ?? false);
@@ -178,6 +180,9 @@ export function UserToolsetConfigDialog({
 
   const onOAuthVerified = useCallback(() => {
     setIsAuthenticated(true);
+    if (embedded) {
+      drawerBodyRefresh.requestRefresh();
+    }
     // Close immediately: parent `onClose` already refreshes the list. Do not wait on
     // `onSuccess` — a slow or stuck `refreshToolsets` would leave this dialog open forever.
     startTransition(() => {
@@ -186,7 +191,7 @@ export function UserToolsetConfigDialog({
     void Promise.resolve(onSuccess()).catch(() => {
       /* extra refresh failed; list was already updated from onClose where applicable */
     });
-  }, [onClose, onSuccess]);
+  }, [drawerBodyRefresh, embedded, onClose, onSuccess]);
 
   const onOAuthIncomplete = useCallback(() => {
     setError(t('agentBuilder.oauthSignInIncomplete'));

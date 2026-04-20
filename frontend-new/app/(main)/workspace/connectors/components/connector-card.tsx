@@ -18,8 +18,13 @@ interface ConnectorCardProps {
   activeInstanceCount?: number;
   /** Number of instances with isActive=false. */
   inactiveInstanceCount?: number;
-  /** Fired when "+ Setup" or "+" is clicked. */
+  /** Fired when "+ Setup" is clicked (registry / first-time setup). */
   onSetup?: (connector: Connector) => void;
+  /**
+   * Fired when the "+" control is clicked on an active connector card
+   * (add another instance — must not reuse an existing instance `_key`).
+   */
+  onAddInstance?: (connector: Connector) => void;
   /** Fired when the card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
 }
@@ -34,6 +39,7 @@ export function ConnectorCard({
   activeInstanceCount = 0,
   inactiveInstanceCount = 0,
   onSetup,
+  onAddInstance,
   onCardClick,
 }: ConnectorCardProps) {
   const [isHovered, setIsHovered] = useState(false);
@@ -105,7 +111,13 @@ export function ConnectorCard({
         <ActiveInstanceBar
           activeCount={activeInstanceCount}
           inactiveCount={inactiveInstanceCount}
-          onAdd={() => onSetup?.(connector)}
+          onAdd={() => {
+            if (onAddInstance) {
+              onAddInstance(connector);
+            } else {
+              onSetup?.(connector);
+            }
+          }}
           onBadgeClick={() => onCardClick?.(connector)}
         />
       )}

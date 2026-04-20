@@ -2,13 +2,21 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, IconButton, Avatar } from '@radix-ui/themes';
+import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime, formatEnabledDate } from '@/lib/utils/formatters';
-import { OrgApi } from '../../../general/api';
 import { SyncStatusPill } from './sync-status';
-import { InfoRow, DotSeparator, ConnectButton, SyncButton } from './primitives';
+import {
+  InfoRow,
+  DotSeparator,
+  ConnectButton,
+  SyncButton,
+  FullSyncButton,
+  ReindexFailedButton,
+  ManualIndexButton,
+} from './primitives';
 import {
   deriveSyncStatus,
   getSyncStrategyLabel,
@@ -40,6 +48,8 @@ interface InstanceCardProps {
   stats?: ConnectorStatsResponse['data'];
   onManage?: (instance: ConnectorInstance) => void;
   onStartSync?: (instance: ConnectorInstance) => void;
+  /** POST …/toggle — flips sync `isActive` */
+  onToggleSyncActive?: (instance: ConnectorInstance) => void | Promise<void>;
   onChevronClick?: (instance: ConnectorInstance) => void;
 }
 
@@ -54,41 +64,27 @@ export function InstanceCard({
   stats,
   onManage,
   onStartSync,
+  onToggleSyncActive,
   onChevronClick,
 }: InstanceCardProps) {
   const { t } = useTranslation();
   // ── Org/User identity state ──
   const [identityName, setIdentityName] = useState<string>(instance.name);
+  // ── Personal header: optional creator avatar (title always uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
 
   // ── Enabled by user info ──
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
-
-  // ── Fetch org logo for team scope (identity name stays as instance.name) ──
-  useEffect(() => {
-    if (scope !== 'team') return;
-    let cancelled = false;
-
-    async function fetchOrgLogo() {
-      try {
-        const logoUrl = await OrgApi.getLogoUrl();
-        if (cancelled) return;
-        if (logoUrl) {
-          setIdentityIcon(logoUrl);
-        }
-      } catch {
-        // Fall back to default icon
-      }
-    }
-
-    fetchOrgLogo();
-    return () => { cancelled = true; };
-  }, [scope]);
+  const [syncToggleBusy, setSyncToggleBusy] = useState(false);
 
   // ── Fetch user info (identity for personal, enabled-by for all) ──
   useEffect(() => {
+    setIdentityIconError(false);
+    if (scope === 'personal') {
+      setIdentityIcon(null);
+    }
     if (!instance.createdBy) return;
     let cancelled = false;
 
@@ -105,9 +101,8 @@ export function InstanceCard({
           const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
           const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
 
-          if (scope === 'personal') {
-            setIdentityName(fullName || instance.name);
-            if (userId) setIdentityIcon(`/api/v1/users/${userId}/dp`);
+          if (scope === 'personal' && userId) {
+            setIdentityIcon(`/api/v1/users/${userId}/dp`);
           }
 
           // "Viraj Gawde" → "Viraj G"
@@ -124,15 +119,60 @@ export function InstanceCard({
 
     fetchUserData();
     return () => { cancelled = true; };
-  }, [scope, instance.createdBy, instance.name]);
+  }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
   const effectiveStatus = deriveSyncStatus(instance, stats);
+  const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
+  const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
   const syncInterval = getSyncIntervalLabel(config);
   const recordsSelected = getRecordsSelectedInfo(config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
   const enabledDate = formatEnabledDate(instance.createdAtTimestamp);
+
+  const canToggleSync =
+    Boolean(instance._key) &&
+    instance.supportsSync &&
+    instance.isConfigured &&
+    instance.isAuthenticated &&
+    instance.status !== 'DELETING';
+
+  /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
+  const syncToggleHelp: string | null =
+    instance.status === 'DELETING'
+      ? 'This connector is being removed.'
+      : !instance.isConfigured
+        ? 'Finish configuration before you can enable sync.'
+        : !instance.isAuthenticated
+          ? 'Authenticate this connector before you can enable sync.'
+          : null;
+
+  const syncSwitchDisabled =
+    !canToggleSync || syncToggleBusy || !onToggleSyncActive;
+
+  const showIndexingActions =
+    Boolean(instance._key) &&
+    instance.isActive &&
+    instance.isConfigured &&
+    instance.isAuthenticated;
+
+  const syncSwitchControl = (
+    <Switch
+      size="1"
+      checked={instance.isActive}
+      disabled={syncSwitchDisabled}
+      onCheckedChange={async () => {
+        if (!onToggleSyncActive || !instance._key || syncToggleBusy) return;
+        setSyncToggleBusy(true);
+        try {
+          await onToggleSyncActive(instance);
+        } finally {
+          setSyncToggleBusy(false);
+        }
+      }}
+    />
+  );
 
   return (
     <Flex
@@ -152,42 +192,38 @@ export function InstanceCard({
           <Flex
             align="center"
             justify="center"
-            style={{ width: 32, height: 32, borderRadius: 'var(--radius-2)', flexShrink: 0, overflow: 'hidden' }}
+            style={{
+              width: 32,
+              height: 32,
+              padding: scope === 'personal' && identityIcon && !identityIconError ? 0 : 8,
+              backgroundColor: 'var(--gray-a2)',
+              borderRadius: 'var(--radius-2)',
+              flexShrink: 0,
+              overflow: 'hidden',
+            }}
           >
-            {identityIcon && !identityIconError ? (
+            {scope === 'personal' && identityIcon && !identityIconError ? (
               <img
                 src={identityIcon}
-                alt={identityName}
+                alt=""
                 width={32}
                 height={32}
                 onError={() => setIdentityIconError(true)}
                 style={{ display: 'block', objectFit: 'cover', width: 32, height: 32 }}
               />
             ) : (
-              <MaterialIcon
-                name={scope === 'team' ? 'business' : 'person'}
-                size={18}
-                color="var(--gray-9)"
-              />
+              <ConnectorIcon type={instance.type} size={16} />
             )}
           </Flex>
 
-          {/* Identity name */}
+          {/* Instance display name (user-chosen when created), not creator name */}
           <Text
             size="2"
             weight="medium"
             style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
-            {identityName}
+            {instance.name?.trim() || instance.type}
           </Text>
-
-          {/* Sync button */}
-          {instance._key && instance.isActive && instance.isConfigured && instance.isAuthenticated && (
-            <SyncButton
-              connectorId={instance._key}
-              connectorName={instance.name}
-            />
-          )}
 
           {/* Sync status pill */}
           <SyncStatusPill
@@ -286,7 +322,70 @@ export function InstanceCard({
         )}
 
         {/* ── Last Synced ── */}
-        <InfoRow label={t('workspace.connectors.instanceCard.lastSynced')} value={lastSynced} />
+        <InfoRow label="LAST SYNCED" value={lastSynced} />
+
+        {/* Enable / pause connector sync (backend toggle). */}
+        {instance._key && instance.supportsSync && (
+          <Flex align="center" gap="4" style={{ marginTop: 2 }}>
+            <Text
+              size="1"
+              weight="medium"
+              style={{
+                color: 'var(--gray-10)',
+                width: 164,
+                flexShrink: 0,
+                textTransform: 'uppercase',
+                letterSpacing: '0.04px',
+                lineHeight: '16px',
+              }}
+            >
+              SYNC ENABLED
+            </Text>
+            {syncToggleHelp && syncSwitchDisabled ? (
+              <Tooltip content={syncToggleHelp} side="top">
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    verticalAlign: 'middle',
+                    cursor: 'default',
+                  }}
+                >
+                  {syncSwitchControl}
+                </span>
+              </Tooltip>
+            ) : (
+              syncSwitchControl
+            )}
+          </Flex>
+        )}
+
+        {/* Indexing / sync actions — only when sync is enabled. */}
+        {showIndexingActions && (
+          <Flex
+            wrap="wrap"
+            gap="2"
+            align="center"
+            style={{
+              marginTop: 4,
+              paddingTop: 12,
+              borderTop: '1px solid var(--gray-a3)',
+            }}
+          >
+            <SyncButton connectorId={instance._key} connectorType={instance.type} />
+            <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
+            <ReindexFailedButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              failedCount={failedCount}
+            />
+            <ManualIndexButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              autoIndexOffCount={autoIndexOffCount}
+            />
+          </Flex>
+        )}
       </Flex>
 
       {/* ── Auth incomplete banner ── */}

@@ -6,6 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // File type to MIME type mapping
 const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
@@ -26,9 +27,6 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   MARKDOWN: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
   MDX: ['text/mdx', 'text/markdown', 'text/plain'],
 };
-
-const MAX_FILE_SIZE_MB = 30;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 interface ReplaceFileDialogProps {
   open: boolean;
@@ -56,6 +54,7 @@ export function ReplaceFileDialog({
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCurrentFileHovered, setIsCurrentFileHovered] = useState(false);
   const [isReplacementFileHovered, setIsReplacementFileHovered] = useState(false);
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Get accepted MIME types based on current file type
@@ -72,7 +71,6 @@ export function ReplaceFileDialog({
     },
     [acceptedMimeTypes, fileType]
   );
-
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
@@ -102,7 +100,7 @@ export function ReplaceFileDialog({
       const files = e.dataTransfer.files;
       if (files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
@@ -119,7 +117,7 @@ export function ReplaceFileDialog({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
@@ -328,7 +326,7 @@ export function ReplaceFileDialog({
                   Replace File
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  You can upload files up to the limit of {MAX_FILE_SIZE_MB} MB
+                  You can upload files up to the limit of {maxFileSizeMB} MB
                 </Text>
               </Flex>
               <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
