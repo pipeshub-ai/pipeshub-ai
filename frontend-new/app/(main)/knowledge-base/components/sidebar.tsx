@@ -618,7 +618,6 @@ function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       variant="ghost"
       size="2"
       color="gray"
-      onClick={() => window.open(connector.url, connector.isExternal ? '_blank' : '_self')}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -644,9 +643,7 @@ function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       >
         {connector.name}
       </Text>
-      {connector.isExternal && (
-        <MaterialIcon name="arrow_outward" size={14} color="var(--slate-9)" />
-      )}
+      <MaterialIcon name="arrow_outward" size={14} color="var(--slate-9)" />
     </Button>
   );
 }

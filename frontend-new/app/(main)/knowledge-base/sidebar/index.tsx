@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
@@ -140,6 +141,7 @@ function KBSidebarContent({
 }: KBSidebarProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const isAdmin = useUserStore(selectIsAdmin);
   const {
     currentFolderId,
     expandedFolders,
@@ -149,6 +151,8 @@ function KBSidebarContent({
     setAllRecordsSidebarSelection,
     toggleSection,
   } = useKnowledgeBaseStore();
+
+  const connectorsBasePath = isAdmin ? '/workspace/connectors/team' : '/workspace/connectors/personal';
 
   // Local state for secondary panel (replaces store-based MoreCollections)
   const [isSecondaryPanelOpen, setIsSecondaryPanelOpen] = useState(false);
@@ -470,7 +474,10 @@ function KBSidebarContent({
           onNodeExpand={onNodeExpand}
           kbSharedTree={sharedTree}
           kbPrivateTree={privateTree}
-          onNavigateToConnectors={() => router.push('/connectors')}
+          onNavigateToConnectors={() => router.push(`${connectorsBasePath}/`)}
+          onNavigateToConnector={(connectorTypeParam) =>
+            router.push(`${connectorsBasePath}/?connectorType=${encodeURIComponent(connectorTypeParam)}`)
+          }
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}

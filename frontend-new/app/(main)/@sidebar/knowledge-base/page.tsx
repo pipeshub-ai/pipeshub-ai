@@ -4,7 +4,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import KnowledgeBaseSidebar from '../../knowledge-base/sidebar';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
-import { MORE_CONNECTORS } from '../../knowledge-base/mock-data';
+import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/mock-data';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { categorizeNode, mergeChildrenIntoTree } from '../../knowledge-base/utils/tree-builder';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
@@ -17,6 +18,8 @@ function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
+
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const {
     categorizedNodes,
@@ -443,7 +446,7 @@ function KnowledgeBaseSidebarSlotContent() {
       appChildrenCache={appChildrenCache}
       loadingAppIds={loadingAppIds}
       connectors={storeConnectors}
-      moreConnectors={MORE_CONNECTORS}
+      moreConnectors={isAdmin ? ADMIN_MORE_CONNECTORS : PERSONAL_MORE_CONNECTORS}
       // Sidebar item actions
       onSidebarReindex={handleSidebarReindex}
       onSidebarRename={isAllRecordsMode ? undefined : handleSidebarRename}
