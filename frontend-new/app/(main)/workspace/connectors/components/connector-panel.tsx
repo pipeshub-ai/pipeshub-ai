@@ -30,6 +30,26 @@ import { resolveAuthFields } from './authenticate-tab/helpers';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import type { PanelTab } from '../types';
 
+/** Non-admin OAuth instances must pick an OAuth app before save. */
+function oauthAppSelectionError(
+  selectedAuthType: string,
+  oauthConfigId: unknown,
+  isProfileInitialized: boolean,
+  isAdmin: boolean
+): string | null {
+  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || isAdmin !== false) {
+    return null;
+  }
+  if (
+    oauthConfigId === undefined ||
+    oauthConfigId === null ||
+    (typeof oauthConfigId === 'string' && oauthConfigId.trim() === '')
+  ) {
+    return 'Please select an OAuth app.';
+  }
+  return null;
+}
+
 // ========================================
 // Component
 // ========================================
@@ -109,10 +129,18 @@ export function ConnectorPanel() {
   const connectorTypeName = registryConnectors.find((c) => c.type === connectorType)?.name ?? connectorName;
 
   const prevPanelTabRef = useRef<PanelTab | null>(null);
+  /** Bumped when the panel open-fetch effect re-runs or the drawer closes so stale requests cannot flip loaders. */
+  const panelOpenFetchGen = useRef(0);
 
   // ── Fetch schema + config on panel open ──────────────────────
   useEffect(() => {
-    if (!isPanelOpen || !connectorType) return;
+    if (!isPanelOpen || !connectorType) {
+      panelOpenFetchGen.current += 1;
+      return;
+    }
+
+    const gen = ++panelOpenFetchGen.current;
+    const instanceKey = panelConnectorId ?? '';
 
     const fetchData = async () => {
       setIsLoadingSchema(true);
@@ -123,25 +151,45 @@ export function ConnectorPanel() {
       try {
         if (isCreateMode) {
           const schemaRes = await ConnectorsApi.getConnectorSchema(connectorType);
+          if (gen !== panelOpenFetchGen.current) return;
+          const s = useConnectorsStore.getState();
+          if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
+            return;
+          }
           setSchemaAndConfig(schemaRes.schema);
         } else {
           const [schemaRes, configRes] = await Promise.all([
             ConnectorsApi.getConnectorSchema(connectorType),
             ConnectorsApi.getConnectorConfig(panelConnectorId!),
           ]);
+          if (gen !== panelOpenFetchGen.current) return;
+          const s = useConnectorsStore.getState();
+          if (
+            s.panelConnector?.type !== connectorType ||
+            s.panelConnectorId !== panelConnectorId
+          ) {
+            return;
+          }
           setSchemaAndConfig(schemaRes.schema, configRes);
         }
       } catch (err: unknown) {
+        if (gen !== panelOpenFetchGen.current) return;
+        const s = useConnectorsStore.getState();
+        if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
+          return;
+        }
         const message = err instanceof Error ? err.message : 'Failed to load connector configuration';
         setSchemaError(message);
       } finally {
-        setIsLoadingSchema(false);
-        setIsLoadingConfig(false);
+        if (gen === panelOpenFetchGen.current) {
+          setIsLoadingSchema(false);
+          setIsLoadingConfig(false);
+        }
       }
     };
 
-    fetchData();
-  }, [isPanelOpen, connectorType, isCreateMode, panelConnectorId]);
+    void fetchData();
+  }, [isPanelOpen, connectorType, isCreateMode, panelConnectorId, setSchemaAndConfig, setSchemaError, setIsLoadingSchema, setIsLoadingConfig]);
 
   // If auth type changes away from OAuth, leave the Authorize tab value so Radix Tabs does not break.
   useEffect(() => {
@@ -184,11 +232,16 @@ export function ConnectorPanel() {
         ConnectorsApi.getConnectorSchema(type),
         ConnectorsApi.getConnectorConfig(id),
       ]);
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId !== id || s.panelConnector?.type !== type) return;
       setSchemaAndConfig(schemaRes.schema, configRes);
     } catch {
       // leave existing form; user can retry
     } finally {
-      setIsLoadingConfig(false);
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId === id && s.panelConnector?.type === type) {
+        setIsLoadingConfig(false);
+      }
     }
   }, [setSchemaAndConfig, setIsLoadingConfig]);
 
@@ -206,6 +259,8 @@ export function ConnectorPanel() {
         ConnectorsApi.getConnectorSchema(type),
         ConnectorsApi.getConnectorConfig(id),
       ]);
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId !== id || s.panelConnector?.type !== type) return;
       setSchemaAndConfig(schemaRes.schema, configRes);
     } catch {
       // non-fatal — checkAuthStatus already committed the panel state
@@ -261,20 +316,15 @@ export function ConnectorPanel() {
         setIsSavingAuth(true);
         setSaveError(null);
 
-        if (
-          selectedAuthType === 'OAUTH' &&
-          isProfileInitialized &&
-          isAdmin === false
-        ) {
-          const oauthId = formData.auth.oauthConfigId;
-          if (
-            oauthId === undefined ||
-            oauthId === null ||
-            (typeof oauthId === 'string' && oauthId.trim() === '')
-          ) {
-            setSaveError('Please select an OAuth app.');
-            return;
-          }
+        const oauthErr = oauthAppSelectionError(
+          selectedAuthType,
+          formData.auth.oauthConfigId,
+          isProfileInitialized,
+          isAdmin
+        );
+        if (oauthErr) {
+          setSaveError(oauthErr);
+          return;
         }
 
         const result = (await ConnectorsApi.createConnectorInstance({
@@ -343,20 +393,15 @@ export function ConnectorPanel() {
         setIsSavingAuth(true);
         setSaveError(null);
 
-        if (
-          selectedAuthType === 'OAUTH' &&
-          isProfileInitialized &&
-          isAdmin === false
-        ) {
-          const oauthId = formData.auth.oauthConfigId;
-          if (
-            oauthId === undefined ||
-            oauthId === null ||
-            (typeof oauthId === 'string' && oauthId.trim() === '')
-          ) {
-            setSaveError('Please select an OAuth app.');
-            return;
-          }
+        const oauthErrEdit = oauthAppSelectionError(
+          selectedAuthType,
+          formData.auth.oauthConfigId,
+          isProfileInitialized,
+          isAdmin
+        );
+        if (oauthErrEdit) {
+          setSaveError(oauthErrEdit);
+          return;
         }
 
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
@@ -367,6 +412,8 @@ export function ConnectorPanel() {
           baseUrl: window.location.origin,
         });
 
+        const editId = panelConnectorId!;
+        const editType = connectorType;
         let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
         try {
           setIsLoadingConfig(true);
@@ -375,11 +422,17 @@ export function ConnectorPanel() {
             ConnectorsApi.getConnectorConfig(panelConnectorId!),
           ]);
           configRes = fetched;
-          setSchemaAndConfig(schemaRes.schema, configRes);
+          const s = useConnectorsStore.getState();
+          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+            setSchemaAndConfig(schemaRes.schema, configRes);
+          }
         } catch {
           // Non-fatal — user can reopen panel
         } finally {
-          setIsLoadingConfig(false);
+          const s = useConnectorsStore.getState();
+          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+            setIsLoadingConfig(false);
+          }
         }
 
         if (isOAuthType(selectedAuthType)) {

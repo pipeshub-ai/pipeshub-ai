@@ -293,9 +293,10 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
       pollRef.current = setInterval(() => {
         pollCount += 1;
         if (pollCount >= OAUTH_POPUP_MAX_POLLS) {
-          // Timeout — give up
+          // Timeout — give up; reset authState so the button does not stay stuck in loading.
           clearOAuthPoll();
           oauthCompletionHandledRef.current = false;
+          useConnectorsStore.getState().setAuthState('empty');
           setIsAuthenticating(false);
           return;
         }

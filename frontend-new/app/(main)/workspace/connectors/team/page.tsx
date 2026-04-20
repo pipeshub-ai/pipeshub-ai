@@ -7,6 +7,8 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
+import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
+import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -100,10 +102,10 @@ function TeamConnectorsPageContent() {
       ]);
 
       if (registryRes.status === 'fulfilled') {
-        setRegistryConnectors(registryRes.value.connectors);
+        setRegistryConnectors(filterConnectorsForScope(registryRes.value.connectors, 'team'));
       }
       if (activeRes.status === 'fulfilled') {
-        setActiveConnectors(activeRes.value.connectors);
+        setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'team'));
       }
 
       // If both failed, show error
@@ -220,6 +222,13 @@ function TeamConnectorsPageContent() {
     },
     [upsertConnectorInstance, setInstanceStats]
   );
+
+  /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
+  const refreshConnectorsListsQuiet = useCallback(async () => {
+    const { registry, active } = await fetchFilteredConnectorLists('team');
+    if (registry) setRegistryConnectors(registry);
+    if (active) setActiveConnectors(active);
+  }, [setRegistryConnectors, setActiveConnectors]);
 
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
@@ -347,6 +356,7 @@ function TeamConnectorsPageContent() {
           duration: 2500,
         });
         await refreshConnectorRowQuiet(instance._key);
+        await refreshConnectorsListsQuiet();
       } catch {
         addToast({
           variant: 'error',
@@ -354,7 +364,7 @@ function TeamConnectorsPageContent() {
         });
       }
     },
-    [addToast, refreshConnectorRowQuiet]
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
   );
 
   const handleInstanceChevron = useCallback(

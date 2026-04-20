@@ -108,7 +108,8 @@ export function ConnectorCatalogLayout({
     return result;
   }, [activeConnectors, registryConnectors]);
 
-  // Apply tab filter
+  // Apply tab filter. Personal "active"/"inactive" tabs must reflect all instances per type,
+  // not the first merged row's isActive (multiple instances can disagree).
   const tabFiltered = useMemo(() => {
     switch (activeTab) {
       case 'configured':
@@ -116,13 +117,13 @@ export function ConnectorCatalogLayout({
       case 'not_configured':
         return allConnectors.filter((c) => !c.isConfigured);
       case 'active':
-        return allConnectors.filter((c) => c.isActive);
+        return allConnectors.filter((c) => (activeCountByType[c.type] ?? 0) > 0);
       case 'inactive':
-        return allConnectors.filter((c) => !c.isActive);
+        return allConnectors.filter((c) => (inactiveCountByType[c.type] ?? 0) > 0);
       default:
         return allConnectors;
     }
-  }, [allConnectors, activeTab]);
+  }, [allConnectors, activeTab, activeCountByType, inactiveCountByType]);
 
   // Apply search filter
   const filtered = useMemo(() => {
@@ -155,10 +156,12 @@ export function ConnectorCatalogLayout({
     counts['all'] = base.length;
     counts['configured'] = base.filter((c) => c.isConfigured).length;
     counts['not_configured'] = base.filter((c) => !c.isConfigured).length;
-    counts['active'] = base.filter((c) => c.isActive).length;
-    counts['inactive'] = base.filter((c) => !c.isActive).length;
+    counts['active'] = base.filter((c) => (activeCountByType[c.type] ?? 0) > 0).length;
+    counts['inactive'] = base.filter(
+      (c) => (inactiveCountByType[c.type] ?? 0) > 0
+    ).length;
     return counts;
-  }, [allConnectors, searchQuery]);
+  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType]);
 
   return (
     <Flex

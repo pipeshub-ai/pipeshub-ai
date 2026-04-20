@@ -141,11 +141,13 @@ export function OAuthAppSelector() {
   /** Saved app id is invalid when the server returns no registrations for this type. */
   useEffect(() => {
     if (selectedAuthType !== 'OAUTH' || loading || oauthApps.length > 0) return;
+    // Do not clear on a fetch error — the list may be temporarily unavailable.
+    if (fetchError) return;
     const id = useConnectorsStore.getState().formData.auth.oauthConfigId as string | undefined;
     if (id?.trim()) {
       setAuthFormValue('oauthConfigId', undefined);
     }
-  }, [selectedAuthType, loading, oauthApps.length, setAuthFormValue]);
+  }, [selectedAuthType, loading, oauthApps.length, fetchError, setAuthFormValue]);
 
   const radixValue = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return undefined;

@@ -13,7 +13,7 @@ import React, {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Dialog, Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 
@@ -215,22 +215,6 @@ export function WorkspaceRightPanel({
   }, [open]);
 
   if (!open || typeof document === 'undefined') return null;
-
-  const primaryBlocked = primaryDisabled || primaryLoading;
-  const primaryButton = (
-    <Button
-      variant="solid"
-      size="2"
-      onClick={onPrimaryClick}
-      disabled={primaryBlocked}
-      style={{
-        cursor: primaryBlocked ? 'not-allowed' : 'pointer',
-        backgroundColor: primaryBlocked ? 'var(--slate-6)' : 'var(--emerald-9)',
-      }}
-    >
-      {primaryLoading ? t('action.loading') : primaryLabel}
-    </Button>
-  );
 
   return createPortal(
     /**

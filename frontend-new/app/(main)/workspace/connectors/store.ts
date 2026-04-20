@@ -156,7 +156,6 @@ interface ConnectorsState {
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
-  resetPanelState: () => void;
   reset: () => void;
 
   // Instance page actions
@@ -607,11 +606,6 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setSyncInterval: (minutes) =>
         set((s) => {
           s.formData.sync.scheduledConfig.intervalMinutes = minutes;
-        }),
-
-      resetPanelState: () =>
-        set((s) => {
-          Object.assign(s, panelResetState);
         }),
 
       // ── Instance page actions ──

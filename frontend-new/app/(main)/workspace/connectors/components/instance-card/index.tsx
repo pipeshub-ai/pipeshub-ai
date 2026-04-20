@@ -66,8 +66,7 @@ export function InstanceCard({
   onToggleSyncActive,
   onChevronClick,
 }: InstanceCardProps) {
-  // ── Org/User identity state ──
-  const [identityName, setIdentityName] = useState<string>(instance.name);
+  // ── Personal header: optional creator avatar (title always uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
 
@@ -78,6 +77,10 @@ export function InstanceCard({
 
   // ── Fetch user info (identity for personal, enabled-by for all) ──
   useEffect(() => {
+    setIdentityIconError(false);
+    if (scope === 'personal') {
+      setIdentityIcon(null);
+    }
     if (!instance.createdBy) return;
     let cancelled = false;
 
@@ -94,9 +97,8 @@ export function InstanceCard({
           const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
           const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
 
-          if (scope === 'personal') {
-            setIdentityName(fullName || instance.name);
-            if (userId) setIdentityIcon(`/api/v1/users/${userId}/dp`);
+          if (scope === 'personal' && userId) {
+            setIdentityIcon(`/api/v1/users/${userId}/dp`);
           }
 
           // "Viraj Gawde" → "Viraj G"
@@ -113,7 +115,7 @@ export function InstanceCard({
 
     fetchUserData();
     return () => { cancelled = true; };
-  }, [scope, instance.createdBy, instance.name]);
+  }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
   const effectiveStatus = deriveSyncStatus(instance, stats);
@@ -199,7 +201,7 @@ export function InstanceCard({
             {scope === 'personal' && identityIcon && !identityIconError ? (
               <img
                 src={identityIcon}
-                alt={identityName}
+                alt=""
                 width={32}
                 height={32}
                 onError={() => setIdentityIconError(true)}
@@ -210,13 +212,13 @@ export function InstanceCard({
             )}
           </Flex>
 
-          {/* Identity name */}
+          {/* Instance display name (user-chosen when created), not creator name */}
           <Text
             size="2"
             weight="medium"
             style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
-            {identityName}
+            {instance.name?.trim() || instance.type}
           </Text>
 
           {/* Sync status pill */}

@@ -20,7 +20,7 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 20
+    limit = 100
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
@@ -34,7 +34,7 @@ export const ConnectorsApi = {
   async getRegistryConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 20
+    limit = 100
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(
       `${BASE_URL}/registry`,

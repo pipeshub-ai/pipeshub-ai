@@ -6,6 +6,8 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
+import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
+import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -99,10 +101,12 @@ function PersonalConnectorsPageContent() {
       ]);
 
       if (registryRes.status === 'fulfilled') {
-        setRegistryConnectors(registryRes.value.connectors);
+        setRegistryConnectors(
+          filterConnectorsForScope(registryRes.value.connectors, 'personal')
+        );
       }
       if (activeRes.status === 'fulfilled') {
-        setActiveConnectors(activeRes.value.connectors);
+        setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'personal'));
       }
 
       if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
@@ -218,6 +222,13 @@ function PersonalConnectorsPageContent() {
     },
     [upsertConnectorInstance, setInstanceStats]
   );
+
+  /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
+  const refreshConnectorsListsQuiet = useCallback(async () => {
+    const { registry, active } = await fetchFilteredConnectorLists('personal');
+    if (registry) setRegistryConnectors(registry);
+    if (active) setActiveConnectors(active);
+  }, [setRegistryConnectors, setActiveConnectors]);
 
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
@@ -337,6 +348,7 @@ function PersonalConnectorsPageContent() {
           duration: 2500,
         });
         await refreshConnectorRowQuiet(instance._key);
+        await refreshConnectorsListsQuiet();
       } catch {
         addToast({
           variant: 'error',
@@ -344,7 +356,7 @@ function PersonalConnectorsPageContent() {
         });
       }
     },
-    [addToast, refreshConnectorRowQuiet]
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
   );
 
   const handleInstanceChevron = useCallback(
