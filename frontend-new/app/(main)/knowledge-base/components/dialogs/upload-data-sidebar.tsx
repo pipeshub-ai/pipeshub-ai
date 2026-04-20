@@ -7,13 +7,15 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
 // Supported file types
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'PNG', 'JPEG', 'JPG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX'];
 const SUPPORTED_MIME_TYPES = [
   'text/plain',
   'application/pdf',
+  'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'image/png',
   'image/jpeg',
+  'image/svg+xml',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/csv',
@@ -23,9 +25,9 @@ const SUPPORTED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ];
 // Extensions used as a fallback when the browser doesn't report a MIME type
-// (e.g. some OSes send CSV files with an empty or generic `type`).
+// (e.g. some OSes send CSV/SVG files with an empty or generic `type`).
 const SUPPORTED_EXTENSIONS = [
-  'txt', 'pdf', 'docx', 'png', 'jpeg', 'jpg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx',
+  'txt', 'pdf', 'doc', 'docx', 'png', 'jpeg', 'jpg', 'svg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx',
 ];
 const MAX_FILE_SIZE_MB = 30;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;

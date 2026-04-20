@@ -36,7 +36,7 @@ export function FilePreviewRenderer({ fileUrl, fileName, fileType, pagination, h
     case 'media':
       return <MediaRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType || ''} />;
     case 'spreadsheet':
-      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
     case 'docx':
       return <DocxRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
     case 'document':

@@ -25,18 +25,20 @@ interface ChatInputProps {
   contextName?: string;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'CSV', 'PNG', 'JPEG', 'JPG'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
 const ACCEPTED_MIME_TYPES = {
   'text/plain': 'TXT',
   'application/pdf': 'PDF',
+  'application/msword': 'DOC',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
   'text/csv': 'CSV',
   'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
+  'image/svg+xml': 'SVG',
 };
-// Extension fallback for files with missing/generic MIME types (e.g. CSV).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'docx', 'csv', 'png', 'jpeg', 'jpg'];
+// Extension fallback for files with missing/generic MIME types (e.g. CSV/SVG).
+const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

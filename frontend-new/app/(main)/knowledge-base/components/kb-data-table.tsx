@@ -89,8 +89,15 @@ export function KbDataTable({
   onGoToCollection,
   refreshData,
 }: KbDataTableProps) {
-  const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection } =
+  const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
+
+  // Collections in the sidebar are still being fetched (initial load).
+  // Used to show a spinner in the center "No collection selected" empty state
+  // while the user is waiting for the sidebar to populate.
+  const kbApp = appNodes.find((n) => n.connector === 'KB');
+  const isLoadingCollections =
+    isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const isAllRecords = pageViewMode === 'all-records';
   const activeSelectedItems = isAllRecords ? selectedRecords : selectedItems;
@@ -210,6 +217,18 @@ export function KbDataTable({
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only
   const hasBreadcrumbs = !!storeTableData?.breadcrumbs?.length;
   if (items.length === 0 && !hasBreadcrumbs && pageViewMode === 'collections') {
+    // While the sidebar's collections list is still being fetched, show a
+    // loading spinner rather than the "No collection selected" empty state,
+    // so the user doesn't think they have no collections while the API is
+    // still responding.
+    if (isLoadingCollections) {
+      return (
+        <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
+          <LottieLoader variant="loader" size={32} showLabel />
+        </Flex>
+      );
+    }
+
     return (
       <Flex
         align="center"

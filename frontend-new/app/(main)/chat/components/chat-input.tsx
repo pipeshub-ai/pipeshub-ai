@@ -46,10 +46,11 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
 const ACCEPTED_MIME_TYPES = {
   'text/plain': 'TXT',
   'application/pdf': 'PDF',
+  'application/msword': 'DOC',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
   'application/vnd.ms-excel': 'XLS',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
@@ -57,10 +58,11 @@ const ACCEPTED_MIME_TYPES = {
   'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
+  'image/svg+xml': 'SVG',
 };
 // Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. CSVs on some Windows setups report an empty `file.type`).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg'];
+// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
+const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

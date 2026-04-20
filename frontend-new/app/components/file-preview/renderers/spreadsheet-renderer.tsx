@@ -301,12 +301,15 @@ const TableCellMemo = memo(function TableCellMemo({
 interface SpreadsheetRendererProps {
   fileUrl: string;
   fileName: string;
+  /** MIME type, e.g. `text/csv` or `application/vnd.ms-excel`. Used to detect CSV
+   *  when the filename doesn't carry a recognisable extension. */
+  fileType?: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function SpreadsheetRenderer({ fileUrl, fileName, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
+export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [state, dispatch] = useReducer(viewerReducer, INITIAL_STATE);
@@ -317,10 +320,15 @@ export function SpreadsheetRenderer({ fileUrl, fileName, citations, activeCitati
 
   // Backend block numbers for CSV files are 0-based while our __rowNum is
   // 1-based (Excel convention). Mirrors the old UI (excel-highlighter.tsx).
+  // We detect CSV via both the filename extension AND the MIME type, because
+  // some records (e.g. files named "colors (2)") arrive without a recognisable
+  // file extension but carry `text/csv` as their MIME type.
   const rowOffset = useMemo(() => {
     const ext = fileName?.split('.').pop()?.toLowerCase();
-    return ext === 'csv' ? 1 : 0;
-  }, [fileName]);
+    const mime = fileType?.toLowerCase();
+    const isCsv = ext === 'csv' || mime === 'text/csv' || mime === 'application/csv';
+    return isCsv ? 1 : 0;
+  }, [fileName, fileType]);
 
   // ── Inject animation styles ─────────────────────────────────────
   useEffect(() => { ensureSpreadsheetStyles(); }, []);
