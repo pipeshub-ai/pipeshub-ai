@@ -6,7 +6,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
+import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -316,9 +316,10 @@ function PersonalConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key) return;
       try {
-        await ensureConnectorSyncActiveThenResync({
+        await startConnectorSync({
           _key: instance._key,
           type: instance.type,
+          isActive: instance.isActive,
         });
         addToast({
           variant: 'success',
@@ -374,7 +375,7 @@ function PersonalConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
+      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
       addToast({
         variant: 'success',
         title: `Your ${connectorTypeInfo?.name ?? 'connector'} instance is now syncing`,
