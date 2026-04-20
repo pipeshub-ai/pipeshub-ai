@@ -4,35 +4,36 @@ import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   useServicesHealthStore,
-  isCachedHealthy,
   selectBackgroundCheckFailed,
   selectAppServices,
   selectInfraServices,
   selectInfraServiceNames,
+  APP_SERVICE_LABELS,
+  formatServiceList,
   type AppServices,
   type InfraServices,
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
-import { LoadingScreen } from './auth-guard';
 
-const APP_SERVICE_LABELS: Record<string, string> = {
-  query: 'Query Service',
-  connector: 'Connector Service',
-  indexing: 'Indexing Service',
-  docling: 'Docling Service',
-};
+const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
+const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
 
-function getUnhealthyServiceNames(
+function classifyUnhealthyServices(
   appServices: AppServices | null,
   infraServices: InfraServices | null,
   infraServiceNames: Record<string, string> | null,
-): string[] {
-  const names: string[] = [];
+): { critical: string[]; nonCritical: string[] } {
+  const critical: string[] = [];
+  const nonCritical: string[] = [];
 
   if (appServices) {
     for (const [key, status] of Object.entries(appServices)) {
-      if (status === 'unhealthy') {
-        names.push(APP_SERVICE_LABELS[key] || key);
+      if (status !== 'unhealthy') continue;
+      const label = APP_SERVICE_LABELS[key] || key;
+      if (CRITICAL_APP_SERVICES.has(key)) {
+        critical.push(label);
+      } else {
+        nonCritical.push(label);
       }
     }
   }
@@ -40,37 +41,28 @@ function getUnhealthyServiceNames(
   if (infraServices) {
     for (const [key, status] of Object.entries(infraServices)) {
       if (status === 'unhealthy') {
-        names.push(infraServiceNames?.[key] || key);
+        critical.push(infraServiceNames?.[key] || key);
       }
     }
   }
 
-  return names;
+  return { critical, nonCritical };
 }
 
 /**
- * Blocks rendering of the authenticated app until critical services
- * (Node.js infra + Query + Connector) are healthy.
+ * Non-blocking health monitor for the authenticated app.
  *
- * Two modes:
- *
- * 1. **Cached-healthy** (localStorage `healthCheck === 'true'`):
- *    Children render immediately. A silent background poll runs every 5 s.
- *    If the background check fails the user is notified via a persistent
- *    warning toast (non-blocking). The toast is dismissed automatically
- *    once services recover.
- *
- * 2. **Not cached** (first load or after a failure):
- *    Children are blocked by `LoadingScreen` until both health endpoints
- *    report healthy, with a loading toast and 5 s polling.
+ * Starts a background poll (every 5 s) against the health endpoints.
+ * When critical services (query, connector, infra) are unhealthy a
+ * persistent warning toast is shown; non-critical services (indexing,
+ * docling) trigger a separate auto-dismissing toast throttled to once
+ * per hour.  Children are always rendered — individual pages use
+ * `<ServiceGate>` to block when the specific services they need are
+ * down.
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
-  const loading = useServicesHealthStore((s) => s.loading);
-  const healthy = useServicesHealthStore((s) => s.healthy);
-  const startPolling = useServicesHealthStore((s) => s.startPolling);
-  const stopPolling = useServicesHealthStore((s) => s.stopPolling);
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
@@ -78,42 +70,42 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const infraServices = useServicesHealthStore(selectInfraServices);
   const infraServiceNames = useServicesHealthStore(selectInfraServiceNames);
 
-  const toastIdRef = useRef<string | null>(null);
-  const hasCheckedCache = useRef(false);
-  const cachedHealthy = useRef(false);
+  const criticalToastIdRef = useRef<string | null>(null);
+  const lastNonCriticalToastRef = useRef<number>(0);
 
-  // Determine cache status once on mount.
-  if (!hasCheckedCache.current) {
-    hasCheckedCache.current = true;
-    cachedHealthy.current = isCachedHealthy();
-  }
-
-  // ── Cached path: start silent background polling ──────────────────────────
+  // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
-    if (!cachedHealthy.current) return;
-
     startBackgroundPolling();
     return () => {
       stopBackgroundPolling();
-      if (toastIdRef.current) {
-        toast.dismiss(toastIdRef.current);
-        toastIdRef.current = null;
+      if (criticalToastIdRef.current) {
+        toast.dismiss(criticalToastIdRef.current);
+        criticalToastIdRef.current = null;
       }
     };
   }, [startBackgroundPolling, stopBackgroundPolling]);
 
-  // ── Cached path: react to background check results ────────────────────────
+  // ── Show / update / dismiss toasts based on health status ────────────────
   useEffect(() => {
-    if (!cachedHealthy.current) return;
+    if (!backgroundCheckFailed) {
+      if (criticalToastIdRef.current) {
+        toast.dismiss(criticalToastIdRef.current);
+        criticalToastIdRef.current = null;
+      }
+      return;
+    }
 
-    if (backgroundCheckFailed) {
-      const unhealthy = getUnhealthyServiceNames(appServices, infraServices, infraServiceNames);
-      const description = unhealthy.length > 0
-        ? `Affected: ${unhealthy.join(', ')}`
-        : undefined;
+    const { critical, nonCritical } = classifyUnhealthyServices(
+      appServices,
+      infraServices,
+      infraServiceNames,
+    );
 
-      if (toastIdRef.current === null) {
-        toastIdRef.current = toast.warning(
+    // Critical services → persistent toast
+    if (critical.length > 0) {
+      const description = `Affected: ${critical.join(', ')}`;
+      if (criticalToastIdRef.current === null) {
+        criticalToastIdRef.current = toast.error(
           'Some services are unavailable',
           {
             description,
@@ -125,71 +117,31 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
           },
         );
       } else {
-        toast.update(toastIdRef.current, { description });
+        toast.update(criticalToastIdRef.current, { description });
       }
-    } else if (toastIdRef.current !== null) {
-      toast.dismiss(toastIdRef.current);
-      toastIdRef.current = null;
+    } else if (criticalToastIdRef.current !== null) {
+      toast.dismiss(criticalToastIdRef.current);
+      criticalToastIdRef.current = null;
+    }
+
+    // Non-critical services (indexing, docling) → auto-dismiss toast, once per hour
+    if (nonCritical.length > 0) {
+      const now = Date.now();
+      if (now - lastNonCriticalToastRef.current >= NON_CRITICAL_TOAST_INTERVAL) {
+        lastNonCriticalToastRef.current = now;
+        toast.warning(
+          `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`,
+          {
+            action: {
+              label: 'View status',
+              onClick: () => router.push('/workspace/services'),
+            },
+          },
+        );
+      }
     }
   }, [backgroundCheckFailed, appServices, infraServices, infraServiceNames, router]);
 
-  // ── Non-cached path: blocking poll + toasts ───────────────────────────────
-  useEffect(() => {
-    if (cachedHealthy.current) return;
-
-    const timer = setTimeout(() => {
-      if (toastIdRef.current === null) {
-        toastIdRef.current = toast.loading('Checking services health. Please wait…');
-      }
-    }, 1000);
-
-    startPolling();
-
-    return () => {
-      clearTimeout(timer);
-      stopPolling();
-      if (toastIdRef.current) {
-        toast.dismiss(toastIdRef.current);
-        toastIdRef.current = null;
-      }
-    };
-  }, [startPolling, stopPolling]);
-
-  // ── Non-cached path: update loading toast on health changes ───────────────
-  useEffect(() => {
-    if (cachedHealthy.current) return;
-
-    if (healthy === true && toastIdRef.current) {
-      toast.update(toastIdRef.current, {
-        variant: 'success',
-        title: 'Services are healthy',
-        description: undefined,
-      });
-      toastIdRef.current = null;
-    } else if (healthy === false && toastIdRef.current) {
-      const unhealthy = getUnhealthyServiceNames(appServices, infraServices, infraServiceNames);
-      const description = unhealthy.length > 0
-        ? `Affected: ${unhealthy.join(', ')}`
-        : undefined;
-      toast.update(toastIdRef.current, {
-        variant: 'loading',
-        title: 'Waiting for services to become ready…',
-        description,
-      });
-    }
-  }, [healthy, appServices, infraServices, infraServiceNames]);
-
-  // ── Render ─────────────────────────────────────────────────────────────────
-
-  // Cached: always show children — background check is non-blocking.
-  if (cachedHealthy.current) {
-    return <>{children}</>;
-  }
-
-  // Non-cached: block until healthy.
-  if (loading || healthy !== true) {
-    return <LoadingScreen />;
-  }
-
+  // Always render children — never block the app shell.
   return <>{children}</>;
 }

@@ -4,6 +4,7 @@ import { useEffect, useCallback, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
@@ -439,9 +440,11 @@ function NavigateButton({
 
 export default function TeamConnectorsPage() {
   return (
-    <Suspense>
-      <TeamConnectorsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <TeamConnectorsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }
 

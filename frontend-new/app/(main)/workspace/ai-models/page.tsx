@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useAIModelsStore } from './store';
 import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
@@ -93,7 +94,7 @@ export default function AIModelsPage() {
   const deleteKeyword = store.deleteTarget?.modelName ?? '';
 
   return (
-    <>
+    <ServiceGate services={['query']}>
       <ProviderGrid
         providers={store.providers}
         configuredModels={store.configuredModels}
@@ -144,6 +145,6 @@ export default function AIModelsPage() {
         confirmLoadingLabel={t('action.deleting')}
         onConfirm={() => void handleDelete()}
       />
-    </>
+    </ServiceGate>
   );
 }

@@ -3,6 +3,7 @@
 import { useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
@@ -370,8 +371,10 @@ function PersonalConnectorsPageContent() {
 
 export default function PersonalConnectorsPage() {
   return (
-    <Suspense>
-      <PersonalConnectorsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <PersonalConnectorsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

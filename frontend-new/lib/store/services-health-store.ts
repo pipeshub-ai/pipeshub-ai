@@ -150,6 +150,7 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
               infraData?.status === 'healthy' && servicesData?.status === 'healthy';
 
             set((state) => {
+              state.loading = false;
               state.backgroundCheckFailed = !overallHealthy;
               state.infraServices = infraData?.services ?? null;
               state.appServices = servicesData?.services ?? null;
@@ -168,6 +169,7 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
             }
           } catch {
             set((state) => {
+              state.loading = false;
               state.backgroundCheckFailed = true;
               state.lastChecked = Date.now();
             });
@@ -197,6 +199,23 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
     { name: 'ServicesHealthStore' },
   ),
 );
+
+// ========================================
+// Constants (shared by HealthGate + ServiceGate)
+// ========================================
+
+export const APP_SERVICE_LABELS: Record<string, string> = {
+  query: 'Query Service',
+  connector: 'Connector Service',
+  indexing: 'Indexing Service',
+  docling: 'Docling Service',
+};
+
+export function formatServiceList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
 
 // ========================================
 // Selectors

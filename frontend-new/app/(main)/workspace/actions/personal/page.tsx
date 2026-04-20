@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Flex, IconButton, Text } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -462,8 +463,10 @@ function PersonalActionsPageContent() {
 
 export default function PersonalActionsPage() {
   return (
-    <Suspense>
-      <PersonalActionsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <PersonalActionsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

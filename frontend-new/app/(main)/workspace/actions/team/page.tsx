@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -566,8 +567,10 @@ function NavigateButton({ label, onClick }: { label: string; onClick: () => void
 
 export default function TeamActionsPage() {
   return (
-    <Suspense>
-      <TeamActionsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <TeamActionsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }
