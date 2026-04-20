@@ -1,12 +1,13 @@
 // Knowledge Base API - Action Operations (CRUD)
 
 import { apiClient } from '@/lib/api';
-import type { 
+import type {
   KnowledgeHubApiResponse,
-  NodeType, 
+  NodeType,
   KnowledgeHubQueryParams,
   RecordDetailsResponse,
 } from './types';
+import { DEFAULT_PAGE_SIZE } from './store';
 
 const BASE_URL = '/api/v1/knowledgeBase';
 
@@ -67,7 +68,7 @@ export const KnowledgeHubApi = {
           // TEMPORARY: onlyContainers disabled until API is fixed
           // onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
         },
         suppressErrorToast: true,
@@ -102,7 +103,7 @@ export const KnowledgeHubApi = {
           // TEMPORARY: onlyContainers disabled until API is fixed
           // onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: DEFAULT_PAGE_SIZE,
         },
       }
     );
@@ -138,7 +139,7 @@ export const KnowledgeHubApi = {
       {
         params: {
           page: 1,
-          limit: 50,
+          limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,breadcrumbs,availableFilters',
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
@@ -182,7 +183,7 @@ export const KnowledgeHubApi = {
       {
         params: {
           page: 1,
-          limit: 50,
+          limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,availableFilters',
           // Data area: Never use onlyContainers (we need all record types)
           ...params,
@@ -273,7 +274,7 @@ export const KnowledgeHubApi = {
       {
         params: {
           page: 1,
-          limit: 50,
+          limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,breadcrumbs,availableFilters',
           // Data area: Never use onlyContainers (we need all root items including records)
           ...params,
@@ -341,6 +342,15 @@ export const KnowledgeHubApi = {
  * folders, and records (upload, create, update, delete, permissions).
  */
 export const KnowledgeBaseApi = {
+  // Get upload limits from server (max file size)
+  async getUploadLimits() {
+    const { data } = await apiClient.get<{ maxFileSizeBytes?: number }>(
+      '/api/v1/knowledgebase/limits',
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
   // List all knowledge bases
   async listKnowledgeBases() {
     const { data } = await apiClient.get<{ knowledgeBases: Record<string, unknown>[]; total: number }>(BASE_URL);
@@ -586,6 +596,40 @@ export const KnowledgeBaseApi = {
       suppressErrorToast: true,
     });
     return data;
+  },
+
+  /**
+   * Unified rename dispatcher — dispatches to renameKnowledgeBase or renameFolder
+   * based on nodeType and whether the node is the root KB itself.
+   */
+  async renameNode(args: {
+    nodeId: string;
+    newName: string;
+    nodeType?: string;
+    rootKbId?: string;
+  }) {
+    const { nodeId, newName, nodeType, rootKbId } = args;
+    const isFolderLike = nodeType === 'folder' || nodeType === 'recordGroup';
+    if (isFolderLike && rootKbId && rootKbId !== nodeId) {
+      return this.renameFolder(rootKbId, nodeId, newName);
+    }
+    return this.renameKnowledgeBase(nodeId, newName);
+  },
+
+  /**
+   * Unified delete dispatcher — dispatches to deleteKnowledgeBase or deleteFolder
+   * based on nodeType and whether the node is the root KB itself.
+   */
+  async deleteNode(args: {
+    nodeId: string;
+    nodeType?: string;
+    rootKbId?: string;
+  }) {
+    const { nodeId, nodeType, rootKbId } = args;
+    if (nodeType === 'folder' && rootKbId && rootKbId !== nodeId) {
+      return this.deleteFolder(rootKbId, nodeId);
+    }
+    return this.deleteKnowledgeBase(nodeId);
   },
 
   // Rename record (file)

@@ -155,14 +155,15 @@ export function ConnectorItemComponent({
 }
 
 // ========================================
-// MoreConnectorItem — link to external connector
+// MoreConnectorItem — navigates to connectors page with panel open
 // ========================================
 
 interface MoreConnectorItemProps {
   connector: MoreConnectorLink;
+  onNavigate: (connectorTypeParam: string) => void;
 }
 
-export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
+export function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -170,7 +171,7 @@ export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       variant="ghost"
       size="2"
       color="gray"
-      onClick={() => window.open(connector.url, connector.isExternal ? '_blank' : '_self')}
+      onClick={() => onNavigate(connector.connectorTypeParam)}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -198,16 +199,14 @@ export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       >
         {connector.name}
       </Text>
-      {connector.isExternal && (
-        <IconButton
-          variant="soft"
-          size="1"
-          tabIndex={-1}
-          style={{ cursor: 'pointer', padding: '0px', pointerEvents: 'none' }}
-        >
-          <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-        </IconButton>
-      )}
+      <IconButton
+        variant="soft"
+        size="1"
+        tabIndex={-1}
+        style={{ cursor: 'pointer', padding: '0px', pointerEvents: 'none' }}
+      >
+        <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+      </IconButton>
     </Button>
   );
 }

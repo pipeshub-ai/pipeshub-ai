@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ========================================
 // Types
@@ -30,6 +31,9 @@ export interface ConfirmationDialogProps {
   /** Whether the confirm action is in-progress */
   isLoading?: boolean;
 
+  /** Label shown on the confirm button while loading (default: "Removing...") */
+  confirmLoadingLabel?: string;
+
   /** Callback when confirm is clicked */
   onConfirm: () => void;
 }
@@ -56,6 +60,7 @@ export function ConfirmationDialog({
   cancelLabel = 'Cancel',
   confirmVariant = 'danger',
   isLoading = false,
+  confirmLoadingLabel = 'Removing...',
   onConfirm,
 }: ConfirmationDialogProps) {
   const handleCancel = () => {
@@ -125,16 +130,16 @@ export function ConfirmationDialog({
             >
               {cancelLabel}
             </Button>
-            <Button
+            <LoadingButton
               variant="solid"
               color={confirmVariant === 'danger' ? 'red' : undefined}
               size="2"
               onClick={onConfirm}
-              disabled={isLoading}
-              style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
+              loading={isLoading}
+              loadingLabel={confirmLoadingLabel}
             >
-              {isLoading ? 'Removing...' : confirmLabel}
-            </Button>
+              {confirmLabel}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

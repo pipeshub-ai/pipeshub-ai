@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui/empty-icon';
+import { Spinner } from '@/app/components/ui/spinner';
+import { TableSkeleton, type TableSkeletonColumnShape } from '@/app/components/data-display';
 
 // ========================================
 // Types
@@ -143,24 +145,49 @@ export function EntityDataTable<T>({
       <Box
         className="no-scrollbar"
         style={{
+          position: 'relative',
           flex: 1,
           overflowY: 'auto',
-          opacity: isLoading ? 0.5 : 1,
+          opacity: isLoading && data.length > 0 ? 0.55 : 1,
           transition: 'opacity 150ms ease',
         }}
       >
-        {!isLoading && data.length === 0 && (
-          <Flex
-            direction="column"
-            align="center"
-            justify="center"
-            gap="3"
-            style={{ height: '100%', color: 'var(--slate-8)' }}
+        {/* Initial-load skeleton (no data yet) */}
+        {isLoading && data.length === 0 ? (
+          <TableSkeleton
+            rows={6}
+            columns={columns.map<TableSkeletonColumnShape>((col, i) => ({
+              width: col.width,
+              minWidth: col.minWidth,
+              barWidth: i === 0 ? 0.6 : 0.75,
+            }))}
+            hasRowActions={Boolean(renderRowActions)}
+          />
+        ) : null}
+
+        {/* Refetch overlay spinner (data present, refreshing) */}
+        {isLoading && data.length > 0 ? (
+          <Box
+            style={{
+              position: 'sticky',
+              top: 8,
+              float: 'right',
+              marginRight: 12,
+              zIndex: 2,
+              padding: '6px 10px',
+              borderRadius: 'var(--radius-3)',
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-4)',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
+              color: 'var(--slate-11)',
+            }}
+            aria-live="polite"
+            aria-label="Refreshing"
           >
-            <EmptyIcon size={48} />
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>No results found</Text>
-          </Flex>
-        )}
+            <Spinner size={14} />
+          </Box>
+        ) : null}
+
         {data.map((item) => {
           const id = getItemId(item);
           const isSelected = selectedIds.has(id);

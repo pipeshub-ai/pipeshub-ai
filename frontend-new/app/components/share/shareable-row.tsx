@@ -34,6 +34,8 @@ interface ShareableRowProps {
   onInvite?: () => void;
   /** Callback for remove action */
   onRemove?: () => void;
+  /** Fires when the role dropdown open state changes */
+  onRoleDropdownOpenChange?: (open: boolean) => void;
 }
 
 export function ShareableRow({
@@ -52,6 +54,7 @@ export function ShareableRow({
   onRoleChange,
   onInvite,
   onRemove,
+  onRoleDropdownOpenChange,
 }: ShareableRowProps) {
   return (
     <Flex
@@ -146,17 +149,18 @@ export function ShareableRow({
         </Box>
       )}
 
-      {showRoleDropdown && role && !isOwner && (
+      {showRoleDropdown && role && (
         <RoleDropdownMenu
           role={role}
           onRoleChange={onRoleChange}
           onRemove={onRemove}
           isTeam={type === 'team'}
           noRolesInfo={noRolesInfo}
+          onOpenChange={onRoleDropdownOpenChange}
         />
       )}
 
-      {isOwner && (
+      {isOwner && !showRoleDropdown && (
         <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
           Owner
         </Text>

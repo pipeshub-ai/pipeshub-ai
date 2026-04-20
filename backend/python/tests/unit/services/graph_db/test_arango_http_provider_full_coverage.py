@@ -635,20 +635,20 @@ class TestGetRecordKeyByExternalId:
 class TestGetRecordByPath:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"path": "/test/file.txt"}])
-        result = await connected_provider.get_record_by_path("c1", "/test/file.txt")
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"id": "unique_r1","recordName":"test","externalRecordId":"ext1"}])
+        result = await connected_provider.get_record_by_path("c1", ["test","file"],"record_group_id")
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_record_by_path("c1", "/missing.txt")
+        result = await connected_provider.get_record_by_path("c1", ["missing"],"record_group_id")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider.get_record_by_path("c1", "/file.txt")
+        result = await connected_provider.get_record_by_path("c1", ["some","file"],"record_group_id")
         assert result is None
 
 

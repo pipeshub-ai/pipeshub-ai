@@ -14,10 +14,7 @@ import { AuthService } from '../services/auth.service';
 import { ConfigurationManagerService } from '../services/cm.service';
 import { TeamsController } from '../controller/teams.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import {
-  resolveMessageBrokerConfig,
-  createMessageProducer,
-} from '../../../libs/services/message-broker.factory';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -75,8 +72,11 @@ export class UserManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerConfig = resolveMessageBrokerConfig(appConfig);
-      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
+      const brokerConfig = messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+      const messageProducer = messageBrokerFactory.createMessageProducer(
+        brokerConfig,
+        container.get('Logger'),
+      );
       await messageProducer.connect();
 
       container

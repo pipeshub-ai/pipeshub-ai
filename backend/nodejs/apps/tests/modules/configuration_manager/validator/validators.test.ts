@@ -5,7 +5,7 @@ import {
   baseStorageSchema,
   s3ConfigSchema,
   azureBlobConfigSchema,
-  llmProvider,
+  providerType,
   addProviderRequestSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
@@ -105,19 +105,24 @@ describe('configuration_manager/validator/validators', () => {
     })
   })
 
-  describe('llmProvider', () => {
-    it('should accept minimax as a valid LLM provider', () => {
-      const result = llmProvider.safeParse('minimax')
+  describe('providerType (dynamic string validation)', () => {
+    it('should accept known providers like openAI', () => {
+      const result = providerType.safeParse('openAI')
       expect(result.success).to.be.true
     })
 
-    it('should accept openAI as a valid LLM provider', () => {
-      const result = llmProvider.safeParse('openAI')
+    it('should accept known providers like minimax', () => {
+      const result = providerType.safeParse('minimax')
       expect(result.success).to.be.true
     })
 
-    it('should reject unknown provider', () => {
-      const result = llmProvider.safeParse('unknownProvider')
+    it('should accept any non-empty provider string (dynamic registry)', () => {
+      const result = providerType.safeParse('brandNewProvider')
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty string', () => {
+      const result = providerType.safeParse('')
       expect(result.success).to.be.false
     })
   })

@@ -12,7 +12,7 @@ import {
   type Edge,
   type Node,
 } from '@xyflow/react';
-import { Box, Flex, Text, Button, Dialog, Callout } from '@radix-ui/themes';
+import { Flex, Text, Button, Dialog, Callout } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
@@ -25,16 +25,21 @@ import { AgentBuilderCanvas } from './components/agent-builder-canvas';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
-import type { BuilderSidebarToolset } from '../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { FlowNodeData } from './types';
 import { normalizeDisplayName, formattedProvider } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
 import { connectionError } from './connection-rules';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { getAgentBuilderPermissions } from './agent-builder-permissions';
+import { toast } from '@/lib/store/toast-store';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
-const AGENT_BUILDER_SIDEBAR_WIDTH = 300;
+const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
+
+const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
 
 /** Extract a human-readable message from an unknown API error. */
 function extractErrorMessage(e: unknown, fallback: string): string {
@@ -60,9 +65,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     loadedAgent,
     error,
     setError,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
     refreshToolsets,
     refreshAgent,
   } = useAgentBuilderData(editingKey);
@@ -100,6 +102,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   } | null>(null);
   const [agentDeleteDialogOpen, setAgentDeleteDialogOpen] = useState(false);
   const [isDeletingAgent, setIsDeletingAgent] = useState(false);
+  const [agentNameError, setAgentNameError] = useState<string | null>(null);
+  const agentNameInputRef = useRef<HTMLInputElement>(null);
 
   const effectiveAgentKey = loadedAgent?._key ?? editingKey ?? null;
 
@@ -114,8 +118,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  const isReadOnly = loadedAgent?.can_edit === false;
-  const isServiceAccount = loadedAgent?.isServiceAccount === true;
+  const { canPersist, isAgentStructureLocked, isServiceAccountToolsetOrgLocked, isServiceAccount } =
+    useMemo(() => getAgentBuilderPermissions(loadedAgent), [loadedAgent]);
+
+  const paletteDragBlockedMessage = useMemo(() => {
+    if (!isAgentStructureLocked) return '';
+    return isServiceAccountToolsetOrgLocked
+      ? t('agentBuilder.paletteActionBlockedViewOnly')
+      : t('agentBuilder.viewerPaletteDragBlocked');
+  }, [isAgentStructureLocked, isServiceAccountToolsetOrgLocked, t]);
 
   useEffect(() => {
     if (loadedAgent) {
@@ -126,6 +137,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   useEffect(() => {
     if (loadedAgent?.name) setAgentName(loadedAgent.name);
   }, [loadedAgent?.name, setAgentName]);
+
+  useEffect(() => {
+    if (agentName.trim()) setAgentNameError(null);
+  }, [agentName]);
 
   // Auto-dismiss connection error banner after 3.5 s
   useEffect(() => {
@@ -310,7 +325,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      if (isReadOnly) return;
+      if (isAgentStructureLocked) return;
       const sourceNode = nodes.find((n) => n.id === connection.source);
       const targetNode = nodes.find((n) => n.id === connection.target);
       const msgKey = connectionError(sourceNode, targetNode, connection);
@@ -330,16 +345,16 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         )
       );
     },
-    [isReadOnly, nodes, setEdges, t]
+    [isAgentStructureLocked, nodes, setEdges, t]
   );
 
   const onEdgeClick = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
-      if (isReadOnly) return;
+      if (isAgentStructureLocked) return;
       setEdgeToDelete(edge.id);
       setEdgeDeleteDialogOpen(true);
     },
-    [isReadOnly, setEdgeDeleteDialogOpen, setEdgeToDelete]
+    [isAgentStructureLocked, setEdgeDeleteDialogOpen, setEdgeToDelete]
   );
 
   const hasToolsets = useMemo(
@@ -380,11 +395,50 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   );
 
   const saveRef = useRef(false);
+
+  const focusAgentNameInput = useCallback(() => {
+    queueMicrotask(() => {
+      agentNameInputRef.current?.focus();
+    });
+  }, []);
+
+  /** Inline error + focus — shared by save, service-account entry, and confirm edge cases. */
+  const showInlineAgentNameRequired = useCallback(() => {
+    setAgentNameError(t('agentBuilder.nameRequired'));
+    focusAgentNameInput();
+  }, [focusAgentNameInput, t]);
+
+  const notifyServiceAccountToolsetBlocked = useCallback(() => {
+    const converting = Boolean(loadedAgent);
+    toast.error(t('agentBuilder.svcAcctRemoveToolsetsTitle'), {
+      description: t('agentBuilder.svcAcctRemoveToolsetsDesc', {
+        action: converting ? t('agentBuilder.svcAcctConvertAction') : t('agentBuilder.svcAcctCreateAction'),
+      }),
+      duration: SVC_ACCT_TOOLSET_BLOCK_TOAST_MS,
+    });
+  }, [loadedAgent, t]);
+
+  const handleRequestServiceAccount = useCallback(() => {
+    if (!agentName.trim()) {
+      toast.error(t('agentBuilder.nameRequired'), {
+        description: t('agentBuilder.svcAcctNameRequired'),
+      });
+      showInlineAgentNameRequired();
+      return;
+    }
+    if (hasToolsets) {
+      notifyServiceAccountToolsetBlocked();
+      return;
+    }
+    setServiceAccountConfirmOpen(true);
+  }, [agentName, hasToolsets, notifyServiceAccountToolsetBlocked, showInlineAgentNameRequired, t]);
+
   const handleSave = useCallback(async () => {
-    if (isReadOnly) return;
+    if (!canPersist) return;
     if (saveRef.current) return;
     if (!agentName.trim()) {
-      setBanner(t('agentBuilder.nameRequired'));
+      showInlineAgentNameRequired();
+      setBanner(null);
       return;
     }
     saveRef.current = true;
@@ -407,10 +461,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (loadedAgent) {
         const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
+        // Agent's model list may have changed — drop the chat-side cache so
+        // the next chat view for this agent refetches fresh models.
+        invalidateModelsForContext(loadedAgent._key);
         await refreshAgent(loadedAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.agentUpdated'));
       } else {
         const created = await AgentsApi.createAgent(payload);
+        invalidateModelsForContext(created._key);
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
@@ -423,7 +481,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [
     agentName,
     edges,
-    isReadOnly,
+    canPersist,
+    showInlineAgentNameRequired,
     isServiceAccount,
     loadedAgent,
     nodes,
@@ -437,8 +496,20 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   ]);
 
   const handleConfirmServiceAccount = useCallback(async () => {
+    if (loadedAgent && !canPersist) return;
     if (!agentName.trim()) {
-      setServiceAccountError(t('agentBuilder.svcAcctNameRequired'));
+      setServiceAccountConfirmOpen(false);
+      setServiceAccountError(null);
+      toast.error(t('agentBuilder.nameRequired'), {
+        description: t('agentBuilder.svcAcctNameRequired'),
+      });
+      showInlineAgentNameRequired();
+      return;
+    }
+    if (hasToolsets) {
+      setServiceAccountConfirmOpen(false);
+      setServiceAccountError(null);
+      notifyServiceAccountToolsetBlocked();
       return;
     }
     setServiceAccountCreating(true);
@@ -459,11 +530,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (currentAgent) {
         const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig);
+        invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.serviceAccountConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
+        invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
@@ -472,10 +545,23 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     } finally {
       setServiceAccountCreating(false);
     }
-  }, [agentName, edges, loadedAgent, nodes, refreshAgent, router, setSuccess, t]);
+  }, [
+    agentName,
+    canPersist,
+    edges,
+    hasToolsets,
+    loadedAgent,
+    nodes,
+    notifyServiceAccountToolsetBlocked,
+    refreshAgent,
+    router,
+    setSuccess,
+    showInlineAgentNameRequired,
+    t,
+  ]);
 
   const confirmDelete = useCallback(async () => {
-    if (!nodeToDelete || isReadOnly) return;
+    if (!nodeToDelete || isAgentStructureLocked) return;
     setDeleting(true);
     setNodes((nds) => nds.filter((n) => n.id !== nodeToDelete));
     setEdges((eds) => eds.filter((e) => e.source !== nodeToDelete && e.target !== nodeToDelete));
@@ -483,7 +569,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setNodeToDelete(null);
     setDeleting(false);
   }, [
-    isReadOnly,
+    isAgentStructureLocked,
     nodeToDelete,
     setDeleteDialogOpen,
     setEdges,
@@ -519,21 +605,22 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         <AgentBuilderHeader
           agentName={agentName}
           onAgentNameChange={setAgentName}
+          agentNameError={agentNameError}
+          agentNameInputRef={agentNameInputRef}
           saving={saving}
           onSave={handleSave}
           shareWithOrg={shareWithOrg}
           onShareWithOrgChange={setShareWithOrg}
-          isReadOnly={isReadOnly}
+          isFlowStructureLocked={isAgentStructureLocked}
+          canPersist={canPersist}
           isServiceAccount={isServiceAccount}
           editing={Boolean(loadedAgent)}
-          onEnableServiceAccount={
-            isReadOnly ? undefined : () => setServiceAccountConfirmOpen(true)
-          }
+          onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
         />
 
-        {(error || banner || success) && (
+        {((loadedAgent && !canPersist) || error || banner || success) && (
           <Flex
             direction="column"
             gap="2"
@@ -545,6 +632,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
               background: 'var(--olive-1)',
             }}
           >
+            {loadedAgent && !canPersist ? (
+              <Callout.Root color="blue" variant="surface" size="1">
+                <Callout.Text style={{ flex: 1, minWidth: 0 }}>
+                  {isServiceAccount
+                    ? t('chat.viewAgentTooltipServiceAccount')
+                    : t('chat.viewAgentTooltipIndividual')}
+                </Callout.Text>
+              </Callout.Root>
+            ) : null}
             {error ? (
               <Callout.Root color="red" variant="surface" size="1">
                 <Flex align="start" justify="between" gap="3" wrap="wrap">
@@ -587,21 +683,25 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
             activeToolsetTypes={activeToolsetTypes}
-            toolsetsHasMore={toolsetsHasMore}
-            toolsetsLoadingMore={toolsetsLoadingMore}
-            onLoadMoreToolsets={loadMoreToolsets}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
             isServiceAccount={isServiceAccount}
-            onManageAgentToolsetCredentials={(ts) => {
-              if (!effectiveAgentKey) {
-                setBanner(t('agentBuilder.saveAsServiceAccountFirst'));
-                return;
-              }
-              if (!ts.instanceId) return;
-              setAgentToolsetDialog({ toolset: ts, instanceId: ts.instanceId });
-            }}
+            paletteStructureLocked={isAgentStructureLocked}
+            paletteDragBlockedMessage={paletteDragBlockedMessage}
+            toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
+            onManageAgentToolsetCredentials={
+              isServiceAccountToolsetOrgLocked
+                ? undefined
+                : (ts) => {
+                    if (!effectiveAgentKey) {
+                      setBanner(t('agentBuilder.saveAsServiceAccountFirst'));
+                      return;
+                    }
+                    if (!ts.instanceId) return;
+                    setAgentToolsetDialog({ toolset: ts, instanceId: ts.instanceId });
+                  }
+            }
           />
           <AgentBuilderCanvas
             sidebarOpen={sidebarOpen}
@@ -622,7 +722,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
               setDeleteDialogOpen(true);
             }}
             onError={(m) => setBanner(m)}
-            readOnly={isReadOnly}
+            readOnly={isAgentStructureLocked}
           />
         </Flex>
 
@@ -723,7 +823,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         agentName={agentName}
         creating={serviceAccountCreating}
         error={serviceAccountError}
-        hasUserToolsets={hasToolsets}
         isConverting={Boolean(loadedAgent)}
         onClose={() => {
           setServiceAccountConfirmOpen(false);
@@ -737,11 +836,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           toolset={agentToolsetDialog.toolset}
           instanceId={agentToolsetDialog.instanceId}
           agentKey={effectiveAgentKey}
-          onClose={() => setAgentToolsetDialog(null)}
-          onSuccess={() => {
+          onClose={() => {
             setAgentToolsetDialog(null);
             void refreshToolsets(effectiveAgentKey, true);
           }}
+          onSuccess={() => {
+            void refreshToolsets(effectiveAgentKey, true);
+          }}
+          onNotify={setBanner}
         />
       ) : null}
 

@@ -1,21 +1,54 @@
 'use client';
 
-import React, { useEffect, useCallback } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
-import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
+import React, { useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import {
+  WorkspaceRightPanel,
+  useWorkspaceRightPanelBodyRefresh,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { AuthenticateTab } from './authenticate-tab';
+import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
 import { SelectRecordsPage } from './select-records-page';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { isNoneAuthType } from '../utils/auth-helpers';
+import {
+  isNoneAuthType,
+  isOAuthType,
+  isConnectorConfigAuthenticated,
+  isConnectorInstanceAuthenticatedForUi,
+} from '../utils/auth-helpers';
 import { trimConnectorConfig } from '../utils/trim-config';
 import { resolveAuthFields } from './authenticate-tab/helpers';
+import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import type { PanelTab } from '../types';
+
+/** Non-admin OAuth instances must pick an OAuth app before save. */
+function oauthAppSelectionError(
+  selectedAuthType: string,
+  oauthConfigId: unknown,
+  isProfileInitialized: boolean,
+  isAdmin: boolean
+): string | null {
+  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || isAdmin !== false) {
+    return null;
+  }
+  if (
+    oauthConfigId === undefined ||
+    oauthConfigId === null ||
+    (typeof oauthConfigId === 'string' && oauthConfigId.trim() === '')
+  ) {
+    return 'Please select an OAuth app.';
+  }
+  return null;
+}
 
 // ========================================
 // Component
@@ -23,7 +56,9 @@ import type { PanelTab } from '../types';
 
 export function ConnectorPanel() {
   const router = useRouter();
-  const pathname = usePathname();
+  const addToast = useToastStore((s) => s.addToast);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const {
     isPanelOpen,
     panelConnector,
@@ -56,49 +91,215 @@ export function ConnectorPanel() {
     setAuthState,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    bumpCatalogRefresh,
+    oauthAuthorizeUiEpoch,
+    selectedScope,
   } = useConnectorsStore();
 
   const isCreateMode = !panelConnectorId;
   const isLoading = isLoadingSchema || isLoadingConfig;
   const connectorName = panelConnector?.name ?? '';
   const connectorType = panelConnector?.type ?? '';
+  /** Prefer list row `authType` when editing an instance so tabs stay correct before config fetch. */
+  const authTypeForOAuthUi =
+    (panelConnectorId ? panelConnector?.authType : undefined) ||
+    selectedAuthType ||
+    connectorConfig?.authType ||
+    panelConnector?.authType ||
+    '';
+  const showAuthorizeTab = Boolean(panelConnectorId && isOAuthType(authTypeForOAuthUi));
+  const authTypeForConfigureGate =
+    connectorConfig?.authType || selectedAuthType || panelConnector?.authType || '';
+  /**
+   * OAuth gate: inferred auth from GET `/config` (incl. nested tokens), explicit `false` on
+   * config over stale list rows, else list-row while config omits a top-level flag.
+   */
+  const instanceAuthenticated = isConnectorInstanceAuthenticatedForUi(
+    panelConnectorId,
+    panelConnector,
+    connectorConfig
+  );
+  const configureTabEnabled =
+    Boolean(connectorConfig) &&
+    (isNoneAuthType(authTypeForConfigureGate) ||
+      !isOAuthType(authTypeForConfigureGate) ||
+      instanceAuthenticated);
   // Use registry connector's display name so the panel always shows the type name
   // (e.g. "Pipeshub docs") rather than an instance name when creating a new connector.
   const connectorTypeName = registryConnectors.find((c) => c.type === connectorType)?.name ?? connectorName;
 
+  const prevPanelTabRef = useRef<PanelTab | null>(null);
+  /** Bumped when the panel open-fetch effect re-runs or the drawer closes so stale requests cannot flip loaders. */
+  const panelOpenFetchGen = useRef(0);
+
   // ── Fetch schema + config on panel open ──────────────────────
   useEffect(() => {
-    if (!isPanelOpen || !connectorType) return;
+    if (!isPanelOpen || !connectorType) {
+      panelOpenFetchGen.current += 1;
+      return;
+    }
+
+    const gen = ++panelOpenFetchGen.current;
+    const instanceKey = panelConnectorId ?? '';
 
     const fetchData = async () => {
+      setIsLoadingSchema(true);
+      setSchemaError(null);
+      if (!isCreateMode) {
+        setIsLoadingConfig(true);
+      }
       try {
-        setIsLoadingSchema(true);
-        setSchemaError(null);
-
         if (isCreateMode) {
-          // Create mode: fetch schema only
           const schemaRes = await ConnectorsApi.getConnectorSchema(connectorType);
+          if (gen !== panelOpenFetchGen.current) return;
+          const s = useConnectorsStore.getState();
+          if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
+            return;
+          }
           setSchemaAndConfig(schemaRes.schema);
         } else {
-          // Edit mode: fetch both schema and config in parallel
-          setIsLoadingConfig(true);
           const [schemaRes, configRes] = await Promise.all([
             ConnectorsApi.getConnectorSchema(connectorType),
             ConnectorsApi.getConnectorConfig(panelConnectorId!),
           ]);
+          if (gen !== panelOpenFetchGen.current) return;
+          const s = useConnectorsStore.getState();
+          if (
+            s.panelConnector?.type !== connectorType ||
+            s.panelConnectorId !== panelConnectorId
+          ) {
+            return;
+          }
           setSchemaAndConfig(schemaRes.schema, configRes);
-          setIsLoadingConfig(false);
         }
       } catch (err: unknown) {
+        if (gen !== panelOpenFetchGen.current) return;
+        const s = useConnectorsStore.getState();
+        if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
+          return;
+        }
         const message = err instanceof Error ? err.message : 'Failed to load connector configuration';
         setSchemaError(message);
       } finally {
-        setIsLoadingSchema(false);
+        if (gen === panelOpenFetchGen.current) {
+          setIsLoadingSchema(false);
+          setIsLoadingConfig(false);
+        }
       }
     };
 
-    fetchData();
-  }, [isPanelOpen, connectorType, isCreateMode, panelConnectorId]);
+    void fetchData();
+  }, [isPanelOpen, connectorType, isCreateMode, panelConnectorId, setSchemaAndConfig, setSchemaError, setIsLoadingSchema, setIsLoadingConfig]);
+
+  // If auth type changes away from OAuth, leave the Authorize tab value so Radix Tabs does not break.
+  useEffect(() => {
+    if (panelActiveTab === 'authorize' && !showAuthorizeTab) {
+      setPanelActiveTab('authenticate');
+    }
+  }, [panelActiveTab, showAuthorizeTab, setPanelActiveTab]);
+
+  /**
+   * Do not stay on Configure when the instance is not authenticated (e.g. stale tab or API catch-up).
+   * `instanceAuthenticated` uses {@link isConnectorInstanceAuthenticatedForUi}: config-based inference and
+   * explicit `isAuthenticated:false` win over the catalog row so we do not bounce incorrectly during GET /config lag;
+   * see ordering documented on that helper before changing deps or tab logic here.
+   */
+  useEffect(() => {
+    if (!isPanelOpen || isLoading) return;
+    if (panelActiveTab !== 'configure' || configureTabEnabled) return;
+    // After `openPanel`, config is cleared until GET /config completes — do not use stale/absent config to switch tabs.
+    if (panelConnectorId && !connectorConfig) return;
+    if (showAuthorizeTab && !instanceAuthenticated) {
+      setPanelActiveTab('authorize');
+    } else {
+      setPanelActiveTab('authenticate');
+    }
+  }, [
+    isPanelOpen,
+    isLoading,
+    panelActiveTab,
+    configureTabEnabled,
+    showAuthorizeTab,
+    instanceAuthenticated,
+    panelConnectorId,
+    connectorConfig,
+    setPanelActiveTab,
+  ]);
+
+  /** Reload schema + config so the Authenticate tab shows saved credentials after navigating back. */
+  const refreshPanelFromServer = useCallback(async () => {
+    const id = useConnectorsStore.getState().panelConnectorId;
+    const type = useConnectorsStore.getState().panelConnector?.type;
+    if (!id || !type) return;
+    try {
+      setIsLoadingConfig(true);
+      const [schemaRes, configRes] = await Promise.all([
+        ConnectorsApi.getConnectorSchema(type),
+        ConnectorsApi.getConnectorConfig(id),
+      ]);
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId !== id || s.panelConnector?.type !== type) return;
+      setSchemaAndConfig(schemaRes.schema, configRes);
+    } catch {
+      // leave existing form; user can retry
+    } finally {
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId === id && s.panelConnector?.type === type) {
+        setIsLoadingConfig(false);
+      }
+    }
+  }, [setSchemaAndConfig, setIsLoadingConfig]);
+
+  /**
+   * Belt-and-suspenders re-fetch used after OAuth completion. Skips `setIsLoadingConfig` so
+   * the panel body doesn't flash the full-panel loader — `checkAuthStatus` already committed the
+   * authenticated config; this just ensures the Authenticate tab form data is also up-to-date.
+   */
+  const refreshPanelSilent = useCallback(async () => {
+    const id = useConnectorsStore.getState().panelConnectorId;
+    const type = useConnectorsStore.getState().panelConnector?.type;
+    if (!id || !type) return;
+    try {
+      const [schemaRes, configRes] = await Promise.all([
+        ConnectorsApi.getConnectorSchema(type),
+        ConnectorsApi.getConnectorConfig(id),
+      ]);
+      const s = useConnectorsStore.getState();
+      if (s.panelConnectorId !== id || s.panelConnector?.type !== type) return;
+      setSchemaAndConfig(schemaRes.schema, configRes);
+    } catch {
+      // non-fatal — checkAuthStatus already committed the panel state
+    }
+  }, [setSchemaAndConfig]);
+
+  const { requestRefresh: requestDrawerBodyRefresh, refreshNonce: drawerBodyRefreshNonce } =
+    useWorkspaceRightPanelBodyRefresh();
+  const { startOAuthPopup, isAuthenticating: isOAuthPopupBusy } = useConnectorOAuthPopup({
+    onDrawerBodyRefresh: requestDrawerBodyRefresh,
+    onAfterConnectorOAuthHydrate: refreshPanelSilent,
+  });
+
+  /**
+   * Refetch config whenever the active tab changes (user click or programmatic), not only
+   * via Radix `onValueChange` (programmatic `setPanelActiveTab` often skips that callback).
+   */
+  useEffect(() => {
+    if (!isPanelOpen || !panelConnectorId) {
+      prevPanelTabRef.current = null;
+      return;
+    }
+    const prev = prevPanelTabRef.current;
+    prevPanelTabRef.current = panelActiveTab;
+    if (
+      prev !== null &&
+      prev !== panelActiveTab &&
+      (panelActiveTab === 'authenticate' ||
+        panelActiveTab === 'authorize' ||
+        panelActiveTab === 'configure')
+    ) {
+      void refreshPanelFromServer();
+    }
+  }, [isPanelOpen, panelConnectorId, panelActiveTab, refreshPanelFromServer]);
 
   // ── Save handlers ────────────────────────────────────────────
 
@@ -107,6 +308,12 @@ export function ConnectorPanel() {
       // Create mode: POST /connectors
       if (!instanceName.trim()) {
         setInstanceNameError('Instance name is required');
+        addToast({
+          variant: 'warning',
+          title: 'Instance name required',
+          description: 'Enter a name for this connector instance before continuing.',
+          duration: 4000,
+        });
         return;
       }
 
@@ -114,29 +321,71 @@ export function ConnectorPanel() {
         setIsSavingAuth(true);
         setSaveError(null);
 
-        const result = await ConnectorsApi.createConnectorInstance({
+        const oauthErr = oauthAppSelectionError(
+          selectedAuthType,
+          formData.auth.oauthConfigId,
+          isProfileInitialized,
+          isAdmin
+        );
+        if (oauthErr) {
+          setSaveError(oauthErr);
+          return;
+        }
+
+        const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
           instanceName: instanceName.trim(),
-          scope: useConnectorsStore.getState().selectedScope,
+          scope: selectedScope,
           authType: selectedAuthType,
-          config: { auth: trimConnectorConfig(formData.auth) },
+          config: {
+            auth: {
+              ...trimConnectorConfig(formData.auth),
+              connectorScope: selectedScope,
+            },
+          },
           baseUrl: window.location.origin,
-        });
+        })) as {
+          connector?: { connectorId?: string };
+          _key?: string;
+          connectorId?: string;
+        };
 
-        // After creation, we have a connectorId — transition to edit mode
-        // Update the store with the new connector ID
+        const newConnectorId =
+          result?.connector?.connectorId ?? result?._key ?? result?.connectorId;
+        if (!newConnectorId) {
+          setSaveError('Create succeeded but no connector id was returned');
+          return;
+        }
+
         useConnectorsStore.setState({
-          panelConnectorId: result._key || result.connectorId,
+          panelConnectorId: newConnectorId,
           isAuthTypeImmutable: true,
         });
 
-        // If NONE auth type, mark as authenticated
+        // Load merged schema + saved config so the Configure tab enables and filters/sync hydrate.
+        try {
+          setIsLoadingConfig(true);
+          const [schemaRes, configRes] = await Promise.all([
+            ConnectorsApi.getConnectorSchema(connectorType),
+            ConnectorsApi.getConnectorConfig(newConnectorId),
+          ]);
+          setSchemaAndConfig(schemaRes.schema, configRes);
+        } catch {
+          setSaveError('Connector was created but configuration could not be loaded. Try reopening the panel.');
+        } finally {
+          setIsLoadingConfig(false);
+        }
+
         if (isNoneAuthType(selectedAuthType)) {
           setAuthState('success');
         }
 
-        // Move to configure tab
-        setPanelActiveTab('configure');
+        bumpCatalogRefresh();
+        if (isOAuthType(selectedAuthType) && !isNoneAuthType(selectedAuthType)) {
+          setPanelActiveTab('authorize');
+        } else {
+          setPanelActiveTab('configure');
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Failed to create connector';
         setSaveError(message);
@@ -149,13 +398,55 @@ export function ConnectorPanel() {
         setIsSavingAuth(true);
         setSaveError(null);
 
+        const oauthErrEdit = oauthAppSelectionError(
+          selectedAuthType,
+          formData.auth.oauthConfigId,
+          isProfileInitialized,
+          isAdmin
+        );
+        if (oauthErrEdit) {
+          setSaveError(oauthErrEdit);
+          return;
+        }
+
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
-          auth: trimConnectorConfig(formData.auth),
+          auth: {
+            ...trimConnectorConfig(formData.auth),
+            connectorScope: selectedScope,
+          },
           baseUrl: window.location.origin,
         });
 
-        // Move to configure tab
-        setPanelActiveTab('configure');
+        const editId = panelConnectorId!;
+        const editType = connectorType;
+        let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
+        try {
+          setIsLoadingConfig(true);
+          const [schemaRes, fetched] = await Promise.all([
+            ConnectorsApi.getConnectorSchema(connectorType),
+            ConnectorsApi.getConnectorConfig(panelConnectorId!),
+          ]);
+          configRes = fetched;
+          const s = useConnectorsStore.getState();
+          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+            setSchemaAndConfig(schemaRes.schema, configRes);
+          }
+        } catch {
+          // Non-fatal — user can reopen panel
+        } finally {
+          const s = useConnectorsStore.getState();
+          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+            setIsLoadingConfig(false);
+          }
+        }
+
+        if (isOAuthType(selectedAuthType)) {
+          setPanelActiveTab(
+            isConnectorConfigAuthenticated(configRes) ? 'configure' : 'authorize'
+          );
+        } else {
+          setPanelActiveTab('configure');
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Failed to save auth configuration';
         setSaveError(message);
@@ -170,6 +461,18 @@ export function ConnectorPanel() {
     selectedAuthType,
     formData.auth,
     panelConnectorId,
+    bumpCatalogRefresh,
+    setSchemaAndConfig,
+    setIsLoadingConfig,
+    setAuthState,
+    setPanelActiveTab,
+    setInstanceNameError,
+    setIsSavingAuth,
+    setSaveError,
+    isAdmin,
+    isProfileInitialized,
+    selectedScope,
+    addToast,
   ]);
 
   const handleSaveConfig = useCallback(async () => {
@@ -222,7 +525,7 @@ export function ConnectorPanel() {
       // After successful save, navigate to the connector type page
       // and show the success dialog
       const savedConnectorType = connectorType;
-      const scope = pathname.includes('/personal/') ? 'personal' : 'team';
+      const scope = useConnectorsStore.getState().selectedScope;
 
       // Close the configuration panel
       closePanel();
@@ -232,6 +535,7 @@ export function ConnectorPanel() {
       if (savedConnectorType) {
         setNewlyConfiguredConnectorId(currentConnectorId);
         setShowConfigSuccessDialog(true);
+        bumpCatalogRefresh();
         router.push(
           `/workspace/connectors/${scope}/?connectorType=${encodeURIComponent(savedConnectorType)}`
         );
@@ -242,7 +546,16 @@ export function ConnectorPanel() {
     } finally {
       setIsSavingConfig(false);
     }
-  }, [panelConnectorId, formData, closePanel, connectorType, pathname, router, setShowConfigSuccessDialog, setNewlyConfiguredConnectorId]);
+  }, [
+    panelConnectorId,
+    formData,
+    closePanel,
+    connectorType,
+    router,
+    setShowConfigSuccessDialog,
+    setNewlyConfiguredConnectorId,
+    bumpCatalogRefresh,
+  ]);
 
   // ── Footer logic ─────────────────────────────────────────────
 
@@ -263,19 +576,42 @@ export function ConnectorPanel() {
     });
   })();
 
+  const handleBackFromConfigure = useCallback(async () => {
+    await refreshPanelFromServer();
+    if (showAuthorizeTab) {
+      setPanelActiveTab('authorize');
+    } else {
+      setPanelActiveTab('authenticate');
+    }
+  }, [refreshPanelFromServer, showAuthorizeTab, setPanelActiveTab]);
+
+  const handleBackFromAuthorize = useCallback(async () => {
+    await refreshPanelFromServer();
+    setPanelActiveTab('authenticate');
+  }, [refreshPanelFromServer, setPanelActiveTab]);
+
   const footerConfig = getFooterConfig({
     panelView,
     panelActiveTab,
     isAuthReady,
     areRequiredAuthFieldsFilled,
+    instanceName,
     hasConnectorId: !!panelConnectorId,
+    authTypeForConfigureGate,
+    instanceAuthenticated,
     isSavingAuth,
     isSavingConfig,
     isLoadingSchema,
     isLoadingConfig,
     onNext: handleSaveAuth,
-    onBack: () => setPanelActiveTab('authenticate'),
     onSave: handleSaveConfig,
+    onContinueFromAuthorize: async () => {
+      await refreshPanelFromServer();
+      setPanelActiveTab('configure');
+    },
+    onBackFromConfigure: handleBackFromConfigure,
+    onBackFromAuthorize: handleBackFromAuthorize,
+    isOAuthPopupBusy,
   });
 
   // ── Header ───────────────────────────────────────────────────
@@ -333,9 +669,7 @@ export function ConnectorPanel() {
           justify="center"
           style={{ height: 200 }}
         >
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>
-            Loading configuration...
-          </Text>
+          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
         </Flex>
       ) : panelView === 'select-records' ? (
         <SelectRecordsPage />
@@ -376,8 +710,7 @@ export function ConnectorPanel() {
             value={panelActiveTab}
             onValueChange={(v) => {
               const tab = v as PanelTab;
-              // Only allow switching to configure tab if connector has server-side config
-              if (tab === 'configure' && !connectorConfig) return;
+              if (tab === 'configure' && !configureTabEnabled) return;
               setPanelActiveTab(tab);
             }}
           >
@@ -389,10 +722,13 @@ export function ConnectorPanel() {
               <Tabs.Trigger value="authenticate">
                 Authenticate Instance
               </Tabs.Trigger>
+              {showAuthorizeTab ? (
+                <Tabs.Trigger value="authorize">Authorize</Tabs.Trigger>
+              ) : null}
               <Tabs.Trigger
                 value="configure"
-                disabled={!connectorConfig}
-                style={!connectorConfig ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                disabled={!configureTabEnabled}
+                style={!configureTabEnabled ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
                 Configure Records
               </Tabs.Trigger>
@@ -402,6 +738,15 @@ export function ConnectorPanel() {
               <Tabs.Content value="authenticate">
                 <AuthenticateTab />
               </Tabs.Content>
+              {showAuthorizeTab ? (
+                <Tabs.Content value="authorize">
+                  <AuthorizeTab
+                    key={`authorize-${panelConnectorId ?? 'new'}-${oauthAuthorizeUiEpoch}-${instanceAuthenticated ? '1' : '0'}-${drawerBodyRefreshNonce}`}
+                    startOAuthPopup={startOAuthPopup}
+                    isAuthenticating={isOAuthPopupBusy}
+                  />
+                </Tabs.Content>
+              ) : null}
               <Tabs.Content value="configure">
                 <ConfigureTab />
               </Tabs.Content>
@@ -437,27 +782,39 @@ function getFooterConfig({
   panelActiveTab,
   isAuthReady: _isAuthReady,
   areRequiredAuthFieldsFilled,
+  instanceName,
   hasConnectorId,
+  authTypeForConfigureGate,
+  instanceAuthenticated,
   isSavingAuth,
   isSavingConfig,
   isLoadingSchema,
   isLoadingConfig,
   onNext,
-  onBack,
   onSave,
+  onContinueFromAuthorize,
+  onBackFromConfigure,
+  onBackFromAuthorize,
+  isOAuthPopupBusy,
 }: {
   panelView: string;
   panelActiveTab: PanelTab;
   isAuthReady: boolean;
   areRequiredAuthFieldsFilled: boolean;
+  instanceName: string;
   hasConnectorId: boolean;
+  authTypeForConfigureGate: string;
+  instanceAuthenticated: boolean;
   isSavingAuth: boolean;
   isSavingConfig: boolean;
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
   onNext: () => void;
-  onBack: () => void;
   onSave: () => void;
+  onContinueFromAuthorize: () => void | Promise<void>;
+  onBackFromConfigure: () => void | Promise<void>;
+  onBackFromAuthorize: () => void | Promise<void>;
+  isOAuthPopupBusy: boolean;
 }): FooterConfig {
   if (panelView === 'select-records') {
     // Footer is hidden for select-records (handled inside that component)
@@ -470,32 +827,64 @@ function getFooterConfig({
   }
 
   if (panelActiveTab === 'authenticate') {
+    const instanceNameReady = hasConnectorId || instanceName.trim().length > 0;
     return {
       primaryLabel: 'Next →',
-      primaryDisabled: !areRequiredAuthFieldsFilled || isSavingAuth,
+      primaryDisabled:
+        !areRequiredAuthFieldsFilled || isSavingAuth || !instanceNameReady,
       primaryLoading: isSavingAuth,
-      primaryTooltip: !areRequiredAuthFieldsFilled
-        ? 'Fill in all required fields to continue'
-        : undefined,
+      primaryTooltip: !instanceNameReady
+        ? 'Enter an instance name to continue'
+        : !areRequiredAuthFieldsFilled
+          ? 'Fill in all required fields to continue'
+          : undefined,
       onPrimary: onNext,
       secondaryLabel: 'Cancel',
     };
   }
 
+  if (panelActiveTab === 'authorize') {
+    return {
+      primaryLabel: 'Continue to configuration →',
+      primaryDisabled: !instanceAuthenticated || isOAuthPopupBusy,
+      primaryLoading: isOAuthPopupBusy,
+      primaryTooltip: isOAuthPopupBusy
+        ? 'Finish signing in with your provider…'
+        : !instanceAuthenticated
+          ? 'Complete OAuth authorization before configuring sync and filters'
+          : undefined,
+      onPrimary: onContinueFromAuthorize,
+      secondaryLabel: '← Back to credentials',
+      onSecondary: () => {
+        void onBackFromAuthorize();
+      },
+    };
+  }
+
   // configure tab
+  const configureSaveAllowed =
+    hasConnectorId &&
+    (instanceAuthenticated ||
+      isNoneAuthType(authTypeForConfigureGate) ||
+      !isOAuthType(authTypeForConfigureGate));
+
   const configTooltip = !hasConnectorId
     ? 'Complete authentication first to save configuration'
+    : !configureSaveAllowed
+    ? 'Complete OAuth authorization before configuring sync and filters.'
     : isLoadingSchema || isLoadingConfig
     ? 'Loading configuration…'
     : undefined;
 
   return {
     primaryLabel: 'Save Configuration',
-    primaryDisabled: !hasConnectorId || isSavingConfig || isLoadingSchema || isLoadingConfig,
+    primaryDisabled: !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,
     secondaryLabel: '← Back',
-    onSecondary: onBack,
+    onSecondary: () => {
+      void onBackFromConfigure();
+    },
   };
 }

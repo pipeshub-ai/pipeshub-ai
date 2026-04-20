@@ -17,7 +17,7 @@ const PDFRenderer = dynamic(() => import('./pdf-renderer').then((m) => m.PDFRend
 import { getRendererType } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
 
-export function FilePreviewRenderer({ fileUrl, fileName, fileType, pagination, highlightBox, highlightPage, citations, activeCitationId, onHighlightClick }: FilePreviewRendererProps) {
+export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, onHighlightClick }: FilePreviewRendererProps) {
   const rendererType = getRendererType(fileType || '', fileName);
 
   switch (rendererType) {
@@ -36,9 +36,9 @@ export function FilePreviewRenderer({ fileUrl, fileName, fileType, pagination, h
     case 'media':
       return <MediaRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType || ''} />;
     case 'spreadsheet':
-      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
     case 'docx':
-      return <DocxRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <DocxRenderer fileUrl={fileUrl} fileName={fileName} fileBlob={fileBlob} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
     case 'document':
       return <DocumentPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} />;
     default:

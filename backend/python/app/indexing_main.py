@@ -4,7 +4,6 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -16,8 +15,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
@@ -372,39 +369,12 @@ app = FastAPI(
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    """Health check endpoint that also verifies connector service health"""
+    """Health check endpoint for the indexing service itself"""
     try:
-        endpoints = await app.container.config_service().get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-        connector_url = f"{connector_endpoint}/health"
-        async with httpx.AsyncClient() as client:
-            connector_response = await client.get(connector_url, timeout=5.0)
-
-            if connector_response.status_code != HttpStatusCode.SUCCESS.value:
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "fail",
-                        "error": f"Connector service unhealthy: {connector_response.text}",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                    },
-                )
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "healthy",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-    except httpx.RequestError as e:
         return JSONResponse(
-            status_code=500,
+            status_code=200,
             content={
-                "status": "fail",
-                "error": f"Failed to connect to connector service: {str(e)}",
+                "status": "healthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -412,7 +382,7 @@ async def health_check() -> JSONResponse:
         return JSONResponse(
             status_code=500,
             content={
-                "status": "fail",
+                "status": "unhealthy",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },

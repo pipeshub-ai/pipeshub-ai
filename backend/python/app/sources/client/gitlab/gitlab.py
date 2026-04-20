@@ -1,8 +1,8 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import gitlab
-from gitlab import Gitlab, GitlabAuthenticationError
+from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
@@ -11,9 +11,9 @@ from app.sources.client.iclient import IClient
 
 class GitLabResponse(BaseModel):
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
+    message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -23,12 +23,12 @@ class GitLabClientViaToken:
     def __init__(
         self,
         token: str,
-        url: Optional[str] = None,
-        timeout: Optional[float] = None,
-        api_version: Optional[str] = "4",
-        retry_transient_errors: Optional[bool] = None,
-        max_retries: Optional[int] = None,
-        obey_rate_limit: Optional[bool] = None,
+        url: str | None = None,
+        timeout: float | None = None,
+        api_version: str | None = "4",
+        retry_transient_errors: bool | None = None,
+        max_retries: int | None = None,
+        obey_rate_limit: bool | None = None,
     ) -> None:
         self.token = token
         self.url = url or "https://gitlab.com"
@@ -38,12 +38,14 @@ class GitLabClientViaToken:
         self.max_retries = max_retries
         self.obey_rate_limit = obey_rate_limit
 
-        self._sdk: Optional[Gitlab] = None
+        self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
+        # NOTE: this handles only authorization via OAuth token
+        # if used will need to change token request param if API_TOKEN
         kwargs: dict[str, Any] = {
             "url": self.url,
-            "private_token": self.token,
+            "oauth_token": self.token,
         }
         if self.timeout is not None:
             kwargs["timeout"] = self.timeout
@@ -57,13 +59,6 @@ class GitLabClientViaToken:
             kwargs["obey_rate_limit"] = self.obey_rate_limit
 
         self._sdk = gitlab.Gitlab(**kwargs)
-        try:
-            self._sdk.auth()  # validate the credentials early
-        except GitlabAuthenticationError as e:
-            raise RuntimeError("GitLab authentication failed") from e
-        except Exception as e:
-            raise RuntimeError("Error initializing GitLab client") from e
-
         return self._sdk
 
     def get_sdk(self) -> Gitlab:
@@ -75,17 +70,20 @@ class GitLabClientViaToken:
     def get_base_url(self) -> str:
         return self.url
 
+    def get_token(self) -> str:
+        return self.token
+
 
 class GitLabConfig(BaseModel):
     token: str = Field(..., description="GitLab private token")
-    url: Optional[str] = Field(
+    url: str | None = Field(
         default="https://gitlab.com", description="GitLab instance URL"
     )
-    timeout: Optional[float] = None
-    api_version: Optional[str] = Field(default="4", description="GitLab API version")
-    retry_transient_errors: Optional[bool] = None
-    max_retries: Optional[int] = None
-    obey_rate_limit: Optional[bool] = None
+    timeout: float | None = None
+    api_version: str | None = Field(default="4", description="GitLab API version")
+    retry_transient_errors: bool | None = None
+    max_retries: int | None = None
+    obey_rate_limit: bool | None = None
 
     def create_client(self) -> GitLabClientViaToken:
         return GitLabClientViaToken(
@@ -109,6 +107,9 @@ class GitLabClient(IClient):
     def get_sdk(self) -> Gitlab:
         return self.client.get_sdk()
 
+    def get_token(self) -> str:
+        return self.client.get_token()
+
     @classmethod
     def build_with_config(
         cls,
@@ -123,7 +124,7 @@ class GitLabClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> "GitLabClient":
         """Build GitLabClient using configuration service
         Args:
@@ -132,30 +133,61 @@ class GitLabClient(IClient):
         Returns:
             GitLabClient instance
         """
-        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
+        config = await cls._get_connector_config(
+            logger, config_service, connector_instance_id
+        )
         if not config:
             raise ValueError("Failed to get GitLab connector configuration")
         auth_config = config.get("auth", {})
-        auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+        if not auth_config:
+            raise ValueError("Auth configuration missing for GitLab connector")
+        credentials_config = config.get("credentials", {})
+        if not credentials_config:
+            raise ValueError(
+                "Credentials configuration not found in Gitlab connector configuration"
+            )
+        auth_type = auth_config.get(
+            "authType", "API_TOKEN"
+        )  # API_TOKEN or OAUTH default is API_TOKEN
+
         if auth_type == "API_TOKEN":
+            # NOTE: if used will need to change token request param if API_TOKEN is used
             token = auth_config.get("token", "")
             timeout = auth_config.get("timeout", 30)
             url = auth_config.get("url", "https://gitlab.com")
             if not token:
                 raise ValueError("Token required for token auth type")
-            client = GitLabClientViaToken(token, url, timeout).create_client()
+            client = GitLabClientViaToken(token, url, timeout)
+            client.create_client()
+        elif auth_type == "OAUTH":
+            access_token = credentials_config.get("access_token", "")
+            timeout = auth_config.get("timeout", 30)
+            url = auth_config.get("url", "https://gitlab.com")
+            if not access_token:
+                raise ValueError("Access token required for OAuth auth type")
+            client = GitLabClientViaToken(access_token, url, timeout)
+            client.create_client()
         else:
             raise ValueError(f"Invalid auth type: {auth_type}")
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        connector_instance_id: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for GitLab."""
         try:
-            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_instance_id}/config"
+            )
             if not config:
-                raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}")
+                raise ValueError(
+                    f"Failed to get GitLab connector configuration for instance {connector_instance_id}"
+                )
             return config
         except Exception as e:
-            logger.error(f"Failed to get GitLab connector config: {e}")
-            raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}")
+            raise ValueError(
+                f"Failed to get GitLab connector configuration for instance {connector_instance_id}"
+            ) from e

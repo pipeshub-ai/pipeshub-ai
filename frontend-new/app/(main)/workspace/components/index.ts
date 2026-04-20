@@ -1,6 +1,9 @@
 export { EntityPageHeader } from './entity-page-header';
 export type { EntityPageHeaderProps } from './entity-page-header';
 
+export { WorkspaceHeaderIconButton } from './workspace-header-icon-button';
+export type { WorkspaceHeaderIconButtonProps } from './workspace-header-icon-button';
+
 export { EntityEmptyState } from './entity-empty-state';
 export type { EntityEmptyStateProps } from './entity-empty-state';
 
@@ -31,6 +34,9 @@ export type { FormFieldProps } from './form-field';
 export { ConfirmationDialog } from './confirmation-dialog';
 export type { ConfirmationDialogProps } from './confirmation-dialog';
 
+export { DestructiveTypedConfirmationDialog } from './destructive-typed-confirmation-dialog';
+export type { DestructiveTypedConfirmationDialogProps } from './destructive-typed-confirmation-dialog';
+
 export { TagInput } from './tag-input';
 export type { TagInputProps, TagItem } from './tag-input';
 
@@ -54,3 +60,6 @@ export type { SettingsSectionProps } from './settings-section';
 
 export { SettingsRow } from './settings-row';
 export type { SettingsRowProps } from './settings-row';
+
+export { PaginatedMembersList } from './paginated-members-list';
+export type { PaginatedMembersListProps, PaginatedMembersListHandle } from './paginated-members-list';

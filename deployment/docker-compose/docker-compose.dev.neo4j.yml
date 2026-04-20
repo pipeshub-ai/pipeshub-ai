@@ -6,7 +6,8 @@ services:
       context: ../../
       dockerfile: Dockerfile
       args:
-        BUILDKIT_INLINE_CACHE: "1"
+        - BUILDKIT_INLINE_CACHE=1
+        - FRONTEND=new
       shm_size: 4gb
       ulimits:
         memlock:

@@ -10,7 +10,7 @@ export interface OnboardingStep {
 }
 
 export type OnboardingStepId =
-  | 'org-profile'
+  // | 'org-profile'
   | 'ai-model'
   | 'embedding-model'
   | 'storage'

@@ -193,7 +193,6 @@ backend/python/cleanup.ps1
 .vscode/settings.json
 pyrightconfig.json
 .claude/settings.local.json
-CLAUDE.md
 nul
 backend/python/requirements.txt
 
@@ -206,3 +205,4 @@ backend/python/uv.lock
 # others
 tasks
 backend/python/.claude/settings.local.json
+.cursor/*

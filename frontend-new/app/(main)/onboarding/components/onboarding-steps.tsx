@@ -7,14 +7,11 @@ import type { OnboardingStep, OnboardingStepId } from '../types';
 interface OnboardingStepsProps {
   steps: OnboardingStep[];
   currentStepId: OnboardingStepId;
-  completedStepIds: OnboardingStepId[];
 }
 
-export function OnboardingSteps({
-  steps,
-  currentStepId,
-  completedStepIds,
-}: OnboardingStepsProps) {
+export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) {
+  const activeIndex = steps.findIndex((s) => s.id === currentStepId);
+
   return (
     <Flex
       style={{
@@ -23,9 +20,18 @@ export function OnboardingSteps({
         gap: '20px',
       }}
     >
-      {steps.map((step) => {
-        const isActive = step.id === currentStepId;
-        const isCompleted = completedStepIds.includes(step.id);
+      {steps.map((step, index) => {
+        const isCurrent = step.id === currentStepId;
+        const isPast =
+          activeIndex !== -1 && index < activeIndex;
+        const isFuture =
+          activeIndex !== -1 && index > activeIndex;
+
+        const topBorderColor = isCurrent
+          ? 'var(--gray-12)'
+          : isPast
+            ? 'var(--accent-9)'
+            : 'var(--gray-4)';
 
         return (
           <Box
@@ -37,14 +43,8 @@ export function OnboardingSteps({
               paddingLeft: '16px',
               paddingRight: '16px',
               position: 'relative',
-              borderTop: `2px solid ${
-                isActive
-                  ? 'var(--gray-11)'
-                  : isCompleted
-                  ? 'var(--accent-9)'
-                  : 'var(--gray-4)'
-              }`,
-              opacity: isActive || isCompleted ? 1 : 0.6,
+              borderTop: `2px solid ${topBorderColor}`,
+              opacity: isFuture ? 0.6 : 1,
             }}
           >
             <Text
@@ -52,10 +52,7 @@ export function OnboardingSteps({
               size="2"
               weight="medium"
               style={{
-                color:
-                  isActive || isCompleted
-                    ? 'var(--gray-12)'
-                    : 'var(--gray-9)',
+                color: isFuture ? 'var(--gray-9)' : 'var(--gray-12)',
                 marginBottom: '4px',
                 lineHeight: '1.4',
               }}
@@ -66,7 +63,11 @@ export function OnboardingSteps({
               as="div"
               size="1"
               style={{
-                color: isActive ? 'var(--gray-11)' : 'var(--gray-8)',
+                color: isCurrent
+                  ? 'var(--gray-11)'
+                  : isPast
+                    ? 'var(--gray-9)'
+                    : 'var(--gray-8)',
                 lineHeight: '1.4',
               }}
             >

@@ -52,6 +52,48 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     return oauth_config
 
 
+async def fetch_toolset_oauth_config_by_id(
+    oauth_config_id: str,
+    toolset_type: str,
+    config_service: ConfigurationService,
+    logger=None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch a toolset OAuth configuration by ID from the config service.
+
+    Toolset OAuth configs live at /services/oauths/toolsets/{toolsetType} (distinct
+    from connector OAuth configs at /services/oauth/{connectorType}). This mirrors
+    ``fetch_oauth_config_by_id`` but reads from the toolset path.
+    """
+    if not oauth_config_id or not toolset_type:
+        if logger:
+            logger.warning("oauth_config_id and toolset_type are required to fetch toolset OAuth config")
+        return None
+
+    try:
+        from app.agents.constants.toolset_constants import get_toolset_oauth_config_path
+
+        oauth_config_path = get_toolset_oauth_config_path(toolset_type)
+        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+        if not isinstance(oauth_configs, list):
+            if logger:
+                logger.warning(f"Toolset OAuth configs at {oauth_config_path} is not a list")
+            return None
+
+        for oauth_cfg in oauth_configs:
+            if oauth_cfg.get("_id") == oauth_config_id:
+                return oauth_cfg
+
+        if logger:
+            logger.warning("Requested toolset OAuth config was not found")
+        return None
+
+    except Exception:
+        if logger:
+            logger.error("Error fetching toolset OAuth config")
+        return None
+
+
 async def fetch_oauth_config_by_id(
     oauth_config_id: str,
     connector_type: str,
@@ -119,10 +161,10 @@ async def fetch_oauth_config_by_id(
 
         # OAuth config not found
         if logger:
-            logger.warning(f"OAuth config {oauth_config_id} not found for connector type {connector_type}")
+            logger.warning("Requested OAuth config was not found")
         return None
 
-    except Exception as e:
+    except Exception:
         if logger:
-            logger.error(f"Error fetching OAuth config {oauth_config_id} for connector type {connector_type}: {e}", exc_info=True)
+            logger.error("Error fetching OAuth config")
         return None

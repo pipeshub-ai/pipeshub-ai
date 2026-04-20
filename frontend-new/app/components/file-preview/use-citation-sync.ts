@@ -14,6 +14,12 @@ interface UseCitationSyncOptions {
   initialHighlightBox?: Array<{ x: number; y: number }>;
   /** Initial page from the citation that opened the preview */
   initialPage?: number;
+  /**
+   * Id of the citation the user clicked to open this preview. When provided
+   * it seeds `activeCitationId` so the panel scrolls/highlights to that exact
+   * citation — instead of the first citation on the target page.
+   */
+  initialCitationId?: string | null;
 }
 
 interface UseCitationSyncResult {
@@ -44,17 +50,48 @@ export function useCitationSync({
   onPageChange,
   initialHighlightBox,
   initialPage,
+  initialCitationId,
 }: UseCitationSyncOptions): UseCitationSyncResult {
-  const [activeCitationId, setActiveCitationId] = useState<string | null>(null);
+  const [activeCitationId, setActiveCitationId] = useState<string | null>(
+    initialCitationId ?? null,
+  );
   const [activeHighlightBox, setActiveHighlightBox] = useState(initialHighlightBox);
   const [activeHighlightPage, setActiveHighlightPage] = useState(initialPage);
 
   // Prevents scroll-sync from firing while a citation click is navigating
   const isClickNavigating = useRef(false);
 
+  // Tracks whether the caller-provided seed has been respected. We skip the
+  // "page → first citation on page" override until the user interacts (via
+  // scroll to a different page or an explicit citation click), so clicking
+  // `[2]` keeps citation [2] highlighted even when `[1]` shares the page.
+  const hasConsumedInitialSeed = useRef(false);
+  const initialPageRef = useRef<number | undefined>(initialPage);
+
+  // Re-seed when a new citation click re-opens / re-targets the same preview
+  useEffect(() => {
+    if (initialCitationId) {
+      setActiveCitationId(initialCitationId);
+      hasConsumedInitialSeed.current = false;
+      initialPageRef.current = initialPage;
+    }
+  }, [initialCitationId, initialPage]);
+
   // ── Page scroll → find matching citation (debounced 300ms) ──────────
   useEffect(() => {
     if (!citations?.length || isClickNavigating.current) return;
+
+    // Suppress the page-based override on first render when a specific
+    // citation was passed in. Only kicks in once the user scrolls to a
+    // different page than the seeded one.
+    if (
+      initialCitationId &&
+      !hasConsumedInitialSeed.current &&
+      currentPage === initialPageRef.current
+    ) {
+      return;
+    }
+    hasConsumedInitialSeed.current = true;
 
     const timer = setTimeout(() => {
       const match = citations.find((c) => c.pageNumbers?.includes(currentPage));
@@ -64,12 +101,14 @@ export function useCitationSync({
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [currentPage, citations]);
+  }, [currentPage, citations, initialCitationId]);
 
   // ── Citation click → navigate + highlight ───────────────────────────
   const handleCitationClick = useCallback(
     (citation: PreviewCitation) => {
       setActiveCitationId(citation.id);
+      // Any user-driven citation click supersedes the initial seed
+      hasConsumedInitialSeed.current = true;
 
       const targetPage = citation.pageNumbers?.[0];
       if (targetPage) {

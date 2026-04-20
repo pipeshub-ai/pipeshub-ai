@@ -1563,6 +1563,8 @@ async def update_toolset_instance(
       - Renaming the instance (instanceName)
       - Updating OAuth credentials (authConfig with clientId/clientSecret)
       - Switching to a different existing OAuth config (oauthConfigId)
+      - For non-OAuth types (e.g. BASIC_AUTH), replacing instance auth with body authConfig
+        (same pattern as create_toolset_instance assigning validated authConfig to instance auth)
 
     When OAuth credentials are updated OR oauthConfigId changes, ALL authenticated
     users for this instance will be deauthenticated in parallel so they must
@@ -1655,6 +1657,14 @@ async def update_toolset_instance(
                 if new_oauth_id != instance.get("oauthConfigId"):
                     instance["oauthConfigId"] = new_oauth_id
                 oauth_credentials_changed = True
+
+    elif (auth_type or "").upper() not in ("", "NONE") and "authConfig" in body:
+        # Match create_toolset_instance: validated body authConfig is stored on instance["auth"]
+        # when not using oauthConfigId (see create branch `else: new_instance["auth"] = auth_config`).
+        auth_config = _validate_dict(
+            value=body.get("authConfig"), field_name="authConfig", allow_empty=True
+        )
+        instance["auth"] = auth_config
 
     instance["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
     instances[idx] = instance
@@ -1841,6 +1851,11 @@ async def get_my_toolsets(
     limit: int = Query(20, ge=1, le=200, description="Items per page"),
     *,
     include_registry: bool = Query(False, alias="includeRegistry"),
+    toolset_type: str | None = Query(
+        None,
+        alias="toolsetType",
+        description="When set, only instances for this toolset type (case-insensitive).",
+    ),
     auth_status: str | None = Query(
         None,
         alias="authStatus",
@@ -1860,6 +1875,9 @@ async def get_my_toolsets(
     filterCounts in the response always reflects the counts for the current
     search query *before* applying auth_status, so the UI can display
     meaningful badge numbers on every filter chip.
+
+    When ``toolsetType`` is set, results and ``filterCounts`` are scoped to that
+    type only (still before ``authStatus`` is applied for counts).
     """
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -1879,6 +1897,7 @@ async def get_my_toolsets(
         fetch_auth_for_instance=_fetch_user_auth,
         auth_status=auth_status,
         expose_non_oauth_auth=True,
+        toolset_type_filter=toolset_type,
     )
 
 async def get_authenticated_toolsets(
@@ -2666,22 +2685,37 @@ async def _build_toolsets_list_response(
     include_has_credentials: bool = False,
     include_auth_key_for_registry: bool = False,
     expose_non_oauth_auth: bool = False,
+    toolset_type_filter: str | None = None,
 ) -> dict[str, Any]:
     """Build merged toolset list response for user- and agent-scoped endpoints."""
     instances = await _load_toolset_instances(org_id, config_service)
+    registry = _get_registry(request)
 
-    search_lower = search.lower() if search else None
-    if search_lower:
+    if toolset_type_filter and str(toolset_type_filter).strip():
+        tt_filter = str(toolset_type_filter).strip().lower()
         instances = [
             i for i in instances
-            if search_lower in i.get("instanceName", "").lower()
-            or search_lower in i.get("toolsetType", "").lower()
+            if str(i.get("toolsetType", "")).strip().lower() == tt_filter
         ]
+
+    search_lower = search.lower().strip() if search else None
+    if search_lower:
+        def _instance_matches_search(inst: dict[str, Any]) -> bool:
+            name = (inst.get("instanceName") or "").lower()
+            tt = (inst.get("toolsetType") or "").lower()
+            if search_lower in name or search_lower in tt:
+                return True
+            meta = registry.get_toolset_metadata(tt) if tt else None
+            if not meta:
+                return False
+            dn = (meta.get("display_name") or meta.get("displayName") or "").lower()
+            desc = (meta.get("description") or "").lower()
+            return search_lower in dn or search_lower in desc
+
+        instances = [i for i in instances if _instance_matches_search(i)]
 
     if not instances and not include_registry:
         return _empty_toolsets_response(page, limit)
-
-    registry = _get_registry(request)
 
     async def _fetch_instance_with_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         instance_id = inst.get("_id", "")
@@ -2736,36 +2770,46 @@ async def _build_toolsets_list_response(
                 and bool(auth_record.get("auth"))
             )
 
+        # Non-OAuth: expose stored credential fields for list UIs (same as GET /my-toolsets).
+        # Do NOT add a second branch that forces auth=null for real instances when
+        # expose_non_oauth_auth is False — that caused isAuthenticated/hasCredentials to
+        # reflect etcd while auth was always null (agent toolset dialog could not hydrate).
         if expose_non_oauth_auth:
             toolset_entry["auth"] = (
                 auth_record.get("auth", None)
                 if auth_type_upper != "OAUTH" and auth_record is not None
                 else None
             )
-        elif include_auth_key_for_registry:
-            toolset_entry["auth"] = None
 
         toolsets.append(toolset_entry)
 
     if include_registry:
         existing_types = {t.get("toolsetType", "").lower() for t in toolsets}
+        registry_scope = (
+            str(toolset_type_filter).strip().lower()
+            if toolset_type_filter and str(toolset_type_filter).strip()
+            else None
+        )
 
         for toolset_name in registry.list_toolsets():
-            try:
-                meta = registry.get_toolset_metadata(toolset_name)
-            except Exception as exc:
-                logger.warning(f"Failed to get metadata for toolset '{toolset_name}': {exc}")
-                meta = None
+            meta = registry.get_toolset_metadata(toolset_name)
             if not meta or meta.get("isInternal", False):
                 continue
 
             toolset_type = (meta.get("name") or toolset_name or "").lower()
+            if registry_scope is not None and toolset_type != registry_scope:
+                continue
             if not toolset_type or toolset_type in existing_types:
                 continue
 
             if search_lower:
                 display_name = meta.get("display_name", toolset_type)
-                if search_lower not in display_name.lower() and search_lower not in toolset_type.lower():
+                desc = (meta.get("description") or "")
+                if (
+                    search_lower not in display_name.lower()
+                    and search_lower not in toolset_type.lower()
+                    and search_lower not in desc.lower()
+                ):
                     continue
 
             supported_auth_types = meta.get("supported_auth_types", [])
@@ -2839,9 +2883,9 @@ async def _resolve_agent_with_permission(
 ) -> dict:
     """
     Verify the caller has any access to the agent and return the full agent
-    document merged with their permission flags.  Does NOT enforce edit rights
-    or service-account restrictions — use ``_require_agent_edit_access`` for
-    write endpoints that need those checks.
+    document merged with their permission flags (including ``can_edit``). Does NOT
+    enforce edit rights or service-account restrictions — use
+    ``_require_agent_edit_access`` for write endpoints that need those checks.
     """
     user_context = _get_user_context(request)
     user_id = user_context["user_id"]
@@ -2914,6 +2958,11 @@ async def get_agent_toolsets(
     limit: int = Query(20, ge=1, le=200, description="Items per page"),
     *,
     include_registry: bool = Query(False, alias="includeRegistry"),
+    toolset_type: str | None = Query(
+        None,
+        alias="toolsetType",
+        description="When set, only instances for this toolset type (case-insensitive).",
+    ),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> dict[str, Any]:
     """
@@ -2925,11 +2974,17 @@ async def get_agent_toolsets(
     so the UI can display them as available options.
 
     Response shape mirrors GET /my-toolsets: includes pagination and filterCounts.
+
+    Non-OAuth ``auth`` fields are included only when the caller has edit access
+    (``can_edit`` on the agent). View-only users still see ``isAuthenticated`` /
+    ``hasCredentials`` but not raw credential fields.
     """
-    await _resolve_agent_with_permission(agent_key, request)
+    agent = await _resolve_agent_with_permission(agent_key, request)
 
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
+
+    expose_non_oauth_auth_fields = bool(agent.get("can_edit", False))
 
     async def _fetch_agent_auth(instance_id: str) -> dict[str, Any] | None:
         return await config_service.get_config(_get_agent_auth_path(instance_id, agent_key), default=None)
@@ -2945,7 +3000,8 @@ async def get_agent_toolsets(
         fetch_auth_for_instance=_fetch_agent_auth,
         include_has_credentials=True,
         include_auth_key_for_registry=True,
-        expose_non_oauth_auth=False,
+        expose_non_oauth_auth=expose_non_oauth_auth_fields,
+        toolset_type_filter=toolset_type,
     )
 
 
@@ -2988,9 +3044,10 @@ async def authenticate_agent_toolset(
     if auth_type.upper() == "API_TOKEN":
         if not (auth.get("apiToken") or "").strip():
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
-    elif auth_type.upper() == "BASIC_AUTH":
-        if not (auth.get("username") or "").strip() or not (auth.get("password") or "").strip():
-            raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
+    elif auth_type.upper() == "BASIC_AUTH" and (
+        not (auth.get("username") or "").strip() or not (auth.get("password") or "").strip()
+    ):
+        raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
     now = get_epoch_timestamp_in_ms()
     agent_auth = {

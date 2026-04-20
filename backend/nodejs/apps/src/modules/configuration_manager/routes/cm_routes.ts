@@ -55,6 +55,9 @@ import {
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
+  getAIModelRegistry,
+  getAIModelRegistryCapabilities,
+  getAIModelProviderSchema,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -788,6 +791,38 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
     metricsMiddleware(container),
     getAIModelsConfig(keyValueStoreService),
+  );
+
+  /**
+   * @route GET /api/v1/configurationManager/ai-models/registry
+   * @desc Get all registered AI model providers from the Python backend registry
+   * @access Private (admin)
+   */
+  router.get(
+    '/ai-models/registry/capabilities',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelRegistryCapabilities(appConfig),
+  );
+
+  router.get(
+    '/ai-models/registry/:providerId/schema',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelProviderSchema(appConfig),
+  );
+
+  router.get(
+    '/ai-models/registry',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelRegistry(appConfig),
   );
 
   /**

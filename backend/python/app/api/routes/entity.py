@@ -814,7 +814,10 @@ async def get_user_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
+    created_by: Optional[str] = Query(None, description="Filter by creator user key"),
+    created_after: Optional[int] = Query(None, description="Filter teams created after this timestamp (ms)"),
+    created_before: Optional[int] = Query(None, description="Filter teams created before this timestamp (ms)")
 ) -> JSONResponse:
     """Get all teams that the current user is a member of"""
     services = await get_services(request)
@@ -836,7 +839,10 @@ async def get_user_teams(
             user_key=user['_key'],
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            created_by=created_by,
+            created_after=created_after,
+            created_before=created_before
         )
 
         if not result_list:
@@ -1013,7 +1019,13 @@ async def get_users(
         raise HTTPException(status_code=500, detail="Failed to fetch users")
 
 @router.get("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
-async def get_team_users(request: Request, team_id: str) -> JSONResponse:
+async def get_team_users(
+    request: Request,
+    team_id: str,
+    search: Optional[str] = Query(None, description="Search members by name or email"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(100, ge=1, le=100, description="Number of members per page")
+) -> JSONResponse:
     """Get all users in a specific team - requires MEMBER role"""
     services = await get_services(request)
     graph_provider = services["graph_provider"]
@@ -1033,18 +1045,32 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         result = await graph_provider.get_team_users(
             team_id=team_id,
             org_id=user_info.get("orgId"),
-            user_key=user['_key']
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
         )
 
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
+
+        total_count = result.get("memberCount", 0)
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "Team users fetched successfully",
-                "team": result
+                "team": result,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "totalCount": total_count,
+                    "totalPages": total_pages,
+                    "hasNextPage": page < total_pages,
+                    "hasPrevPage": page > 1
+                }
             }
         )
     except HTTPException:

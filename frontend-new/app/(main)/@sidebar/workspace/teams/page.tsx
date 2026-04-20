@@ -1,7 +1,4 @@
-'use client';
-
-import WorkspaceSidebar from '@/workspace/sidebar';
-
+/** @see workspace/layout.tsx */
 export default function WorkspaceSidebarSlot() {
-  return <WorkspaceSidebar />;
+  return null
 }

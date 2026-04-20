@@ -4,7 +4,7 @@ import React from 'react';
 import { Badge } from '@radix-ui/themes';
 import type { BadgeProps } from '@radix-ui/themes';
 
-export type UserStatus = 'Active' | 'Inactive' | 'Pending' | 'Expired' | 'Deactivated';
+export type UserStatus = 'Active' | 'Inactive' | 'Pending' | 'Expired' | 'Deactivated' | 'Blocked';
 
 /**
  * Map status to Radix Badge color.
@@ -16,6 +16,7 @@ export type UserStatus = 'Active' | 'Inactive' | 'Pending' | 'Expired' | 'Deacti
  * | Pending      | amber   |
  * | Expired      | red     |
  * | Deactivated  | gray    |
+ * | Blocked      | red     |
  */
 const STATUS_COLOR_MAP: Record<UserStatus, BadgeProps['color']> = {
   Active: 'jade',
@@ -23,6 +24,7 @@ const STATUS_COLOR_MAP: Record<UserStatus, BadgeProps['color']> = {
   Pending: 'amber',
   Expired: 'red',
   Deactivated: 'gray',
+  Blocked: 'red',
 };
 
 export interface StatusBadgeProps {

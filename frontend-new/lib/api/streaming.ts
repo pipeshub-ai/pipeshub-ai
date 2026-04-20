@@ -29,7 +29,13 @@
 
 import { useAuthStore } from '@/lib/store/auth-store';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+// Default to '' (same origin) rather than `undefined`, because template-string
+// concatenation like `${API_BASE_URL}${url}` would otherwise stringify
+// `undefined` and produce URLs like `/chat/undefined/api/v1/...`. In our
+// standard deployment the Next.js static export is served by the Node.js
+// backend, so the API is always same-origin and an empty prefix is correct.
+// Override with `NEXT_PUBLIC_API_BASE_URL` at build time for split deployments.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 export interface StreamingOptions {
   onChunk: (chunk: string) => void;

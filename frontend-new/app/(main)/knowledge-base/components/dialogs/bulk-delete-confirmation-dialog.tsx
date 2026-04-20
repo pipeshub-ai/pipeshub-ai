@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 interface BulkDeleteConfirmationDialogProps {
   open: boolean;
@@ -94,13 +95,15 @@ export function BulkDeleteConfirmationDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button
+            <LoadingButton
               color="red"
               onClick={handleConfirm}
-              disabled={!isConfirmed || isDeleting}
+              disabled={!isConfirmed}
+              loading={isDeleting}
+              loadingLabel={t('action.deleting')}
             >
-              {isDeleting ? t('action.deleting') : `Delete ${itemCount} ${itemCount === 1 ? 'Item' : 'Items'}`}
-            </Button>
+              {`Delete ${itemCount} ${itemCount === 1 ? 'Item' : 'Items'}`}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>
