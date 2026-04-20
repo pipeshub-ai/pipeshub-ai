@@ -476,7 +476,7 @@ export const ChatApi = {
    * extract them into a messagesMap keyed by conversation ID. This lets
    * the archived-chats page load message detail without a second API call.
    */
-  async fetchArchivedConversations(params?: { page?: number; limit?: number }): Promise<{
+  async fetchArchivedConversations(params?: { page?: number; limit?: number; conversationId?: string }): Promise<{
     conversations: Conversation[];
     messagesMap: Record<string, ConversationMessage[]>;
     pagination: ConversationsListResponse['pagination'];
@@ -484,6 +484,7 @@ export const ChatApi = {
     const query: Record<string, string | number> = {};
     if (params?.page != null) query.page = params.page;
     if (params?.limit != null) query.limit = params.limit;
+    if (params?.conversationId) query.conversationId = params.conversationId;
 
     const { data } = await apiClient.get<{
       conversations: (ConversationApiResponse & { messages?: ConversationMessage[] })[];
@@ -500,6 +501,57 @@ export const ChatApi = {
       conversations: raw.map(transformConversation),
       messagesMap,
       pagination: data.pagination,
+    };
+  },
+
+  /**
+   * Search across all archived conversations (both assistant and agent).
+   * Endpoint: GET /api/v1/conversations/show/archives/search
+   *
+   * Returns a unified, paginated list sorted by lastActivityAt desc.
+   * Each result includes a `source` field ('assistant' | 'agent') and
+   * optionally `agentKey` for agent conversations.
+   */
+  async searchArchivedConversations(params: {
+    search: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    conversations: (Conversation & { source: 'assistant' | 'agent'; agentKey?: string })[];
+    pagination: ConversationsListResponse['pagination'];
+    summary: {
+      totalMatches: number;
+      assistantMatches: number;
+      agentMatches: number;
+      searchQuery: string;
+    };
+  }> {
+    const query: Record<string, string | number> = { search: params.search };
+    if (params.page != null) query.page = params.page;
+    if (params.limit != null) query.limit = params.limit;
+
+    const { data } = await apiClient.get<{
+      conversations: (ConversationApiResponse & {
+        source: 'assistant' | 'agent';
+        agentKey?: string;
+      })[];
+      pagination: ConversationsListResponse['pagination'];
+      summary: {
+        totalMatches: number;
+        assistantMatches: number;
+        agentMatches: number;
+        searchQuery: string;
+      };
+    }>('/api/v1/conversations/show/archives/search', { params: query });
+
+    return {
+      conversations: (data.conversations ?? []).map((c) => ({
+        ...transformConversation(c),
+        source: c.source,
+        agentKey: c.agentKey,
+      })),
+      pagination: data.pagination,
+      summary: data.summary,
     };
   },
 

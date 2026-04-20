@@ -52,6 +52,8 @@ interface ArchivedChatsState {
   /** Bumped whenever agent groups are re-fetched from the server (resets sidebar "See more" pagination). */
   agentGroupsEpoch: number;
   agentGroupsPagination: PaginationState;
+  /** Cached agentKey → display name map, populated once on initial load. */
+  agentNameMap: Record<string, string>;
 
   // -- Selected conversation --
   selected: SelectedConversationState | null;
@@ -112,6 +114,7 @@ const initialState: ArchivedChatsState = {
   agentGroupsError: null,
   agentGroupsEpoch: 0,
   agentGroupsPagination: { ...initialPagination },
+  agentNameMap: {},
   selected: null,
   isLoadingConversation: false,
   conversationError: null,
@@ -202,13 +205,14 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>()(
             ArchivedChatsApi.getAgents({ limit: 200 }),
           ]);
 
-          // Build a name lookup map
+          // Build and cache a name lookup map for the lifetime of this session.
           const nameMap: Record<string, string> = {};
           for (const agent of agentsRes.agents) {
             if (agent._key) nameMap[agent._key] = agent.name || agent._key;
           }
 
           set((state) => {
+            state.agentNameMap = nameMap;
             state.agentGroups = groupsRes.groups.map((g) => ({
               ...g,
               agentName: nameMap[g.agentKey] ?? null,
@@ -242,15 +246,12 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>()(
 
         try {
           const nextPage = agentGroupsPagination.page + 1;
-          const [groupsRes, agentsRes] = await Promise.all([
-            ArchivedChatsApi.fetchAllAgentsArchivedConversations({ agentPage: nextPage, agentLimit: AGENT_GROUPS_PAGE_SIZE }),
-            ArchivedChatsApi.getAgents({ limit: 200 }),
-          ]);
+          const groupsRes = await ArchivedChatsApi.fetchAllAgentsArchivedConversations({
+            agentPage: nextPage,
+            agentLimit: AGENT_GROUPS_PAGE_SIZE,
+          });
 
-          const nameMap: Record<string, string> = {};
-          for (const agent of agentsRes.agents) {
-            if (agent._key) nameMap[agent._key] = agent.name || agent._key;
-          }
+          const nameMap = get().agentNameMap;
 
           set((state) => {
             // Append new agent groups (deduplicate by agentKey)
@@ -328,10 +329,15 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>()(
           state.selected = null;
         });
         try {
-          const result = await ArchivedChatsApi.fetchConversation(id);
-          const resolvedTitle = result.conversation?.title || title;
+          // Use the archives endpoint filtered by conversationId.
+          // The regular GET /conversations/:id enforces isArchived:false → 404 for archived chats.
+          const { conversations: archConvs, messagesMap: archMsgs } =
+            await ArchivedChatsApi.fetchArchivedConversations({ conversationId: id });
+          const conv = archConvs[0];
+          const messages = archMsgs[id] ?? [];
+          const resolvedTitle = conv?.title || title;
           set((state) => {
-            state.selected = { id, title: resolvedTitle, messages: result.messages, agentKey: null };
+            state.selected = { id, title: resolvedTitle, messages, agentKey: null };
             state.isLoadingConversation = false;
           });
         } catch (err) {

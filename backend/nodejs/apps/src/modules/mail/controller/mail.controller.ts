@@ -31,6 +31,7 @@ export class MailController {
     let result;
     try {
       const body = req.body;
+      console.log('body', body);
       if (!this.config.smtp) {
         throw new NotFoundError('Smtp Configuration not set');
       }

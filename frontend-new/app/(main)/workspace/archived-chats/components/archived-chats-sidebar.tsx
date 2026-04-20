@@ -19,8 +19,6 @@ import type { Conversation, AgentArchivedGroup } from '../types';
 interface ArchivedChatsSidebarProps {
   conversations: Conversation[];
   agentGroups: AgentArchivedGroup[];
-  /** Bumped when agent groups are re-fetched — resets per-agent "See more" page state. */
-  agentGroupsEpoch: number;
   isLoading: boolean;
   isLoadingAgentGroups: boolean;
   selectedConversationId: string | null;
@@ -133,8 +131,6 @@ function AgentGroupSection({
 }: AgentGroupSectionProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(true);
-  /** Next API `page` to request (1-based). Starts at 2 because page 1 is already loaded from the grouped endpoint. */
-  const [nextApiPage, setNextApiPage] = useState(2);
 
   const displayName = group.agentName ?? group.agentKey;
 
@@ -217,9 +213,7 @@ function AgentGroupSection({
               isLoading={group.isLoadingMore}
               label={t('workspace.archivedChats.moreChats')}
               onClick={() => {
-                const pageToFetch = nextApiPage;
-                setNextApiPage((p) => p + 1);
-                onLoadMore(group.agentKey, pageToFetch);
+                onLoadMore(group.agentKey, group.pagination.page + 1);
               }}
             />
           )}
@@ -232,7 +226,6 @@ function AgentGroupSection({
 export function ArchivedChatsSidebar({
   conversations,
   agentGroups,
-  agentGroupsEpoch,
   isLoading,
   isLoadingAgentGroups,
   selectedConversationId,
@@ -377,7 +370,7 @@ export function ArchivedChatsSidebar({
               <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-4)' }}>
                 {agentGroups.map((group) => (
                   <AgentGroupSection
-                    key={`${group.agentKey}-${agentGroupsEpoch}`}
+                    key={group.agentKey}
                     group={group}
                     selectedConversationId={selectedConversationId}
                     selectedAgentKey={selectedAgentKey}

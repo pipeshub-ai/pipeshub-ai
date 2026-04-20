@@ -21,4 +21,7 @@ export const ArchivedChatsApi = {
   restoreAgentConversation: AgentsApi.restoreAgentConversation.bind(AgentsApi),
   deleteAgentConversation: AgentsApi.deleteAgentConversation.bind(AgentsApi),
   getAgents: AgentsApi.getAgents.bind(AgentsApi),
+
+  // Unified search across all archived conversations (assistant + agent)
+  searchArchivedConversations: ChatApi.searchArchivedConversations.bind(ChatApi),
 };

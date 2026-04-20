@@ -59,6 +59,7 @@ import {
   unarchiveAgentConversation,
   listAllArchivesAgentConversation,
   listAllAgentsArchivedConversationsGrouped,
+  searchArchivedConversations,
 } from '../controller/es_controller';
 import {
   getSpeechCapabilities,
@@ -384,6 +385,22 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
     listAllArchivesConversation,
+  );
+
+  /**
+   * @route GET /api/v1/conversations/show/archives/search
+   * @desc Search across all archived conversations (assistant + agent)
+   * @access Private
+   * @query {string} search - Search term (required)
+   * @query {number} page - Page number (default: 1)
+   * @query {number} limit - Items per page (default: 20, max: 100)
+   */
+  router.get(
+    '/show/archives/search',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_READ),
+    metricsMiddleware(container),
+    searchArchivedConversations,
   );
 
   return router;

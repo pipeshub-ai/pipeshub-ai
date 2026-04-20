@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, Suspense } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Box } from '@radix-ui/themes';
 import {
@@ -37,7 +37,6 @@ function ArchivedChatsPageContent() {
   // Store slices
   const conversations = useArchivedChatsStore((s) => s.conversations);
   const agentGroups = useArchivedChatsStore((s) => s.agentGroups);
-  const agentGroupsEpoch = useArchivedChatsStore((s) => s.agentGroupsEpoch);
   const isLoadingList = useArchivedChatsStore((s) => s.isLoadingList);
   const isLoadingAgentGroups = useArchivedChatsStore((s) => s.isLoadingAgentGroups);
   const messagesMap = useArchivedChatsStore((s) => s.messagesMap);
@@ -159,6 +158,17 @@ function ArchivedChatsPageContent() {
     ...agentGroups.flatMap((g) => g.conversations),
   ];
 
+  // O(1) lookup: conversationId → agentKey, used by the search modal fallback path.
+  const agentKeyById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of agentGroups) {
+      for (const conv of group.conversations) {
+        map.set(conv.id, group.agentKey);
+      }
+    }
+    return map;
+  }, [agentGroups]);
+
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
@@ -167,7 +177,6 @@ function ArchivedChatsPageContent() {
       <ArchivedChatsSidebar
         conversations={conversations}
         agentGroups={agentGroups}
-        agentGroupsEpoch={agentGroupsEpoch}
         isLoading={isLoadingList}
         isLoadingAgentGroups={isLoadingAgentGroups}
         selectedConversationId={conversationId}
@@ -209,16 +218,20 @@ function ArchivedChatsPageContent() {
         onClose={() => setIsSearchOpen(false)}
         conversations={allConversations}
         isLoading={isLoadingList || isLoadingAgentGroups}
-        onSelect={(id) => {
-          // Find if it's an agent conversation
-          for (const group of agentGroups) {
-            const found = group.conversations.find((c) => c.id === id);
-            if (found) {
-              router.push(
-                `/workspace/archived-chats?conversationId=${id}&agentKey=${group.agentKey}`
-              );
-              return;
-            }
+        onSelect={(id, selectedAgentKey) => {
+          if (selectedAgentKey) {
+            router.push(
+              `/workspace/archived-chats?conversationId=${id}&agentKey=${selectedAgentKey}`
+            );
+            return;
+          }
+          // Fallback: check local agent groups for browse-mode selections
+          const foundAgentKey = agentKeyById.get(id);
+          if (foundAgentKey) {
+            router.push(
+              `/workspace/archived-chats?conversationId=${id}&agentKey=${foundAgentKey}`
+            );
+            return;
           }
           router.push(`/workspace/archived-chats?conversationId=${id}`);
         }}

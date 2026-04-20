@@ -308,11 +308,11 @@ export const buildSharedWithMeFilter = (req: AuthenticatedUserRequest) => {
     // 2. Either the conversation is explicitly shared with the user
     //    or the conversation is publicly shared
     initiator: { $ne: new mongoose.Types.ObjectId(`${req.user?.userId}`) },
-    $or: [
+    $and: [
+      { isShared: true },
       {
         'sharedWith.userId': new mongoose.Types.ObjectId(`${req.user?.userId}`),
       },
-      { isShared: true },
     ],
   };
 
@@ -346,8 +346,12 @@ export const buildFilter = (
     isArchived: false,
     $or: [
       { userId: new mongoose.Types.ObjectId(`${userId}`) },
-      { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
-      { isShared: true },
+      {
+        $and: [
+          { isShared: true },
+          { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
+        ],
+      },
     ],
   };
 

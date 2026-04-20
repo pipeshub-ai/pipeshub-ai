@@ -3462,6 +3462,168 @@ export const listAllArchivesConversation = async (
   }
 };
 
+/**
+ * Search across all archived conversations — both assistant (Conversation)
+ * and agent (AgentConversation) collections — and return a unified,
+ * paginated result sorted by lastActivityAt desc.
+ *
+ * Query params: `search` (required), `page`, `limit`
+ *
+ * GET /api/v1/conversations/show/archives/search?search=foo&page=1&limit=20
+ */
+export const searchArchivedConversations = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    // ── Search parameter (required) ────────────────────────────────
+    const rawSearch = req.query.search;
+    if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
+      throw new BadRequestError('search query parameter is required');
+    }
+    if (Array.isArray(rawSearch)) {
+      throw new BadRequestError('Search parameter must be a string, not an array');
+    }
+    const searchValue = rawSearch.trim();
+    validateNoXSS(searchValue, 'search parameter');
+    validateNoFormatSpecifiers(searchValue, 'search parameter');
+    if (searchValue.length > 1000) {
+      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+    }
+    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // ── Pagination ─────────────────────────────────────────────────
+    const { skip, limit, page } = getPaginationParams(req);
+
+    logger.debug('Searching archived conversations (assistant + agent)', {
+      requestId,
+      userId,
+      search: searchValue,
+      page,
+      limit,
+    });
+
+    // ── Shared base filter pieces ──────────────────────────────────
+    const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
+    const userOid = new mongoose.Types.ObjectId(`${userId}`);
+
+    const searchCondition = {
+      $or: [
+        { title: { $regex: escapedSearch, $options: 'i' } },
+        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+      ],
+    };
+
+    // ── Assistant (Conversation) filter ─────────────────────────────
+    const assistantFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      $or: [
+        { userId: userOid },
+        {
+          $and: [
+            { 'sharedWith.userId': userOid },
+            { isShared: true },
+          ],
+        },
+      ],
+      $and: [searchCondition],
+    };
+
+    // ── Agent (AgentConversation) filter ─────────────────────────────
+    const agentFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      userId: userOid,
+      $and: [searchCondition],
+    };
+
+    // ── Execute queries: $unionWith aggregation + per-source counts ──
+    // $unionWith (Mongo 4.4+) merges both collections server-side so that
+    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
+    // in-memory loads when the search matches many documents.
+    const [aggregateResult, assistantCount, agentCount] = await Promise.all([
+      Conversation.aggregate([
+        { $match: assistantFilter },
+        { $addFields: { source: 'assistant' } },
+        {
+          $unionWith: {
+            coll: AgentConversation.collection.name,
+            pipeline: [
+              { $match: agentFilter },
+              { $addFields: { source: 'agent' } },
+            ],
+          },
+        },
+        { $sort: { lastActivityAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $project: { messages: 0, __v: 0 } },
+      ]),
+      Conversation.countDocuments(assistantFilter),
+      AgentConversation.countDocuments(agentFilter),
+    ]);
+
+    const totalCount = assistantCount + agentCount;
+
+    // ── Tag and apply computed fields (bounded to `limit` docs) ──────
+    const paginatedResults = aggregateResult.map((c: any) => ({
+      ...addComputedFields(c as IConversation, userId),
+      archivedAt: c.updatedAt,
+      archivedBy: c.archivedBy,
+      source: c.source as 'assistant' | 'agent',
+      ...(c.source === 'agent' ? { agentKey: c.agentKey } : {}),
+    }));
+
+    const response = {
+      conversations: paginatedResults,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      summary: {
+        totalMatches: totalCount,
+        assistantMatches: assistantCount,
+        agentMatches: agentCount,
+        searchQuery: searchValue,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    logger.debug('Successfully searched archived conversations', {
+      requestId,
+      totalMatches: totalCount,
+      assistantMatches: assistantCount,
+      agentMatches: agentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json(response);
+  } catch (error: any) {
+    logger.error('Error searching archived conversations', {
+      requestId,
+      message: 'Error searching archived conversations',
+      error: error.message,
+    });
+    next(error);
+  }
+};
+
 export const search =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -6499,13 +6661,17 @@ export const archiveAgentConversation = async (
     });
 
     async function performArchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne({
-        _id: conversationId,
-        userId,
-        orgId,
-        agentKey,
-        isDeleted: false,
-      });
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
 
       if (!conversation) {
         throw new NotFoundError('Agent conversation not found');
@@ -6595,13 +6761,17 @@ export const unarchiveAgentConversation = async (
     });
 
     async function performUnarchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne({
-        _id: conversationId,
-        userId,
-        orgId,
-        agentKey,
-        isDeleted: false,
-      });
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
 
       if (!conversation) {
         throw new NotFoundError('Agent conversation not found');
@@ -6780,7 +6950,12 @@ export const updateAgentConversationTitle = async (
       throw new NotFoundError('Agent conversation not found');
     }
 
-    conversation.title = req.body.title;
+    const title = req.body.title?.trim();
+    if (!title) {
+      throw new BadRequestError('Title is required and cannot be empty');
+    }
+
+    conversation.title = title;
     await conversation.save();
 
     logger.debug('Agent conversation title updated successfully', {
