@@ -41,11 +41,10 @@ export interface Connector {
   connectorInfo?: Record<string, unknown> | null;
   config?: Record<string, unknown>;
   /**
-   * Transient operational status set by the backend.
-   * DELETING: instance is being deleted (show as disabled).
-   * SYNCING: backend-initiated sync in progress.
+   * Transient operational status from the backend.
+   * Common values: `DELETING`, `SYNCING`. Other strings may appear before the UI is updated.
    */
-  status?: 'DELETING' | 'SYNCING' | null;
+  status?: string | null;
 }
 
 /** API list response shape. */

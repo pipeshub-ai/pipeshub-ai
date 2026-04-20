@@ -9,10 +9,12 @@ import {
   WorkspaceRightPanel,
   useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { isAxiosError } from 'axios';
 import { useToastStore } from '@/lib/store/toast-store';
+import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
-import type { Connector, ConnectorScope, InstancePanelTab } from '../../types';
+import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 
@@ -68,32 +70,20 @@ export function InstanceManagementPanel() {
     if (!id || deleteBusy) return;
     setDeleteBusy(true);
     try {
-      const raw = await ConnectorsApi.deleteConnectorInstance(id);
-      const data = raw as Record<string, unknown> | null | undefined;
-      if (
-        data &&
-        typeof data === 'object' &&
-        typeof data._key === 'string' &&
-        typeof data.type === 'string'
-      ) {
-        const { activeConnectors, selectedInstance: currentSelected } =
-          useConnectorsStore.getState();
-        const prev =
-          currentSelected?._key === data._key
-            ? currentSelected
-            : activeConnectors.find((c) => c._key === data._key);
-        if (prev) {
-          const nextStatusRaw = data.status;
-          let status: Connector['status'] = prev.status ?? null;
-          if (
-            nextStatusRaw === 'DELETING' ||
-            nextStatusRaw === 'SYNCING' ||
-            nextStatusRaw === null
-          ) {
-            status = nextStatusRaw as Connector['status'];
-          }
-          upsertConnectorInstance({ ...prev, status });
-        }
+      const merge = await ConnectorsApi.deleteConnectorInstance(id);
+      const { activeConnectors, selectedInstance: currentSelected } =
+        useConnectorsStore.getState();
+      const prev =
+        currentSelected?._key === merge._key
+          ? currentSelected
+          : activeConnectors.find((c) => c._key === merge._key);
+      if (prev) {
+        upsertConnectorInstance({
+          ...prev,
+          _key: merge._key,
+          type: merge.type || prev.type,
+          status: merge.status,
+        });
       }
       removeConnectorInstanceCaches(id);
       addToast({
@@ -106,10 +96,19 @@ export function InstanceManagementPanel() {
       setPendingDeleteId(null);
       closeInstancePanel();
       bumpCatalogRefresh();
-    } catch {
+    } catch (error: unknown) {
+      console.error('ConnectorsApi.deleteConnectorInstance', error);
+      let description: string | undefined;
+      if (isAxiosError(error)) {
+        const fromBody = extractApiErrorMessage(error.response?.data);
+        description = (fromBody ?? processError(error).message).trim() || undefined;
+      } else if (error instanceof Error && error.message.trim()) {
+        description = error.message.trim();
+      }
       addToast({
         variant: 'error',
         title: 'Failed to remove connector',
+        ...(description ? { description } : {}),
       });
     } finally {
       setDeleteBusy(false);
@@ -169,10 +168,14 @@ export function InstanceManagementPanel() {
   // When there are multiple instances of this connector type, render an
   // instance-switcher dropdown instead of a plain title string.
   const instancePendingDelete =
-    (pendingDeleteId ? instances.find((i) => i._key === pendingDeleteId) : null) ?? selectedInstance;
+    pendingDeleteId == null
+      ? selectedInstance
+      : pendingDeleteId === selectedInstance._key
+        ? selectedInstance
+        : (instances.find((i) => i._key === pendingDeleteId) ?? selectedInstance);
 
   const removeConnectorDisabled =
-    selectedInstance.isActive === true || selectedInstance.status === 'DELETING';
+    selectedInstance.isActive || selectedInstance.status === 'DELETING';
 
   const removeConnectorDisabledReason =
     selectedInstance.status === 'DELETING'

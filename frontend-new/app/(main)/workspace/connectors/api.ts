@@ -12,6 +12,48 @@ import type {
 
 const BASE_URL = '/api/v1/connectors';
 
+/** Normalized DELETE /connectors/:id body for optimistic UI merge. */
+export type DeleteConnectorInstanceMerge = {
+  _key: string;
+  type: string;
+  status: string | null;
+};
+
+function resolveDeleteInstanceResponseStatus(body: Record<string, unknown>): string | null {
+  if (!('status' in body)) {
+    return 'DELETING';
+  }
+  const s = body.status;
+  if (typeof s === 'string' && s.length > 0) {
+    return s;
+  }
+  if (s === null) {
+    return 'DELETING';
+  }
+  return 'DELETING';
+}
+
+function parseDeleteConnectorInstanceBody(
+  data: unknown,
+  fallbackConnectorId: string
+): DeleteConnectorInstanceMerge {
+  if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    if (typeof o._key === 'string') {
+      return {
+        _key: o._key,
+        type: typeof o.type === 'string' ? o.type : '',
+        status: resolveDeleteInstanceResponseStatus(o),
+      };
+    }
+  }
+  return {
+    _key: fallbackConnectorId,
+    type: '',
+    status: 'DELETING',
+  };
+}
+
 export const ConnectorsApi = {
   // ── List & Registry ──
 
@@ -71,10 +113,10 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Delete a connector instance */
-  async deleteConnectorInstance(connectorId: string) {
+  /** Delete a connector instance; response is normalized for optimistic store merge. */
+  async deleteConnectorInstance(connectorId: string): Promise<DeleteConnectorInstanceMerge> {
     const { data } = await apiClient.delete(`${BASE_URL}/${connectorId}`);
-    return data;
+    return parseDeleteConnectorInstanceBody(data, connectorId);
   },
 
   /** Update connector instance name */

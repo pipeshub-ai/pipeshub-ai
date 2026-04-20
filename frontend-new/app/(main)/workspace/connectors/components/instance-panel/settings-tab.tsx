@@ -40,6 +40,34 @@ export function SettingsTab({
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
   const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
 
+  const removeDisabled = Boolean(removeConnectorDisabled);
+  const removeConnectorButton = onRequestRemoveConnector ? (
+    <Button
+      type="button"
+      color="red"
+      variant="soft"
+      disabled={removeDisabled}
+      style={{
+        alignSelf: 'flex-start',
+        cursor: removeDisabled ? 'not-allowed' : 'pointer',
+      }}
+      onClick={removeDisabled ? undefined : () => onRequestRemoveConnector()}
+    >
+      Remove connector instance
+    </Button>
+  ) : null;
+
+  const removeConnectorControl =
+    removeConnectorButton &&
+    removeDisabled &&
+    removeConnectorDisabledReason ? (
+      <Tooltip content={removeConnectorDisabledReason}>
+        <span style={{ alignSelf: 'flex-start', display: 'inline-flex' }}>{removeConnectorButton}</span>
+      </Tooltip>
+    ) : (
+      removeConnectorButton
+    );
+
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
       {/* ── Enabled By ── */}
@@ -149,43 +177,7 @@ export function SettingsTab({
             Permanently remove this connector instance and stop syncing its data. This cannot be
             undone.
           </Text>
-          {removeConnectorDisabled ? (
-            removeConnectorDisabledReason ? (
-              <Tooltip content={removeConnectorDisabledReason}>
-                <span style={{ alignSelf: 'flex-start' }}>
-                  <Button
-                    type="button"
-                    color="red"
-                    variant="soft"
-                    disabled
-                    style={{ cursor: 'not-allowed' }}
-                  >
-                    Remove connector instance
-                  </Button>
-                </span>
-              </Tooltip>
-            ) : (
-              <Button
-                type="button"
-                color="red"
-                variant="soft"
-                disabled
-                style={{ alignSelf: 'flex-start', cursor: 'not-allowed' }}
-              >
-                Remove connector instance
-              </Button>
-            )
-          ) : (
-            <Button
-              type="button"
-              color="red"
-              variant="soft"
-              style={{ alignSelf: 'flex-start', cursor: 'pointer' }}
-              onClick={() => onRequestRemoveConnector()}
-            >
-              Remove connector instance
-            </Button>
-          )}
+          {removeConnectorControl}
         </Flex>
       ) : null}
     </Flex>

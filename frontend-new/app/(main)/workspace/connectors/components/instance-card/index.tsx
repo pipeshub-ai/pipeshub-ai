@@ -361,7 +361,7 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. */}
+        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatus → sync_disabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"
