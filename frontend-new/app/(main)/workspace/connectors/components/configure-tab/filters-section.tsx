@@ -185,7 +185,8 @@ function isFilterRowValue(v: unknown): v is FilterRowValue {
 
 function booleanDefaultValue(field: FilterSchemaField): boolean {
   if (typeof field.defaultValue === 'boolean') return field.defaultValue;
-  return true;
+  /** Schema omission must not imply ON — matches manual-indexing copy (OFF is default). */
+  return false;
 }
 
 function defaultFilterOperator(field: FilterSchemaField): string {
@@ -259,7 +260,11 @@ function isMeaningfulCommitted(field: FilterSchemaField, raw: unknown): boolean 
   return true;
 }
 
-function summarizeCommittedFilter(field: FilterSchemaField, row: FilterRowValue): string {
+function summarizeCommittedFilter(
+  field: FilterSchemaField,
+  row: FilterRowValue,
+  section: FilterSection
+): string {
   const op = formatOperatorLabel(row.operator);
   const ft = String(field.filterType ?? '').toLowerCase();
   if (ft === 'list' || ft === 'multiselect' || isListLikeField(field)) {
@@ -279,7 +284,9 @@ function summarizeCommittedFilter(field: FilterSchemaField, row: FilterRowValue)
     return ds || de ? `${op} · date range` : op;
   }
   if (ft === 'boolean') {
-    return row.value ? 'Yes' : 'No';
+    const yn = row.value ? 'Yes' : 'No';
+    if (section === 'indexing') return yn;
+    return `${op} · ${yn}`;
   }
   const s = row.value === undefined || row.value === null ? '' : String(row.value);
   const short = s.length > 36 ? `${s.slice(0, 34)}…` : s;
@@ -584,9 +591,24 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
   const row = getRow(field, raw);
   const checked = row.value === true || row.value === 'true';
 
-  const tooltipLines =
-    'OFF (default): Records are automatically indexed based on the indexing filters below.\n\n' +
-    'ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.';
+  // Tooltip body is a <p>; only phrasing content is valid (no div/Flex inside).
+  const tooltipContent = (
+    <Text
+      as="span"
+      size="1"
+      style={{
+        display: 'block',
+        maxWidth: 300,
+        whiteSpace: 'pre-line',
+        color: 'var(--gray-12)',
+        lineHeight: 1.55,
+      }}
+    >
+      {`OFF (default): Records are automatically indexed based on the indexing filters below.
+
+ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
+    </Text>
+  );
 
   return (
     <Box
@@ -617,7 +639,7 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <Tooltip content={tooltipLines}>
+              <Tooltip content={tooltipContent}>
                 <IconButton
                   type="button"
                   size="1"
@@ -687,12 +709,13 @@ export function FiltersSection() {
       setActiveIndexing([]);
       return;
     }
-    const { formData: fd0, setFilterFormValue: patchFilter } = useConnectorsStore.getState();
+    const { formData: snapshotForm, setFilterFormValue: patchFilter } = useConnectorsStore.getState();
 
-    // Legacy parity: every indexing schema field gets default operator/value in form state
+    // Legacy parity: every indexing schema field gets default operator/value in form state.
+    // Configure save is not gated on dirty state; seeding only fills keys missing from merged config.
     for (const field of indexingFields) {
       const key = field.name;
-      const existing = fd0.filters.indexing[key];
+      const existing = snapshotForm.filters.indexing[key];
       if (existing === undefined || existing === null) {
         const row = getRow(field, undefined);
         patchFilter('indexing', key, {
@@ -839,11 +862,11 @@ function FilterCategoryBlock({
         return {
           name,
           kind: 'single' as const,
-          chipLine: `${field.displayName}: ${summarizeCommittedFilter(field, row)}`,
+          chipLine: `${field.displayName}: ${summarizeCommittedFilter(field, row, section)}`,
         };
       })
       .filter((x): x is FilterPreviewItem => x !== null);
-  }, [activeFieldNames, fields, values]);
+  }, [activeFieldNames, fields, section, values]);
 
   return (
     <Box
@@ -1017,15 +1040,14 @@ function FilterFieldRow({
   const isBooleanField = field.filterType === 'boolean';
 
   const commit = (next: FilterRowValue) => {
-    const boolOp = defaultFilterOperator(field);
-    let op = isBooleanField ? (next.operator?.trim() ? next.operator : boolOp) : next.operator;
-    if (!isBooleanField && !op?.trim()) {
+    const trimmedOp = next.operator?.trim();
+    if (!isBooleanField && !trimmedOp) {
       if (allowClear) {
         onClear();
         return;
       }
-      op = defaultFilterOperator(field);
     }
+    const op = trimmedOp || defaultFilterOperator(field);
     onChange(section, field.name, {
       operator: op,
       value: next.value,

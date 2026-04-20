@@ -476,7 +476,7 @@ export function FilterDropdown({
             >
               <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                Loading more options…
+                Refreshing options…
               </Text>
             </Flex>
           ) : null}
