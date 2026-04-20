@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -114,6 +115,7 @@ function InfoCallout({ children }: { children: React.ReactNode }) {
 
 /** Bottom info note (Platform Configuration) */
 function PlatformConfigNote() {
+  const { t } = useTranslation();
   return (
     <Flex
       align="start"
@@ -130,10 +132,10 @@ function PlatformConfigNote() {
       </Box>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          Platform Configuration
+          {t('workspace.labs.title')}
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-          Changes to platform settings affect all users and take effect immediately. 
+          {t('workspace.labs.subtitle')}
         </Text>
       </Flex>
     </Flex>
@@ -145,6 +147,7 @@ function PlatformConfigNote() {
 // ========================================
 
 export default function LabsPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -201,11 +204,11 @@ export default function LabsPage() {
     const newErrors: { fileSizeLimitMb?: string } = {};
     const limit = form.fileSizeLimitMb;
     if (limit === '' || limit === undefined) {
-      newErrors.fileSizeLimitMb = 'Please enter a file size limit';
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeRequired');
     } else if (Number(limit) > 1000) {
-      newErrors.fileSizeLimitMb = "File size can't be > 1000 MB";
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeMax');
     } else if (Number(limit) <= 0) {
-      newErrors.fileSizeLimitMb = 'File size limit must be greater than 0';
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeMin');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -230,18 +233,18 @@ export default function LabsPage() {
       if (fileSizeDirty) {
         addToast({
           variant: 'success',
-          title: 'File upload limit saved',
-          description: 'You can change the limit in the future',
+          title: t('workspace.labs.toasts.saveSuccess'),
+          description: t('workspace.labs.toasts.saveSuccessDescription'),
         });
       }
 
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed updating labs settings',
-        description: 'Some issue has occurred',
+        title: t('workspace.labs.toasts.saveError'),
+        description: t('workspace.labs.toasts.saveErrorDescription'),
         action: {
-          label: 'Try Again',
+          label: t('message.tryAgain'),
           onClick: () => handleSaveRef.current(),
         },
       });
@@ -259,8 +262,8 @@ export default function LabsPage() {
     discardChanges();
     addToast({
       variant: 'success',
-      title: 'Discarded edits',
-      description: 'Your changes have been reverted',
+      title: t('workspace.labs.toasts.discardSuccess'),
+      description: t('workspace.labs.toasts.discardSuccessDescription'),
     });
   }, [discardChanges, addToast]);
 
@@ -298,22 +301,22 @@ export default function LabsPage() {
         {/* Page header */}
         <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            Labs
+            {t('workspace.sidebar.nav.labs')}
           </Heading>
           <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-            Manage platform settings
+            {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
         <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title="File Upload Limit">
+          <SettingsSection title={t('workspace.labs.fileUploadLimit')}>
             <Flex direction="column" gap="2">
-              <SettingsRow label="File Upload Limit" description="Maximum file size for uploads">
+              <SettingsRow label={t('workspace.labs.fileUploadLimitLabel')} description={t('workspace.labs.fileUploadLimitDescription')}>
                 <Flex direction="column" gap="1">
                   <TextField.Root
                     type="number"
-                    placeholder="max. 1000"
+                    placeholder={t('workspace.labs.fileUploadLimitPlaceholder')}
                     value={form.fileSizeLimitMb === '' ? '' : String(form.fileSizeLimitMb)}
                     onChange={handleFileSizeLimitChange}
                     color={errors.fileSizeLimitMb ? 'red' : undefined}
@@ -332,7 +335,7 @@ export default function LabsPage() {
                         }}
                       >
                         <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
-                          MB
+                          {t('units.mb')}
                         </Text>
                       </Flex>
                     </TextField.Slot>
@@ -346,8 +349,7 @@ export default function LabsPage() {
               </SettingsRow>
 
               <InfoCallout>
-                Changes apply immediately to all file uploads including Knowledge Hub and other
-                backend-enforced uploads
+                {t('workspace.labs.callout')}
               </InfoCallout>
             </Flex>
           </SettingsSection>
@@ -361,10 +363,10 @@ export default function LabsPage() {
       <ConfirmationDialog
         open={discardDialogOpen}
         onOpenChange={setDiscardDialogOpen}
-        title="Discard changes?"
-        message="If you discard, your edits won't be saved"
-        confirmLabel="Discard"
-        cancelLabel="Continue Editing"
+        title={t('workspace.labs.discardDialog.title')}
+        message={t('workspace.labs.discardDialog.message')}
+        confirmLabel={t('workspace.labs.discardDialog.confirm')}
+        cancelLabel={t('workspace.labs.discardDialog.cancel')}
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
       />

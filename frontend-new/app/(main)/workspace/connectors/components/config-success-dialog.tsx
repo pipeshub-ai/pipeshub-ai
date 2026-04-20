@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Button } from '@radix-ui/themes';
 
 // ========================================
@@ -24,6 +25,7 @@ export function ConfigSuccessDialog({
   onStartSyncing,
   onDoLater,
 }: ConfigSuccessDialogProps) {
+  const { t } = useTranslation();
   if (!open) return null;
 
   return (
@@ -63,12 +65,12 @@ export function ConfigSuccessDialog({
         }}
       >
         <Text size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
-          Instance is configured and ready to sync!
+          {t('workspace.connectors.successDialog.title')}
         </Text>
 
         <Text size="2" style={{ color: 'var(--gray-11)', lineHeight: '20px' }}>
-          You can start syncing your {connectorName} data with Pipeshub now,
-          or choose to do it later from settings.
+          {t('workspace.connectors.successDialog.description', { name: connectorName })}{' '}
+          {t('workspace.connectors.successDialog.descriptionSuffix')}
         </Text>
 
         <Flex align="center" gap="3" style={{ marginTop: 4 }}>
@@ -79,7 +81,7 @@ export function ConfigSuccessDialog({
             onClick={onDoLater}
             style={{ cursor: 'pointer' }}
           >
-            I&apos;ll do it later
+            {t('workspace.connectors.successDialog.later')}
           </Button>
           <Button
             variant="solid"
@@ -87,7 +89,7 @@ export function ConfigSuccessDialog({
             onClick={onStartSyncing}
             style={{ cursor: 'pointer' }}
           >
-            Start Syncing Now
+            {t('workspace.connectors.successDialog.startSync')}
           </Button>
         </Flex>
       </Flex>

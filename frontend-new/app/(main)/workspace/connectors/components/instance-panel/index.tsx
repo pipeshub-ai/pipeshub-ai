@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { usePathname } from 'next/navigation';
 import { Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -31,6 +32,7 @@ export function InstanceManagementPanel() {
     openInstancePanel,
   } = useConnectorsStore();
 
+  const { t } = useTranslation();
   const [iconError, setIconError] = useState(false);
   const [triggerHovered, setTriggerHovered] = useState(false);
 
@@ -159,8 +161,8 @@ export function InstanceManagementPanel() {
               marginBottom: 16,
             }}
           >
-            <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
-            <Tabs.Trigger value="settings">Settings</Tabs.Trigger>
+            <Tabs.Trigger value="overview">{t('workspace.connectors.instancePanel.overview')}</Tabs.Trigger>
+            <Tabs.Trigger value="settings">{t('workspace.connectors.instancePanel.settings')}</Tabs.Trigger>
           </Tabs.List>
 
           <Tabs.Content value="overview">
@@ -187,7 +189,7 @@ export function InstanceManagementPanel() {
             style={{ cursor: 'pointer' }}
           >
             <MaterialIcon name="settings" size={16} color="var(--gray-11)" />
-            Manage Configuration
+            {t('workspace.connectors.instancePanel.manageConfig')}
           </Button>
         </Flex>
       </Flex>

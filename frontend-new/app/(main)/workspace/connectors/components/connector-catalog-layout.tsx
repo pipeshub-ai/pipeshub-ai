@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -56,7 +57,7 @@ interface ConnectorCatalogLayoutProps {
 export function ConnectorCatalogLayout({
   title,
   subtitle,
-  searchPlaceholder = 'Search...',
+  searchPlaceholder,
   searchQuery,
   onSearchChange,
   tabs,
@@ -70,6 +71,8 @@ export function ConnectorCatalogLayout({
   onCardClick,
   isLoading = false,
 }: ConnectorCatalogLayoutProps) {
+  const { t } = useTranslation();
+  const resolvedSearchPlaceholder = searchPlaceholder ?? t('form.searchPlaceholder');
   // Count active (isActive=true) and inactive (isActive=false) instances per connector type
   const { activeCountByType, inactiveCountByType } = useMemo(() => {
     const active: Record<string, number> = {};
@@ -190,7 +193,7 @@ export function ConnectorCatalogLayout({
 
         <TextField.Root
           size="2"
-          placeholder={searchPlaceholder}
+          placeholder={resolvedSearchPlaceholder}
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           style={{ width: 224, flexShrink: 0 }}
@@ -224,7 +227,7 @@ export function ConnectorCatalogLayout({
           justify="center"
           style={{ width: '100%', flex: 1 }}
         >
-          <LottieLoader variant="loader" size={48} showLabel label="Loading connectors…" />
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.loadingConnectors')} />
         </Flex>
       ) : filtered.length === 0 ? (
         <Flex
@@ -236,7 +239,7 @@ export function ConnectorCatalogLayout({
         >
           <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            No connectors found
+            {t('workspace.connectors.emptyState')}
           </Text>
         </Flex>
       ) : (

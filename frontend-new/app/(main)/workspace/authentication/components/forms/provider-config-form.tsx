@@ -7,6 +7,7 @@ import React, {
   forwardRef,
   useCallback,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { PROVIDER_CONFIGS } from '../../constants';
@@ -41,6 +42,7 @@ interface ProviderConfigFormProps {
 
 const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormProps>(
   ({ method, onValidChange }, ref) => {
+    const { t } = useTranslation();
     const config = PROVIDER_CONFIGS[method];
     const [values, setValues] = useState<Record<string, string | boolean>>({});
     const [isLoading, setIsLoading] = useState(true);
@@ -105,7 +107,7 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     if (isLoading) {
       return (
         <Flex align="center" justify="center" style={{ padding: '32px 0' }}>
-          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.authentication.loadingConfig')} />
         </Flex>
       );
     }
