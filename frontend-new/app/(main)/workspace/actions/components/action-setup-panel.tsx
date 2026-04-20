@@ -16,8 +16,10 @@ import {
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
-import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
   WorkspaceRightPanel,
@@ -28,9 +30,10 @@ import { ToolsetsApi, type RegistryToolsetRow, type ToolsetOauthConfigListRow } 
 import {
   apiErrorDetail,
   configureAuthFieldsForType,
+  documentationLinksFromToolsetSchema,
   getToolsetAuthConfigFromSchema,
   oauthConfigureSeedValuesFromListRow,
-  toolsetSchemaRoot,
+  primaryHttpDocumentationUrl,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
@@ -382,25 +385,34 @@ export function ActionSetupPanel({
     toolsetType,
   ]);
 
-  const docUrl = useMemo(() => {
-    const root = toolsetSchemaRoot(schemaRaw) as Record<string, unknown> | null;
-    const links = root?.documentationLinks as { url?: string }[] | undefined;
-    const url = links?.[0]?.url;
-    return typeof url === 'string' && url.startsWith('http') ? url : '';
-  }, [schemaRaw]);
+  const docLinksFromRegistry = useMemo(
+    (): DocumentationLink[] => normalizeDocumentationLinks(registryRow?.documentationLinks),
+    [registryRow?.documentationLinks]
+  );
+
+  const docLinks = useMemo(() => {
+    const fromSchema = documentationLinksFromToolsetSchema(schemaRaw);
+    // Schema path is normalized; registry rows from my-toolsets are normalized in toolsets/api mappers.
+    return fromSchema.length ? fromSchema : docLinksFromRegistry;
+  }, [schemaRaw, docLinksFromRegistry]);
+
+  const docUrl = useMemo(() => primaryHttpDocumentationUrl(docLinks), [docLinks]);
 
   const headerActions =
     docUrl ? (
-      <IconButton
-        variant="ghost"
-        color="gray"
-        size="1"
-        type="button"
-        aria-label={t('workspace.actions.documentation')}
-        onClick={() => window.open(docUrl, '_blank', 'noopener,noreferrer')}
-      >
-        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-      </IconButton>
+      <Flex align="center" gap="1">
+        <IconButton
+          variant="ghost"
+          color="gray"
+          size="1"
+          type="button"
+          aria-label={t('workspace.actions.documentation')}
+          onClick={() => window.open(docUrl, '_blank', 'noopener,noreferrer')}
+          style={{ cursor: 'pointer' }}
+        >
+          <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+        </IconButton>
+      </Flex>
     ) : null;
 
   const panelIcon =
@@ -438,7 +450,14 @@ export function ActionSetupPanel({
           </Text>
         </Flex>
       ) : (
-        <Flex direction="column" gap="4" style={{ minWidth: 0 }}>
+        <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
+          {docLinks.length > 0 ? (
+            <DocumentationSection
+              links={docLinks}
+              connectorIconPath={registryRow?.iconPath ?? '/assets/icons/toolsets/default.svg'}
+            />
+          ) : null}
+
           <Box>
             <Text as="div" size="4" weight="bold" style={{ color: 'var(--slate-12)' }}>
               {displayName}

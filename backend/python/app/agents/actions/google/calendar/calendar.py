@@ -19,6 +19,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 from app.utils.time_conversion import prepare_iso_timestamps
@@ -173,7 +174,17 @@ class CreateMeetLinkInput(BaseModel):
             app_description="Calendar OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg")
+        .add_documentation_link(DocumentationLink(
+            "Calendar API Setup",
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/google-workspace/calendar",
+            "pipeshub",
+        )))\
     .build_decorator()
 class GoogleCalendar:
     """Calendar tool exposed to the agents using CalendarDataSource"""

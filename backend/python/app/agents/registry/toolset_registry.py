@@ -627,6 +627,7 @@ class ToolsetRegistry:
                     if isinstance(tool_def, dict)
                 )
 
+            serialized_cfg = serialized_metadata.get('config', {}) or {}
             toolset_info = {
                 'name': serialized_metadata['name'],
                 'normalized_name': normalized_name,
@@ -636,9 +637,10 @@ class ToolsetRegistry:
                 'appGroup': serialized_metadata['app_group'],
                 'supportedAuthTypes': serialized_metadata['supported_auth_types'],
                 'iconPath': serialized_metadata['icon_path'],
+                'documentationLinks': serialized_cfg.get('documentationLinks', []),
                 'toolCount': len(serialized_metadata.get('tools', [])),
                 'tools': tools,  # Include tools for drag-and-drop
-                'config': serialized_metadata.get('config', {}),  # Serialized config (OAuth as dicts)
+                'config': serialized_cfg,  # Serialized config (OAuth as dicts)
             }
             all_toolsets.append(toolset_info)
 

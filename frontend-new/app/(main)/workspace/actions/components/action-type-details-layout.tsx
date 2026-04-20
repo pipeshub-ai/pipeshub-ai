@@ -5,6 +5,7 @@ import { Box, Button, Callout, Flex, Heading, SegmentedControl, Spinner, Text, T
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { RegistryToolsetRow } from '@/app/(main)/toolsets/api';
+import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
 
@@ -209,8 +210,14 @@ export function ActionTypeDetailsLayout({
           <button
             type="button"
             onClick={() => {
-              if (onOpenDocs) onOpenDocs();
-              else window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer');
+              if (onOpenDocs) {
+                onOpenDocs();
+                return;
+              }
+              const url =
+                primaryHttpDocumentationUrl(registryRow?.documentationLinks) ||
+                EXTERNAL_LINKS.documentation;
+              window.open(url, '_blank', 'noopener,noreferrer');
             }}
             style={{
               appearance: 'none',
