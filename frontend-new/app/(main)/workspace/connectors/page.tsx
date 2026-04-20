@@ -2,16 +2,22 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 /**
- * /workspace/connectors — redirects to the Team tab by default.
+ * /workspace/connectors — admins go to the org team catalog; others to personal connectors.
  */
 export default function ConnectorsPage() {
   const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   useEffect(() => {
-    router.replace('/workspace/connectors/team');
-  }, [router]);
+    if (!isProfileInitialized) return;
+    router.replace(
+      isAdmin ? '/workspace/connectors/team/' : '/workspace/connectors/personal/'
+    );
+  }, [router, isAdmin, isProfileInitialized]);
 
   return null;
 }
