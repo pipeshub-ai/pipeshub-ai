@@ -23,11 +23,10 @@ const TEAM_MEMBERS_MAX_PAGES = 50;
  */
 async function fetchAllTeamMemberIds(teamId: string): Promise<string[]> {
   const collected: string[] = [];
-  let page = 1;
 
-  // First page also gives us totalCount so we know whether to keep going.
+  // First page gives us the totalCount needed to compute the remaining pages.
   const first = await TeamsApi.getTeamUsers(teamId, {
-    page,
+    page: 1,
     limit: TEAM_MEMBERS_PAGE_LIMIT,
   });
   for (const m of first.members) if (m.userId) collected.push(m.userId);
@@ -37,14 +36,18 @@ async function fetchAllTeamMemberIds(teamId: string): Promise<string[]> {
     Math.max(1, Math.ceil((first.totalCount ?? collected.length) / TEAM_MEMBERS_PAGE_LIMIT))
   );
 
-  while (page < totalPages) {
-    page += 1;
-    const next = await TeamsApi.getTeamUsers(teamId, {
-      page,
-      limit: TEAM_MEMBERS_PAGE_LIMIT,
-    });
-    if (next.members.length === 0) break;
-    for (const m of next.members) if (m.userId) collected.push(m.userId);
+  // Fetch pages 2..totalPages in parallel — they're read-only, independent,
+  // and the cap on TEAM_MEMBERS_MAX_PAGES keeps the fan-out bounded.
+  if (totalPages > 1) {
+    const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    const results = await Promise.all(
+      remainingPages.map((page) =>
+        TeamsApi.getTeamUsers(teamId, { page, limit: TEAM_MEMBERS_PAGE_LIMIT })
+      )
+    );
+    for (const res of results) {
+      for (const m of res.members) if (m.userId) collected.push(m.userId);
+    }
   }
 
   return collected;
@@ -172,8 +175,16 @@ export function createChatShareAdapter(
         }
       }
 
+      // The chat /share endpoint accepts an optional accessLevel ('read' | 'write').
+      // The sidebar forces submission.role to 'READER' when supportsRoles is false
+      // (our case), but map it explicitly so the backend contract is respected if
+      // the adapter is ever flipped to support roles.
+      const accessLevel: 'read' | 'write' =
+        submission.role === 'WRITER' ? 'write' : 'read';
+
       await apiClient.post(`${conversationBasePath}/share`, {
         userIds: Array.from(userIdsSet),
+        accessLevel,
       });
     },
 
