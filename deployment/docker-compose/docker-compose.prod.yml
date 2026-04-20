@@ -136,8 +136,6 @@ services:
     image: mongo:8.0.17
     container_name: mongodb
     restart: always
-    ports:
-      - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
@@ -153,8 +151,6 @@ services:
     image: redis:bookworm
     container_name: redis
     restart: always
-    ports:
-      - "6379:6379"
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
@@ -174,8 +170,6 @@ services:
     image: arangodb:3.12.4
     container_name: arango
     restart: always
-    ports:
-      - "8529:8529"
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
     volumes:
@@ -190,9 +184,6 @@ services:
     image: quay.io/coreos/etcd:v3.5.17
     container_name: etcd
     restart: always
-    ports:
-      - "2379:2379"
-      - "2380:2380"
     command: >
       etcd
       --name etcd-node
@@ -214,8 +205,6 @@ services:
     image: confluentinc/cp-zookeeper:7.9.0
     container_name: zookeeper
     restart: always
-    ports:
-      - "2181:2181"
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
@@ -226,8 +215,6 @@ services:
     restart: always
     depends_on:
       - zookeeper
-    ports:
-      - "9092:9092"
     environment:
       - KAFKA_BROKER_ID=1
       - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
@@ -254,9 +241,6 @@ services:
     image: qdrant/qdrant:v1.15
     container_name: qdrant
     restart: always
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       # Performance optimizations

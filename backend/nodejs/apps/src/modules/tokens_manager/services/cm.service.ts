@@ -719,6 +719,47 @@ export class ConfigService {
     return scopes.split(',').map((s) => s.trim()).filter(Boolean);
   }
 
+  public async getDeploymentConfig(): Promise<Record<string, string>> {
+    let config: Record<string, string> = {};
+
+    try {
+      const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          config = parsed;
+        }
+      }
+    } catch {
+      config = {};
+    }
+
+    // Node.js owns messageBrokerType and kvStoreType — always overwrite from env
+    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'kafka').toLowerCase();
+    config.kvStoreType = (process.env.KV_STORE_TYPE || 'etcd').toLowerCase();
+
+    // dataStoreType and vectorDbType are owned by Python — never set defaults here
+
+    await this.keyValueStoreService.set(configPaths.deployment, JSON.stringify(config));
+
+    return config;
+  }
+
+  public async readDeploymentConfig(): Promise<Record<string, string>> {
+    try {
+      const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          return parsed;
+        }
+      }
+    } catch {
+      // fall through
+    }
+    return {};
+  }
+
   public async getRsAvailable(): Promise<string> {
     if (!process.env.REPLICA_SET_AVAILABLE) {
       const mongoUri = (

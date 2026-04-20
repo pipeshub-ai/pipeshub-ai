@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -19,15 +20,37 @@ class RerankerService:
                 - "cross-encoder/ms-marco-MiniLM-L-6-v2" (fast)
                 - "BAAI/bge-reranker-base" (balanced)
                 - "BAAI/bge-reranker-large" (more accurate)
+
+        Note:
+            The underlying CrossEncoder model is NOT loaded here. Loading a
+            reranker model can take minutes on a cold cache (download) plus
+            non-trivial CPU time (weights load), which would block the asyncio
+            event loop if done on construction. We defer the load until the
+            first `rerank()` call and perform it inside `asyncio.to_thread`,
+            serialized with an `asyncio.Lock` so concurrent first callers
+            share a single load.
         """
         self.model_name = model_name
-        # Load model with half precision for faster inference if supported
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = CrossEncoder(model_name, device=self.device)
+        self.model: Optional[CrossEncoder] = None
+        self._model_lock = asyncio.Lock()
 
-        # For faster inference with larger batch sizes on GPU
+    def _load_model_sync(self) -> CrossEncoder:
+        """Blocking load of the CrossEncoder. Runs in a worker thread."""
+        model = CrossEncoder(self.model_name, device=self.device)
+        # For faster inference with larger batch sizes on GPU, use fp16 weights.
         if self.device == "cuda":
-            self.model.model = self.model.model.half()
+            model.model = model.model.half()
+        return model
+
+    async def _ensure_model_loaded(self) -> CrossEncoder:
+        """Lazily load the reranker model on first use, without blocking the event loop."""
+        if self.model is not None:
+            return self.model
+        async with self._model_lock:
+            if self.model is None:
+                self.model = await asyncio.to_thread(self._load_model_sync)
+        return self.model
 
     async def rerank(
         self, query: str, documents: List[Dict[str, Any]], top_k: Optional[int] = None
@@ -67,7 +90,12 @@ class RerankerService:
 
         # Get relevance scores
         try:
-            scores = self.model.predict(doc_query_pairs)
+            model = await self._ensure_model_loaded()
+            # `model.predict` is CPU/GPU bound and synchronous; run it in a
+            # worker thread so we don't stall the event loop (especially
+            # important on the very first call, which also triggers the
+            # lazy download/load above).
+            scores = await asyncio.to_thread(model.predict, doc_query_pairs)
         except Exception:
             for doc in documents:
                 doc["reranker_score"] = 0.0

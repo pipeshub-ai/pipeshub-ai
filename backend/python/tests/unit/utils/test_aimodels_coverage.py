@@ -141,8 +141,7 @@ class TestAzureAIEmbeddingCtxLength:
 
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
     def test_azure_ai_non_cohere_model(self, mock_cls):
-        """Even with a non-cohere model name, check_embedding_ctx_length
-        is False due to the 'cohere' or bug on line 150."""
+        """Non-cohere models should have check_embedding_ctx_length=True."""
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
@@ -154,8 +153,7 @@ class TestAzureAIEmbeddingCtxLength:
         }
         result = get_embedding_model(EmbeddingProvider.AZURE_AI.value, config)
         call_kwargs = mock_cls.call_args.kwargs
-        # Always False due to the bug
-        assert call_kwargs["check_embedding_ctx_length"] is False
+        assert call_kwargs["check_embedding_ctx_length"] is True
 
 
 # ============================================================================

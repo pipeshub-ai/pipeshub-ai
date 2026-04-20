@@ -21,6 +21,32 @@ router = APIRouter()
 
 SPARSE_IDF = False
 
+
+def _extract_error_message(e: Exception) -> str:
+    """Extract a clean, user-facing message from API SDK exceptions.
+
+    Handles OpenAI/Azure, Anthropic, and similar SDKs that embed a nested
+    ``body`` dict with the real error text.
+    """
+    # OpenAI / Azure OpenAI SDK errors (openai.APIStatusError subclasses)
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            msg = nested.get("message")
+            if msg:
+                return str(msg)
+        if body.get("message"):
+            return str(body["message"])
+
+    # Anthropic SDK errors
+    if hasattr(e, "message") and isinstance(getattr(e, "message"), str):
+        msg = getattr(e, "message")
+        if msg and msg != str(e):
+            return msg
+
+    return str(e)
+
 def _load_test_image() -> str:
     """Loads the base64 encoded test image from a file."""
     # Path is relative to this file. Adjust if you place the asset elsewhere.
@@ -426,11 +452,12 @@ async def perform_llm_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
+        clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"LLM health check failed: {str(e)}",
+                "message": f"LLM health check failed: {clean_msg}",
                 "details": {
                     "provider": llm_config.get("provider"),
                     "model": model_name,
@@ -505,7 +532,8 @@ async def perform_embedding_health_check(
             embedding_dimension = len(test_embeddings[0]) if test_embeddings else 0
             all(len(emb) == embedding_dimension for emb in test_embeddings)
 
-            # Additional policy: If existing collection has points and vector size differs, reject
+            # Policy: reject if the existing non-empty collection was built
+            # with a different model OR a different vector size.
             try:
                 retrieval_service = await request.app.container.retrieval_service()
                 collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
@@ -519,20 +547,53 @@ async def perform_embedding_health_check(
 
                     points_count = getattr(collection_info, "points_count", 0)
 
-                    if points_count>0 and qdrant_vector_size != embedding_dimension:
-                        return JSONResponse(
-                            status_code=400,
-                            content={
-                                "status": "error",
-                                "message": "Embedding model dimension mismatch with existing non-empty collection",
-                                "details": {
-                                    "existing_vector_size": qdrant_vector_size,
-                                    "new_embedding_size": embedding_dimension,
-                                    "points_count": points_count,
+                    if points_count > 0:
+                        # Check dimension mismatch
+                        if qdrant_vector_size != embedding_dimension:
+                            return JSONResponse(
+                                status_code=400,
+                                content={
+                                    "status": "error",
+                                    "message": "Embedding model dimension mismatch with existing non-empty collection",
+                                    "details": {
+                                        "existing_vector_size": qdrant_vector_size,
+                                        "new_embedding_size": embedding_dimension,
+                                        "points_count": points_count,
+                                    },
+                                    "timestamp": get_epoch_timestamp_in_ms(),
                                 },
-                                "timestamp": get_epoch_timestamp_in_ms(),
-                            },
-                        )
+                            )
+
+                        # Check model identity — same dimensions but different
+                        # model means incompatible vector spaces.
+                        current_model_name = await retrieval_service.get_current_embedding_model_name()
+                        new_provider = embedding_config.get("provider", "")
+                        new_model = model_name
+
+                        if current_model_name:
+                            current_normalized = current_model_name.removeprefix("models/").strip().lower()
+                            new_normalized = (new_model or "").removeprefix("models/").strip().lower()
+
+                            if current_normalized and new_normalized and current_normalized != new_normalized:
+                                return JSONResponse(
+                                    status_code=400,
+                                    content={
+                                        "status": "error",
+                                        "message": (
+                                            f"Embedding model mismatch: the existing collection was built with "
+                                            f"'{current_model_name}'. Switching to '{new_model}' (provider: "
+                                            f"{new_provider}) would corrupt search results. Please re-index "
+                                            f"or use the same model."
+                                        ),
+                                        "details": {
+                                            "current_model": current_model_name,
+                                            "new_model": new_model,
+                                            "new_provider": new_provider,
+                                            "points_count": points_count,
+                                        },
+                                        "timestamp": get_epoch_timestamp_in_ms(),
+                                    },
+                                )
             except grpc._channel._InactiveRpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
                     logger.info("Collection not found - acceptable for health check")
@@ -577,11 +638,12 @@ async def perform_embedding_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
+        clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Embedding health check failed: {str(e)}",
+                "message": f"Embedding health check failed: {clean_msg}",
                 "details": {
                     "provider": embedding_config.get("provider"),
                     "model": embedding_config.get("configuration").get("model"),

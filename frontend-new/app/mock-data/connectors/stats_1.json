@@ -1,0 +1,57 @@
+{
+    "success": true,
+    "data": {
+        "orgId": "699fd9f1712d1105459d05cf",
+        "connectorId": "5f885a1d-092e-4aeb-9364-86817a96c1f1",
+        "origin": "CONNECTOR",
+        "stats": {
+            "total": 82,
+            "indexingStatus": {
+                "NOT_STARTED": 0,
+                "IN_PROGRESS": 0,
+                "COMPLETED": 0,
+                "FAILED": 0,
+                "FILE_TYPE_NOT_SUPPORTED": 0,
+                "AUTO_INDEX_OFF": 82,
+                "ENABLE_MULTIMODAL_MODELS": 0,
+                "EMPTY": 0,
+                "QUEUED": 0,
+                "PAUSED": 0
+            }
+        },
+        "byRecordType": [
+            {
+                "recordType": "FILE",
+                "total": 63,
+                "indexingStatus": {
+                    "NOT_STARTED": 0,
+                    "IN_PROGRESS": 0,
+                    "COMPLETED": 0,
+                    "FAILED": 0,
+                    "FILE_TYPE_NOT_SUPPORTED": 0,
+                    "AUTO_INDEX_OFF": 63,
+                    "ENABLE_MULTIMODAL_MODELS": 0,
+                    "EMPTY": 0,
+                    "QUEUED": 0,
+                    "PAUSED": 0
+                }
+            },
+            {
+                "recordType": "SHAREPOINT_PAGE",
+                "total": 19,
+                "indexingStatus": {
+                    "NOT_STARTED": 0,
+                    "IN_PROGRESS": 0,
+                    "COMPLETED": 0,
+                    "FAILED": 0,
+                    "FILE_TYPE_NOT_SUPPORTED": 0,
+                    "AUTO_INDEX_OFF": 19,
+                    "ENABLE_MULTIMODAL_MODELS": 0,
+                    "EMPTY": 0,
+                    "QUEUED": 0,
+                    "PAUSED": 0
+                }
+            }
+        ]
+    }
+}

@@ -273,6 +273,9 @@ def write_html_report(
 
     failed_entries = [e for e in entries if e.outcome == "failed"]
     sum_dur = sum(e.duration for e in entries)
+    # HTML/CSS use short tokens (.row-pass, .status.fail); outcomes are passed/failed/skipped.
+    _row_css = {"passed": "row-pass", "failed": "row-fail", "skipped": "row-skip"}
+    _status_css = {"passed": "pass", "failed": "fail", "skipped": "skip"}
 
     # Group by suite
     by_suite: Dict[str, List[TestReportEntry]] = defaultdict(list)
@@ -301,7 +304,7 @@ def write_html_report(
         f'    <div class="card card-pass"><div class="card-value">{passed}</div><div class="card-label">Passed</div></div>',
         f'    <div class="card card-fail"><div class="card-value">{failed}</div><div class="card-label">Failed</div></div>',
         f'    <div class="card card-skip"><div class="card-value">{skipped}</div><div class="card-label">Skipped</div></div>',
-        f'    <div class="card"><div class="card-value">{total}</div><div class="card-label">Total (call phase)</div></div>',
+        f'    <div class="card"><div class="card-value">{total}</div><div class="card-label">Total tests</div></div>',
         f'    <div class="card"><div class="card-value">{pass_rate:.1f}%</div><div class="card-label">Pass rate (executed)</div></div>',
         "  </div>",
         '  <section class="section">',
@@ -406,10 +409,11 @@ def write_html_report(
         )
         for e in suite_entries:
             status = e.outcome.upper()
-            row_class = f"row-{e.outcome}"
+            row_class = _row_css.get(e.outcome, f"row-{e.outcome}")
+            st = _status_css.get(e.outcome, e.outcome)
             name = _test_name_from_nodeid(e.nodeid)
             lines.append(
-                f'<tr class="{row_class}"><td class="status {e.outcome}">{status}</td>'
+                f'<tr class="{row_class}"><td class="status {st}">{status}</td>'
                 f'<td class="dur">{e.duration:.2f}s</td><td><code>{html.escape(name)}</code></td></tr>'
             )
         lines.append("</tbody></table>")

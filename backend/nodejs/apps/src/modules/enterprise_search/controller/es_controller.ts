@@ -96,6 +96,26 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
+/**
+ * Parses the chatMode from request body and determines if agent mode is enabled.
+ * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
+ * 
+ * @param requestChatMode - The chatMode value from request body
+ * @returns Object containing the parsed chatMode and agentMode flag
+ */
+const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
+  let chatMode: string = requestChatMode || 'quick';
+  let agentMode: boolean = false;
+  
+  if (chatMode.includes('agent')) {
+    chatMode = chatMode.split(':')[1] || 'auto';
+    agentMode = true;
+  }
+  
+  return { chatMode, agentMode };
+};
+
+
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 const stableObjectIdHexForExternalEmail = (email: string): string =>
   crypto
@@ -336,6 +356,7 @@ export const streamChat =
         userId,
       });
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -346,12 +367,14 @@ export const streamChat =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: savedConversation._id?.toString() || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -1377,6 +1400,7 @@ export const addMessageStream =
         ) as IMessage[],
       );
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -1386,12 +1410,14 @@ export const addMessageStream =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: conversationId || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -1815,6 +1841,12 @@ export const getAllConversations = async (
     const { skip, limit, page } = getPaginationParams(req);
     const filter = buildFilter(req, orgId, userId, conversationId as string);
     const sortOptions = buildSortOptions(req);
+
+    // Restrict "Your Chats" to conversations owned by this user.
+    // The default buildFilter includes shared conversations in its $or,
+    // but those are fetched separately via sharedWithMeFilter below.
+    delete filter.$or;
+    filter.userId = new mongoose.Types.ObjectId(`${userId}`);
 
     // sharedWith Me Conversation
     const sharedWithMeFilter = buildSharedWithMeFilter(req);

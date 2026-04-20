@@ -30,6 +30,7 @@ from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
 from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.qna.response_prompt import build_direct_answer_time_context
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -190,22 +191,6 @@ async def _deep_respond_impl(
             log.warning("Fast-path failed, falling back to standard: %s", e)
             # Fall through to standard path
 
-    # ================================================================
-    # Merge and deduplicate retrieval results from parallel calls.
-    # Sort by (virtual_record_id, block_index) for consistent R-labels.
-    # ================================================================
-    if final_results:
-        from app.modules.agents.qna.nodes import merge_and_number_retrieval_results
-        final_results = merge_and_number_retrieval_results(final_results, log)
-        final_results = sorted(
-            final_results,
-            key=lambda x: (
-                x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
-                x.get("block_index", 0),
-            ),
-        )
-        state["final_results"] = final_results
-
     log.info("Citation data: %d results, %d records", len(final_results), len(virtual_record_map))
 
     # ================================================================
@@ -236,20 +221,16 @@ async def _deep_respond_impl(
                     "Please provide accurate and relevant information."
                 )
 
-        qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, log, "json"
+        from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+        _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        qna_content, _ref_mapper = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper,
         )
+        state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content
         log.debug("Built qna_message_content via get_message_content()")
     else:
         state["qna_message_content"] = None
-
-    # Build R-label → virtual_record_id mapping
-    from app.modules.qna.response_prompt import build_record_label_mapping
-    record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
-    if record_label_map:
-        log.debug("Record label mapping: %s", record_label_map)
-    state["record_label_to_uuid_map"] = record_label_map
 
     # ================================================================
     # Build messages.
@@ -314,12 +295,15 @@ async def _deep_respond_impl(
             )
             if qna_has_retrieval:
                 analyses_text += (
-                    "Use these structured insights to provide a MORE DETAILED and DEEPER "
-                    "response than a simple retrieval answer. The context blocks above "
-                    "contain the raw source data with citation labels (R1, R2, etc.) — "
-                    "use those labels for citations. The analysis below provides "
-                    "structured findings, connections, and deeper insights that should "
-                    "enrich your response.\n\n"
+                    "Use these structured insights to build a COMPREHENSIVE, WELL-SYNTHESIZED "
+                    "response. Do NOT simply list findings — instead:\n"
+                    "  • Identify the key themes and cross-source connections the analyses reveal.\n"
+                    "  • For each topic in the user's query, draw from the relevant analyses AND "
+                    "the context blocks to construct a detailed, coherent explanation.\n"
+                    "  • Where multiple sub-agents investigated the same topic, merge their findings "
+                    "into a single, richer narrative rather than repeating similar content.\n"
+                    "  • Cover ALL distinct aspects of the user's query using the evidence available; "
+                    "if a topic is thoroughly documented, reflect that depth in your answer.\n\n"
                 )
             elif has_api_results:
                 analyses_text += (
@@ -360,17 +344,19 @@ async def _deep_respond_impl(
     # ================================================================
     tools: list = []
     if virtual_record_map:
-        from app.utils.agent_fetch_full_record import (
-            create_agent_fetch_full_record_tool,
+        from app.utils.fetch_full_record import (
+            create_fetch_full_record_tool,
         )
-        fetch_tool = create_agent_fetch_full_record_tool(
+        fetch_tool = create_fetch_full_record_tool(
             virtual_record_map,
-            label_to_virtual_record_id=record_label_map if record_label_map else None,
+            org_id=state.get("org_id", ""),
+            graph_provider=state.get("graph_provider"),
         )
         tools = [fetch_tool]
         log.debug(
             "Added agent fetch_full_record tool (%d records, %d labels)",
-            len(virtual_record_map), len(record_label_map),
+            len(virtual_record_map),
+            len(final_results),
         )
 
     # Initialize blob_store if missing
@@ -452,6 +438,7 @@ async def _deep_respond_impl(
             mode="json",
             is_agent=True,
             conversation_id=state.get("conversation_id"),
+            ref_mapper=state.get("citation_ref_mapper"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -469,8 +456,11 @@ async def _deep_respond_impl(
                         from app.utils.citations import (
                             normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
+                        _ref_to_url_snap = state.get("citation_ref_mapper")
+                        _ref_to_url_snap = _ref_to_url_snap.ref_to_url if _ref_to_url_snap else None
                         _, _enriched = _ncc_agent(
-                            _raw_answer, final_results, virtual_record_map, []
+                            _raw_answer, final_results, virtual_record_map, [],
+                            ref_to_url=_ref_to_url_snap,
                         )
                         if _enriched:
                             log.info(
@@ -571,7 +561,7 @@ def _build_simple_retrieval_messages(
     Mirrors the chatbot approach: short system prompt + conversation history +
     qna_message_content as the user message. The user message (built by
     get_message_content) already contains all citation rules, output format,
-    tool instructions, and R-labeled blocks — no need for the 248-line
+    tool instructions, and blocks — no need for the 248-line
     system prompt from build_response_prompt().
     """
     messages: list = []
@@ -596,13 +586,28 @@ def _build_simple_retrieval_messages(
         "studied the data in depth).\n\n"
         "Your response should be MORE COMPREHENSIVE and MORE DETAILED than a standard "
         "retrieval answer. Specifically:\n"
-        "- Use the sub-agent analysis to identify key themes, connections between sources, "
-        "and deeper insights that a surface-level read would miss.\n"
-        "- Use the context blocks (R-labeled) for citations and exact quotes.\n"
-        "- Provide detailed explanations, not brief summaries.\n"
+        "- Synthesize the sub-agent analyses to identify key themes, connections between "
+        "sources, and deeper insights that a surface-level read would miss.\n"
+        "- Provide detailed explanations with specifics, not brief summaries.\n"
         "- When multiple sources cover the same topic, synthesize them into a coherent "
         "narrative rather than listing them separately.\n"
-        "- Expand on each point with specific details found in the blocks and analysis."
+        "- Expand on each point with specific details found in the blocks and analysis.\n\n"
+        "CRITICAL SYNTHESIS RULES:\n"
+        "- The sub-agent analyses ARE your primary knowledge source. They were produced "
+        "by specialized agents that fetched and studied the full source documents. "
+        "If an analysis covers a topic, you HAVE that information — present it.\n"
+        "- NEVER say 'I don't have information about X' or 'there is no content for X' "
+        "if the sub-agent analyses discuss X. Extract and present what the analyses reveal.\n"
+        "- If a specific document (e.g. an ERD page, a schema doc) is mentioned in the "
+        "analyses but its full text is not in the context blocks, summarise what the "
+        "analyses say about it and cite the source appropriately.\n"
+        "- Answer EVERY part of the user's query. If one part is covered only in the "
+        "analyses and another only in the blocks, combine both into a unified answer.\n\n"
+        "CITATION RULES:\n"
+        "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
+        "- Each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
+        "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
+        "- If you cannot find the Citation ID for a claim, omit the citation rather than guessing.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
@@ -1025,6 +1030,7 @@ async def _handle_direct_answer(
     # Add capability summary
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
+    system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     messages = [SystemMessage(content=system_content)]
 

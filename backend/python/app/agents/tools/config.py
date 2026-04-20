@@ -209,6 +209,10 @@ class ToolDiscoveryConfig:
             app_name="zoom",
             client_builder="ZoomClient",
         ),
+        "salesforce": AppConfiguration(
+            app_name="salesforce",
+            client_builder="SalesforceClient",
+        ),
 
     }
 

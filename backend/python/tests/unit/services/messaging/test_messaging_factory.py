@@ -3,6 +3,7 @@ Tests for MessagingFactory: create_producer and create_consumer.
 """
 
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
@@ -62,9 +63,10 @@ class TestCreateProducer:
             )
 
     def test_default_broker_is_kafka(self, logger, producer_config):
-        """When broker_type is omitted, it defaults to 'kafka'."""
+        """When broker_type is omitted and MESSAGE_BROKER=kafka, defaults to kafka."""
         from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
-        producer = MessagingFactory.create_producer(logger, config=producer_config)
+        with patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}):
+            producer = MessagingFactory.create_producer(logger, config=producer_config)
         assert isinstance(producer, KafkaMessagingProducer)
 
 

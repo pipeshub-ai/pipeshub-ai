@@ -338,8 +338,22 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        # Conditionally initialize ArangoDB service based on DATA_STORE
+        # Write deployment config to KV store so Node.js can read it
         data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
+        try:
+            existing_deployment = await config_service.get_config(
+                config_node_constants.DEPLOYMENT.value, default={}
+            ) or {}
+            existing_deployment["dataStoreType"] = data_store_type
+            existing_deployment["vectorDbType"] = "qdrant"
+            await config_service.set_config(
+                config_node_constants.DEPLOYMENT.value, existing_deployment
+            )
+            logger.info(f"✅ Deployment config written to KV store (dataStoreType={data_store_type})")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to write deployment config to KV store: {e}")
+
+        # Conditionally initialize ArangoDB service based on DATA_STORE
         if data_store_type == "arangodb":
             logger.info("Ensuring ArangoDB service is initialized")
             # Arango_service is needed for migrations

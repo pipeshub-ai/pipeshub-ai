@@ -15,6 +15,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -682,6 +683,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Error upserting person for {email}: {e}")
             return None
 
+    @retry_on_deadlock()
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
 
@@ -833,6 +835,7 @@ class DataSourceEntitiesProcessor:
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
+    @retry_on_deadlock()
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
         try:
             if not records_with_permissions:
@@ -879,6 +882,7 @@ class DataSourceEntitiesProcessor:
             raise e
 
 
+    @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
@@ -899,6 +903,7 @@ class DataSourceEntitiesProcessor:
             if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 await self._reset_indexing_status_to_queued(record.id, tx_store)
 
+    @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
@@ -907,10 +912,12 @@ class DataSourceEntitiesProcessor:
             if processed_record:
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
+    @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
 
+    @retry_on_deadlock()
     async def reindex_existing_records(self, records: list[Record]) -> None:
         """
         Publish reindex events for existing records without DB operations.
@@ -959,6 +966,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
+    @retry_on_deadlock()
     async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         try:
             if not record_groups:
@@ -1154,6 +1162,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
 
+    @retry_on_deadlock()
     async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_id: str = None) -> None:
         """Update the name of an existing record group in the database."""
         try:
@@ -1183,6 +1192,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
             raise
 
+    @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
@@ -1196,6 +1206,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
+    @retry_on_deadlock()
     async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
@@ -1279,6 +1290,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
             raise e
 
+    @retry_on_deadlock()
     async def on_new_app_roles(self, roles: list[tuple[AppRole, list[AppUser]]]) -> None:
         """
         Processes new app roles, upserts them, and creates permission edges
@@ -1391,16 +1403,17 @@ class DataSourceEntitiesProcessor:
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """
         Get app metadata (scope, createdBy, etc.) from the database.
-        
+
         Args:
             connector_id: The connector/app ID
-            
+
         Returns:
             AppMetadata object or None if not found
         """
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_by_id(connector_id)
 
+    @retry_on_deadlock()
     async def on_user_group_member_removed(
         self,
         external_group_id: str,
@@ -1460,6 +1473,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_user_group_member_added(
         self,
         external_group_id: str,
@@ -1536,6 +1550,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_user_group_deleted(
         self,
         external_group_id: str,
@@ -1587,6 +1602,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def delete_user_group_by_id(self, group_id: str) -> None:
         """
         Delete a user group by its internal ID, including all associated edges.
@@ -1602,6 +1618,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
             raise
 
+    @retry_on_deadlock()
     async def migrate_group_permissions_to_user(
         self,
         group_id: str,
@@ -1768,6 +1785,7 @@ class DataSourceEntitiesProcessor:
             return None
         return None
 
+    @retry_on_deadlock()
     async def migrate_group_to_user_by_external_id(
         self,
         group_external_id: str,
@@ -1819,6 +1837,7 @@ class DataSourceEntitiesProcessor:
 
             self.logger.info(f"✅ Completed migration and deleted group '{group.name}'")
 
+    @retry_on_deadlock()
     async def on_app_role_deleted(
         self,
         external_role_id: str,
@@ -1870,6 +1889,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_record_group_deleted(
         self,
         external_group_id: str,
@@ -1945,12 +1965,14 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
+    @retry_on_deadlock()
     async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
         async with self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
+    @retry_on_deadlock()
     async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
         """Delete permissions from a record."""
 

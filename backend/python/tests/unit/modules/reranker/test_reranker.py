@@ -23,14 +23,28 @@ class TestRerankerService:
 
     @pytest.fixture
     def service(self, mock_cross_encoder):
-        """Create a RerankerService with mocked model."""
+        """Create a RerankerService with its model pre-populated.
+
+        The real service lazy-loads the CrossEncoder on the first call to
+        ``rerank()``; for the reranking-logic tests below we bypass that by
+        setting ``svc.model`` directly so tests can configure
+        ``service.model.predict.return_value`` synchronously.
+        """
         from app.modules.reranker.reranker import RerankerService
-        mock_ce, model_instance, _ = mock_cross_encoder
+        _, model_instance, _ = mock_cross_encoder
         svc = RerankerService(model_name="test-model")
-        assert mock_ce.called
+        svc.model = model_instance
         return svc
 
     # ── Initialization ──────────────────────────────────────────────────
+
+    def test_init_does_not_load_model_eagerly(self, mock_cross_encoder):
+        """Construction must NOT download/load the CrossEncoder (would block loop)."""
+        from app.modules.reranker.reranker import RerankerService
+        mock_ce, _, _ = mock_cross_encoder
+        svc = RerankerService(model_name="test-model")
+        assert svc.model is None
+        mock_ce.assert_not_called()
 
     def test_init_cpu_device(self, mock_cross_encoder):
         from app.modules.reranker.reranker import RerankerService
@@ -38,26 +52,46 @@ class TestRerankerService:
         mock_torch.cuda.is_available.return_value = False
         svc = RerankerService()
         assert svc.device == "cpu"
-        # half() should NOT be called on CPU
+        # half() should NOT be called on CPU even once the model is loaded.
+        svc._load_model_sync()
         model_instance.model.half.assert_not_called()
 
-    def test_init_cuda_device_applies_half_precision(self):
+    def test_cuda_load_applies_half_precision(self):
+        """On CUDA, the lazy load path should apply half precision."""
         with patch("app.modules.reranker.reranker.CrossEncoder") as mock_ce, \
              patch("app.modules.reranker.reranker.torch") as mock_torch:
             mock_torch.cuda.is_available.return_value = True
             model_instance = MagicMock()
             mock_ce.return_value = model_instance
-            # Capture original .model before it gets overwritten by half()
             original_inner_model = model_instance.model
             from app.modules.reranker.reranker import RerankerService
             svc = RerankerService()
             assert svc.device == "cuda"
+            # Construction must not trigger the load.
+            mock_ce.assert_not_called()
+            svc._load_model_sync()
             original_inner_model.half.assert_called_once()
 
     def test_init_stores_model_name(self, mock_cross_encoder):
         from app.modules.reranker.reranker import RerankerService
         svc = RerankerService(model_name="custom/model")
         assert svc.model_name == "custom/model"
+
+    @pytest.mark.asyncio
+    async def test_lazy_load_on_first_rerank(self, mock_cross_encoder):
+        """First rerank() call should trigger the CrossEncoder load exactly once."""
+        from app.modules.reranker.reranker import RerankerService
+        mock_ce, model_instance, _ = mock_cross_encoder
+        model_instance.predict.return_value = np.array([0.5])
+        svc = RerankerService(model_name="lazy-model")
+        assert svc.model is None
+        docs = [{"content": "doc", "score": 0.5, "block_type": BlockType.TEXT.value}]
+        await svc.rerank("q", docs)
+        # CrossEncoder should have been instantiated exactly once via the lazy path.
+        assert mock_ce.call_count == 1
+        # A second rerank should not reload.
+        await svc.rerank("q", docs)
+        assert mock_ce.call_count == 1
 
     # ── Empty input ─────────────────────────────────────────────────────
 

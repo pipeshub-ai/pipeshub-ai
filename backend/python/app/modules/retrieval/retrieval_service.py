@@ -44,6 +44,15 @@ USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
 
+valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
+    ]
+
 class RetrievalService:
     def __init__(
         self,
@@ -84,6 +93,10 @@ class RetrievalService:
         self.embedding_model = None
         self.embedding_size = None
         self.embedding_model_instance = None
+        # Serialize concurrent embedding model loads so we only build the model
+        # once even if multiple requests race during warmup. Safe to create at
+        # import-time on Python 3.10+ (no running loop required).
+        self._embedding_model_lock = asyncio.Lock()
 
     async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
         try:
@@ -125,48 +138,71 @@ class RetrievalService:
     async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
-            if self.embedding_model == embedding_model:
+
+            # Fast path: same model already loaded, no lock needed.
+            if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
                 return self.embedding_model_instance
-            self.embedding_model = embedding_model
-            try:
-                if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
-                    self.logger.info("Using default embedding model")
-                    embedding_model = DEFAULT_EMBEDDING_MODEL
-                    dense_embeddings = get_default_embedding_model()
 
-                else:
-                    self.logger.info(f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}")
-                    ai_models = await self.config_service.get_config(
-                        config_node_constants.AI_MODELS.value
-                    )
-                    dense_embeddings = None
-                    if ai_models["embedding"]:
-                        self.logger.info("No default embedding model found, using first available provider")
-                        configs = ai_models["embedding"]
-                        # Try to find the default config
-                        selected_config = next((c for c in configs if c.get("isDefault", False)), None)
-                        # If no default, take the first one
-                        if not selected_config and configs:
-                            selected_config = configs[0]
+            # Serialize the (potentially very slow) model load so concurrent
+            # callers don't all download / instantiate the embedding model.
+            async with self._embedding_model_lock:
+                # Re-check after acquiring the lock in case another coroutine
+                # already finished loading while we were waiting.
+                if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
+                    return self.embedding_model_instance
 
-                        if selected_config:
-                            dense_embeddings = get_embedding_model(selected_config["provider"], selected_config)
-                            self.logger.info(f"Embedding provider: {selected_config['provider']}")
+                try:
+                    if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
+                        self.logger.info("Using default embedding model")
+                        effective_model = DEFAULT_EMBEDDING_MODEL
+                        # HuggingFaceEmbeddings(...) may download ~1GB+ and load a
+                        # transformer, which blocks the event loop. Offload to a
+                        # worker thread so the server stays responsive.
+                        dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                    else:
+                        self.logger.info(
+                            f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
+                        )
+                        ai_models = await self.config_service.get_config(
+                            config_node_constants.AI_MODELS.value
+                        )
+                        dense_embeddings = None
+                        effective_model = embedding_model
+                        if ai_models["embedding"]:
+                            self.logger.info(
+                                "No default embedding model found, using first available provider"
+                            )
+                            configs = ai_models["embedding"]
+                            selected_config = next(
+                                (c for c in configs if c.get("isDefault", False)), None
+                            )
+                            if not selected_config and configs:
+                                selected_config = configs[0]
 
+                            if selected_config:
+                                # Provider clients (Bedrock/OpenAI/etc.) may also do
+                                # blocking I/O on construction, so offload here too.
+                                dense_embeddings = await asyncio.to_thread(
+                                    get_embedding_model,
+                                    selected_config["provider"],
+                                    selected_config,
+                                )
+                                self.logger.info(
+                                    f"Embedding provider: {selected_config['provider']}"
+                                )
 
-            except Exception as e:
-                self.logger.error(f"Error creating embedding model: {str(e)}")
-                raise EmbeddingModelCreationError(
-                    f"Failed to create embedding model: {str(e)}"
-                ) from e
+                except Exception as e:
+                    self.logger.error(f"Error creating embedding model: {str(e)}")
+                    raise EmbeddingModelCreationError(
+                        f"Failed to create embedding model: {str(e)}"
+                    ) from e
 
-            # Get the embedding dimensions from the model
-
-            self.logger.info(
-                f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
-            )
-            self.embedding_model_instance = dense_embeddings
-            return dense_embeddings
+                self.logger.info(
+                    f"Using embedding model: {getattr(effective_model, 'model', effective_model)}"
+                )
+                self.embedding_model = embedding_model
+                self.embedding_model_instance = dense_embeddings
+                return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
@@ -538,7 +574,7 @@ class RetrievalService:
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value:
+                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
                         _, child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)

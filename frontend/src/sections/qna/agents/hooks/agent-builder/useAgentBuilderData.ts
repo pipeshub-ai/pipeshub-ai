@@ -12,6 +12,8 @@ import AgentApiService from '../../services/api';
 /** Map a raw toolset item from the API into the sidebar-compatible format. */
 const toSidebarToolset = (inst: any) => ({
   ...inst,
+  // Preserved for credential dialogs (non-OAuth hydrate); API omits for OAuth.
+  auth: inst.auth,
   name: inst.toolsetType || inst.instanceName || '',
   normalized_name: inst.toolsetType || '',
   displayName: inst.instanceName || inst.displayName || inst.toolsetType || '',

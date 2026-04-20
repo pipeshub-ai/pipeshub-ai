@@ -1,0 +1,52 @@
+{
+    "chunk": ".",
+    "accumulated": "### VAPT Policy Overview\n\nThe VAPT (Vulnerability Assessment and Penetration Testing) policy is an essential component of an organization's security framework. It aims to identify, evaluate, and mitigate vulnerabilities within the organization's systems and applications. Here are the key elements of the VAPT policy:\n\n1. **Purpose**: The primary goal of the VAPT policy is to enhance the security posture of the organization by proactively identifying vulnerabilities before they can be exploited by malicious actors.\n\n2. **Scope**: The policy applies to all systems, applications, and networks owned or operated by the organization. This includes internal and external assets.\n\n3. **Assessment Types**:\n   - **Vulnerability Assessment**: A systematic review of security weaknesses in an information system. This includes identifying vulnerabilities in software, hardware, and network configurations.\n   - **Penetration Testing**: A simulated cyber attack against the organization's systems to exploit vulnerabilities and assess the effectiveness of security measures.\n\n4. **Frequency**: VAPT activities should be conducted regularly, with a minimum of annual assessments. However, more frequent assessments may be required after significant changes to the IT environment or following a security incident.\n\n5. **Reporting**: After each assessment, a detailed report should be generated, outlining identified vulnerabilities, their severity, and recommended remediation actions. This report should be shared with relevant stakeholders, including IT and security teams.\n\n6. **Remediation**: The organization must have a process in place to address identified vulnerabilities promptly. This includes prioritizing vulnerabilities based on their risk level and ensuring that remediation efforts are tracked and completed.\n\n7. **Compliance**: The VAPT policy should align with industry standards and regulatory requirements, such as SOC 2 and ISO/IEC 27001, to ensure compliance and best practices in security management [1].\n\n8. **Roles and Responsibilities**: Clearly define the roles and responsibilities of personnel involved in the VAPT process, including security teams, IT staff, and management.\n\n9. **Continuous Improvement**: The policy should include provisions for continuous improvement based on lessons learned from assessments and emerging threats in the cybersecurity landscape.\n\n### Conclusion\nImplementing a robust VAPT policy is crucial for safeguarding the organization's assets and ensuring compliance with security standards. Regular assessments help in maintaining a proactive security posture and mitigating risks effectively.",
+    "citations": [
+        {
+            "content": "PipesHub is compliant with SOC 2 and ISO/IEC pp\r\n27001, and is designed to meet enterprise gp\r\nsecurity,privacy, and compliance requirements. ypypq\r\nThe platform supports auditability, transparent pppyp\r\narchitecture, and strong access controls.",
+            "chunkIndex": 1,
+            "metadata": {
+                "orgId": "69803cedc03caefc0f8c167e",
+                "recordId": "184505ed-6fd8-470b-b538-885d29cbecfa",
+                "virtualRecordId": "1662ce6c-8ae4-4e38-8673-4a2b9aa5afa7",
+                "recordName": "Pipeshub _ Enterprise AI Search, Built for Trust.pdf",
+                "recordType": "FILE",
+                "recordVersion": 0,
+                "origin": "CONNECTOR",
+                "connector": "ONEDRIVE",
+                "blockText": "PipesHub is compliant with SOC 2 and ISO/IEC pp\r\n27001, and is designed to meet enterprise gp\r\nsecurity,privacy, and compliance requirements. ypypq\r\nThe platform supports auditability, transparent pppyp\r\narchitecture, and strong access controls.",
+                "blockType": "text",
+                "bounding_box": [
+                    {
+                        "x": 0.05218749841054281,
+                        "y": 0.487962962962963
+                    },
+                    {
+                        "x": 0.27852373123168944,
+                        "y": 0.487962962962963
+                    },
+                    {
+                        "x": 0.27852373123168944,
+                        "y": 0.600092598243996
+                    },
+                    {
+                        "x": 0.05218749841054281,
+                        "y": 0.600092598243996
+                    }
+                ],
+                "pageNum": [
+                    7
+                ],
+                "extension": "pdf",
+                "mimeType": "application/pdf",
+                "blockNum": [
+                    71
+                ],
+                "webUrl": "https://pipeshubinc-my.sharepoint.com/personal/abhishek_pipeshubinc_onmicrosoft_com/Documents/Pipeshub%20_%20Enterprise%20AI%20Search,%20Built%20for%20Trust.pdf",
+                "previewRenderable": true,
+                "hideWeburl": false
+            },
+            "citationType": "vectordb|document"
+        }
+    ]
+}

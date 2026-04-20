@@ -18,10 +18,9 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from typing import Any, Literal, Union
 from uuid import UUID
-import pytz
-from datetime import datetime, timezone
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -30,11 +29,19 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
-from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.capability_summary import (
+    build_capability_summary,
+    build_connector_routing_rules,
+    classify_knowledge_sources,
+)
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
-from app.modules.qna.response_prompt import create_response_messages
+from app.modules.qna.response_prompt import (
+    build_direct_answer_time_context,
+    create_response_messages,
+)
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
+from app.utils.time_conversion import build_llm_time_context
 
 # ============================================================================
 # CONSTANTS & CONFIGURATION
@@ -104,7 +111,7 @@ class NodeConfig:
     MAX_VALIDATION_RETRIES: int = 2
 
     # Query limits
-    MAX_RETRIEVAL_QUERIES: int = 3
+    MAX_RETRIEVAL_QUERIES: int = 6
     MAX_QUERY_LENGTH: int = 100
     MAX_QUERY_WORDS: int = 8
 
@@ -535,7 +542,7 @@ def _underscore_to_dotted(name: str) -> str:
 
     Tool names follow 'app.tool_name' format.  The first underscore
     that corresponds to the app/tool separator is replaced with a dot.
-    
+
     If the name already contains a dot, return it as-is (don't create invalid names).
     """
     # If name already has a dot, don't convert (avoid creating invalid names like calculator.calculate.single_operand)
@@ -1401,9 +1408,14 @@ class ToolExecutor:
     def _process_retrieval_output(result: dict[str, Any] | str | tuple[bool, str] | list[Any] | None, state: ChatState, log: logging.Logger) -> str:
         """Process retrieval tool output and update state (accumulates results from multiple retrieval calls)"""
         try:
+            # Fast path: tool already wrote to state and returned pre-formatted content
+            if isinstance(result, str) and "<record>" in result:
+                log.info("📚 Retrieval returned pre-formatted content (state already updated by tool)")
+                return result
+
             from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
-            # Try to parse as RetrievalToolOutput
+            # Legacy/fallback path: parse JSON and extract data
             retrieval_output = None
 
             if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -2475,7 +2487,7 @@ Example 2: "What columns are in invoice?"
 2. Optional follow-up: `mariadb.execute_query` only if user asks for row data
 
 Example 3: "Give me the DDL for invoice"
-1. `mariadb.get_table_ddl(table="invoice")`    
+1. `mariadb.get_table_ddl(table="invoice")`
 """
 
 
@@ -2534,14 +2546,17 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
 4. **User wants data FROM a specific service?**
    - *Explicit:* names the service ("list Jira issues", "Confluence pages", "my Gmail")
+   - *Topic + source pattern:* **"[topic] from [service]"**, **"[topic] only from [service]"**, **"[topic] in [service]"** → Treat as a data request: search [service] for [topic] using live API + retrieval in parallel (if indexed). Even if phrased as a constraint/instruction, always SEARCH immediately.
    - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
    → Use the matching service tool. **If that service is ALSO indexed (see DUAL-SOURCE APPS), add retrieval in parallel.**
-5. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
+5. **Short follow-up trigger after established topic+source?** ("give data", "show me", "go ahead", "yes", "do it", "continue") → Check conversation context for the most recent topic and source, then search that source for that topic. Do NOT set `can_answer_directly: true`.
+6. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
 
 ## CRITICAL: Retrieval is the Default
 
 **⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**
 **⚠️ RULE: If you have 0 tools planned and needs_clarification=false and can_answer_directly=false, you MUST add retrieval.**
+**⚠️ RULE: A bare topic keyword, name, or phrase (even a single word) is ALWAYS a retrieval query — NEVER `can_answer_directly: true`. Search first, answer from results.**
 
 Examples of retrieval queries:
 - "Tell me about X" → retrieval
@@ -2805,7 +2820,7 @@ User: "from the all above conversations what is all that we have discussed and w
 Action: Set can_answer_directly: true, answer from conversation history, NO tools
 ```
 
-**General rule:** Conversation context beats tool calls. Meta-questions about conversation = direct answer.
+**General rule:** Reuse applies only to data that was actually fetched and shown. Acknowledgments and injected context are not reusable data.
 
 ## Content Generation for Action Tools
 
@@ -2893,6 +2908,7 @@ Generate:
 {mariadb_guidance}
 {redshift_guidance}
 {zoom_guidance}
+{salesforce_guidance}
 
 ## Planning Best Practices
 
@@ -2993,8 +3009,10 @@ WRONG (don't do this):
 ```
 
 **User asking about themselves:**
-- Use provided user info directly
-- Set `can_answer_directly: true`
+- Only applies when the user's message is **explicitly asking about their own identity/profile** (e.g., "who am I?", "what's my email?", "what's my account type?")
+- The `## Current User Information` block is **injected system context** for your use in queries — its presence does NOT mean the user is asking about themselves
+- If the conversation context establishes a pending data retrieval (e.g., user asked for Jira issues, Confluence pages), the current user info is just context to help build queries — execute the retrieval
+- Set `can_answer_directly: true` **only** for pure self-info questions with no other data retrieval intent
 
 **User asking about capabilities:**
 - When users ask about capabilities, available tools, knowledge sources, or what actions you can perform
@@ -3541,6 +3559,75 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
+SALESFORCE_GUIDANCE = r"""
+# Salesforce Toolset Guidance
+
+## Available Tools
+- **soql_query / sosl_search** — Run SOQL (structured) or SOSL (full-text) queries. Always include `LIMIT` in SOQL.
+- **get_record / create_record / update_record / delete_record** — Generic CRUD by sObject API name + Id. Use specialized tools below for standard objects when possible.
+- **describe_object** — Inspect fields, types, and picklist values for any sObject before querying or creating.
+- **list_recent_records** — Quick "recent N" listing for any sObject.
+- **search_accounts / create_account** — Account search and create.
+- **search_contacts / create_contact** — Contact search and create (LastName required).
+- **search_leads / create_lead / convert_lead** — Lead search, create, and convert (to Account/Contact, optionally Opportunity).
+- **search_opportunities / create_opportunity** — Opportunity search and create (Name, StageName, CloseDate required).
+- **search_cases / create_case** — Case search and create.
+- **search_products / create_product** — Product2 catalog search and create.
+- **add_product_to_opportunity** — Adds an OpportunityLineItem (resolves PricebookEntry from product_id automatically).
+- **search_tasks / create_task** — Task activities (use `what_id` for Account/Opportunity/Case, `who_id` for Contact/Lead).
+- **get_record_chatter** — Fetches the Chatter feed (posts, comments, authors, timestamps) for any record by Id.
+- **post_chatter_to_record** — Creates a new top-level Chatter post on any record.
+- **post_chatter_comment** — Replies to an existing Chatter feed item (use the FeedElement Id, starts with `0D5`).
+- **get_current_user** — Returns the authenticated user's profile / Id.
+
+## Core Rules
+- **Prefer specialized tools** over `soql_query` / `create_record` / `update_record` for standard objects (Account, Contact, Lead, Opportunity, Case, Product2, Task). Use generic tools only for custom objects (`__c`) or when a specialized tool can't express the request.
+- **SOQL must always include `LIMIT`** (default to `LIMIT 10-50`) and prefer `ORDER BY LastModifiedDate DESC`.
+- **Never invent record Ids.** If you only have a name, search first (e.g., `search_accounts`) then use the returned Id.
+- **Never guess picklist values** (StageName, Status, Priority, Industry). If unsure, call `describe_object` to discover valid values.
+- **Date format**: All date fields (e.g., `CloseDate`, `ActivityDate`) must be `YYYY-MM-DD`.
+- **Don't ask the user for optional fields** they didn't mention — omit them.
+- **Act first, don't ask.** If the user gives a record name (opportunity, account, contact, etc.), immediately search for it with a fuzzy `LIKE` match — DO NOT ask for the Id or the exact spelling. Only ask for clarification if the search returns multiple ambiguous results AND you cannot pick a clearly best match. Single match → proceed silently.
+
+## Tool-Level Dependencies
+
+| Tool | Dependency Logic |
+|-----|----------------|
+| `get_record` | Requires `record_id` → resolve via the matching `search_*` tool first if missing |
+| `update_record` | Requires `record_id` → resolve via search first; never update by name |
+| `delete_record` | Requires `record_id` → resolve via search first; confirm deletion intent |
+| `describe_object` | Standalone — call BEFORE creating/querying when unsure of fields or picklist values |
+| `list_recent_records` | Standalone |
+| `soql_query` | Standalone — but if filtering by a name, first resolve to an Id via the matching `search_*` tool |
+| `sosl_search` | Standalone — use for cross-object full-text search when the target object is unknown |
+| `get_record_chatter` | Requires `record_id` → resolve via the matching `search_*` tool (e.g., `search_opportunities`, `search_accounts`) |
+| `post_chatter_to_record` | Requires `record_id` → resolve via the matching `search_*` tool. Use for NEW top-level posts on a record |
+| `post_chatter_comment` | Requires `feed_element_id` (starts with `0D5`) → if you already have it from a prior `get_record_chatter` in this conversation use it directly; otherwise resolve record → `get_record_chatter` → pick the target post. Use for REPLIES to existing posts |
+| `search_accounts` | Standalone |
+| `create_account` | Standalone — only `Name` is required |
+| `search_contacts` | Optional `account_id` filter → resolve via `search_accounts` if user filters by account name |
+| `create_contact` | Optional `account_id` → resolve via `search_accounts` if user mentions an account by name |
+| `search_leads` | Standalone |
+| `create_lead` | Standalone — `LastName` and `Company` required |
+| `convert_lead` | Requires `lead_id` → resolve via `search_leads`. `converted_status` is a `LeadStatus` picklist with `IsConverted=true` (commonly `'Closed - Converted'`); call `describe_object("LeadStatus")` if unsure |
+| `search_opportunities` | Optional `account_id` filter → resolve via `search_accounts` if user filters by account name |
+| `create_opportunity` | Optional `account_id` → resolve via `search_accounts`. `stage_name` is a picklist → call `describe_object("Opportunity")` if unsure |
+| `search_cases` | Optional `account_id` filter → resolve via `search_accounts` |
+| `create_case` | Optional `account_id` / `contact_id` → resolve via `search_accounts` / `search_contacts` |
+| `search_products` | Standalone |
+| `create_product` | Standalone — note: needs a separate `PricebookEntry` to be sellable on opportunities |
+| `add_product_to_opportunity` | Requires `opportunity_id` (→ `search_opportunities`) AND `product_id` (→ `search_products`). Auto-resolves PricebookEntry |
+| `search_tasks` | Optional `what_id` (→ matching `search_*`), `who_id` (→ `search_contacts` / `search_leads`), `owner_id` (→ `get_current_user` for self) |
+| `create_task` | `what_id` → resolve via the right `search_*` tool (Account/Opportunity/Case). `who_id` → resolve via `search_contacts` / `search_leads`. `owner_id` defaults to current user |
+| `get_current_user` | Standalone — call FIRST whenever the user says "my X" so you can filter by the returned `OwnerId` |
+
+## Example Flow: "what is being discussed in the Acme opportunity chatter?"
+1. `search_opportunities(name="Acme")` → get the Id (and `webUrl`).
+2. `get_record_chatter(record_id=<id>)` → fetch the feed.
+3. Summarize the latest posts/comments with authors and dates. Surface the `webUrl`.
+DO NOT ask the user for the Opportunity Id or to confirm the exact name before step 1.
+"""
+
 ZOOM_GUIDANCE = r"""
 # Zoom Toolset Guidance
 
@@ -3657,8 +3744,8 @@ ZOOM_GUIDANCE = r"""
 - **Never set both.** If neither is given, ask the user which they prefer.
 
 ### Timezone Inference
-BEFORE checking if timezone is missing, always read the Temporal Context 
-   section. If User timezone is present there, use it directly. Never ask user for timezone.
+BEFORE checking if timezone is missing, always read the **Time context**
+   section. If a **Time zone** line is present there, use it directly. Never ask the user for a time zone.
 
 ---
 
@@ -3668,7 +3755,7 @@ BEFORE checking if timezone is missing, always read the Temporal Context
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
-5. **Always use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
+5. **Always use the user's timezone** → INFERRABLE from **Time context**, and assume current year if not provided.
 6. **Multiple matches on search — confirm before acting.** If `list_meetings` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
 8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
@@ -3839,6 +3926,7 @@ async def planner_node(
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
+    salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -3851,7 +3939,8 @@ async def planner_node(
         clickup_guidance=clickup_guidance,
         mariadb_guidance=mariadb_guidance,
         redshift_guidance=redshift_guidance,
-        zoom_guidance=zoom_guidance
+        zoom_guidance=zoom_guidance,
+        salesforce_guidance=salesforce_guidance,
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -3903,16 +3992,12 @@ async def planner_node(
         system_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{system_prompt}"
 
     # Add timezone / current time context if provided
-    timezone = state.get("timezone")
-    current_time = state.get("current_time")
-    if timezone or current_time:
-        time_context_parts = []
-        if current_time:
-            time_context_parts.append(f"Current time: {current_time}")
-        if timezone:
-            time_context_parts.append(f"User timezone: {timezone}")
-        time_context = "\n".join(time_context_parts)
-        system_prompt = f"{system_prompt}\n\n## Temporal Context\n{time_context}"
+    time_block = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+    if time_block:
+        system_prompt = f"{system_prompt}\n\n{time_block}"
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
     messages = _build_planner_messages(state, query, log)
@@ -4235,7 +4320,7 @@ def _format_user_context(state: ChatState) -> str:
             parts.append("")
 
         parts.append("**General:**")
-        parts.append("- **When user asks about themselves**: use this info DIRECTLY with `can_answer_directly: true`")
+        parts.append("- **When user asks about themselves**: answer using this info directly — no tools needed")
         parts.append("")
 
     return "\n".join(parts)
@@ -4905,6 +4990,12 @@ def _has_zoom_tools(state: ChatState) -> bool:
     return any(isinstance(ts, dict) and "zoom" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
+def _has_salesforce_tools(state: ChatState) -> bool:
+    """Check if Salesforce tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "salesforce" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
 def _has_clickup_tools(state: ChatState) -> bool:
     """Check if ClickUp tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
@@ -4919,7 +5010,9 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
     Build knowledge context for the planner prompt.
 
-    Fully data-driven — no hardcoded per-app rules.
+    Uses shared `classify_knowledge_sources` and `build_connector_routing_rules`
+    from capability_summary so connector routing logic is maintained in one place.
+
     Derives guidance from what is actually configured:
       - agent_knowledge  → what is indexed (retrieval sources)
       - agent_toolsets   → what live API tools exist
@@ -4930,31 +5023,15 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     if not agent_knowledge:
         return ""
 
-    # ── 1. Classify knowledge sources ────────────────────────────────────────
-    # KB = document stores; everything else = app connector snapshot
-    kb_sources: list[str] = []
-    indexed_apps: list[dict] = []   # {"label": str, "type_key": str, "connector_id": str}
-
-    for k in agent_knowledge:
-        if not isinstance(k, dict):
-            continue
-        name     = k.get("displayName") or k.get("name") or ""
-        ktype    = (k.get("type") or "").strip()
-        ktype_up = ktype.upper()
-        connector_id = (k.get("connectorId") or "").strip()
-
-        if ktype_up == "KB":
-            kb_sources.append(name or "Knowledge Base (Collection)")
-        else:
-            # Normalise to lowercase single-word key (e.g. "DRIVE WORKSPACE" → "drive")
-            type_key = ktype.lower().split()[0] if ktype else ""
-            label    = name or type_key.capitalize() or "App Connector"
-            indexed_apps.append({"label": label, "type_key": type_key, "connector_id": connector_id})
-
+    # ── 1. Classify knowledge sources (shared utility) ────────────────────
+    connector_configs = state.get("connector_configs") or {}
+    kb_sources, indexed_apps = classify_knowledge_sources(
+        agent_knowledge,
+        connector_configs=connector_configs if isinstance(connector_configs, dict) else None,
+    )
     indexed_type_keys = {a["type_key"] for a in indexed_apps if a["type_key"]}
 
-    # ── 2. Classify live API toolsets ────────────────────────────────────────
-    # Build: type_key → list of tool names available for that app
+    # ── 2. Classify live API toolsets ────────────────────────────────────
     api_tools_by_type: dict[str, list[str]] = {}
 
     for ts in agent_toolsets:
@@ -4964,7 +5041,6 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         if not ts_name or ts_name in ("retrieval", "calculator"):
             continue
 
-        # Normalise toolset name to type_key (same logic as knowledge)
         ts_key   = ts_name.split()[0]
         ts_tools = ts.get("tools", [])
         tool_names = [
@@ -4979,7 +5055,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
 
     overlapping_keys = indexed_type_keys & set(api_tools_by_type.keys())
 
-    # ── 3. Build context block ────────────────────────────────────────────────
+    # ── 3. Build context block ────────────────────────────────────────────
     lines: list[str] = [
         "",
         "## 🧠 KNOWLEDGE & DATA SOURCES",
@@ -4992,30 +5068,53 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             "\n### 📚 INDEXED KNOWLEDGE → `retrieval.search_internal_knowledge`"
         )
         lines.append(
-            "Retrieval performs **semantic search** across ALL indexed sources at once.\n"
+            "Retrieval performs **semantic search** across indexed sources.\n"
             "Use it when the query asks *what is / find / search by topic or keyword*.\n"
-            "⚠️  Retrieval returns a **snapshot** — it may lag behind the live system."
+            "⚠️  Retrieval returns a **snapshot** — it may lag behind the live system.\n\n"
+            "**Two distinct filter parameters — never confuse them:**\n"
+            "  • `collection_ids` → filters to a specific **KB collection** "
+            "(use the record_group_id listed below)\n"
+            "  • `connector_ids` → filters to a specific **app connector** "
+            "(use the connector_id listed below)\n"
+            "  • Omit both → searches all indexed content"
         )
 
         if kb_sources:
-            lines.append("\n**Knowledge Bases (always searched, no filter needed):**")
-            lines.extend(f"  - 📄 {kb}" for kb in kb_sources)
+            lines.append("\n**Knowledge Base Collections** (search with `collection_ids`):")
+            for kb in kb_sources:
+                cids = kb.get("collection_ids", [])
+                if cids:
+                    cids_display = ", ".join(f'"{c}"' for c in cids)
+                    lines.append(
+                        f'  - 📄 **{kb["label"]}** — ({kb["type"]}) '
+                        f'`collection_ids: [{cids_display}]`'
+                    )
+                else:
+                    lines.append(
+                        f'  - 📄 {kb["label"]} '
+                        "(omit collection_ids to search full KB)"
+                    )
 
         if indexed_apps:
+            from app.modules.agents.capability_summary import format_connector_filter_lines
             lines.append(
-                "\n**Indexed App Connectors** (text is searchable via retrieval):\n"
-                "  Use the type_key or connector_id in `filters.apps` for retrieval:"
+                "\n**Indexed App Connectors** (search with `connector_ids`):"
             )
-            lines.extend(
-                f"  - 🔗 `{app['type_key']}` ({app['label']}) — connector_id: `{app['connector_id']}`"
-                for app in indexed_apps
-            )
-        else:
-            lines.append(
-                "\n⚠️  **NO app connectors are indexed** — only Knowledge Bases above are available.\n"
-                "  → When calling `retrieval.search_internal_knowledge`, do NOT set `filters.apps`.\n"
-                "  → Use `filters: {{}}` or omit filters entirely so the KB is searched."
-            )
+            for app in indexed_apps:
+                line = f"  - 🔗 **{app['label']}** (app: {app['type_key']}) — connector_id: `{app['connector_id']}`"
+                fls = format_connector_filter_lines(app.get("filters"))
+                if fls:
+                    line += f" [indexed: {'; '.join(fls)}]"
+                lines.append(line)
+
+        # ── Routing rules (handles KB-only, connector-only, and mixed) ──
+        routing = build_connector_routing_rules(
+            indexed_apps,
+            kb_sources=kb_sources,
+            call_format="planner",
+        )
+        if routing:
+            lines.append(routing)
 
     # --- Live API toolsets ---
     if api_tools_by_type:
@@ -5030,10 +5129,9 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             "  • **Write actions** — create, update, delete, comment, send, assign"
         )
         for ts_key, tool_names in api_tools_by_type.items():
-            # Show up to 5 representative tool names
             MAX_TOOLS = 5
-            sample = ", ".join(tool_names[:5])
-            more   = f" … (+{len(tool_names)-5} more)" if len(tool_names) > MAX_TOOLS else ""
+            sample = ", ".join(tool_names[:MAX_TOOLS])
+            more   = f" … (+{len(tool_names) - MAX_TOOLS} more)" if len(tool_names) > MAX_TOOLS else ""
             lines.append(f"  - 🛠️ **{ts_key.capitalize()}**: {sample}{more}")
 
     # --- Overlap guidance (apps with BOTH indexed AND live API) ---
@@ -5047,12 +5145,12 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             "\n"
             "| User intent | What to use |\n"
             "|---|---|\n"
-            "| **SERVICE NOUN** without explicit search verb — '[topic] tickets', '[topic] issues', '[topic] pages' | BOTH retrieval + live API search (parallel) |\n"
-            "| **FIND / SEARCH** content by topic or keyword — 'find pages about X', 'search for issues about Y' | BOTH retrieval + live API search (parallel) |\n"
-            "| **LIVE / CURRENT** data — 'list my open tickets', 'show recent changes', 'assigned to me' | live API only |\n"
+            "| **SERVICE NOUN** — '[topic] tickets', '[topic] pages' (no explicit verb) | BOTH retrieval + live API search (parallel) |\n"
+            "| **FIND / SEARCH** content by topic or keyword | BOTH retrieval + live API search (parallel) |\n"
+            "| **LIVE / CURRENT** data — 'list my open tickets', 'assigned to me' | live API only |\n"
             "| **LOOKUP** by exact ID or key — PA-123, page id 12345 | live API only |\n"
-            "| **WRITE ACTION** — create, update, delete, comment, send, assign | live API write tool only |\n"
-            "| **INFORMATION** — 'what is X', 'tell me about Y', 'explain Z' (no service resource noun) | retrieval only |\n"
+            "| **WRITE ACTION** — create, update, delete, comment, assign | live API write tool only |\n"
+            "| **INFORMATION** — 'what is X', 'explain Z' (no service resource noun) | retrieval only |\n"
         )
         for key in sorted(overlapping_keys):
             label = next(
@@ -5063,19 +5161,15 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             lines.append(
                 f"  **{label}**: retrieval → topic/historical search; "
                 f"live API ({', '.join(tool_sample)}) → current data, exact IDs, write actions; "
-                f"BOTH → when user uses a service resource noun ('[topic] tickets', '[topic] issues', '[topic] pages') OR explicitly asks to find/search content by topic"
+                f"BOTH → service resource noun ('[topic] tickets', '[topic] pages') "
+                f"OR explicit find/search by topic"
             )
 
-    # --- Hybrid search guidance: when to combine retrieval + live search APIs ---
-    # Only relevant when user explicitly wants to find/search/discover content.
+    # --- Hybrid search guidance ---
     has_retrieval = bool(kb_sources or indexed_apps)
-    # Collect search-capable tools from non-overlapping toolsets
     non_overlap_search_tools: dict[str, list[str]] = {}
     for ts_key, tool_names in api_tools_by_type.items():
-        search_tools = [
-            t for t in tool_names
-            if "search" in t.split(".")[-1].lower()
-        ]
+        search_tools = [t for t in tool_names if "search" in t.split(".")[-1].lower()]
         if search_tools:
             non_overlap_search_tools[ts_key] = search_tools
 
@@ -5102,20 +5196,20 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             lines.append(f"  - 🔍 **{ts_key.capitalize()}**: {tool_list}")
 
         lines.append(
-            "\n**EXAMPLE** — 'find pages about OneDrive configuration' (explicit search in service):\n"
-            "```json\n"
-            "[\n"
-            "  {{\"name\": \"retrieval.search_internal_knowledge\", \"args\": {{\"query\": \"OneDrive configuration\", \"filters\": {{}}}}}},\n"
-            "  {{\"name\": \"confluence.search_content\", \"args\": {{\"query\": \"OneDrive configuration\"}}}}\n"
-            "]\n"
-            "```\n"
-            "**EXAMPLE** — 'what is our OneDrive configuration?' (information query, NOT explicit search):\n"
-            "```json\n"
-            "[{{\"name\": \"retrieval.search_internal_knowledge\", \"args\": {{\"query\": \"OneDrive configuration\"}}}}]\n"
-            "```"
+            "\n**EXAMPLE** — 'find pages about OneDrive configuration':\n"
+            '```json\n'
+            '[\n'
+            '  {"name": "retrieval.search_internal_knowledge", "args": {"query": "OneDrive configuration"}},\n'
+            '  {"name": "confluence.search_content", "args": {"query": "OneDrive configuration"}}\n'
+            ']\n'
+            '```\n'
+            "**EXAMPLE** — 'what is our OneDrive configuration?' (information only):\n"
+            '```json\n'
+            '[{"name": "retrieval.search_internal_knowledge", "args": {"query": "OneDrive configuration"}}]\n'
+            '```'
         )
 
-    # --- Universal decision rule (always shown) ---
+    # --- Universal decision rule (always shown at the end) ---
     lines.append(
         "\n### 🎯 TOOL SELECTION SUMMARY\n"
         "```\n"
@@ -5128,10 +5222,14 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         "General information query — 'what is X', 'tell me about Y' (no service noun)   →  retrieval (DEFAULT)\n"
         "Ambiguous / unclear intent                                                     →  retrieval (DEFAULT)\n"
         "```\n"
-        "⚠️ **RETRIEVAL FILTER RULE**:\n"
-        "   • `filters.apps` should ONLY contain app names listed in 'Indexed App Connectors' above.\n"
-        "   • If no app connectors are indexed (only KB), use `\"filters\": {{}}` (empty).\n"
-        "   • NEVER set `filters.apps` to a live-API-only service.\n"
+        "⚠️ **RETRIEVAL CONNECTOR RULE**:\n"
+        "   • Reason about the query to determine which connector(s) it targets.\n"
+        "   • **Connector(s) identified → search only those** — one parallel call per identified connector.\n"
+        "   • **Cannot identify a connector (general / ambiguous) → search ALL configured connectors in parallel.**\n"
+        "   • Default when uncertain: search ALL connectors.\n"
+        "   • Each call sets `connector_ids` to exactly ONE connector_id — never combine them.\n"
+        "   • If only KB sources are indexed (no app connectors), omit `connector_ids`.\n"
+        "   • NEVER set `connector_ids` to a live-API-only service connector.\n"
         "\n"
         "⚠️ **EFFICIENCY**: If a previous tool already returned IDs/keys, use them\n"
         "   directly in the next write tool. Do NOT re-fetch items you already have."
@@ -6065,110 +6163,6 @@ async def prepare_continue_node(
 
 
 # ============================================================================
-# MERGE AND NUMBER RETRIEVAL RESULTS (OPTION B)
-# ============================================================================
-
-def merge_and_number_retrieval_results(
-    final_results: list[dict[str, Any]],
-    log: logging.Logger
-) -> list[dict[str, Any]]:
-    """
-    Merge and deduplicate retrieval results from multiple parallel calls.
-
-    OPTION B: This function is called ONCE after all parallel retrieval
-    calls are complete. It:
-    1. Deduplicates blocks by (virtual_record_id, block_index)
-    2. Groups blocks by document, ordering documents by their best relevance
-       score (most relevant first). Within each document, blocks are ordered
-       by block_index for readability.
-
-    Sorting by relevance score (not by UUID string) ensures that R1 always
-    refers to the most relevant document. This matters critically for
-    fetch_full_record tool calls — when the LLM calls fetch_full_record(["R1"])
-    it should retrieve the most relevant document, not an arbitrarily-ordered one.
-
-    NOTE: Block numbering is done by get_message_content() (same as chatbot).
-    This function only merges and sorts - no numbering here.
-
-    Args:
-        final_results: List of result dicts from multiple retrieval calls
-        log: Logger instance
-
-    Returns:
-        Deduplicated and relevance-sorted results (block numbers assigned later
-        by get_message_content)
-    """
-    if not final_results:
-        return []
-
-    # Step 1: Deduplicate by (virtual_record_id, block_index)
-    seen_blocks: dict[tuple, Any] = {}
-    # Track the best score seen for each document (used for document ordering)
-    doc_best_score: dict[str, float] = {}
-    # Track the earliest position each document appeared in the results list
-    doc_first_position: dict[str, int] = {}
-
-    for position, result in enumerate(final_results):
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-
-        if not virtual_record_id:
-            continue
-
-        block_index = result.get("block_index", 0)
-        block_key = (virtual_record_id, block_index)
-        score = float(result.get("score", 0.0))
-
-        # Track best score per document for ordering
-        if virtual_record_id not in doc_best_score or score > doc_best_score[virtual_record_id]:
-            doc_best_score[virtual_record_id] = score
-
-        # Track earliest position per document as tiebreaker
-        if virtual_record_id not in doc_first_position:
-            doc_first_position[virtual_record_id] = position
-
-        # Keep the first occurrence (or the one with highest score if duplicate)
-        if block_key not in seen_blocks:
-            seen_blocks[block_key] = result
-        else:
-            existing_score = seen_blocks[block_key].get("score", 0.0)
-            if score > existing_score:
-                seen_blocks[block_key] = result
-
-    # Step 2: Sort documents by relevance (best score desc, then earliest position asc)
-    # Within each document, sort blocks by block_index for natural reading order.
-    deduplicated = list(seen_blocks.values())
-
-    def sort_key(x: dict[str, Any]) -> tuple:
-        vid = x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", "")
-        best_score = doc_best_score.get(vid, 0.0)
-        first_pos = doc_first_position.get(vid, 999999)
-        block_idx = x.get("block_index", 0)
-        # Primary: highest score first (-best_score), Secondary: earliest position, Tertiary: block_index
-        return (-best_score, first_pos, block_idx)
-
-    deduplicated.sort(key=sort_key)
-
-    # Step 3: Count unique records for logging
-    seen_virtual_record_ids = set()
-    for result in deduplicated:
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-        if virtual_record_id:
-            seen_virtual_record_ids.add(virtual_record_id)
-
-    log.info(
-        f"✅ Merged {len(deduplicated)} blocks from {len(seen_virtual_record_ids)} records "
-        f"(deduplicated from {len(final_results)} raw results, sorted by relevance score). "
-        f"Block numbering will be done by get_message_content()."
-    )
-
-    return deduplicated
-
-
-# ============================================================================
 # RESPOND NODE - FINAL RESPONSE GENERATION
 # ============================================================================
 
@@ -6343,23 +6337,6 @@ async def respond_node(
             log.warning(f"Fast-path failed, falling back to standard: {e}")
             # Fall through to standard path
 
-    # ================================================================
-    # Merge and deduplicate retrieval results from parallel calls.
-    # Then sort by (virtual_record_id, block_index) — the SAME ordering
-    # the chatbot uses so that get_message_content() assigns consistent
-    # R-labels (R1 = first record's blocks, R2 = second record, etc.)
-    # ================================================================
-    if final_results:
-        final_results = merge_and_number_retrieval_results(final_results, log)
-        # Mirror chatbot sort: group by record then by block order within record
-        final_results = sorted(
-            final_results,
-            key=lambda x: (
-                x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
-                x.get("block_index", 0),
-            ),
-        )
-        state["final_results"] = final_results
 
     log.info(f"📚 Citation data: {len(final_results)} results, {len(virtual_record_map)} records")
 
@@ -6367,9 +6344,9 @@ async def respond_node(
     # Use get_message_content() — the EXACT same function the chatbot
     # uses — to build the user message with knowledge context.
     # This ensures:
-    #   • Consistent R{record_number}-{block_index} block labels
+    #   • Consistent block indices and block web URLs
     #   • The same rich context_metadata per record
-    #   • The same tool instructions (fetch_full_record with R-labels)
+    #   • The same tool instructions (fetch_full_record with record IDs)
     #   • The same output-format instructions
     # The formatted content is stored in state["qna_message_content"]
     # and consumed by create_response_messages() below.
@@ -6399,21 +6376,16 @@ async def respond_node(
                     "Please provide accurate and relevant information."
                 )
 
-        qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, log, "json"
+        from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+        _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        qna_content, _ref_mapper = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper
         )
+        state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content
         log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")
     else:
         state["qna_message_content"] = None
-
-    # Build R-label → virtual_record_id mapping AFTER sorting so the numbering
-    # matches what get_message_content() assigned above.
-    from app.modules.qna.response_prompt import build_record_label_mapping
-    record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
-    if record_label_map:
-        log.debug(f"📌 Record label mapping: {record_label_map}")
-    state["record_label_to_uuid_map"] = record_label_map
 
     # Build messages (create_response_messages uses qna_message_content as user msg)
     messages = create_response_messages(state)
@@ -6427,13 +6399,9 @@ async def respond_node(
     ]
     failed_results = [r for r in tool_results if r.get("status") == "error"]
 
-    # Check for sub-agent analyses (deep agent: pre-analyzed domain summaries)
-    # These are available even when tool_results is empty (complex tasks produce
-    # domain summaries instead of raw tool results).
-    _sub_analyses = sub_agent_analyses if sub_agent_analyses else state.get("sub_agent_analyses", [])
     has_api_results = non_retrieval_results or (failed_results and not any(r.get("status") == "success" for r in tool_results))
 
-    if has_api_results or _sub_analyses:
+    if has_api_results:
         # Build context for API tool results.
         # When qna_message_content is set, retrieval blocks are already embedded in the
         # user message — pass [] to avoid duplication but set has_retrieval_in_context=True
@@ -6444,28 +6412,6 @@ async def respond_node(
             [] if qna_has_retrieval else final_results,
             has_retrieval_in_context=qna_has_retrieval,
         ) if has_api_results else ""
-
-        # Include sub-agent analyses (deep agent: pre-analyzed summaries)
-        if _sub_analyses:
-            analyses_text = "\n## Sub-Agent Analysis\n\n"
-            analyses_text += (
-                "The following detailed analysis was produced by specialized sub-agents "
-                "that studied the raw data in depth. "
-            )
-            if has_api_results:
-                analyses_text += (
-                    "Preserve ALL items and findings from this analysis in your response. "
-                    "Cross-reference with the raw API data above for exact details, links, "
-                    "and any additional information.\n\n"
-                )
-            else:
-                analyses_text += (
-                    "Preserve ALL items and findings from this analysis in your response. "
-                    "Include every data point, link, and detail.\n\n"
-                )
-            for analysis in _sub_analyses[:5]:
-                analyses_text += f"{analysis}\n\n"
-            context = analyses_text + context
 
         if context.strip():
             if messages and isinstance(messages[-1], HumanMessage):
@@ -6538,18 +6484,18 @@ async def respond_node(
         # formats them via record_to_message_content() — identical to chatbot).
         tools = []
         if virtual_record_map:
-            from app.utils.agent_fetch_full_record import (
-                create_agent_fetch_full_record_tool,
+            from app.utils.fetch_full_record import (
+                create_fetch_full_record_tool,
             )
-            fetch_tool = create_agent_fetch_full_record_tool(
+            fetch_tool = create_fetch_full_record_tool(
                 virtual_record_map,
-                label_to_virtual_record_id=record_label_map if record_label_map else None,
+                org_id=org_id,
+                graph_provider=graph_provider,
             )
             tools = [fetch_tool]
             log.debug(
                 f"Added agent fetch_full_record tool "
                 f"({len(virtual_record_map)} records available, "
-                f"{len(record_label_map)} labels mapped)"
             )
 
         # Create tool_runtime_kwargs
@@ -6586,16 +6532,17 @@ async def respond_node(
             conversation_id=state.get("conversation_id"),
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
+            ref_mapper=state.get("citation_ref_mapper"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
 
             # ── Agent-side citation enrichment (no streaming.py changes) ────────
             # streaming.py's normalize_citations_and_chunks extracts citations from
-            # inline [R#-#] markers in the LLM answer text.  In combined (MODE 3)
-            # responses the LLM may skip inline markers and rely only on blockNumbers.
-            # streaming.py does not forward blockNumbers in the complete event, so we
-            # apply a second-pass extraction here — before the event reaches the client.
+            # inline citation markers (markdown links or legacy R-labels) in the LLM
+            # answer text.  In combined (MODE 3) responses the LLM may skip inline
+            # markers. streaming.py does not forward
+            # here — before the event reaches the client.
             #
             # Pass 1: re-run inline marker extraction in case streaming.py received
             #         stale/empty final_results (safety net for edge cases).
@@ -6613,7 +6560,9 @@ async def respond_node(
                         from app.utils.citations import (
                             normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
-                        _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
+                        _ref_to_url = state.get("citation_ref_mapper")
+                        _ref_to_url = _ref_to_url.ref_to_url if _ref_to_url else None
+                        _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [], ref_to_url=_ref_to_url)
                         if _enriched:
                             log.info(
                                 "🔖 Citation enrichment (respond_node): "
@@ -6707,7 +6656,6 @@ async def _generate_direct_response(
     and stores the result in state. Fully self-contained — the caller just
     needs to ``return state`` after this returns.
     """
-    from app.utils.streaming import stream_llm_response
 
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
@@ -6753,13 +6701,23 @@ async def _generate_direct_response(
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
     else:
-        system_content = f"{instructions_prefix}{role_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
+        system_content = (
+            f"{instructions_prefix}{role_prefix}"
+            "You are a helpful, friendly AI assistant. Respond naturally and concisely.\n\n"
+            "⚠️ NEVER expose internal system terms (such as `can_answer_directly`, `needs_clarification`, "
+            "`connector_ids`, `collection_ids`, JSON keys, tool names, or planning details) in your response. "
+            "Write as if you are naturally conversing with the user.\n\n"
+            "⚠️ NEVER ask clarifying questions or present a numbered menu of options. "
+            "If the user sends a short topic or keyword, respond with what you know from context. "
+            "Do not ask 'what do you mean?' — just respond helpfully."
+        )
         if user_context:
-            system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+            system_content += "\n\nWhen the user asks about themselves, use the provided user info directly."
 
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
+    system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     messages.append(SystemMessage(content=system_content))
 
@@ -7047,12 +7005,13 @@ def _build_tool_results_context(
         else:
             parts.append("\n## 📚 Internal Knowledge in Context\n\n")
             parts.append(
-                "Internal knowledge blocks (with R-labels like R1-0, R2-3) are present "
+                "Internal knowledge blocks (with Citation IDs) are present "
                 "in the conversation above.\n"
             )
         parts.append(
-            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge: [R1-0], [R2-3]\n"
-            "Include ALL cited block labels in `blockNumbers`.\n\n"
+            "Cite key facts from internal knowledge using markdown links: [source](ref1). Use the EXACT Citation ID from the context. Limit to the most relevant citations — do NOT cite every sentence.\n"
+            "Do NOT manually number citations — the system assigns numbers automatically.\n"
+            "If unsure of the exact Citation ID, omit the citation rather than guessing.\n"
         )
 
     if non_retrieval:
@@ -7089,22 +7048,20 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "**⚠️ MODE 3 — COMBINED RESPONSE (MANDATORY)**\n"
-            "You have BOTH internal knowledge blocks (R-labels in context) AND API tool results.\n"
+            "You have BOTH internal knowledge blocks (with Citation IDs) AND API tool results.\n"
             "This is the MOST ACCURATE mode — you have both indexed historical content AND live current data.\n"
             "You MUST:\n"
             "  1. Synthesize BOTH sources into ONE coherent, comprehensive answer\n"
             "  2. Use retrieval results for historical context, background, and comprehensive coverage\n"
             "  3. Use API results for current state, real-time data, and exact IDs/keys\n"
             "  4. When sources conflict, prioritize API results for current state, but mention historical context from retrieval\n"
-            "  5. Cite every fact from internal knowledge inline: [R1-0], [R2-3]\n"
-            "  6. Include all cited labels in `blockNumbers`\n"
-            "  7. Format all API items as clickable links and include them in `referenceData`\n"
-            "  8. Combine insights: \"Based on our indexed knowledge [R1-0], and current live data, here's the complete picture...\"\n\n"
+            "  5. Cite key facts from internal knowledge using markdown links: [source](ref1). Limit to the most relevant citations — do NOT cite every sentence.\n"
+            "  6. Format all API items as clickable links and include them in `referenceData`\n"
+            "  7. Combine insights: \"Based on our indexed knowledge [source](ref1), and current live data, here's the complete picture...\"\n\n"
         )
     elif has_retrieval:
         parts.append(
-            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [R1-0].\n"
-            "Include all cited labels in `blockNumbers`.\n"
+            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](ref1). The system assigns citation numbers automatically.\n"
         )
     else:
         parts.append(
@@ -7135,24 +7092,22 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "Return ONLY JSON matching MODE 3:\n"
-            "{\"answer\": \"...with inline [R1-0] citations...\", "
-            "\"confidence\": \"High\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
+            "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"R1-0\", \"R2-3\"], "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
     elif has_retrieval:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...with inline [R1-0] citations...\", "
-            "\"confidence\": \"High\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
+            "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"R1-0\", \"R2-3\"]}\n"
         )
     else:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...\", \"confidence\": \"High\", "
+            "{\"answer\": \"...\", \"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Tool Execution\", "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
@@ -7206,8 +7161,14 @@ def check_for_error(state: ChatState) -> Literal["error", "continue"]:
 def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
     """Process retrieval tool output (accumulates results from multiple retrieval calls)"""
     try:
+        # Fast path: tool already wrote to state and returned pre-formatted content
+        if isinstance(result, str) and "<record>" in result:
+            log.info("Retrieval returned pre-formatted content (state already updated by tool)")
+            return result
+
         from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
+        # Legacy/fallback path: parse JSON and extract data
         retrieval_output = None
 
         if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -7504,15 +7465,7 @@ async def react_agent_node(
 
                 # Process retrieval tool results to extract final_results
                 if "retrieval" in tool_name.lower():
-                    try:
-                        if isinstance(result_content, str):
-                            parsed = json.loads(result_content)
-                            _process_retrieval_output(parsed, state, log)
-                        elif isinstance(result_content, dict):
-                            _process_retrieval_output(result_content, state, log)
-                    except Exception as e:
-                        log.warning(f"Failed to process retrieval output: {e}")
-                        _process_retrieval_output(result_content, state, log)
+                    _process_retrieval_output(result_content, state, log)
 
                 # Detect actual tool success/failure from result content
                 tool_status = _detect_tool_result_status(result_content)
@@ -7927,14 +7880,15 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
    - Service search tools → searches live data via the service API
    - `retrieval_search_internal_knowledge` → searches within indexed document content
 
-   This applies regardless of what word the user uses ("files", "pages", "docs", etc.)
+   This applies regardless of what word the user uses ("files", "pages", "docs", "data", etc.)
    and regardless of whether they name a specific service.
    Only skip a dimension if its tool is not available.
 
    **Exceptions (use specific tools only):**
    - Exact ID lookup → live API only
    - Write actions → live API write tool only
-   - Filtered stateful queries ("my open tickets") → live API only
+   - Filtered stateful queries ("my open tickets this sprint") → live API only
+   - Pure greetings or arithmetic → can answer directly
 
 4. **ID Resolution — NEVER ask users for internal IDs**:
    - Users don't know event_id, message_id, page_id, space_id, drive_id, etc.
@@ -7947,7 +7901,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
-   - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
+   - For retrieval/internal knowledge: Include inline citations as markdown links [source](ref1) after key facts. Limit to the most relevant citations — do NOT cite every sentence. The system assigns citation numbers automatically.
    - Store technical IDs in referenceData for follow-up queries.
 
 ## Execution Policy (MANDATORY)
@@ -7972,7 +7926,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
   unavailable if execution returns an explicit auth/connection error.
 - **Date normalization is mandatory before tool calls**:
    - Convert ALL relative date phrases to absolute ISO dates (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) before calling tools.
-   - Use user's timezone and current time from the Temporal Context section.
+   - Use **Current time** and **Time zone** (when present) from the **Time context** section.
    - Do NOT ask user to provide dates when relative dates are resolvable.
    - Common mappings:
      - "today" → current date
@@ -7993,6 +7947,34 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
      b) Execute each step in order, using results from previous steps.
      c) If one step fails, try to recover (Error Recovery Protocol) before giving up.
      d) Report the complete result at the end, not after each step.
+
+## Knowledge Search (MANDATORY — apply before any other decision)
+
+When `retrieval_search_internal_knowledge` is available and knowledge sources are configured:
+
+**ALWAYS search for ANY of these:**
+- A topic, keyword, concept, name, or phrase (even a single bare word)
+- An information or documentation request ("what is X", "how does Y work", "tell me about Z")
+- Any question that could be answered from indexed documents or connected services
+- A short phrase with no explicit verb — treat it as a topic to search for
+
+**NEVER skip retrieval and answer directly for the above.** Zero tool calls for a substantive
+topic query is WRONG — it means the user gets no information from the knowledge base.
+
+**Default: when the query has a topic, SEARCH in parallel across all configured sources.**
+Use the routing signals in the Knowledge & Data Sources section to select which connector(s)
+to target. If unsure → search ALL sources.
+
+**Skip retrieval ONLY for:**
+- Pure greetings or thanks ("hi", "thanks")
+- Simple arithmetic or date calculations
+- User asking about their own identity/profile
+- Write actions where you have all required parameters already
+
+## Response Hygiene (CRITICAL)
+- **NEVER** expose internal system terms in your response: `can_answer_directly`, `needs_clarification`.
+- **NEVER** echo back the `## Current User Information` block or its Usage section verbatim — it is system context for you, not content to repeat to the user.
+- Write all responses as natural, professional prose as if you are conversing directly with the user.
 """
 
     # ── Build Available Tools section with full schemas ──────────────────────
@@ -8027,13 +8009,15 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
     if has_retrieval:
         base_prompt += """
-## Citation Rules (CRITICAL)
+## Citation Rules
 
 When you have internal knowledge from retrieval tools:
-1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [R1-1]."
-2. One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
-3. Include ALL cited blocks in your response
-4. Do NOT put citations at end of paragraph — inline after each fact
+1. Cite key facts inline: "Revenue grew 29% [source](ref5)." Focus on the most important claims — do NOT cite every sentence.
+2. Use the EXACT Citation ID from the context as a markdown link: [source](ref1). Do NOT manually number citations — the system assigns numbers automatically.
+3. One citation per markdown link. Do NOT club multiple Citation IDs in one link.
+4. Limit to the most relevant citations overall.
+5. Do NOT put citations at end of paragraph — inline after the specific fact
+6. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
@@ -8080,7 +8064,7 @@ Use this decision tree to choose the right approach:
 1. Call both tools (retrieval + service API).
 2. Analyze both results for overlapping and unique information.
 3. Present a unified answer that combines insights from both sources.
-4. Use citations [R1-1] for retrieval-sourced facts.
+4. Use citations as markdown links [source](ref1) for key retrieval-sourced facts. Limit to the most relevant citations. The system assigns citation numbers automatically.
 5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 
@@ -8099,6 +8083,9 @@ Use this decision tree to choose the right approach:
 
     if _has_zoom_tools(state):
         base_prompt += "\n" + ZOOM_GUIDANCE
+
+    if _has_salesforce_tools(state):
+        base_prompt += "\n" + SALESFORCE_GUIDANCE
 
     if _has_clickup_tools(state):
         base_prompt += "\n" + CLICKUP_GUIDANCE
@@ -8122,20 +8109,12 @@ Use this decision tree to choose the right approach:
         base_prompt += "\n" + TEAMS_GUIDANCE
 
     # Add timezone / current time context if provided
-    timezone = state.get("timezone")
-    current_time = state.get("current_time")
-    if timezone or current_time:
-        time_parts = []
-        if current_time:
-            time_parts.append(f"**Current time**: {current_time}")
-        if timezone:
-            tz = pytz.timezone(timezone)
-            now = datetime.now(tz)
-            abbr = now.strftime("%Z")        # IST, EST, PST etc.
-            offset = now.strftime("%z")      # +0530
-            offset_fmt = f"{offset[:-2]}:{offset[-2:]}"  # +05:30
-            time_parts.append(f"**User timezone**: {timezone} ({abbr} (UTC{offset_fmt}))")
-        base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
+    time_block = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+    if time_block:
+        base_prompt += "\n\n" + time_block
 
     # ── Capability summary ────────────────────────────────────────────────────
     capability_summary = build_capability_summary(state)

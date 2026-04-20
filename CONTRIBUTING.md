@@ -252,7 +252,7 @@ Our project consists of three main components:
 
 ### Running Node.js Unit Tests
 
-Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention.
+Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention. See [`backend/nodejs/apps/tests/README.md`](backend/nodejs/apps/tests/README.md) for full details.
 
 ```bash
 cd backend/nodejs/apps
@@ -272,7 +272,7 @@ npx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts
 
 ### Running Python Unit Tests
 
-Tests use **pytest** and are located in `backend/python/tests/`. Test files follow the `test_*.py` naming convention.
+Tests use **pytest** and are located in `backend/python/tests/`. Test files follow the `test_*.py` naming convention. See [`backend/python/tests/README.md`](backend/python/tests/README.md) for full details.
 
 ```bash
 cd backend/python
@@ -299,6 +299,173 @@ pytest --cov=app --cov-report=term-missing
 # Run tests in parallel (requires pytest-xdist)
 pytest -n auto
 ```
+
+### Running Frontend E2E Tests (Playwright)
+
+The frontend (`frontend-new/`) uses [Playwright](https://playwright.dev/) for end-to-end testing. Tests cover authentication, navigation, workspace settings, entity CRUD (users, groups, teams), chat, and knowledge base pages.
+
+#### Prerequisites
+
+1. Install dependencies (includes `@playwright/test`):
+   ```bash
+   cd frontend-new
+   npm install
+   ```
+
+2. Install Playwright browsers:
+   ```bash
+   npx playwright install chromium
+   ```
+
+3. Create a `.env.test` file from the template and fill in test credentials:
+   ```bash
+   cp .env.test.example .env.test
+   ```
+
+   Required variables:
+   | Variable | Description |
+   |----------|-------------|
+   | `TEST_USER_EMAIL` | Email of an existing admin user |
+   | `TEST_USER_PASSWORD` | Password for that user |
+   | `BASE_URL` | Dev server URL (default `http://localhost:3001`) |
+
+#### Running E2E Tests
+
+All commands below run from the `frontend-new/` directory.
+
+| Command | Description |
+|---------|-------------|
+| `npm run test:e2e` | Run all tests (starts dev server automatically) |
+| `npm run test:e2e:ui` | Open Playwright UI for interactive debugging |
+| `npm run test:e2e:headed` | Run tests in a visible browser |
+| `npm run test:e2e:seed` | Seed bulk test data (30 users, 30 groups, 30 teams) |
+| `npm run test:e2e:cleanup` | Delete all seeded test data |
+| `npm run test:e2e:users` | Run only user-related tests |
+| `npm run test:e2e:groups` | Run only group-related tests |
+| `npm run test:e2e:teams` | Run only team-related tests |
+| `npm run test:e2e:report` | Open the HTML test report |
+| `npm run test:e2e:coverage` | Run all tests with V8 code coverage |
+| `npm run test:e2e:coverage-report` | Open the coverage HTML report |
+
+#### Code Coverage
+
+Run `npm run test:e2e:coverage` to collect V8 code coverage. Reports are generated in `coverage/e2e/` with V8, LCOV, and console summary formats. Open the HTML report with `npm run test:e2e:coverage-report`.
+
+#### Debugging & Verbose Output
+
+To watch test execution in a visible browser and capture full traces (including passing tests):
+
+```bash
+# Visible browser + trace for every test
+npx playwright test --headed --trace on
+
+# Slow motion — 1 second pause between each action
+npx playwright test --headed --trace on --slow-mo=1000
+
+# Record video of every test
+npx playwright test --headed --video on
+
+# Screenshot after every test (pass or fail)
+npx playwright test --screenshot on
+```
+
+| Flag | What it does |
+|------|-------------|
+| `--headed` | Opens a visible browser window instead of running headless |
+| `--trace on` | Records a trace for every test (default only records on first retry) |
+| `--slow-mo=N` | Adds N milliseconds pause between each Playwright action |
+| `--video on` | Records a video of every test run |
+| `--screenshot on` | Takes a screenshot after every test (not just failures) |
+
+**Interactive UI mode** (recommended for debugging):
+
+```bash
+npm run test:e2e:ui
+```
+
+This opens Playwright's built-in UI with a live browser, action timeline, and DOM snapshots you can step through.
+
+**Viewing traces and reports after a run:**
+
+```bash
+# Open the HTML report — click any test to see its trace
+npx playwright show-report
+
+# Open a specific trace file directly
+npx playwright show-trace test-results/<test-folder>/trace.zip
+```
+
+#### E2E Test Projects
+
+Playwright is configured with four projects that run in order:
+
+1. **setup** — Logs in via the browser and saves auth state to `.auth/user.json`.
+2. **seed** — Seeds bulk data using a mix of UI interactions and API calls. Depends on `setup`.
+3. **authenticated** — All feature tests that use the saved auth state. Depends on `setup`.
+4. **unauthenticated** — Login page tests that run without saved auth.
+
+#### E2E Directory Structure
+
+```
+frontend-new/e2e/
+├── setup/           # Auth setup (login + save storageState)
+├── fixtures/        # Shared test fixtures (API context, base)
+├── helpers/         # Reusable interaction helpers
+│   ├── login.helper.ts
+│   ├── entity-table.helper.ts
+│   ├── pagination.helper.ts
+│   ├── search.helper.ts
+│   ├── sidebar-form.helper.ts
+│   └── tag-input.helper.ts
+├── seed/            # Data seeding and cleanup
+├── auth/            # Login and logout tests
+├── navigation/      # Routing and sidebar navigation tests
+├── workspace/       # Workspace settings page tests
+├── users/           # Users table, invite, actions, bulk ops
+├── groups/          # Groups table, create, actions
+├── teams/           # Teams table, create, actions
+├── chat/            # Chat interface tests
+└── knowledge-base/  # Knowledge base tests
+```
+
+#### Writing New E2E Tests
+
+- **Authenticated tests** go in a feature folder under `e2e/` and import from `@playwright/test`. They automatically use the saved auth state.
+- **API-based tests** (seeding, cleanup) should import from `e2e/fixtures/api-context.fixture.ts` to get a pre-authenticated `APIRequestContext`.
+- **Helpers** in `e2e/helpers/` provide reusable functions for common UI interactions (table rows, pagination, search, sidebar forms, tag input).
+
+Example test:
+```typescript
+import { test, expect } from '@playwright/test';
+
+test.describe('My Feature', () => {
+  test('loads the page', async ({ page }) => {
+    await page.goto('/workspace/my-feature/');
+    await expect(page.locator('text="My Feature"')).toBeVisible();
+  });
+});
+```
+
+#### Seed Data Conventions
+
+- Seeded users follow the pattern `e2e-user-XXXX@e2etest.pipeshub.local`
+- Seeded groups are named `E2E Group XXX`
+- Seeded teams are named `E2E Team XXXX`
+- Always run `npm run test:e2e:cleanup` after seeded test runs to remove test data
+
+#### E2E CI Notes
+
+In CI, set the environment variable `CI=true` to enable:
+- Retries (2 attempts per test)
+- Single worker (sequential execution)
+- Fresh dev server (no reuse)
+
+#### E2E Artifacts
+
+The following are generated during test runs and are gitignored:
+- `.auth/` — Saved browser auth state
+- `test-results/` — Test artifacts (screenshots, traces)
+- `playwright-report/` — HTML report
 
 ## Documentation
 

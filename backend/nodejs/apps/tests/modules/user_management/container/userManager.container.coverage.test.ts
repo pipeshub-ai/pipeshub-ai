@@ -1,9 +1,14 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Kafka } from 'kafkajs'
 import { UserManagerContainer } from '../../../../src/modules/user_management/container/userManager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
+import {
+  BaseKafkaConnection,
+  BaseKafkaProducerConnection,
+} from '../../../../src/libs/services/kafka.service'
 
 describe('UserManagerContainer - coverage', () => {
   let originalInstance: any
@@ -23,6 +28,18 @@ describe('UserManagerContainer - coverage', () => {
       publish: sinon.stub().resolves(),
       publishBatch: sinon.stub().resolves(),
       healthCheck: sinon.stub().resolves(true),
+    } as any)
+    // stub so that the actual instance is not called.
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
+    sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
+    sinon.stub(Kafka.prototype, 'producer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      send: sinon.stub().resolves(),
+      sendBatch: sinon.stub().resolves(),
+      on: sinon.stub(),
+      events: {},
     } as any)
   })
 

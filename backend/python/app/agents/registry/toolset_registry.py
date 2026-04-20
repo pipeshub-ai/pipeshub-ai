@@ -415,6 +415,7 @@ class ToolsetRegistry:
             # 'app.agents.actions.freshdesk.freshdesk',
             # 'app.agents.actions.bookstack.bookstack',
             'app.agents.actions.zoom.zoom',
+            'app.agents.actions.salesforce.salesforce',
         ]
         self.discover_toolsets(standard_paths)
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")

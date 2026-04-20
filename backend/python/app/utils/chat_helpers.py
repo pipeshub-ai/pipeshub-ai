@@ -1,10 +1,10 @@
 import asyncio
-import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
-
+import base64
+import re
 from jinja2 import Template
 
 from app.config.constants.service import config_node_constants
@@ -37,7 +37,125 @@ from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
-group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
+valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
+    ]
+
+def _safe_stringify_content(value: Any) -> str:
+    """Convert citation content to string without raising."""
+    try:
+        return str(value)
+    except Exception as exc:
+        logger.warning("Failed to cast citation content to string: %s", exc)
+        return ""
+
+def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
+    """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
+    base = frontend_url.rstrip("/") if frontend_url else ""
+    return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
+
+
+
+
+def is_base64_image(s: str) -> bool:
+    """
+    Check if a string is a valid base64-encoded image.
+    
+    Accepts both:
+    - Data URLs: "data:image/png;base64,iVBORw0KGgo..."
+    - Raw base64 strings: "iVBORw0KGgo..."
+    """
+    if not isinstance(s, str) or not s.strip():
+        return False
+
+    # Handle data URL format
+    data_url_pattern = r'^data:image/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|tiff);base64,(.+)$'
+    match = re.match(data_url_pattern, s.strip(), re.IGNORECASE)
+    
+    if match:
+        b64_data = match.group(2)
+    else:
+        b64_data = s.strip()
+
+    # Validate base64 characters
+    if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', b64_data):
+        return False
+
+    # Check padding
+    if len(b64_data) % 4 != 0:
+        return False
+
+    # Try to decode
+    try:
+        decoded = base64.b64decode(b64_data)
+    except Exception:
+        return False
+
+    # Check for known image magic bytes
+    image_signatures = {
+        b'\x89PNG\r\n\x1a\n': 'PNG',
+        b'\xff\xd8\xff': 'JPEG',
+        b'GIF87a': 'GIF',
+        b'GIF89a': 'GIF',
+        b'RIFF': 'WEBP',  # WEBP starts with RIFF
+        b'BM': 'BMP',
+        b'II*\x00': 'TIFF',
+        b'MM\x00*': 'TIFF',
+    }
+
+    for signature, fmt in image_signatures.items():
+        if decoded.startswith(signature):
+            return True
+
+    # SVG is XML text — check for <svg tag after decoding
+    try:
+        text = decoded[:200].decode('utf-8', errors='ignore').lower().strip()
+        if '<svg' in text or '<?xml' in text:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+class CitationRefMapper:
+    """Builds a bidirectional mapping between tiny citation refs (ref1, ref2, ...) and full block web URLs.
+
+    get_or_create_ref() is idempotent — same URL always returns the same ref.
+    The mapper is designed to be shared as a single mutable instance across
+    retrieval tool calls, respond nodes, and tool execution hops.
+    """
+
+    def __init__(self):
+        self._counter: int = 0
+        self._url_to_ref: dict[str, str] = {}
+        self._ref_to_url: dict[str, str] = {}
+
+    def get_or_create_ref(self, full_url: str) -> str:
+        """Return existing ref if URL already mapped, else create a new one."""
+        if full_url in self._url_to_ref:
+            return self._url_to_ref[full_url]
+        self._counter += 1
+        ref = f"ref{self._counter}"
+        self._url_to_ref[full_url] = ref
+        self._ref_to_url[ref] = full_url
+        return ref
+
+    @property
+    def ref_to_url(self) -> dict[str, str]:
+        """Snapshot of ref→URL mapping (safe to pass downstream without exposing mutability)."""
+        return dict(self._ref_to_url)
+
+    @property
+    def url_to_ref(self) -> dict[str, str]:
+        """Snapshot of URL→ref mapping."""
+        return dict(self._url_to_ref)
+
 
 # Create a logger for this module
 logger = create_logger("chat_helpers")
@@ -54,7 +172,7 @@ collection_map = {
                     RecordType.DEAL.value: "deals",
                 }
 
-def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Optional[Dict[str, Any]] = None) -> Optional[Record]:
+def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
     """
     Creates a Record subclass instance from a dictionary.
 
@@ -196,7 +314,7 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -242,6 +360,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         virtual_record_id = result["metadata"].get("virtualRecordId")
         if not virtual_record_id:
             continue
+        result["virtual_record_id"] = virtual_record_id
+
         meta = result.get("metadata")
 
         if virtual_record_id not in adjacent_chunks:
@@ -265,10 +385,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         blocks = block_container.get("blocks",[])
         block_groups = block_container.get("block_groups",[])
 
-        if is_block_group:
-            block = block_groups[index]
-        else:
-            block = blocks[index]
+        block = block_groups[index] if is_block_group else blocks[index]
 
         block_type = block.get("type")
         result["block_type"] = block_type
@@ -290,7 +407,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         else:
                             continue
                     else:
-                        if result.get("content") and result.get("content").startswith("data:image/"):
+                        if result.get("content") and is_base64_image(result.get("content")):
                             continue
 
                     adjacent_chunks[virtual_record_id].append(index-1)
@@ -382,11 +499,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block.get("parent_index") is not None:
             parent_index = block.get("parent_index")
-            group_text_result = build_group_text(block_groups, blocks, parent_index, virtual_record_id, seen_chunks)
+            group_text_result = get_group_label_n_first_child(block_groups, parent_index)
             if group_text_result is None:
                 continue
-            label, first_child_block_index, content = group_text_result
-            result["content"] = content
+            group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,result)
+            if not group_blocks:
+                continue
+            label, first_child_block_index = group_text_result
+            result["content"] = ("",group_blocks)
             result["block_type"] = label
             result["virtual_record_id"] = virtual_record_id
             result["block_index"] = first_child_block_index
@@ -394,9 +514,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             flattened_results.append(result)
             continue
+        else:
+            continue
 
 
-        result["virtual_record_id"] = virtual_record_id
         if "block_index" not in result:
             result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
@@ -522,7 +643,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     return flattened_results
 
-def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[str, Any]) -> Dict[str, Any]:
+def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[str, Any]) -> dict[str, Any]:
         try:
             virtual_record_id = record.get("virtual_record_id", "")
             block_type = block.get("type")
@@ -592,9 +713,10 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             web_url = meta.get("webUrl") or record.get("weburl", "")
             origin = meta.get("origin") or record.get("origin", "")
             recordId = meta.get("recordId") or record.get("id", "")
+            record_type = record.get("record_type", "")
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
-            elif web_url and origin != "UPLOAD":
+            elif web_url and origin != "UPLOAD" and record_type != RecordType.MAIL.value:
                 web_url = generate_text_fragment_url(web_url, block_text)
 
             enhanced_metadata = {
@@ -602,7 +724,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "recordId": recordId,
                         "virtualRecordId": virtual_record_id,
                         "recordName": meta.get("recordName") or record.get("record_name", ""),
-                        "recordType": record.get("record_type", ""),
+                        "recordType": record_type,
                         "recordVersion": record.get("version", ""),
                         "origin": origin,
                         "connector": meta.get("connector") or record.get("connector_name", ""),
@@ -631,7 +753,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
         except Exception as e:
             raise e
 
-def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
+def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
         """Safely extract bounding box data from citation metadata"""
         if not citation_metadata or not citation_metadata.get("bounding_boxes"):
             return None
@@ -651,7 +773,7 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None,frontend_url: Optional[str] = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
@@ -705,6 +827,8 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
                 else:
                     record["context_metadata"] = ""
 
+            record["frontend_url"] = frontend_url or ""
+            record["virtual_record_id"] = virtual_record_id
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None
@@ -712,7 +836,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
     except Exception as e:
         raise e
 
-async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> Tuple[Dict[str, Any], Dict[str, int]]:
+async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> tuple[dict[str, Any], dict[str, int]]:
     try:
         # Lazy import to avoid circular dependency: chat_helpers -> ContainerUtils -> RetrievalService -> chat_helpers
         from app.containers.utils.utils import ContainerUtils
@@ -814,7 +938,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         raise e
 
 
-def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Dict[str, Any]:
+def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> dict[str, Any]:
     try:
         page_num = metadata.get("pageNum")
         if isinstance(page_num, (list,tuple)):
@@ -833,7 +957,7 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
 
         block_type = metadata.get("blockType","text")
         # Create the Block structure
-        block = {
+        return {
             "id": str(uuid4()),  # Generate unique ID
             "index": metadata.get("blockNum")[0] if metadata.get("blockNum") and len(metadata.get("blockNum")) > 0 else 0, # TODO: blockNum indexing might be different for different file types
             "type": block_type,
@@ -845,14 +969,13 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
             "weburl": metadata.get("webUrl"),
             "citation_metadata": citation_metadata,
         }
-        return block
     except Exception as e:
         raise e
 
 MAX_CELLS_IN_TABLE_THRESHOLD = 250  # Equivalent to ~700 words assuming ~2-3 words per cell
 
 
-def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children: Union[Dict[str, Any], List[Dict[str, Any]]]) -> int | None:
+def _find_first_block_index_recursive(block_groups: list[dict[str, Any]], children: dict[str, Any] | list[dict[str, Any]]) -> int | None:
     """Recursively search through the first child to find the first block_index.
 
     Args:
@@ -901,9 +1024,9 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
 
 
 def _extract_text_content_recursive(
-    block_groups: List[Dict[str, Any]],
-    blocks: List[Dict[str, Any]],
-    children: Union[Dict[str, Any], List[Dict[str, Any]]],
+    block_groups: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    children: dict[str, Any] | list[dict[str, Any]],
     virtual_record_id: str = None,
     seen_chunks: set = None,
     depth: int = 0,
@@ -1000,7 +1123,7 @@ def _extract_text_content_recursive(
     return content
 
 
-def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> Tuple[str, int, str] | None:
+def get_group_label_n_first_child(block_groups: list[dict[str, Any]], parent_index: int) -> tuple[str, int] | None:
     """Extract grouped text content and first child index for supported group types.
 
     Returns (label, first_child_block_index, content) or None if invalid or unsupported.
@@ -1010,14 +1133,7 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
 
     parent_block = block_groups[parent_index]
     label = parent_block.get("type")
-    valid_group_labels = [
-        GroupType.LIST.value,
-        GroupType.ORDERED_LIST.value,
-        GroupType.FORM_AREA.value,
-        GroupType.INLINE.value,
-        GroupType.KEY_VALUE_AREA.value,
-        GroupType.TEXT_SECTION.value,
-    ]
+    
 
     if label not in valid_group_labels:
         return None
@@ -1029,18 +1145,15 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
     first_child_block_index = _find_first_block_index_recursive(block_groups, children)
     if first_child_block_index is None:
         logger.warning(
-            "⚠️ build_group_text: first_child_block_index is None for parent_index=%s",
+            "⚠️ get_group_label_n_first_child: first_child_block_index is None for parent_index=%s",
             parent_index
         )
         return None
 
-    content = _extract_text_content_recursive(
-        block_groups, blocks, children, virtual_record_id, seen_chunks, 0
-    )
-    return label, first_child_block_index, content
+    return label, first_child_block_index
 
 
-def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int) -> List[Dict[str, Any]]:
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None) -> list[dict[str, Any]]:
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -1060,78 +1173,86 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
             if start is not None and end is not None:
                 for block_index in range(start, end + 1):
                     if 0 <= block_index < len(blocks):
+                        if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                            continue
                         result_blocks.append(blocks[block_index])
-        return result_blocks
-
     # Handle old format (list of BlockContainerIndex)
-    if isinstance(children, list):
+    elif isinstance(children, list):
         for child in children:
             block_index = child.get("block_index")
             if block_index is not None and 0 <= block_index < len(blocks):
+                if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                    continue
                 result_blocks.append(blocks[block_index])
+    
+    child_results = []
+    meta = result.get("metadata", {})
+    for block in result_blocks:
+        data = block.get("data")
+        if data:
+            data = _safe_stringify_content(data)
+        if not data:
+            continue
+        child_results.append({
+            "content": data,
+            "block_type": block.get("type"),
+            "virtual_record_id": virtual_record_id,
+            "block_index": block.get("index"),
+            "metadata": get_enhanced_metadata(record, block, meta),
+            "score": float(result.get("score",0.0)),
+            "citationType": "vectordb|document",
+        })
+    return child_results
 
-    return result_blocks
 
-
-def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str|None:
+def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
     Args:
         record: The record JSON object containing block_containers and other metadata
-        final_results: Optional list of final results for context
+        ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
 
     Returns:
-        String of message content in the same format as get_message_content
+        Tuple of (content list, ref_mapper)
     """
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
 
     try:
-        record_string = ""
+
+        content = []
         context_metadata = record.get("context_metadata", "")
-        record_string += f"""<record>\n{context_metadata}
+        content.append({
+            "type": "text",
+            "text": f"""<record>\n{context_metadata}
 Record blocks (sorted):\n\n"""
+        })
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
         block_groups = block_containers.get("block_groups", [])
 
         seen_block_groups = set()
-        record_number = 1
-        # Determine record_number consistent with previously sent context if possible
-        try:
-            if final_results:
-                # Build ordered list of unique virtual_record_ids as used in get_message_content
-                ordered_unique_vrids = []
-                seen_vrids = set()
-                for res in final_results:
-                    vrid = res.get("virtual_record_id")
-                    if vrid is not None and vrid not in seen_vrids:
-                        seen_vrids.add(vrid)
-                        ordered_unique_vrids.append(vrid)
+        rec_frontend_url = record.get("frontend_url", "")
+        rec_record_id = record.get("id", "")
 
-                # Map current record's virtual_record_id to its position (1-based)
-                current_vrid = record.get("virtual_record_id")
-                if current_vrid in ordered_unique_vrids:
-                    record_number = ordered_unique_vrids.index(current_vrid) + 1
-        except Exception:
-            return []
-
-        # Group blocks with parent_index (like table rows) for processing as block groups
-
-        # Process individual blocks
         for block in blocks:
             block_index = block.get("index", 0)
             block_type = block.get("type")
 
-            block_number = f"R{record_number}-{block_index}"
+            block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
+            ref = ref_mapper.get_or_create_ref(block_web_url)
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
             elif block_type == BlockType.TABLE_ROW.value:
-                # Group table rows by their parent_index for block group processing
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
                 if block_group_id in seen_block_groups:
@@ -1140,29 +1261,24 @@ Record blocks (sorted):\n\n"""
                 if block_group_index is not None:
                     corresponding_block_group = block_groups[block_group_index]
 
-                    # Process the block group with its child rows
                     block_type = corresponding_block_group.get("type")
                     data = corresponding_block_group.get("data", {})
 
                     if block_type == GroupType.TABLE.value:
                         table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
 
-                        # Get block indices from children (handle both old and new formats)
                         children = corresponding_block_group.get("children")
                         rows_to_be_included_list = []
                         if children:
                             if isinstance(children, dict) and 'block_ranges' in children:
-                                # New range-based format
                                 for range_obj in children.get('block_ranges', []):
                                     start = range_obj.get('start')
                                     end = range_obj.get('end')
                                     if start is not None and end is not None:
                                         rows_to_be_included_list.extend(range(start, end + 1))
                             elif isinstance(children, list):
-                                # Old format
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
 
-                        # Process table rows
                         child_results = []
                         for row_index in rows_to_be_included_list:
                             if row_index < len(blocks):
@@ -1173,22 +1289,26 @@ Record blocks (sorted):\n\n"""
                                 else:
                                     row_text = str(block_data)
 
+                                child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                 child_results.append({
                                     "content": row_text,
                                     "block_index": row_index,
+                                    "block_web_url": child_block_web_url,
+                                    "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
                                 })
 
                         if child_results:
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
+                                block_group_web_url="",
                                 table_summary=table_summary,
                                 table_rows=child_results,
-                                record_number=record_number,
                             )
-                            record_string += f"{rendered_form}\n\n"
-
-
+                            content.append({
+                                "type": "text",
+                                "text": f"{rendered_form}\n\n"
+                            })
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -1198,33 +1318,42 @@ Record blocks (sorted):\n\n"""
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
-                group_blocks = build_group_blocks(block_groups, blocks, parent_index)
+                block_group_type = block_group.get("type")
+                if block_group_type not in valid_group_labels:
+                    continue
 
+                virtual_record_id = record.get("virtual_record_id", "")
+                group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,{})
 
                 if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
+                for gb in group_blocks:
+                    gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
+                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
                 rendered_form = template.render(
                     block_group_index=parent_index,
+                    block_group_web_url="",
                     label=block_group.get("type"),
                     blocks=group_blocks,
-                    record_number=record_number,
                 )
-                record_string += f"{rendered_form}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"{rendered_form}\n\n"
+                })
             else:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                continue
 
-        return record_string
+        return content, ref_mapper
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
     content = []
-
-    # Use simple prompt for quick mode
-    if mode == "simple":
-        # Build simple context - just blocks with numbers
+    if mode == "no_tools":
         chunks = []
         seen_blocks = set()
         for result in flattened_results:
@@ -1241,8 +1370,15 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                     continue
 
                 # Get content text
+                block_web_url = ""
+                record = virtual_record_id_to_result.get(virtual_record_id) or {}
+                frontend_url = record.get("frontend_url", "")
+                record_id = record.get("id", "")
+                block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+                citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
+
                 if block_type == GroupType.TABLE.value:
-                    table_summary, child_results = result.get("content")
+                    table_summary, _ = result.get("content")
                     content_text = f"Table: {table_summary}"
                 else:
                     content_text = result.get("content", "")
@@ -1250,7 +1386,9 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 chunks.append({
                     "metadata": {
                         "blockText": content_text,
-                        "recordName": result.get("record_name")
+                        "recordName": result.get("metadata", {}).get("recordName", ""),
+                        "block_web_url": block_web_url,
+                        "citation_ref": citation_ref,
                     }
                 })
 
@@ -1266,10 +1404,8 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
             "text": rendered_form
         })
 
-        return content
-
+        return content, ref_mapper
     else:
-        # Standard/JSON mode - use detailed prompt
         template = Template(qna_prompt_instructions_1)
         rendered_form = template.render(
                     user_data=user_data,
@@ -1283,232 +1419,139 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                     "text": rendered_form
                 })
 
-        seen_virtual_record_ids = set()
-        seen_blocks = set()
-        record_number = 1
-        for i,result in enumerate(flattened_results):
-            virtual_record_id = result.get("virtual_record_id")
-            if virtual_record_id not in seen_virtual_record_ids:
-                if i > 0:
-                    content.append({
-                        "type": "text",
-                        "text": "</record>"
-                    })
-                    record_number = record_number + 1
-                seen_virtual_record_ids.add(virtual_record_id)
-                record = virtual_record_id_to_result[virtual_record_id]
-                if record is None:
-                    continue
+        message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
+        message_content_array = [item for sublist in message_content_array for item in sublist]
 
-                template = Template(qna_prompt_context)
-                rendered_form = template.render(
-                    context_metadata=record.get("context_metadata", ""),
-                )
-                content.append({
-                    "type": "text",
-                    "text": rendered_form
-                })
-
-            result_id = f"{virtual_record_id}_{result.get('block_index')}"
-            if result_id not in seen_blocks:
-                seen_blocks.add(result_id)
-                block_type = result.get("block_type")
-                block_index = result.get("block_index")
-                block_number = f"R{record_number}-{block_index}"
-                if block_type == BlockType.IMAGE.value:
-                    if result.get("content").startswith("data:image/"):
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
-                        })
-                    else:
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
-                        })
-                elif block_type == GroupType.TABLE.value:
-                    table_summary,child_results = result.get("content")
-                    if child_results:
-                        template = Template(table_prompt)
-                        rendered_form = template.render(
-                            block_group_index=result.get("block_group_index"),
-                            table_summary=table_summary,
-                            table_rows=child_results,
-                            record_number=record_number,
-                        )
-                        content.append({
-                            "type": "text",
-                            "text": f"{rendered_form}\n\n"
-                        })
-                    else:
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
-                        })
-                elif block_type == BlockType.TEXT.value:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-                elif block_type == BlockType.TABLE_ROW.value:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
-                    })
-                elif block_type in group_types:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-                else:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-            else:
-                continue
-
+        content.extend(message_content_array)
         # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)
         rendered_instructions_2 = template_instructions_2.render(mode=mode)
 
         content.append({
             "type": "text",
-            "text": f"</record>\n</context>\n\n{rendered_instructions_2}"
+            "text": f"</context>\n\n{rendered_instructions_2}"
         })
-        return content
+        return content, ref_mapper
 
-
-
-def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> List[str]:
-    virtual_record_id_to_record_number = {}
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
+    all_contents = []
+    content = []
     seen_virtual_record_ids = set()
-    record_number = 1
-
-    for result in final_results:
-        virtual_record_id = result.get("virtual_record_id")
-        if virtual_record_id not in seen_virtual_record_ids:
-            seen_virtual_record_ids.add(virtual_record_id)
-            virtual_record_id_to_record_number[virtual_record_id] = record_number
-            record_number = record_number + 1
-    all_record_strings = []
     seen_blocks = set()
-    seen_virtual_record_ids.clear()
-    record_ids =[]
-    record_string = ""
+    current_frontend_url = ""
+    current_record_id = ""
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
             if i > 0:
-                all_record_strings.append(record_string)
-                record_string = ""
+                content.append({
+                    "type": "text",
+                    "text": "</record>"
+                })
+                all_contents.append(content)
+                content = []
             seen_virtual_record_ids.add(virtual_record_id)
             record = virtual_record_id_to_result[virtual_record_id]
             if record is None:
                 continue
 
-            record_string += f"""<record>\n{record.get("context_metadata", "")}
-Record blocks (sorted):\n\n"""
-            record_ids.append(record.get("id"))
+            current_frontend_url = record.get("frontend_url", "")
+            current_record_id = record.get("id", "")
+
+            template = Template(qna_prompt_context)
+            rendered_form = template.render(
+                context_metadata=record.get("context_metadata", ""),
+            )
+            content.append({
+                "type": "text",
+                "text": rendered_form
+            })
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
             block_type = result.get("block_type")
             block_index = result.get("block_index")
-            record_number = virtual_record_id_to_record_number[virtual_record_id] if virtual_record_id in virtual_record_id_to_record_number else None
-            if record_number is None:
-                continue
-            block_number = f"R{record_number}-{block_index}"
-            if block_type == GroupType.TABLE.value:
+            block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
+            result["block_web_url"] = block_web_url
+            ref = ref_mapper.get_or_create_ref(block_web_url)
+            result["citation_ref"] = ref
+            if block_type == BlockType.IMAGE.value:
+                if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
+                    content.append({
+                        "type": "text",
+                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                    })
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": result.get("content")}
+                    })
+                else:
+                    if is_base64_image(result.get("content")):
+                        continue
+                    content.append({
+                        "type": "text",
+                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                    })
+            elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
+                block_group_index = result.get("block_group_index")
                 if child_results:
+                    for child in child_results:
+                        child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
+                        child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
                     template = Template(table_prompt)
                     rendered_form = template.render(
-                        block_group_index=result.get("block_group_index"),
+                        block_group_index=block_group_index,
+                        block_group_web_url="",
                         table_summary=table_summary,
                         table_rows=child_results,
-                        record_number=record_number,
                     )
-                    record_string += f"{rendered_form}\n\n"
-                else:
-                    record_string += f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
+                    content.append({
+                        "type": "text",
+                        "text": f"{rendered_form}\n\n"
+                    })
             elif block_type == BlockType.TEXT.value:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-            elif block_type != BlockType.IMAGE.value:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
+            elif block_type in valid_group_labels:
+                block_group_index = result.get("block_group_index")
+                group_blocks = result.get("content")[1] if isinstance(result.get("content"), tuple) else []
+                if not group_blocks:
+                    continue
+                for gb in group_blocks:
+                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0))
+                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
+                template = Template(block_group_prompt)
+                rendered_form = template.render(
+                    block_group_index=block_group_index,
+                    block_group_web_url="",
+                    label=block_type,
+                    blocks=group_blocks,
+                )
+                content.append({
+                    "type": "text",
+                    "text": f"{rendered_form}\n\n"
+                })
+            else:
+                continue
         else:
             continue
 
-    all_record_strings.append(record_string)
-
-    return all_record_strings
-
-def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    content = []
-    block_group = tool_result.get("block_group", {})
-    block_group_index = block_group.get("index", 0)
-    record_number = tool_result.get("record_number", 1)
-    record_id = tool_result.get("record_id", "")
-    record_name = tool_result.get("record_name", "")
-    content.append({
-            "type": "text",
-            "text": f"""<record>
-            * Record Id: {record_id}
-            * Record Name: {record_name}
-            * Block Group:
-            """
-        })
-
-    child_results = []
-    blocks = block_group.get("blocks",[])
-    table_summary = block_group.get("data",{}).get("table_summary","")
-    for block in blocks:
-        block_data = block.get("data", {})
-        if isinstance(block_data, dict):
-            row_text = block_data.get("row_natural_language_text", "")
-        else:
-            row_text = str(block_data)
-
-        child_results.append({
-            "content": row_text,
-            "block_index": block.get("index", 0),
-        })
-
-    if child_results:
-        template = Template(table_prompt)
-        rendered_form = template.render(
-            block_group_index=block_group_index,
-            table_summary=table_summary,
-            table_rows=child_results,
-            record_number=record_number,
-        )
+    if content:
         content.append({
             "type": "text",
-            "text": rendered_form
+            "text": "</record>"
         })
-    else:
-        content.append({
-            "type": "text",
-            "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}"
-        })
-    content.append({
-        "type": "text",
-        "text": """</record>
-        Now produce the final answer STRICTLY following the previously provided Output format.\n
-        CRITICAL REQUIREMENTS:\n
-        - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
-        - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
-        - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""
-    })
-    return content
+        all_contents.append(content)
 
+    return all_contents, ref_mapper
 
-def count_tokens_in_messages(messages: List[Any],enc) -> int:
+def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """
     Count the total number of tokens in a messages array.
     Supports both dict messages and LangChain message objects.
@@ -1583,7 +1626,7 @@ def count_tokens_text(text: str,enc) -> int:
 
     return max(1, len(text) // 4)
 
-def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int, int]:
+def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]]]) -> tuple[int, int]:
     # Lazy import tiktoken; fall back to a rough heuristic if unavailable
     enc = None
     try:
@@ -1601,9 +1644,12 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
     current_message_tokens = count_tokens_in_messages(messages,enc)
     new_tokens = 0
 
-    for message_content in message_contents:
-        new_tokens += count_tokens_text(message_content,enc)
+    flattened_message_contents = [item for sublist in message_contents for item in sublist]
 
+    for message in flattened_message_contents:
+        text_content = message.get("text", "") if message.get("type") == "text" else ""
+        if text_content:
+            new_tokens += count_tokens_text(text_content,enc)
 
     return current_message_tokens, new_tokens
 
@@ -1612,7 +1658,7 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 FRAGMENT_WORD_COUNT = 8
 
 
-def extract_start_end_text(snippet: str) -> Tuple[str, str]:
+def extract_start_end_text(snippet: str) -> tuple[str, str]:
     if not snippet:
         return "", ""
 
@@ -1680,6 +1726,10 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         return base_url
 
     try:
+
+        if "#:~:text=" in base_url:
+            return base_url
+
         snippet = text_snippet.strip()
         if not snippet:
             return base_url

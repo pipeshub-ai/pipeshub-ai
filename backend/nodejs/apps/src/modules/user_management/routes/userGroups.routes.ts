@@ -16,7 +16,11 @@ const UserGroupIdUrlParams = z.object({
 
 const UserGroupIdValidationSchema = z.object({
   body: z.object({}),
-  query: z.object({}),
+  query: z.object({
+    page: z.string().optional(),
+    limit: z.string().optional(),
+    search: z.string().optional(),
+  }),
   params: UserGroupIdUrlParams,
   headers: z.object({}),
 });

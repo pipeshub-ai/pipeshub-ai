@@ -29,6 +29,7 @@ from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
 from app.agents.tools.factories.redshift import RedshiftClientFactory
 from app.agents.tools.factories.slack import SlackClientFactory
+from app.agents.tools.factories.salesforce import SalesforceClientFactory
 from app.agents.tools.factories.zoom import ZoomClientFactory
 
 # from app.agents.tools.factories.gitlab import GitLabClientFactory
@@ -198,6 +199,9 @@ class ClientFactoryRegistry:
 
             elif app_name == "zoom":
                 cls.register(app_name, ZoomClientFactory())
+
+            elif app_name == "salesforce":
+                cls.register(app_name, SalesforceClientFactory())
 
             # elif app_name == "gitlab":
             #     cls.register(app_name, GitLabClientFactory())

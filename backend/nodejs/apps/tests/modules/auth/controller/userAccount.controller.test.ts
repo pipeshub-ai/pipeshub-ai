@@ -1220,6 +1220,32 @@ describe('UserAccountController', () => {
       expect(result.data).to.equal('mail sent');
       expect(mockMailService.sendMail.calledOnce).to.be.true;
     });
+
+    it('should use /reset-password#token= hash fragment format in the link', async () => {
+      const user = {
+        _id: 'u1',
+        email: 'user@example.com',
+        orgId: 'o1',
+        fullName: 'Test User',
+      };
+
+      sinon.stub(Org, 'findOne').resolves({
+        shortName: 'TestOrg',
+        registeredName: 'Test Organization',
+      } as any);
+
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendForgotPasswordEmail(user);
+
+      const mailCall = mockMailService.sendMail.firstCall.args[0];
+      const link: string = mailCall.templateData.link;
+
+      // Must use hash fragment (#token=), never query param (?token=)
+      expect(link).to.match(/\/reset-password#token=.+/);
+      expect(link).to.not.include('?token=');
+      expect(link).to.not.include('&token=');
+    });
   });
 
   describe('generateAndSendLoginOtp', () => {
@@ -1521,7 +1547,7 @@ describe('UserAccountController', () => {
   });
 
   describe('authenticateWithPassword', () => {
-    it('should throw NotFoundError when no password is set', async () => {
+    it('should throw BadRequestError with a generic "incorrect password" message when no password is set (to prevent account enumeration)', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
@@ -1534,8 +1560,8 @@ describe('UserAccountController', () => {
         await controller.authenticateWithPassword(user, 'password', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(NotFoundError);
-        expect((error as NotFoundError).message).to.include('not created a password yet');
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as BadRequestError).message).to.include('Incorrect password');
       }
     });
 

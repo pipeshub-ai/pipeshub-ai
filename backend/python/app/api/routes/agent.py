@@ -16,11 +16,13 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, config_node_constants
+from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -75,11 +77,12 @@ class ChatQuery(BaseModel):
 
 class RouteDecision(BaseModel):
     """
-    Routing decision with mandatory reasoning.
+    Routing decision with structured chain-of-thought reasoning.
 
-    reasoning: one-sentence explanation written before committing to a route
-               (chain-of-thought before commitment reduces misroutes)
-    route: the tier — type-safe, cannot produce an invalid value
+    reasoning: structured analysis — sub-tasks identified, dependency chain,
+               parameter availability, and justification for the chosen tier.
+               Written BEFORE committing to a route (CoT reduces misroutes).
+    route: the tier — type-safe, cannot produce an invalid value.
     """
     reasoning: str
     route: Literal["quick", "react", "deep"]
@@ -138,6 +141,13 @@ class LLMInitializationError(AgentError):
             status_code=500
         )
 
+class ReasoningModelRequiredError(AgentError):
+    """Reasoning model required"""
+    def __init__(self) -> None:
+        super().__init__(
+            detail="Reasoning model is required in agent mode. Please use a reasoning model.",
+            status_code=400
+        )
 
 # ============================================================================
 # Helper Functions
@@ -229,8 +239,8 @@ async def _auto_select_graph(
 ) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
-    three agent types: quick, verification, or deep.
-    Falls back to 'verification' if parsing fails.
+    three agent types: quick, react, or deep.
+    Falls back to 'react' if parsing fails.
     """
 
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -239,62 +249,96 @@ async def _auto_select_graph(
     if not user_query:
         return modern_agent_graph
 
+    capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data = (
+        _build_agent_capability_context(query_info)
+    )
     context_block = _build_routing_context(query_info)
+
     structured_llm = llm.with_structured_output(RouteDecision)
 
     system_prompt = (
         "You are a routing agent. Classify the user request into exactly one "
         "execution tier: quick, react, or deep.\n\n"
 
-        + context_block +
+        + capability_block
+        + context_block
+        + "## quick\n"
+        "Every action and every parameter can be fully determined right now "
+        "from the query and context, before anything runs. The request itself "
+        "is the final action — retrieving, searching, displaying, or acting on "
+        "something where the goal is the retrieval or action itself, not "
+        "further processing of what comes back.\n\n"
 
-        "## quick\n"
-        "Every action and every parameter can be fully determined right now from "
-        "the query and context, before anything runs. The request itself is the "
-        "final action — retrieving, displaying, or acting on something where the "
-        "goal is the retrieval or action itself, not further processing of what "
-        "comes back.\n\n"
-        "CRITICAL: For a request to be 'quick', ALL required parameters for the "
-        "final action must be directly available from the query text, conversation "
-        "context, or system constants. If ANY required parameter must be obtained "
-        "by calling a tool first (e.g., resolving an ID, key, or identifier), "
-        "then it is NOT quick — it requires a prior step and should be 'react'.\n\n"
+        "CRITICAL: For a request to be 'quick', ALL of the following must be true:\n"
+        "1. ALL required parameters for the final action are directly available "
+        "from the query text, conversation context, or system constants — NO "
+        "tool calls needed to obtain any parameter (IDs, keys, identifiers).\n"
+        "2. The query contains exactly ONE distinct action or question. If the "
+        "query asks about two or more separate topics, tasks, or actions "
+        "(e.g., 'How do I do X and also Y?'), it is NOT quick.\n\n"
 
         "## react\n"
-        "A fixed, predictable sequence of dependent steps where the chain length "
-        "is deterministic before execution starts, but at least one step's "
-        "parameters only become known from a prior step's result. The intent "
-        "implies: get something first, then do something with it — where 'it' "
-        "is one specific thing.\n\n"
+        "A fixed, predictable sequence of dependent steps where the chain "
+        "length is deterministic before execution starts, but at least one "
+        "step's parameters only become known from a prior step's result. The "
+        "intent implies: get something first, then do something with it — "
+        "where 'it' is one specific thing.\n\n"
         "Key indicator: If the final action requires a parameter (ID, key, "
         "identifier, or any structured value) that must be fetched/resolved "
         "through a tool call, this is react. The dependency chain is: "
         "resolve parameter → execute final action.\n\n"
-
+        "Also use react when the query has multiple related sub-tasks that "
+        "build on shared context.\n\n"
+        "**react is the safe default when routing is unclear.**\n\n"
 
         "## deep\n"
         "Reserved for tasks react cannot handle. Only two cases qualify:\n"
         "(a) The intent requires getting a collection and then doing something "
         "to EVERY item in it — the number of items is unknown before the "
         "collection is retrieved. Wanting to SEE a collection is not this.\n"
-        "(b) The intent requires gathering information from multiple fully "
-        "independent sources and combining it into one unified answer.\n\n"
+        "(b) The intent requires gathering information from ≥2 fully "
+        "independent sources and combining it into one unified answer.\n"
+        f"Configuration check: {n_knowledge} source(s) configured — deep "
+        f"is {'viable' if n_knowledge >= 2 else 'NOT viable (need ≥2)'}.\n\n"
+
+        "## What counts as a known vs unknown parameter\n"
+        "Known (does NOT require a prior tool call):\n"
+        "  • Any search term, keyword, or topic that appears in the query text "
+        "itself — the user's words ARE the search input.\n"
+        "  • Any ID, name, key, or value explicitly stated in the query or "
+        "conversation history.\n"
+        "  • Which tool or knowledge source to use — this is an internal agent "
+        "routing decision, NOT a parameter the query must supply.\n\n"
+        "Unknown (DOES require a prior tool call):\n"
+        "  • An ID, key, or identifier that is not present anywhere in the "
+        "query or conversation and must be obtained from a tool's response "
+        "before the final action can execute.\n\n"
 
         "## Decision\n"
-        "Q1: Are ALL required parameters for the final action directly available "
-        "from the query, context, or constants — with NO tool calls needed to "
-        "obtain them? If ANY parameter requires a tool call to resolve (IDs, "
-        "keys, identifiers, or any structured values), answer NO. → quick only if YES\n\n"
+        "Answer these in order. Stop at the first match.\n\n"
+
+        "Q1: Is this a single question or action, AND are ALL required "
+        "parameters known (per the definitions above) — with NO tool calls "
+        "needed to obtain them? → **quick**\n\n"
+
         "Q2: Does the request require a fixed sequence where at least one "
         "parameter for the final action must come from a prior tool's result? "
-        "→ react\n\n"
-        "Q3: Does the request imply acting on every item in a collection whose "
-        "size is only known at runtime, or combining independent sources? → deep\n\n"
-        "Default → react\n\n"
+        "→ **react**\n\n"
 
-        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', 'proceed') "
-        "— infer the full intent from the prior conversation above, then apply "
-        "the decision above to that inferred intent.\n\n"
+        "Q3: Does the request imply acting on every item in a collection "
+        "whose size is only known at runtime, or combining ≥2 fully "
+        f"independent sources ({n_knowledge} configured)? → **deep**\n\n"
+
+        "Q4: Does the query contain multiple distinct sub-questions, topics, "
+        "or actions? → NOT quick; use react (if topics are related or "
+        "sequential) or deep (if fully independent and targeting different "
+        "sources).\n\n"
+
+        "Default → **react**\n\n"
+
+        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
+        "'proceed') — infer the full intent from the prior conversation "
+        "above, then apply the decision tree to that inferred intent.\n\n"
 
         f"Query: {user_query}"
     )
@@ -331,8 +375,6 @@ async def _auto_select_graph(
         )
         return modern_agent_graph
 
-
-
 def _build_routing_context(query_info: dict[str, Any]) -> str:
     """
     Compact prior conversation context for resolving follow-ups.
@@ -363,6 +405,103 @@ def _build_routing_context(query_info: dict[str, Any]) -> str:
         + "\n".join(turns)
         + "\n\n"
     )
+
+
+def _build_agent_capability_context(
+    query_info: dict[str, Any],
+) -> tuple[str, int, list[dict], list[dict], list[dict]]:
+    """
+    Build a rich capability summary for the routing prompt.
+
+    Prefers fully-labeled data when available (chat_stream path supplies
+    query_info["knowledge"] and query_info["toolsets"]).  Falls back
+    gracefully to filter counts + bare tool-name strings when only the
+    lighter query_info structure is present (non-streaming chat / askAI).
+
+    Returns:
+        (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
+        where tools_data is a list of {"full_name": str, "desc": str} dicts.
+    """
+    from app.modules.agents.capability_summary import (  # noqa: PLC0415 – lazy import kept for historical reasons
+        classify_knowledge_sources,
+        format_connector_filter_lines,
+    )
+
+    lines: list[str] = ["## Agent capabilities\n"]
+    indexed_connectors: list[dict] = []
+    kb_sources: list[dict] = []
+
+    # ── Knowledge sources ─────────────────────────────────────────────────────
+    agent_knowledge: list[dict] = query_info.get("knowledge") or []
+    connector_cfgs = query_info.get("connector_configs") or {}
+
+    if agent_knowledge:
+        kb_sources, indexed_connectors = classify_knowledge_sources(
+            agent_knowledge,
+            connector_configs=connector_cfgs if isinstance(connector_cfgs, dict) else None,
+        )
+        n_knowledge = len(kb_sources) + len(indexed_connectors)
+        lines.append(f"Knowledge sources ({n_knowledge} total):")
+        for c in indexed_connectors:
+            line = f"  • {c['label']} — app connector (type: {c['type_key']})"
+            fls = format_connector_filter_lines(c.get("filters"))
+            if fls:
+                line += "; " + "; ".join(fls)
+            lines.append(line)
+        for k in kb_sources:
+            cids = k.get("collection_ids", [])
+            scope = f", {len(cids)} scoped collection(s)" if cids else ""
+            lines.append(f"  • {k['label']} — knowledge base{scope}")
+    else:
+        # Fallback: derive counts from filters (NO_KB_SELECTED sentinel excluded)
+        filters = query_info.get("filters") or {}
+        n_connectors = len(filters.get("apps") or [])
+        n_kb = len([
+            x for x in (filters.get("kb") or [])
+            if x and x != "NO_KB_SELECTED"
+        ])
+        n_knowledge = n_connectors + n_kb
+        if n_knowledge:
+            lines.append(
+                f"Knowledge sources ({n_knowledge} total): "
+                f"{n_connectors} connector(s), {n_kb} KB collection(s)"
+            )
+        else:
+            lines.append("Knowledge sources: none configured")
+
+    lines.append("")
+
+    # ── Action tools ──────────────────────────────────────────────────────────
+    # Prefer toolsets (rich: fullName + description per tool).
+    # Fall back to the flat "tools" string list when toolsets are absent.
+    tools_data: list[dict] = []  # {"full_name": str, "desc": str}
+
+    toolsets: list[dict] = query_info.get("toolsets") or []
+    if toolsets:
+        for ts in toolsets:
+            for tool in ts.get("tools", []):
+                full_name = tool.get("fullName") or tool.get("name", "")
+                if not full_name:
+                    continue
+                desc = (tool.get("description") or "").strip()
+                tools_data.append({"full_name": full_name, "desc": desc})
+    else:
+        raw_tools: list = query_info.get("tools") or []
+        for t in raw_tools:
+            if isinstance(t, str) and t:
+                tools_data.append({"full_name": t, "desc": ""})
+
+    if tools_data:
+        lines.append(f"Action tools ({len(tools_data)} total):")
+        for td in tools_data:
+            entry = f"  • {td['full_name']}"
+            if td["desc"]:
+                entry += f" — {td['desc'][:100]}"
+            lines.append(entry)
+    else:
+        lines.append("Action tools: none configured")
+
+    return "\n".join(lines) + "\n\n", n_knowledge, indexed_connectors, kb_sources, tools_data
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
@@ -2544,12 +2683,13 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
         agent.update(perm)
 
+        agent_knowledge = agent.get("knowledge", [])
+
         # Build filters from knowledge array (new format)
         filters = chat_query.filters.copy() if chat_query.filters else {}
 
         if not chat_query.filters:
             # Extract knowledge sources from agent's knowledge array
-            agent_knowledge = agent.get("knowledge", [])
             knowledge_connector_ids = []
             kb_record_groups = []
 
@@ -2589,6 +2729,13 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         if agent.get("connectors"):
             filters["connectors"] = agent.get("connectors", [])
 
+        _chat_conn_ids = [
+            k["connectorId"] for k in agent_knowledge
+            if isinstance(k, dict) and k.get("connectorId")
+            and not str(k["connectorId"]).startswith("knowledgeBase_")
+        ]
+        connector_configs = await fetch_connector_configs(config_service, _chat_conn_ids)
+
         # Build query info
         query_info = {
             "query": chat_query.query,
@@ -2600,6 +2747,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "retrievalMode": chat_query.retrievalMode,
             "filters": filters,
             "tools": chat_query.tools if chat_query.tools is not None else agent.get("tools"),
+            "knowledge": agent_knowledge,
+            "connector_configs": connector_configs,
             "systemPrompt": agent.get("systemPrompt"),
             "instructions": agent.get("instructions"),
             "timezone": chat_query.timezone,
@@ -2684,30 +2833,38 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
-        if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
-            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-        else:
-            # Standard user path: look up the user document and verify permissions.
+        if agent_id == "agentIdPlaceholder":
+            toolset_registry = getattr(request.app.state, "toolset_registry", None)
+            agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
-            perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-            if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
-                raise AgentNotFoundError(agent_id)
+            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+
+        else:
+            if is_service_account:
+                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
+                # Service account agents are always org-wide, so skip user-specific permission checks
+                # and the user document lookup which would fail.
+                enriched_user_info = {
+                    "userId": user_context["userId"],
+                    "orgId": user_context["orgId"],
+                    "userEmail": user_context.get("email", user_context["userId"]),
+                    "_key": None,
+                }
+                agent = await services["graph_provider"].get_agent(agent_id, org_key)
+                if not agent or not agent.get("isServiceAccount"):
+                    raise AgentNotFoundError(agent_id)
+                perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            else:
+                # Standard user path: look up the user document and verify permissions.
+                user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+                enriched_user_info = await _enrich_user_info(user_context, user_doc)
+                perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+                if not perm:
+                    raise AgentNotFoundError(agent_id)
+                agent = await services["graph_provider"].get_agent(agent_id, org_key)
+                if not agent:
+                    raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
 
@@ -2731,15 +2888,21 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
 
         # Get LLM for chat
-        llm = (await get_llm_for_chat(
+        llm_result = (await get_llm_for_chat(
             services["config_service"],
             model_key,
             model_name,
             chat_query.chatMode
-        ))[0]
+        ))
 
-        if not llm:
+        if not llm_result:
             raise LLMInitializationError()
+
+        llm = llm_result[0]
+        llm_config = llm_result[1]
+
+        if not llm_config.get("isReasoning", False):
+            raise ReasoningModelRequiredError()
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
@@ -2939,12 +3102,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
 
-        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
-
-        if not filters.get("kb"):
+        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
+        # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
+        # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
+        if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 
+        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+
         logger.info(f"Filters: {filters}")
+
+        _stream_conn_ids = [
+            k["connectorId"] for k in agent_knowledge
+            if isinstance(k, dict) and k.get("connectorId")
+            and not str(k["connectorId"]).startswith("knowledgeBase_")
+        ]
+        connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
 
         # Build query info
         query_info = {
@@ -2962,6 +3135,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
+            "connector_configs": connector_configs,
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
@@ -2991,3 +3165,88 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+async def get_assistant_agent(
+    user_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    graph_provider: IGraphDBProvider,
+    toolset_registry: ToolsetRegistry,
+    logger: Logger,
+) -> dict:
+    """
+    Get the assistant agent with all authenticated toolsets and accessible connectors.
+
+    Args:
+        user_id: User ID
+        org_id: Organization ID
+        config_service: Configuration service for etcd access
+        graph_provider: Graph provider instance
+        toolset_registry: Toolset registry instance
+        logger: Logger instance
+
+    Returns:
+        Dictionary containing assistant agent configuration with toolsets and knowledge sources
+    """
+    from app.api.routes.toolsets import get_authenticated_toolsets
+
+    # Get authenticated toolsets using the helper method
+    try:
+        authenticated_toolsets_list = await get_authenticated_toolsets(
+            user_id=user_id,
+            org_id=org_id,
+            config_service=config_service,
+            registry=toolset_registry,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
+        authenticated_toolsets_list = []
+
+    # Get all accessible connectors for knowledge sources
+    knowledge_sources = []
+
+    try:
+        # Get active connector instances accessible to the user
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+        if not user:
+            logger.error(f"User not found: {user_id}")
+            return {}
+        user_key = user.get("id") or user.get("_key")
+        connectors = await graph_provider.get_user_apps(
+            user_id=user_key,
+        )
+        for connector in connectors:
+            connector_id = connector.get("id", "") or connector.get("_key", "")
+            connector_name = connector.get("name", "")
+            connector_type = connector.get("type", "")
+
+            if connector_type == Connectors.KNOWLEDGE_BASE:
+                continue
+            # Build knowledge source entry
+            knowledge_entry = {
+                "connectorId": connector_id,
+                "name": connector_name,
+                "displayName": connector_name,
+                "type": connector_type,
+                "filtersParsed": {
+                    "recordGroups": [],
+                    "records": []
+                }
+            }
+            knowledge_sources.append(knowledge_entry)
+    except Exception as e:
+        logger.error(f"Error fetching knowledge sources: {e}", exc_info=True)
+        knowledge_sources = []
+
+    # Return assistant agent configuration
+    return {
+        "systemPrompt": "You are a helpful AI assistant with access to various tools and knowledge sources. Use them to help users accomplish their tasks efficiently.",
+        "models": [],
+        "startMessage": "Hello! I'm your AI assistant. I have access to your connected tools and knowledge bases. How can I help you today?",
+        "name": "assistant",
+        "description": "AI assistant with access to all your authenticated tools and knowledge sources",
+        "isActive": True,
+        "tags": ["assistant", "general-purpose"],
+        "toolsets": authenticated_toolsets_list,
+        "knowledge": knowledge_sources,
+    }
