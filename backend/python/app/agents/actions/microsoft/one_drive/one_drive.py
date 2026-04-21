@@ -1428,14 +1428,15 @@ class OneDrive:
                 # Extract extension from current name
                 current_ext = current_name.rsplit(".", 1)[-1] if "." in current_name else ""
 
-                # Append extension only if new_name doesn't already carry the current one.
-                # Use a strict definition of "has an extension": the suffix after the last
-                # dot must match the current extension exactly (case-insensitive). This
-                # prevents names like "Q1.2024 Report" from being treated as having an
-                # extension ".2024 Report" and silently dropping the real extension.
+                # Append the original extension only if new_name doesn't already carry
+                # a real file extension. A "real" extension is short (≤5 chars) and
+                # alphanumeric-only. This prevents names like "Q1.2024 Report" from
+                # being treated as having extension ".2024 Report" and silently dropping
+                # the real extension, while still allowing intentional extension changes
+                # like renaming "old.pdf" → "Final.docx".
                 new_ext = new_name.rsplit(".", 1)[-1] if "." in new_name else ""
-                already_has_ext = new_ext.lower() == current_ext.lower()
-                if current_ext and not already_has_ext:
+                new_ext_is_real = bool(new_ext) and len(new_ext) <= 5 and new_ext.isalnum()
+                if current_ext and not new_ext_is_real:
                     new_name = f"{new_name}.{current_ext}"
 
             body = DriveItem()

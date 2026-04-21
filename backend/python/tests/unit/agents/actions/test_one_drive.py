@@ -19,7 +19,7 @@ from app.agents.actions.microsoft.one_drive.one_drive import (
     # Pydantic schemas
     CopyItemInput,
     CreateFolderInput,
-    CreateOfficeFileInput,
+    CreateWordFileInput,
     CreateOneNoteNotebookInput,
     CreateOneNotePageInput,
     CreateOneNoteSectionInput,
@@ -416,7 +416,7 @@ class TestPydanticSchemas:
 
     def test_get_shared_with_me_defaults(self):
         inp = GetSharedWithMeInput()
-        assert inp.top is None
+        assert inp.top == 10
 
     def test_search_shared_with_me_defaults(self):
         inp = SearchSharedWithMeInput(query="report")
@@ -424,7 +424,7 @@ class TestPydanticSchemas:
         assert inp.per_drive_top is None
 
     def test_create_office_file_input(self):
-        inp = CreateOfficeFileInput(
+        inp = CreateWordFileInput(
             drive_id="d-1", file_name="doc.docx", file_type="word"
         )
         assert inp.parent_folder_id is None
@@ -730,6 +730,15 @@ class TestShareItem:
         )
         assert success is False
         assert "email" in json.loads(result)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_email_format(self):
+        od = _make_onedrive()
+        success, result = await od.share_item(
+            drive_id="d-1", item_id="i-1", emails=["notanemail"], role="read"
+        )
+        assert success is False
+        assert "notanemail" in json.loads(result)["error"]
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1712,7 +1721,8 @@ class TestRenameItemMoreBranches:
         assert body.name == "BareName"
 
     @pytest.mark.asyncio
-    async def test_no_append_when_new_name_has_extension(self):
+    async def test_no_append_when_new_name_has_real_extension(self):
+        """Any short alnum extension in new_name is treated as intentional — don't append."""
         od = _make_onedrive()
         od.client.drives_get_items = AsyncMock(
             return_value=_mock_response(
@@ -1728,7 +1738,28 @@ class TestRenameItemMoreBranches:
         )
         assert success is True
         body = od.client.drives_update_items.call_args[1]["request_body"]
+        # "docx" is short and alnum → treated as a real extension → original .pdf not appended
         assert body.name == "Final.docx"
+
+    @pytest.mark.asyncio
+    async def test_appends_extension_when_dot_is_not_real_extension(self):
+        """'Q1.2024 Report' has a space in the suffix — not a real extension, original appended."""
+        od = _make_onedrive()
+        od.client.drives_get_items = AsyncMock(
+            return_value=_mock_response(
+                success=True,
+                data={"name": "budget.xlsx", "id": "i"},
+            )
+        )
+        od.client.drives_update_items = AsyncMock(
+            return_value=_mock_response(success=True, data={})
+        )
+        success, _ = await od.rename_item(
+            drive_id="d-1", item_id="i-1", new_name="Q1.2024 Report"
+        )
+        assert success is True
+        body = od.client.drives_update_items.call_args[1]["request_body"]
+        assert body.name == "Q1.2024 Report.xlsx"
 
     @pytest.mark.asyncio
     async def test_exception_in_try(self):

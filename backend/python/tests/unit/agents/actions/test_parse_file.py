@@ -624,24 +624,14 @@ class TestHandleCsvTsv:
         parser._tsv_parser.read_raw_rows.assert_called()
 
     @pytest.mark.asyncio
-    async def test_read_raw_rows_non_unicode_error_then_success(self):
-        """Generic Exception in decode loop is ignored; a later encoding can succeed."""
+    async def test_read_raw_rows_non_unicode_error_propagates(self):
+        """Non-UnicodeDecodeError exceptions from the parser are re-raised, not swallowed."""
         parser = _make_parser()
         parser._csv_parser.read_raw_rows = MagicMock(
-            side_effect=[ValueError("bad rows"), [["x", "y"]]]
+            side_effect=ValueError("bad rows")
         )
-        parser._csv_parser.find_tables_in_csv = MagicMock(return_value=[MagicMock()])
-        expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._csv_parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(
-            return_value=expected
-        )
-        with patch(
-            "app.agents.actions.util.parse_file.get_llm",
-            new_callable=AsyncMock,
-            return_value=("llm", None),
-        ):
-            result = await parser.handle_csv(b"a,b", "file.csv")
-            assert result is expected
+        with pytest.raises(ValueError, match="bad rows"):
+            await parser.handle_csv(b"a,b", "file.csv")
 
 
 class TestHandleMd:
