@@ -39,6 +39,11 @@ interface UploadState {
   totalSize: number;
   completedCount: number;
   totalCount: number;
+  /** Completed rows removed by `clearCompleted` (tray only lists failures). */
+  clearedCompletedCount: number;
+  /** Files / bytes in the current upload wave (set on `addItems`, survives `clearCompleted`). */
+  sessionUploadFileCount: number;
+  sessionUploadTotalSize: number;
 }
 
 interface UploadActions {
@@ -65,6 +70,9 @@ const initialState: UploadState = {
   totalSize: 0,
   completedCount: 0,
   totalCount: 0,
+  clearedCompletedCount: 0,
+  sessionUploadFileCount: 0,
+  sessionUploadTotalSize: 0,
 };
 
 export const useUploadStore = create<UploadStore>()(
@@ -74,6 +82,18 @@ export const useUploadStore = create<UploadStore>()(
 
       addItems: (newItems) =>
         set((state) => {
+          const countNew = newItems.length;
+          const bytesNew = newItems.reduce((sum, item) => sum + item.size, 0);
+
+          if (state.items.length === 0) {
+            state.sessionUploadFileCount = countNew;
+            state.sessionUploadTotalSize = bytesNew;
+            state.clearedCompletedCount = 0;
+          } else {
+            state.sessionUploadFileCount += countNew;
+            state.sessionUploadTotalSize += bytesNew;
+          }
+
           const itemsToAdd: UploadItem[] = newItems.map((item) => ({
             ...item,
             // Use caller-provided id when pre-generated, otherwise generate one
@@ -124,10 +144,13 @@ export const useUploadStore = create<UploadStore>()(
 
       clearCompleted: () =>
         set((state) => {
+          const completedInTray = state.items.filter((item) => item.status === 'completed').length;
+          state.clearedCompletedCount += completedInTray;
+
           state.items = state.items.filter((item) => item.status !== 'completed');
           state.totalCount = state.items.length;
           state.totalSize = state.items.reduce((sum, item) => sum + item.size, 0);
-          state.completedCount = 0;
+          state.completedCount = state.items.filter((i) => i.status === 'completed').length;
           if (state.items.length === 0) {
             state.isVisible = false;
           }
@@ -139,6 +162,9 @@ export const useUploadStore = create<UploadStore>()(
           state.totalCount = 0;
           state.totalSize = 0;
           state.completedCount = 0;
+          state.clearedCompletedCount = 0;
+          state.sessionUploadFileCount = 0;
+          state.sessionUploadTotalSize = 0;
           state.isVisible = false;
         }),
 
@@ -167,6 +193,7 @@ export const useUploadStore = create<UploadStore>()(
           if (item) {
             item.status = 'completed';
             item.progress = 100;
+            item.error = undefined;
           }
           state.completedCount = state.items.filter((i) => i.status === 'completed').length;
         }),
@@ -176,8 +203,10 @@ export const useUploadStore = create<UploadStore>()(
           const item = state.items.find((i) => i.id === id);
           if (item) {
             item.status = 'failed';
+            item.progress = 0;
             item.error = error;
           }
+          state.completedCount = state.items.filter((i) => i.status === 'completed').length;
         }),
     })),
     { name: 'UploadStore' }
@@ -191,3 +220,6 @@ export const selectIsCollapsed = (state: UploadStore) => state.isCollapsed;
 export const selectTotalSize = (state: UploadStore) => state.totalSize;
 export const selectCompletedCount = (state: UploadStore) => state.completedCount;
 export const selectTotalCount = (state: UploadStore) => state.totalCount;
+export const selectClearedCompletedCount = (state: UploadStore) => state.clearedCompletedCount;
+export const selectSessionUploadFileCount = (state: UploadStore) => state.sessionUploadFileCount;
+export const selectSessionUploadTotalSize = (state: UploadStore) => state.sessionUploadTotalSize;
