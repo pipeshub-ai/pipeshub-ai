@@ -2245,7 +2245,6 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE record.connectorId = $connector_id
                 AND record.isDeleted <> true
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
-                AND record.origin = 'CONNECTOR'
 
                 WITH collect(DISTINCT record) AS candidateRecords{user_with}
                 UNWIND candidateRecords AS record
@@ -7396,19 +7395,35 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Create event data for router to publish
             try:
-                # KB records should always use record-events, not sync-events
-                # They don't need connector-based batch reindexing
-                if origin == OriginTypes.UPLOAD.value:
-                    # Get file record for KB reindex event payload
-                    # KB uploads are always FILE records
+                if origin == OriginTypes.UPLOAD.value and depth > 0:
+                    # KB folder reindex with children: use sync-events (same as connectors)
+                    # Consumer will find children via get_records_by_parent_record(depth)
+                    connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "kb"
+                    event_type = f"{connector_for_event}.reindex"
+
+                    payload = {
+                        "orgId": org_id,
+                        "recordId": record_id,
+                        "depth": depth,
+                        "connectorId": connector_id,
+                        "connector": connector_for_event,
+                        "userKey": user_key
+                    }
+
+                    event_data = {
+                        "eventType": event_type,
+                        "topic": "sync-events",
+                        "payload": payload
+                    }
+                elif origin == OriginTypes.UPLOAD.value:
+                    # Single KB file reindex: use record-events
                     file_record = None
                     if record.get("recordType") == "FILE":
                         file_record = await self.get_document(record_id, CollectionNames.FILES.value)
 
-                    # Create reindex event payload for KB records
                     payload = await self._create_reindex_event_payload(record, file_record, user_id, request, record_id=record_id)
                     event_data = {
-                        "eventType": "newRecord",  # Use newRecord for KB reindex (same as single record reindex)
+                        "eventType": "newRecord",
                         "topic": "record-events",
                         "payload": payload
                     }

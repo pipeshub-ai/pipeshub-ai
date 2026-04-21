@@ -607,7 +607,7 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {getStatusBadge() || (
+          {isFolder ? null : (getStatusBadge() || (
             <Text
               size="2"
               weight="medium"
@@ -618,7 +618,7 @@ function GridCard({
             >
               -
             </Text>
-          )}
+          ))}
         </Flex>
       </Flex>
     </Flex>

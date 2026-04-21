@@ -1649,15 +1649,16 @@ function KnowledgeBasePageContent() {
     });
 
     try {
-      // Check if this is a folder inside an app (use record-group endpoint)
-      const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-      const breadcrumbs = currentTableData?.breadcrumbs ?? [];
-      const isFolderInsideApp =  (item as KnowledgeHubNode).nodeType === 'recordGroup'
-        && breadcrumbs.some(b => b.nodeType === 'app') && item.nodeType !== 'folder';
+      const nodeType = (item as KnowledgeHubNode).nodeType;
 
-      if (isFolderInsideApp) {
+      if (nodeType === 'recordGroup') {
+        // RecordGroups are connector-app folders — use record-group endpoint
         await KnowledgeBaseApi.reindexRecordGroup(item.id);
+      } else if (nodeType === 'folder') {
+        // KB folders — reindex all children (depth=100)
+        await KnowledgeBaseApi.reindexItem(item.id, 100);
       } else {
+        // Regular records — reindex single item
         await KnowledgeBaseApi.reindexItem(item.id);
       }
 
@@ -1684,7 +1685,7 @@ function KnowledgeBasePageContent() {
         },
       });
     }
-  }, [refreshData, isAllRecordsMode, allRecordsTableData, tableData]);
+  }, [refreshData]);
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
@@ -1878,6 +1879,7 @@ function KnowledgeBasePageContent() {
     const items = selectedItemsArray.map(item => ({
       id: item.id,
       name: item.name,
+      nodeType: ('nodeType' in item) ? (item as KnowledgeHubNode).nodeType : undefined,
     }));
     await bulkReindexSelected(items, refreshData);
   }, [selectedItemsArray, bulkReindexSelected, refreshData]);

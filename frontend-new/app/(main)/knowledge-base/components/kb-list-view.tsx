@@ -256,7 +256,7 @@ function TableRow({
 
   // Status indicator
   const getStatusIcon = () => {
-    // if (isFolder) return null;
+    if (isFolder) return null;
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
