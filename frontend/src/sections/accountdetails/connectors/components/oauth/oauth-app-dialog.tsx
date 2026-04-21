@@ -885,32 +885,7 @@ const OAuthAppDialog: React.FC<OAuthAppDialogProps> = ({
                         }}
                       >
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Box
-                            sx={{
-                              p: 0.5,
-                              borderRadius: 0.75,
-                              bgcolor: alpha(theme.palette.info.main, 0.1),
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                            }}
-                          >
-                            {selectedConnector?.iconPath ? (
-                              <img
-                                src={selectedConnector.iconPath}
-                                alt=""
-                                width={14}
-                                height={14}
-                                style={{ objectFit: 'contain', display: 'block' }}
-                                onError={(e) => {
-                                  const target = e.target as HTMLImageElement;
-                                  target.style.display = 'none';
-                                }}
-                              />
-                            ) : (
-                              <Iconify icon={openInNewIcon} width={14} color={theme.palette.info.main} />
-                            )}
-                          </Box>
+                          <OAuthDocLinkIcon iconPath={selectedConnector?.iconPath} />
                           <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500, color: theme.palette.text.primary, flex: 1 }}>
                             {link.title}
                           </Typography>
@@ -1178,5 +1153,36 @@ const OAuthAppDialog: React.FC<OAuthAppDialogProps> = ({
     </Dialog>
   );
 };
+
+function OAuthDocLinkIcon({ iconPath }: { iconPath?: string }) {
+  const theme = useTheme();
+  const [iconError, setIconError] = useState(false);
+
+  return (
+    <Box
+      sx={{
+        p: 0.5,
+        borderRadius: 0.75,
+        bgcolor: alpha(theme.palette.info.main, 0.1),
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {iconPath && !iconError ? (
+        <img
+          src={iconPath}
+          alt=""
+          width={14}
+          height={14}
+          style={{ objectFit: 'contain', display: 'block' }}
+          onError={() => setIconError(true)}
+        />
+      ) : (
+        <Iconify icon={openInNewIcon} width={14} color={theme.palette.info.main} />
+      )}
+    </Box>
+  );
+}
 
 export default OAuthAppDialog;

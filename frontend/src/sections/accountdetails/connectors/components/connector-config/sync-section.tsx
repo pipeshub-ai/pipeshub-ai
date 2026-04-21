@@ -1,4 +1,4 @@
-import React, { forwardRef } from 'react';
+import React, { useState, forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -409,30 +409,7 @@ const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
                     }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-                      {connectorConfig.iconPath && (
-                        <Box
-                          sx={{
-                            p: 0.5,
-                            borderRadius: 0.75,
-                            bgcolor: alpha(theme.palette.info.main, 0.08),
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <img
-                            src={connectorConfig.iconPath}
-                            alt=""
-                            width={14}
-                            height={14}
-                            style={{ objectFit: 'contain', display: 'block' }}
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.style.display = 'none';
-                            }}
-                          />
-                        </Box>
-                      )}
+                      <SyncDocLinkIcon iconPath={connectorConfig.iconPath} />
                       <Typography
                         variant="body2"
                         sx={{
@@ -485,5 +462,49 @@ const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
 });
 
 SyncSection.displayName = 'SyncSection';
+
+function SyncDocLinkIcon({ iconPath }: { iconPath?: string }) {
+  const theme = useTheme();
+  const [iconError, setIconError] = useState(false);
+
+  if (!iconPath || iconError) {
+    return (
+      <Box
+        sx={{
+          p: 0.5,
+          borderRadius: 0.75,
+          bgcolor: alpha(theme.palette.info.main, 0.08),
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <Iconify icon={bookIcon} width={14} color={theme.palette.info.main} />
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        p: 0.5,
+        borderRadius: 0.75,
+        bgcolor: alpha(theme.palette.info.main, 0.08),
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <img
+        src={iconPath}
+        alt=""
+        width={14}
+        height={14}
+        style={{ objectFit: 'contain', display: 'block' }}
+        onError={() => setIconError(true)}
+      />
+    </Box>
+  );
+}
 
 export default SyncSection;
