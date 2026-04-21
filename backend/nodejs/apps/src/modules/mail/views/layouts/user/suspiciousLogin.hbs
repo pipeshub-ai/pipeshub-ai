@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <html>
   {{>head}}
-  <main>
-    <body>
+  <body>
+    <main>
       <table {{{containerstyle}}}>
         <tr>
           <td>{{> header}}</td>
         </tr>
         <tr>
           <td>
-            <table class='mobile-width' {{{bodytablestyle}}}>
+            <table class="mobile-width" {{{bodytablestyle}}}>
               <tr>
                 <td
                   style="
@@ -18,42 +18,42 @@
                   "
                 >
                   <div
-                    style='
+                    style="
                       font-size: 20px;
                       font-weight: 700;
                       color: #1d1c1d;
                       letter-spacing: -0.25px;
                       line-height: 28px;
                       margin: 0 0 16px 0;
-                    '
+                    "
                   >
                     We noticed a suspicious sign-in attempt
                   </div>
                   <div
-                    style='
+                    style="
                       font-size: 15px;
                       font-weight: 400;
                       color: #434245;
                       line-height: 22px;
                       margin: 0 0 24px 0;
-                    '
+                    "
                   >
-                    <div>Hi {{name}},</div>
+                    <div>{{#if name}}Hi {{name}},{{else}}Hi,{{/if}}</div>
                     <div>We detected multiple failed sign-in attempts on your
                       PipesHub account, and your account has been temporarily
                       locked to keep it safe.</div>
-                    <div style='height: 22px; line-height: 22px;'>&nbsp;</div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
                     <div>To regain access, please reach out to your
                       organisation&rsquo;s admin and ask them to unlock your
                       account.</div>
                   </div>
                   <div
-                    style='
+                    style="
                       font-size: 15px;
                       font-weight: 400;
                       color: #434245;
                       line-height: 22px;
-                    '
+                    "
                   >
                     If you didn&rsquo;t attempt to sign in, please let your
                     admin know so they can review the activity on your account.
@@ -67,6 +67,6 @@
           <td>{{> footer}}</td>
         </tr>
       </table>
-    </body>
-  </main>
+    </main>
+  </body>
 </html>

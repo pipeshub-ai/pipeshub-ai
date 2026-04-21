@@ -187,6 +187,7 @@ export class UserAccountController {
         await userCredentials.save();
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
+        const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
 
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
@@ -196,8 +197,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user?.fullName,
           },
         });
         throw new UnauthorizedError(
@@ -1020,8 +1021,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user.fullName,
           },
         });
       }

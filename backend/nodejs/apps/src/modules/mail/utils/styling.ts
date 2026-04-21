@@ -13,6 +13,11 @@ export const addStyling =( templateData:Record<string,any>) => {
               align="center"
               valign="middle"`;
 
+  // The styles below are consumed only by the not-yet-migrated templates:
+  //   layouts/workflows/reviewerAdded.hbs, layouts/workflows/mentionedInWorkflowActivity.hbs,
+  //   layouts/org/accountCreation.hbs, partials/taskTable.hbs.
+  // Remove these exports once those templates are migrated to the inline-style format
+  // used by the user/appuser templates.
   const divstyle = ` style="max-width: 600px; margin: 0 5% 0 5% ;"`;
   const pstyle = `style="text-align: center;"`;
   const buttonstyle = `style="border: none; color: rgb(255, 255, 255); padding: 16px 32px; text-align: center; display: inline-block; font-size: 15px; margin: 4px 2px; cursor: pointer; background-color: #527798; width: 60%; font-weight: bold; border-radius: 5px;"`;
