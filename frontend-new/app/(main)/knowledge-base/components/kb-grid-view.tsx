@@ -251,6 +251,21 @@ function GridCard({
               <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={12} color="var(--olive-11)" />
             </Flex>
           );
+        case 'EMPTY':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--slate-2)',
+                border: '1px solid var(--slate-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={12} color="var(--slate-11)" />
+            </Flex>
+          );
         default:
           return (
             <Flex
