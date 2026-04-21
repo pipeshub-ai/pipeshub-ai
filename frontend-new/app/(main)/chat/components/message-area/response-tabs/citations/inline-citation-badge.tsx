@@ -105,32 +105,12 @@ export function InlineCitationBadge({
         {truncatedName}
       </Text>
 
-      {/* Citation number in a nested mini-badge */}
-      <Flex
-        as="span"
-        align="center"
-        justify="center"
-        style={{
-          backgroundColor: 'transparent',
-          borderRadius: 'var(--radius-1)', /* was: 2px, delta: +1px */
-          padding: '0 var(--space-1)', /* was: 0 3px, delta: +1px side */
-          minWidth: '14px',
-          height: '14px',
-        }}
-      >
-        <Text
-          size="1"
-          weight="medium"
-          style={{
-            color: 'var(--slate-10)',
-            backgroundColor: 'transparent',
-            lineHeight: 1,
-            fontSize: 'var(--font-size-1)', /* was: 10px, delta: +2px */
-          }}
-        >
-          +{chunkIndex}
-        </Text>
-      </Flex>
+      {/* Citation number circle (also acts as popover trigger) */}
+      <CitationNumberCircle
+        chunkIndex={chunkIndex}
+        citation={citation}
+        callbacks={callbacks}
+      />
     </Flex>
   );
 }

@@ -14,7 +14,7 @@ from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
     .with_color("#D97706")
     .popular()
     .add_field(API_KEY)
-    .add_field(model_field("e.g., claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001"))
+    .add_field(model_field("e.g., claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-6"))
     .add_field(LLM_COMMON_TAIL[0])
     .add_field(LLM_COMMON_TAIL[1])
     .add_field(LLM_COMMON_TAIL[2])
