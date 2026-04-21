@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Avatar, Box } from '@radix-ui/themes';
+import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
@@ -15,18 +15,58 @@ interface SettingsTabProps {
   instance: ConnectorInstance;
   /** Config data from GET /connectors/{id}/config */
   config?: ConnectorConfig | null;
+  /** Opens remove confirmation (parent owns the dialog). */
+  onRequestRemoveConnector?: () => void;
+  /** When true, remove control is disabled (e.g. sync still on, or already deleting). */
+  removeConnectorDisabled?: boolean;
+  /** Shown when remove is disabled. */
+  removeConnectorDisabledReason?: string | null;
 }
 
 // ========================================
 // SettingsTab
 // ========================================
 
-export function SettingsTab({ instance, config }: SettingsTabProps) {
+export function SettingsTab({
+  instance,
+  config,
+  onRequestRemoveConnector,
+  removeConnectorDisabled,
+  removeConnectorDisabledReason,
+}: SettingsTabProps) {
   const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
   const syncInterval = getSyncIntervalLabel(config ?? undefined);
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
   const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
+
+  const removeDisabled = Boolean(removeConnectorDisabled);
+  const removeConnectorButton = onRequestRemoveConnector ? (
+    <Button
+      type="button"
+      color="red"
+      variant="soft"
+      disabled={removeDisabled}
+      style={{
+        alignSelf: 'flex-start',
+        cursor: removeDisabled ? 'not-allowed' : 'pointer',
+      }}
+      onClick={removeDisabled ? undefined : () => onRequestRemoveConnector()}
+    >
+      Remove connector instance
+    </Button>
+  ) : null;
+
+  const removeConnectorControl =
+    removeConnectorButton &&
+    removeDisabled &&
+    removeConnectorDisabledReason ? (
+      <Tooltip content={removeConnectorDisabledReason}>
+        <span style={{ alignSelf: 'flex-start', display: 'inline-flex' }}>{removeConnectorButton}</span>
+      </Tooltip>
+    ) : (
+      removeConnectorButton
+    );
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -118,6 +158,28 @@ export function SettingsTab({ instance, config }: SettingsTabProps) {
           )}
         </Flex>
       </SectionCard>
+
+      {onRequestRemoveConnector ? (
+        <Flex
+          direction="column"
+          gap="3"
+          p="3"
+          style={{
+            borderRadius: 'var(--radius-3)',
+            border: '1px solid var(--red-a6)',
+            backgroundColor: 'var(--red-a2)',
+          }}
+        >
+          <Text size="2" weight="bold" color="red">
+            Danger zone
+          </Text>
+          <Text size="2" color="gray" style={{ maxWidth: 420 }}>
+            Permanently remove this connector instance and stop syncing its data. This cannot be
+            undone.
+          </Text>
+          {removeConnectorControl}
+        </Flex>
+      ) : null}
     </Flex>
   );
 }
