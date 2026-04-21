@@ -18,10 +18,12 @@ import {
   useServicesHealthStore,
   selectInfraServices,
   selectAppServices,
+  selectInfraServiceNames,
+  selectDeployment,
   selectLastChecked,
   type ServiceStatus,
+  type Deployment,
 } from '@/lib/store/services-health-store';
-import { apiClient } from '@/lib/api/axios-instance';
 
 // ========================================
 // Service metadata
@@ -33,13 +35,6 @@ interface ServiceMeta {
   logoSlug?: string;
   label: string;
   description: string;
-}
-
-interface Deployment {
-  kvStoreType: string;
-  messageBrokerType: string;
-  graphDbType: string;
-  vectorDbType?: string;
 }
 
 const LOGO_SIZE = 22;
@@ -192,19 +187,16 @@ export default function ServicesPage() {
 
   const addToast = useToastStore((s) => s.addToast);
 
+  const checkHealth = useServicesHealthStore((s) => s.checkHealth);
   const infraServices = useServicesHealthStore(selectInfraServices);
   const appServices = useServicesHealthStore(selectAppServices);
+  const infraServiceNames = useServicesHealthStore(selectInfraServiceNames);
+  const deployment = useServicesHealthStore(selectDeployment);
   const lastChecked = useServicesHealthStore(selectLastChecked);
 
-  const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [localInfra, setLocalInfra] = useState(infraServices);
-  const [localApp, setLocalApp] = useState(appServices);
-  const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
-  const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
-  const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
 
-  const infraServiceList = useMemo(() => buildInfraServices(localDeployment), [localDeployment]);
+  const infraServiceList = useMemo(() => buildInfraServices(deployment), [deployment]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -212,54 +204,24 @@ export default function ServicesPage() {
     }
   }, [isProfileInitialized, isAdmin, router]);
 
-  const fetchHealth = useCallback(async (showToast = false) => {
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
     try {
-      const [infraResp, servicesResp] = await Promise.allSettled([
-        apiClient.get('/api/v1/health', { suppressErrorToast: true }),
-        apiClient.get('/api/v1/health/services', { suppressErrorToast: true }),
-      ]);
-
-      const infraData = infraResp.status === 'fulfilled' ? infraResp.value.data : null;
-      const servicesData = servicesResp.status === 'fulfilled' ? servicesResp.value.data : null;
-
-      setLocalInfra(infraData?.services ?? null);
-      setLocalApp(servicesData?.services ?? null);
-      setLocalServiceNames(infraData?.serviceNames ?? null);
-      setLocalDeployment(infraData?.deployment ?? null);
-      setLocalLastChecked(Date.now());
-
-      if (showToast) {
-        const allHealthy = infraData?.status === 'healthy' && servicesData?.status === 'healthy';
-        addToast({
-          variant: allHealthy ? 'success' : 'warning',
-          title: allHealthy ? 'All services are healthy' : 'Some services are unhealthy',
-        });
-      }
-    } catch {
-      if (showToast) {
-        addToast({ variant: 'error', title: 'Failed to check services health' });
-      }
+      const allHealthy = await checkHealth();
+      addToast({
+        variant: allHealthy ? 'success' : 'warning',
+        title: allHealthy ? 'All services are healthy' : 'Some services are unhealthy',
+      });
     } finally {
-      setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [addToast]);
-
-  useEffect(() => {
-    if (!isProfileInitialized || isAdmin === false) return;
-    fetchHealth();
-  }, [isProfileInitialized, isAdmin, fetchHealth]);
-
-  const handleRefresh = useCallback(() => {
-    setIsRefreshing(true);
-    fetchHealth(true);
-  }, [fetchHealth]);
+  }, [checkHealth, addToast]);
 
   if (!isProfileInitialized || isAdmin === false) {
     return null;
   }
 
-  if (isLoading) {
+  if (lastChecked === null) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
         <LottieLoader variant="loader" size={48} showLabel label="Loading services status…" />
@@ -267,9 +229,7 @@ export default function ServicesPage() {
     );
   }
 
-  const lastCheckedLabel = localLastChecked
-    ? `Last checked: ${new Date(localLastChecked).toLocaleTimeString()}`
-    : null;
+  const lastCheckedLabel = `Last checked: ${new Date(lastChecked).toLocaleTimeString()}`;
 
   return (
     <Box style={{ height: '100%', overflowY: 'auto', background: 'linear-gradient(180deg, var(--olive-2) 0%, var(--olive-1) 100%)' }}>
@@ -286,11 +246,9 @@ export default function ServicesPage() {
           </Box>
 
           <Flex align="center" gap="3">
-            {lastCheckedLabel && (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                {lastCheckedLabel}
-              </Text>
-            )}
+            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              {lastCheckedLabel}
+            </Text>
             <Button
               variant="outline"
               color="gray"
@@ -342,8 +300,8 @@ export default function ServicesPage() {
               <ServiceRow
                 key={meta.key}
                 meta={meta}
-                status={localInfra?.[meta.key as keyof typeof localInfra]}
-                displayName={localServiceNames?.[meta.key]}
+                status={infraServices?.[meta.key as keyof typeof infraServices]}
+                displayName={infraServiceNames?.[meta.key]}
               />
             ))}
           </Flex>
@@ -378,7 +336,7 @@ export default function ServicesPage() {
               <ServiceRow
                 key={meta.key}
                 meta={meta}
-                status={localApp?.[meta.key as keyof typeof localApp]}
+                status={appServices?.[meta.key as keyof typeof appServices]}
               />
             ))}
           </Flex>

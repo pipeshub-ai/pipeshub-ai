@@ -52,19 +52,18 @@ function classifyUnhealthyServices(
 /**
  * Non-blocking health monitor for the authenticated app.
  *
- * Starts a background poll (every 5 s) against the health endpoints.
- * When critical services (query, connector, infra) are unhealthy a
- * persistent warning toast is shown; non-critical services (indexing,
- * docling) trigger a separate auto-dismissing toast throttled to once
- * per hour.  Children are always rendered — individual pages use
- * `<ServiceGate>` to block when the specific services they need are
- * down.
+ * Runs a single health check on mount. Re-checks happen only via the
+ * "Check Now" button on /workspace/services. When critical services
+ * (query, connector, infra) are unhealthy a persistent warning toast
+ * is shown; non-critical services (indexing, docling) trigger a
+ * separate auto-dismissing toast throttled to once per hour. Children
+ * are always rendered — individual pages use `<ServiceGate>` to block
+ * when the specific services they need are down.
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
-  const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
-  const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
+  const checkHealth = useServicesHealthStore((s) => s.checkHealth);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
   const appServices = useServicesHealthStore(selectAppServices);
   const infraServices = useServicesHealthStore(selectInfraServices);
@@ -73,17 +72,16 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const criticalToastIdRef = useRef<string | null>(null);
   const lastNonCriticalToastRef = useRef<number>(0);
 
-  // ── Start background polling on mount ────────────────────────────────────
+  // ── One-shot health check on mount ───────────────────────────────────────
   useEffect(() => {
-    startBackgroundPolling();
+    checkHealth();
     return () => {
-      stopBackgroundPolling();
       if (criticalToastIdRef.current) {
         toast.dismiss(criticalToastIdRef.current);
         criticalToastIdRef.current = null;
       }
     };
-  }, [startBackgroundPolling, stopBackgroundPolling]);
+  }, [checkHealth]);
 
   // ── Show / update / dismiss toasts based on health status ────────────────
   useEffect(() => {
