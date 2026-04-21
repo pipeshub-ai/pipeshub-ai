@@ -2179,11 +2179,17 @@ class LinearConnector(BaseConnector):
             parent_weburl: Web URL of parent record (used for file weburl)
             exclude_images: If True, exclude image patterns and only extract file links
             indexing_filter_key: Indexing filter key to use (defaults to FILES)
+            is_full_sync: If True, existing FileRecords are also rebuilt and returned in
+                the first list (so on_new_records recreates their edges after a full-sync
+                edge wipe). Default False preserves the incremental contract.
 
         Returns:
             Tuple of:
-            - List of (FileRecord, permissions) tuples for NEW files only (safe for on_new_records)
-            - List of ChildRecord objects for EXISTING files (for children_records during streaming)
+            - List of (FileRecord, permissions) tuples for records to emit through
+              on_new_records. Contains NEW files, plus EXISTING files when
+              is_full_sync=True (rebuilt with preserved id/version).
+            - List of ChildRecord objects for EXISTING files (for children_records
+              during streaming).
         """
         file_records: List[Tuple[Record, List[Permission]]] = []
         existing_file_children: List[ChildRecord] = []
@@ -2959,17 +2965,24 @@ class LinearConnector(BaseConnector):
             # For files, we don't track updatedAt, so keep same version unless URL changed
             version = existing_record.version if existing_record else 0
 
-        # Get file size from URL using HEAD request
+        # Get file size from URL using HEAD request — skip for existing records to
+        # avoid an N-HEAD-request fan-out on full resync; reuse the cached value.
         size_in_bytes = 0
-        try:
-            if self.data_source:
-                datasource = await self._get_fresh_datasource()
-                file_size = await datasource.get_file_size(file_url)
-                if file_size is not None:
-                    size_in_bytes = file_size
-        except Exception as e:
-            # Log error but don't fail - use 0 as fallback
-            self.logger.debug(f"⚠️ Could not fetch file size for {file_url}: {e}")
+        if existing_record is not None:
+            size_in_bytes = getattr(existing_record, "size_in_bytes", 0) or 0
+        else:
+            try:
+                if self.data_source:
+                    datasource = await self._get_fresh_datasource()
+                    file_size = await datasource.get_file_size(file_url)
+                    if file_size is not None:
+                        size_in_bytes = file_size
+            except Exception as e:
+                # Log error but don't fail - use 0 as fallback
+                self.logger.debug(f"⚠️ Could not fetch file size for {file_url}: {e}")
+
+        now_ms = get_epoch_timestamp_in_ms()
+        created_at = existing_record.created_at if existing_record and existing_record.created_at else now_ms
 
         file_record = FileRecord(
             id=record_id,
@@ -2987,8 +3000,8 @@ class LinearConnector(BaseConnector):
             connector_id=self.connector_id,
             mime_type=mime_type,
             weburl=parent_weburl or file_url,  # Use parent's weburl if available, otherwise fallback to file_url
-            created_at=get_epoch_timestamp_in_ms(),
-            updated_at=get_epoch_timestamp_in_ms(),
+            created_at=created_at,
+            updated_at=now_ms,
             source_created_at=parent_created_at,
             source_updated_at=parent_updated_at,
             preview_renderable=True,
