@@ -36,12 +36,14 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeConfig
 from app.connectors.core.registry.connector_builder import (
     AuthBuilder,
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.registry.types import ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -80,39 +82,32 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Drive Workspace",
-            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-            token_url="https://oauth2.googleapis.com/token",
-            redirect_uri="connectors/oauth/callback/Drive",
-            scopes=OAuthScopeConfig(
-                personal_sync=[],
-                team_sync=[
-                    "https://www.googleapis.com/auth/drive.readonly",
-                    "https://www.googleapis.com/auth/drive.metadata.readonly",
-                    "https://www.googleapis.com/auth/drive.metadata",
-                    "https://www.googleapis.com/auth/documents.readonly",
-                    "https://www.googleapis.com/auth/spreadsheets.readonly",
-                    "https://www.googleapis.com/auth/presentations.readonly",
-                    "https://www.googleapis.com/auth/drive.file",
-                    "https://www.googleapis.com/auth/drive",
-                ],
-                agent=[]
-            ),
-            fields=[
-                CommonFields.client_id("Google Cloud Console"),
-                CommonFields.client_secret("Google Cloud Console")
-            ],
-            icon_path="/assets/icons/connectors/drive.svg",
-            app_group="Google Workspace",
-            app_description="OAuth application for accessing Google Drive API and related Google Workspace services",
-            app_categories=["Storage"],
-            additional_params={
-                "access_type": "offline",
-                "prompt": "consent",
-                "include_granted_scopes": "true"
-            }
-        )
+        AuthBuilder.type(AuthType.CUSTOM).fields([
+                AuthField(
+                    name="adminEmail",
+                    display_name="Admin Email",
+                    placeholder="admin@yourdomain.com",
+                    description="Google Workspace administrator email address used for domain-wide delegation.",
+                    field_type="TEXT",
+                    required=True,
+                ),
+                AuthField(
+                    name="serviceAccountJson",
+                    display_name="Service Account JSON",
+                    placeholder="Click to upload service account JSON file",
+                    description="Upload the service account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                    field_type="FILE",
+                    required=True,
+                    min_length=0,
+                    accepted_file_types=[".json"],
+                    validation_rules=[
+                        {"type": ValidationRuleType.JSON_VALID,        "errorMessage": "File must be valid JSON."},
+                        {"type": ValidationRuleType.JSON_HAS_FIELDS,   "fields": ["type", "client_id", "project_id"], "errorMessage": "Missing required fields: {missing}"},
+                        {"type": ValidationRuleType.JSON_FIELD_EQUALS, "field": "type", "value": "service_account", "errorMessage": "This is not a Google Cloud Service Account JSON file. The 'type' field must be 'service_account'."},
+                    ],
+                    is_secret=True,
+                ),
+            ])
     ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/drive.svg")

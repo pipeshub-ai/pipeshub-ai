@@ -23,6 +23,20 @@ class FieldType(str, Enum):
     EMAIL = "EMAIL"
 
 
+class ValidationRuleType(str, Enum):
+    """Rule types executed against file content after upload.
+
+    String values are the wire format consumed by the frontend's
+    ``executeValidationRules`` function — do not rename without updating
+    the TypeScript ``ValidationRuleType`` const in types.ts.
+    """
+    JSON_VALID        = "json_valid"
+    JSON_HAS_FIELDS   = "json_has_fields"
+    JSON_FIELD_EQUALS = "json_field_equals"
+    TEXT_CONTAINS     = "text_contains"
+    TEXT_NOT_CONTAINS = "text_not_contains"
+
+
 @dataclass
 class AuthField:
     """Represents an authentication field"""
@@ -37,6 +51,8 @@ class AuthField:
     max_length: int = 1000
     is_secret: bool = False
     usage: Literal["CONFIGURE", "AUTHENTICATE", "BOTH"] = "BOTH"
+    accepted_file_types: list[str] = field(default_factory=list)
+    validation_rules: list[dict] = field(default_factory=list)
 
 
 @dataclass

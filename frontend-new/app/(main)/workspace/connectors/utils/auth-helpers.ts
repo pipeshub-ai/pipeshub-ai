@@ -14,7 +14,7 @@ export function isNoneAuthType(authType: string): boolean {
 
 /** Check if auth type uses OAuth redirect flow (show authenticate button) */
 export function isOAuthType(authType: string): boolean {
-  return ['OAUTH', 'OAUTH_ADMIN_CONSENT', 'OAUTH_CERTIFICATE'].includes(normalizeAuthTypeKey(authType));
+  return ['OAUTH'].includes(normalizeAuthTypeKey(authType));
 }
 
 /**

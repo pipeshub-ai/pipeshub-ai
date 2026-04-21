@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -333,9 +334,28 @@ class GoogleClient(IClient):
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None
     ) -> dict[str, Any]:
-        """Handle enterprise token for a specific connector."""
+        """Handle enterprise token for a specific connector.
+
+        Supports two storage formats:
+        - New (schema-driven): auth.serviceAccountJson is a JSON string; auth.adminEmail is separate.
+        - Legacy (old frontend): service account fields are spread directly into auth alongside adminEmail.
+        """
         config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
-        return config.get("auth", {})
+        auth = config.get("auth", {})
+
+        service_account_json_raw = auth.get("serviceAccountJson")
+        if service_account_json_raw:
+            try:
+                service_account_data = json.loads(service_account_json_raw)
+                admin_email = auth.get("adminEmail", "")
+                return {**service_account_data, "adminEmail": admin_email}
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.warning(
+                    f"Failed to parse serviceAccountJson for connector {connector_instance_id}: {e}. "
+                    "Falling back to legacy auth format."
+                )
+
+        return auth
 
     # =========================================================================
     # TOOLSET-BASED CLIENT CREATION (New Architecture)

@@ -30,6 +30,8 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
         "validation": {
             "minLength": min_length,
             "maxLength": field.max_length,
+            "acceptedFileTypes": field.accepted_file_types,
+            "validationRules": field.validation_rules,
         },
         "isSecret": field.is_secret
     }
