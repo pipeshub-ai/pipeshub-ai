@@ -61,7 +61,7 @@ class RSSApp(App):
         .add_documentation_link(
             DocumentationLink(
                 "RSS Connector Guide",
-                "https://docs.pipeshub.ai/connectors/rss",
+                "https://docs.pipeshub.com/connectors/overview",
                 "setup",
             )
         )

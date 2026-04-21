@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
   MAX_TOOLSETS_LIST_LIMIT,
@@ -272,6 +273,16 @@ function TeamActionsPageContent() {
     };
   }, [typeListPagination]);
 
+  const configurePanelDocUrl = useMemo(
+    () => primaryHttpDocumentationUrl(configureToolset?.documentationLinks),
+    [configureToolset?.documentationLinks]
+  );
+
+  const managePanelDocUrl = useMemo(
+    () => primaryHttpDocumentationUrl(manageInstance?.documentationLinks),
+    [manageInstance?.documentationLinks]
+  );
+
   const handleTabChange = useCallback(
     (val: string) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -338,7 +349,6 @@ function TeamActionsPageContent() {
           listRefreshing={typeListRefreshing}
           onBack={handleBackFromType}
           onAddInstance={handleAddFromType}
-          onOpenDocs={() => window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')}
           onAuthenticateInstance={(inst) => {
             setManageInstance(null);
             setConfigureToolset(inst);
@@ -399,18 +409,23 @@ function TeamActionsPageContent() {
             }
             hideFooter
             headerActions={
-              <IconButton
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="1"
-                aria-label={t('workspace.actions.documentation')}
-                onClick={() =>
-                  window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')
-                }
-              >
-                <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-              </IconButton>
+              configurePanelDocUrl ? (
+                <Flex align="center" gap="1">
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    aria-label={t('workspace.actions.documentation')}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() =>
+                      window.open(configurePanelDocUrl, '_blank', 'noopener,noreferrer')
+                    }
+                  >
+                    <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+                  </IconButton>
+                </Flex>
+              ) : undefined
             }
           >
             <UserToolsetConfigDialog
@@ -445,18 +460,23 @@ function TeamActionsPageContent() {
             }
             hideFooter
             headerActions={
-              <IconButton
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="1"
-                aria-label={t('workspace.actions.documentation')}
-                onClick={() =>
-                  window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')
-                }
-              >
-                <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-              </IconButton>
+              managePanelDocUrl ? (
+                <Flex align="center" gap="1">
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    aria-label={t('workspace.actions.documentation')}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() =>
+                      window.open(managePanelDocUrl, '_blank', 'noopener,noreferrer')
+                    }
+                  >
+                    <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+                  </IconButton>
+                </Flex>
+              ) : undefined
             }
           >
             <AdminManageActionPanel
@@ -566,8 +586,10 @@ function NavigateButton({ label, onClick }: { label: string; onClick: () => void
 
 export default function TeamActionsPage() {
   return (
-    <Suspense>
-      <TeamActionsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <TeamActionsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

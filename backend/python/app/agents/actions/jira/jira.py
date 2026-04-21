@@ -20,7 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -299,7 +299,17 @@ class GetCommentsInput(BaseModel):
             ),
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
-                CommonFields.client_secret("Atlassian Developer Console")
+                CommonFields.client_secret("Atlassian Developer Console"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL the Jira agent should work with.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
             icon_path="/assets/icons/connectors/jira.svg",
             app_group="Project Management",
@@ -341,7 +351,17 @@ class GetCommentsInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg")
+        .add_documentation_link(DocumentationLink(
+            "Jira Cloud API Setup",
+            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/jira/jira",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""
@@ -640,16 +660,35 @@ class Jira:
         try:
             client_obj = self.client._client
 
-            # Browse URLs need the site host from accessible-resources (*.atlassian.net).
+            # OAuth: get_base_url() is the API gateway (api.atlassian.com/ex/jira/{cloud_id}).
+            # Browse URLs need the site host from accessible-resources (*.atlassian.net),
+            # and we must match the cloud_id to the correct site (the token can access many).
             if hasattr(client_obj, 'get_token'):
                 token = client_obj.get_token()
                 if token:
+                    cloud_id = None
+                    if hasattr(client_obj, 'get_base_url'):
+                        gateway = (client_obj.get_base_url() or "").rstrip('/')
+                        match = re.search(r"/ex/jira/([^/]+)", gateway)
+                        if match:
+                            cloud_id = match.group(1)
+
                     resources = await JiraClient.get_accessible_resources(token)
-                    if resources and len(resources) > 0:
-                        # Extract base URL from resource URL
-                        resource_url = resources[0].url
-                        # Resource URL is like 'https://example.atlassian.net'
-                        self._site_url = resource_url.rstrip('/')
+                    if resources:
+                        if cloud_id:
+                            picked = next((r for r in resources if r.id == cloud_id), None)
+                            if picked is None:
+                                logger.warning(
+                                    "Jira _get_site_url: cloud_id %s not found in accessible resources (%s); "
+                                    "refusing to fall back to a different site.",
+                                    cloud_id, [r.id for r in resources],
+                                )
+                                return None
+                            self._site_url = picked.url.rstrip('/')
+                            return self._site_url
+                        # Could not extract cloud_id from the gateway URL — only safe
+                        # when the token has exactly one accessible site.
+                        self._site_url = resources[0].url.rstrip('/')
                         return self._site_url
 
             # API token / basic: configured instance base_url is the site URL
@@ -659,7 +698,7 @@ class Jira:
                     self._site_url = base_url.rstrip('/')
                     return self._site_url
         except Exception as e:
-            logger.warning(f"Could not get site URL: {e}")
+            logger.warning("Could not get site URL: %s", e)
 
         return None
 

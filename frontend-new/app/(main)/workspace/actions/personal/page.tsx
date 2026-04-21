@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Flex, IconButton, Text } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
   MAX_TOOLSETS_LIST_LIMIT,
@@ -184,6 +185,7 @@ function PersonalActionsPageContent() {
         iconPath: primary.iconPath || '',
         supportedAuthTypes: authUpper ? [authUpper] : ['NONE'],
         toolCount: primary.toolCount ?? 0,
+        ...(primary.documentationLinks?.length ? { documentationLinks: primary.documentationLinks } : {}),
       };
     }
     return {
@@ -237,6 +239,11 @@ function PersonalActionsPageContent() {
       onPageChange: (p: number) => setTypeListPage(p),
     };
   }, [typeListPagination]);
+
+  const configurePanelDocUrl = useMemo(
+    () => primaryHttpDocumentationUrl(configureToolset?.documentationLinks),
+    [configureToolset?.documentationLinks]
+  );
 
   const handleTabChange = useCallback(
     (val: string) => {
@@ -317,7 +324,6 @@ function PersonalActionsPageContent() {
           isLoading={typeListLoading}
           listRefreshing={typeListRefreshing}
           onBack={handleBackFromType}
-          onOpenDocs={() => window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')}
           onAuthenticateInstance={(inst) => setConfigureToolset(inst)}
           onConfigureInstance={(inst) => setConfigureToolset(inst)}
           instanceFilter={typeInstanceFilter}
@@ -345,18 +351,23 @@ function PersonalActionsPageContent() {
             }
             hideFooter
             headerActions={
-              <IconButton
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="1"
-                aria-label={t('workspace.actions.documentation')}
-                onClick={() =>
-                  window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')
-                }
-              >
-                <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-              </IconButton>
+              configurePanelDocUrl ? (
+                <Flex align="center" gap="1">
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    aria-label={t('workspace.actions.documentation')}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() =>
+                      window.open(configurePanelDocUrl, '_blank', 'noopener,noreferrer')
+                    }
+                  >
+                    <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+                  </IconButton>
+                </Flex>
+              ) : undefined
             }
           >
             <UserToolsetConfigDialog
@@ -432,18 +443,23 @@ function PersonalActionsPageContent() {
           }
           hideFooter
           headerActions={
-            <IconButton
-              type="button"
-              variant="ghost"
-              color="gray"
-              size="1"
-              aria-label={t('workspace.actions.documentation')}
-              onClick={() =>
-                window.open(EXTERNAL_LINKS.documentation, '_blank', 'noopener,noreferrer')
-              }
-            >
-              <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-            </IconButton>
+            configurePanelDocUrl ? (
+              <Flex align="center" gap="1">
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  aria-label={t('workspace.actions.documentation')}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() =>
+                    window.open(configurePanelDocUrl, '_blank', 'noopener,noreferrer')
+                  }
+                >
+                  <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+                </IconButton>
+              </Flex>
+            ) : undefined
           }
         >
           <UserToolsetConfigDialog
@@ -462,8 +478,10 @@ function PersonalActionsPageContent() {
 
 export default function PersonalActionsPage() {
   return (
-    <Suspense>
-      <PersonalActionsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <PersonalActionsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

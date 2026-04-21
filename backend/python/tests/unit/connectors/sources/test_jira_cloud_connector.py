@@ -249,7 +249,7 @@ class TestInitCoverage:
             MockJiraClient.get_accessible_resources = AsyncMock(return_value=[mock_resource])
 
             connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH"},
+                "auth": {"authType": "OAUTH", "baseUrl": "https://company.atlassian.net"},
                 "credentials": {"access_token": "test-token"},
             })
 
@@ -300,7 +300,7 @@ class TestInitCoverage:
             MockJiraClient.get_accessible_resources = AsyncMock(return_value=[])
 
             connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH"},
+                "auth": {"authType": "OAUTH", "baseUrl": "https://company.atlassian.net"},
                 "credentials": {"access_token": "test-token"},
             })
 

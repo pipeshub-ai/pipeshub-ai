@@ -197,23 +197,28 @@ class TestJiraGetAccessibleResources:
 class TestJiraGetCloudId:
     @pytest.mark.asyncio
     async def test_success(self):
-        with patch.object(JiraClient, "get_accessible_resources", return_value=[
-            AtlassianCloudResource(id="c1", name="Site", url="https://s.com", scopes=[]),
-        ]):
-            assert await JiraClient.get_cloud_id("tok") == "c1"
+        with patch.object(
+            JiraClient,
+            "get_accessible_resources",
+            new_callable=AsyncMock,
+            return_value=[
+                AtlassianCloudResource(id="c1", name="Site", url="https://s.com", scopes=[]),
+            ],
+        ):
+            assert await JiraClient.get_cloud_id("tok", "https://s.com") == "c1"
 
     @pytest.mark.asyncio
     async def test_no_resources(self):
-        with patch.object(JiraClient, "get_accessible_resources", return_value=[]):
-            with pytest.raises(Exception, match="No accessible resources"):
-                await JiraClient.get_cloud_id("tok")
+        with patch.object(JiraClient, "get_accessible_resources", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(ValueError, match="No Atlassian Cloud sites"):
+                await JiraClient.get_cloud_id("tok", "https://s.com")
 
 
 class TestJiraGetBaseUrl:
     @pytest.mark.asyncio
     async def test_success(self):
-        with patch.object(JiraClient, "get_cloud_id", return_value="c1"):
-            url = await JiraClient.get_jira_base_url("tok")
+        with patch.object(JiraClient, "get_cloud_id", new_callable=AsyncMock, return_value="c1"):
+            url = await JiraClient.get_jira_base_url("tok", "https://s.com")
             assert url == "https://api.atlassian.com/ex/jira/c1"
 
 
@@ -233,9 +238,13 @@ class TestJiraBuildFromServices:
     async def test_bearer_token(self, log):
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={
-            "auth": {"authType": "BEARER_TOKEN", "bearerToken": "bearer_tok"},
+            "auth": {
+                "authType": "BEARER_TOKEN",
+                "bearerToken": "bearer_tok",
+                "baseUrl": "https://acme.atlassian.net",
+            },
         })
-        with patch.object(JiraClient, "get_jira_base_url", return_value="https://api.atlassian.com/ex/jira/c1"):
+        with patch.object(JiraClient, "get_jira_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/jira/c1"):
             jc = await JiraClient.build_from_services(log, cs, "inst1")
             assert isinstance(jc.get_client(), JiraRESTClientViaToken)
 
@@ -243,10 +252,10 @@ class TestJiraBuildFromServices:
     async def test_oauth(self, log):
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         })
-        with patch.object(JiraClient, "get_jira_base_url", return_value="https://api.atlassian.com/ex/jira/c1"):
+        with patch.object(JiraClient, "get_jira_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/jira/c1"):
             jc = await JiraClient.build_from_services(log, cs, "inst1")
             assert isinstance(jc.get_client(), JiraRESTClientViaToken)
 
@@ -339,9 +348,10 @@ class TestJiraBuildFromToolset:
         config = {
             "isAuthenticated": True,
             "authType": "OAUTH",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         }
-        with patch.object(JiraClient, "get_jira_base_url", return_value="https://api.atlassian.com/ex/jira/c1"):
+        with patch.object(JiraClient, "get_jira_base_url", new_callable=AsyncMock, return_value="https://api.atlassian.com/ex/jira/c1"):
             jc = await JiraClient.build_from_toolset(config, log)
             assert isinstance(jc.get_client(), JiraRESTClientViaToken)
 

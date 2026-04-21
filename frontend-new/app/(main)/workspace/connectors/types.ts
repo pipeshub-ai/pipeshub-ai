@@ -41,11 +41,10 @@ export interface Connector {
   connectorInfo?: Record<string, unknown> | null;
   config?: Record<string, unknown>;
   /**
-   * Transient operational status set by the backend.
-   * DELETING: instance is being deleted (show as disabled).
-   * SYNCING: backend-initiated sync in progress.
+   * Transient operational status from the backend.
+   * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
-  status?: 'DELETING' | 'SYNCING' | null;
+  status?: string | null;
 }
 
 /** API list response shape. */
@@ -333,7 +332,7 @@ export interface PanelFormData {
 // Panel tab + view types
 // ========================================
 
-export type PanelTab = 'authenticate' | 'configure';
+export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
 

@@ -11,6 +11,9 @@ import type {
   DateFilterType,
 } from './types';
 
+/** Must match backend `MIN_SEARCH_QUERY_LENGTH` in `knowledge_hub_router.py`. */
+export const KB_MIN_SEARCH_QUERY_LENGTH = 2;
+
 /**
  * Size range buckets in bytes
  * All ranges include both gte and lte bounds to match API format: "gte:X,lte:Y"
@@ -145,9 +148,10 @@ export function buildFilterParams(
     include: 'counts,permissions,breadcrumbs,availableFilters',
   };
 
-  // Search query
-  if (filter.searchQuery?.trim()) {
-    params.q = filter.searchQuery.trim();
+  // Search query (omit `q` until long enough — backend returns 400 otherwise)
+  const searchTrimmed = filter.searchQuery?.trim();
+  if (searchTrimmed && searchTrimmed.length >= KB_MIN_SEARCH_QUERY_LENGTH) {
+    params.q = searchTrimmed;
   }
 
   // Node types (CSV string)
@@ -231,9 +235,9 @@ export function buildAllRecordsFilterParams(
     include: 'counts,permissions,breadcrumbs,availableFilters',
   };
 
-  // Search query
-  if (filter.searchQuery?.trim()) {
-    params.q = filter.searchQuery.trim();
+  const searchTrimmedAll = filter.searchQuery?.trim();
+  if (searchTrimmedAll && searchTrimmedAll.length >= KB_MIN_SEARCH_QUERY_LENGTH) {
+    params.q = searchTrimmedAll;
   }
 
   // Node types (CSV string)

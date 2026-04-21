@@ -14,7 +14,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
@@ -108,7 +108,17 @@ class GetTablesSchemaInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/mariadb.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/mariadb.svg")
+        .add_documentation_link(DocumentationLink(
+            "MariaDB Documentation",
+            "https://mariadb.com/docs/server/server-usage/connecting/mariadb-connecting-guide-1",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/mariadb/mariadb",
+            "pipeshub",
+        )))\
     .build_decorator()
 class MariaDB:
     """MariaDB tools exposed to agents."""

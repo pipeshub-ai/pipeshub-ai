@@ -41,7 +41,7 @@ const PEOPLE_SUB_ITEMS = [
 
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
-  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors', adminOnly: true },
+  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
   { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true },
   { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
   { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },

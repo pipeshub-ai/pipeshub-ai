@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Box,
   Button,
@@ -12,6 +13,7 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi, DEFAULT_SYSTEM_PROMPT } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
@@ -24,6 +26,7 @@ interface PromptSectionCardProps {
 }
 
 function PromptSectionCard({ children }: PromptSectionCardProps) {
+  const { t } = useTranslation();
   return (
     <Flex
       direction="column"
@@ -56,10 +59,10 @@ function PromptSectionCard({ children }: PromptSectionCardProps) {
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1 }}>
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            System Prompt
+            {t('workspace.prompts.systemPrompt')}
           </Text>
           <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            Define the behaviour and personality of the AI assistant
+            {t('workspace.prompts.systemPromptDescription')}
           </Text>
         </Flex>
       </Flex>
@@ -76,6 +79,7 @@ function PromptSectionCard({ children }: PromptSectionCardProps) {
 }
 
 function PromptConfigCallout() {
+  const { t } = useTranslation();
   return (
     <Flex
       align="start"
@@ -92,12 +96,10 @@ function PromptConfigCallout() {
       </Box>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          Prompt Configuration
+          {t('workspace.prompts.configCalloutTitle')}
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-          The custom system prompt helps define the AI&apos;s behaviour, tone, and approach to
-          answering questions. Make sure your prompt is clear and aligns with your
-          organisation&apos;s needs.
+          {t('workspace.prompts.configCalloutDescription')}
         </Text>
       </Flex>
     </Flex>
@@ -109,6 +111,7 @@ function PromptConfigCallout() {
 // ============================================================
 
 export default function PromptsPage() {
+  const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -147,15 +150,15 @@ export default function PromptsPage() {
       setSavedPrompt(customPrompt);
       addToast({
         variant: 'success',
-        title: 'Prompt saved',
-        description: 'The system prompt has been updated',
+        title: t('workspace.prompts.toasts.saved'),
+        description: t('workspace.prompts.toasts.savedDescription'),
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save prompt',
-        description: 'Something went wrong. Please try again.',
-        action: { label: 'Try Again', onClick: handleSave },
+        title: t('workspace.prompts.toasts.saveError'),
+        description: t('workspace.prompts.toasts.saveErrorDescription'),
+        action: { label: t('action.tryAgain'), onClick: handleSave },
       });
     } finally {
       setIsSaving(false);
@@ -166,8 +169,8 @@ export default function PromptsPage() {
     setCustomPrompt(savedPrompt);
     addToast({
       variant: 'success',
-      title: 'Discarded changes',
-      description: 'Your edits have been reverted',
+      title: t('workspace.prompts.toasts.discarded'),
+      description: t('workspace.prompts.toasts.discardedDescription'),
     });
   }, [savedPrompt, addToast]);
 
@@ -181,6 +184,7 @@ export default function PromptsPage() {
   }
 
   return (
+    <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
 
@@ -188,10 +192,10 @@ export default function PromptsPage() {
         <Flex align="center" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Custom System Prompt
+              {t('workspace.prompts.heading')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Configure the custom system prompt for AI responses
+              {t('workspace.prompts.subtitle')}
             </Text>
           </Box>
           <Button
@@ -203,7 +207,7 @@ export default function PromptsPage() {
             }
           >
             <MaterialIcon name="open_in_new" size={14} />
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -213,7 +217,7 @@ export default function PromptsPage() {
             {/* Label row */}
             <Flex align="center" justify="between">
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Custom System Prompt
+                {t('workspace.prompts.heading')}
               </Text>
               <Button
                 variant="outline"
@@ -221,14 +225,14 @@ export default function PromptsPage() {
                 size="2"
                 onClick={handleUseDefault}
               >
-                Use Default Prompt
+                {t('workspace.prompts.useDefault')}
               </Button>
             </Flex>
 
             {/* Textarea */}
             <TextArea
               rows={6}
-              placeholder="Enter your custom system prompt here"
+              placeholder={t('workspace.prompts.placeholder')}
               value={customPrompt}
               onChange={(e) => setCustomPrompt(e.target.value)}
               style={{ resize: 'vertical' }}
@@ -236,8 +240,7 @@ export default function PromptsPage() {
 
             {/* Helper text */}
             <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
-              This prompt will be used across all AI chat interactions to guide the
-              assistant&apos;s responses. Changes take effect immediately for new conversations.
+              {t('workspace.prompts.helperText')}
             </Text>
           </PromptSectionCard>
         </Box>
@@ -255,5 +258,6 @@ export default function PromptsPage() {
         isSaving={isSaving}
       />
     </Box>
+    </ServiceGate>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Badge,
@@ -13,25 +13,31 @@ import {
   Spinner,
   Text,
   TextField,
+  Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
-import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
   WorkspaceRightPanel,
+  WorkspaceRightPanelBodyPortalContext,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { ToolsetsApi, type RegistryToolsetRow, type ToolsetOauthConfigListRow } from '@/app/(main)/toolsets/api';
 import {
   apiErrorDetail,
   configureAuthFieldsForType,
+  documentationLinksFromToolsetSchema,
   getToolsetAuthConfigFromSchema,
   oauthConfigureSeedValuesFromListRow,
-  toolsetSchemaRoot,
+  primaryHttpDocumentationUrl,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
+import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 
 const NEW_OAUTH_VALUE = '__new__';
 
@@ -80,6 +86,7 @@ export function ActionSetupPanel({
   onCreatedUserAuthNotice,
 }: ActionSetupPanelProps) {
   const { t } = useTranslation();
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const toolsetType = registryRow?.name ?? '';
   const displayName = registryRow?.displayName || registryRow?.name || '';
 
@@ -169,6 +176,49 @@ export function ActionSetupPanel({
   }, [open, toolsetType, authType]);
 
   const authConfigSchema = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
+
+  const toolsetOAuthCallbackUrl = useMemo(() => {
+    if (typeof window === 'undefined' || !toolsetType.trim() || !isOAuthType(authType)) return '';
+    return toolsetRedirectUri(window.location.origin, toolsetType);
+  }, [toolsetType, authType]);
+
+  /** Align with connector Authenticate tab: respect schema `displayRedirectUri` unless type is plain `OAUTH`. */
+  const showOAuthRedirectUri = useMemo(() => {
+    if (!isOAuthType(authType) || !toolsetOAuthCallbackUrl) return false;
+    const upper = (authType || '').toUpperCase();
+    if (upper === 'OAUTH') return true;
+    const schemas = authConfigSchema?.schemas as
+      | Record<string, { displayRedirectUri?: boolean } | undefined>
+      | undefined;
+    const entry = schemas?.[authType] ?? schemas?.[upper];
+    const fromEntry = entry && typeof entry.displayRedirectUri === 'boolean' ? entry.displayRedirectUri : undefined;
+    const fromRoot =
+      authConfigSchema && typeof authConfigSchema.displayRedirectUri === 'boolean'
+        ? authConfigSchema.displayRedirectUri
+        : undefined;
+    const displayRedirect = fromEntry ?? fromRoot;
+    return displayRedirect !== false;
+  }, [authType, authConfigSchema, toolsetOAuthCallbackUrl]);
+
+  const copyOAuthRedirectUri = useCallback(async () => {
+    if (!toolsetOAuthCallbackUrl) return;
+    try {
+      await navigator.clipboard.writeText(toolsetOAuthCallbackUrl);
+      onNotify?.(t('workspace.actions.redirectUriCopied'));
+    } catch {
+      setError(t('workspace.actions.manage.copyFailed'));
+    }
+  }, [onNotify, t, toolsetOAuthCallbackUrl]);
+
+  const oauthRedirectCardShell = {
+    padding: 16,
+    backgroundColor: 'var(--olive-2)',
+    borderRadius: 'var(--radius-2)',
+    border: '1px solid var(--olive-3)',
+    width: '100%' as const,
+    boxSizing: 'border-box' as const,
+  };
+
   const manageFields = useMemo(
     () => configureAuthFieldsForType(authConfigSchema, authType),
     [authConfigSchema, authType]
@@ -335,25 +385,34 @@ export function ActionSetupPanel({
     toolsetType,
   ]);
 
-  const docUrl = useMemo(() => {
-    const root = toolsetSchemaRoot(schemaRaw) as Record<string, unknown> | null;
-    const links = root?.documentationLinks as { url?: string }[] | undefined;
-    const url = links?.[0]?.url;
-    return typeof url === 'string' && url.startsWith('http') ? url : '';
-  }, [schemaRaw]);
+  const docLinksFromRegistry = useMemo(
+    (): DocumentationLink[] => normalizeDocumentationLinks(registryRow?.documentationLinks),
+    [registryRow?.documentationLinks]
+  );
+
+  const docLinks = useMemo(() => {
+    const fromSchema = documentationLinksFromToolsetSchema(schemaRaw);
+    // Schema path is normalized; registry rows from my-toolsets are normalized in toolsets/api mappers.
+    return fromSchema.length ? fromSchema : docLinksFromRegistry;
+  }, [schemaRaw, docLinksFromRegistry]);
+
+  const docUrl = useMemo(() => primaryHttpDocumentationUrl(docLinks), [docLinks]);
 
   const headerActions =
     docUrl ? (
-      <IconButton
-        variant="ghost"
-        color="gray"
-        size="1"
-        type="button"
-        aria-label={t('workspace.actions.documentation')}
-        onClick={() => window.open(docUrl, '_blank', 'noopener,noreferrer')}
-      >
-        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-      </IconButton>
+      <Flex align="center" gap="1">
+        <IconButton
+          variant="ghost"
+          color="gray"
+          size="1"
+          type="button"
+          aria-label={t('workspace.actions.documentation')}
+          onClick={() => window.open(docUrl, '_blank', 'noopener,noreferrer')}
+          style={{ cursor: 'pointer' }}
+        >
+          <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+        </IconButton>
+      </Flex>
     ) : null;
 
   const panelIcon =
@@ -391,7 +450,14 @@ export function ActionSetupPanel({
           </Text>
         </Flex>
       ) : (
-        <Flex direction="column" gap="4" style={{ minWidth: 0 }}>
+        <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
+          {docLinks.length > 0 ? (
+            <DocumentationSection
+              links={docLinks}
+              connectorIconPath={registryRow?.iconPath ?? '/assets/icons/toolsets/default.svg'}
+            />
+          ) : null}
+
           <Box>
             <Text as="div" size="4" weight="bold" style={{ color: 'var(--slate-12)' }}>
               {displayName}
@@ -409,6 +475,65 @@ export function ActionSetupPanel({
             {t('workspace.actions.configurationHeading')}
           </Text>
 
+          {showOAuthRedirectUri ? (
+            <Flex direction="column" gap="4" style={oauthRedirectCardShell}>
+              <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
+                <Flex direction="column" gap="1">
+                  <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+                    {t('workspace.actions.redirectUri')}
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                    {t('workspace.actions.redirectUriHint')}
+                  </Text>
+                </Flex>
+                <Flex
+                  align="center"
+                  gap="0"
+                  style={{
+                    width: '100%',
+                    minWidth: 0,
+                    border: '1px solid var(--olive-4)',
+                    borderRadius: 'var(--radius-2)',
+                    background: 'var(--color-surface)',
+                    paddingRight: 4,
+                  }}
+                >
+                  <Box
+                    asChild
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: '10px 12px',
+                      overflowX: 'auto',
+                      overflowY: 'hidden',
+                      fontSize: 12,
+                      whiteSpace: 'nowrap',
+                      lineHeight: 1.5,
+                      fontFamily: 'var(--code-font-family, ui-monospace, monospace)',
+                      color: 'var(--gray-12)',
+                    }}
+                  >
+                    <code>{toolsetOAuthCallbackUrl}</code>
+                  </Box>
+                  <Tooltip content={t('workspace.actions.redirectUri')}>
+                    <IconButton
+                      type="button"
+                      size="1"
+                      variant="ghost"
+                      color="gray"
+                      radius="full"
+                      style={{ flexShrink: 0, cursor: 'pointer' }}
+                      aria-label={t('workspace.actions.redirectUri')}
+                      onClick={() => void copyOAuthRedirectUri()}
+                    >
+                      <MaterialIcon name="content_copy" size={18} color="var(--gray-11)" />
+                    </IconButton>
+                  </Tooltip>
+                </Flex>
+              </Flex>
+            </Flex>
+          ) : null}
+
           <FormField label={t('workspace.actions.instanceName')} required>
             <TextField.Root
               value={instanceName}
@@ -421,7 +546,11 @@ export function ActionSetupPanel({
             <FormField label={t('workspace.actions.authType')}>
               <Select.Root value={authType} onValueChange={setAuthType} size="2">
                 <Select.Trigger style={{ width: '100%' }} />
-                <Select.Content style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}>
+                <Select.Content
+                  position="popper"
+                  container={panelBodyPortal ?? undefined}
+                  style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+                >
                   {authOptions.map((opt) => (
                     <Select.Item key={opt} value={opt}>
                       {opt}
@@ -436,7 +565,11 @@ export function ActionSetupPanel({
             <FormField label={t('workspace.actions.oauthAppLabel')}>
               <Select.Root value={oauthAppValue} onValueChange={handleOauthAppChange} size="2">
                 <Select.Trigger style={{ width: '100%' }} />
-                <Select.Content style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}>
+                <Select.Content
+                  position="popper"
+                  container={panelBodyPortal ?? undefined}
+                  style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+                >
                   <Select.Item value={NEW_OAUTH_VALUE}>{t('workspace.actions.oauthAppNew')}</Select.Item>
                   {oauthConfigs.map((c) => (
                     <Select.Item key={c._id} value={c._id}>

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import type { SchemaField } from '../types';
 
 /** Extra left padding when `startAdornment` is set (icon column) */
@@ -477,6 +478,8 @@ function SelectInput({
   portalZIndex?: number;
   startAdornment?: React.ReactNode;
 }) {
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+
   // Build options list from field.options or external options prop
   const optionItems = options ||
     ('options' in field && Array.isArray(field.options)
@@ -505,7 +508,11 @@ function SelectInput({
             }}
             placeholder={'placeholder' in field ? (field.placeholder ?? 'Select...') : 'Select...'}
           />
-          <Select.Content style={portalZIndex != null ? { zIndex: portalZIndex } : undefined}>
+          <Select.Content
+            position="popper"
+            container={panelBodyPortal ?? undefined}
+            style={portalZIndex != null ? { zIndex: portalZIndex } : undefined}
+          >
             {optionItems.map((opt) => (
               <Select.Item key={opt.value} value={opt.value}>
                 {opt.label}

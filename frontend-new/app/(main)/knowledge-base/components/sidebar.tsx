@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { FolderIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -608,9 +610,10 @@ function ConnectorItemComponent({
 
 interface MoreConnectorItemProps {
   connector: MoreConnectorLink;
+  onNavigate: (connectorTypeParam: string) => void;
 }
 
-function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
+function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -618,7 +621,7 @@ function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       variant="ghost"
       size="2"
       color="gray"
-      onClick={() => window.open(connector.url, connector.isExternal ? '_blank' : '_self')}
+      onClick={() => onNavigate(connector.connectorTypeParam)}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -644,9 +647,14 @@ function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       >
         {connector.name}
       </Text>
-      {connector.isExternal && (
-        <MaterialIcon name="arrow_outward" size={14} color="var(--slate-9)" />
-      )}
+      <IconButton
+        variant="soft"
+        size="1"
+        tabIndex={-1}
+        style={{ cursor: 'pointer', padding: '0px', pointerEvents: 'none' }}
+      >
+        <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+      </IconButton>
     </Button>
   );
 }
@@ -874,6 +882,7 @@ export function Sidebar({
 }: KBSidebarProps) {
   const { t } = useTranslation();
   const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
   const {
     // Collections mode state
     currentFolderId,
@@ -1332,13 +1341,19 @@ export function Sidebar({
             </Text>
             <Flex direction="column" gap="2" style={{ marginTop: '4px' }}>
               {moreConnectors.map((connector) => (
-                <MoreConnectorItem key={connector.id} connector={connector} />
+                <MoreConnectorItem
+                  key={connector.id}
+                  connector={connector}
+                  onNavigate={(connectorTypeParam) =>
+                    router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
+                  }
+                />
               ))}
               <Button
                 variant="ghost"
                 size="2"
                 color="gray"
-                onClick={() => router.push('/connectors')}
+                onClick={() => router.push(buildConnectorsUrl(isAdmin))}
                 style={{
                   width: '100%',
                   justifyContent: 'space-between',

@@ -145,7 +145,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         <Flex direction="column" gap="2">
           <DetailRow label="Name" value={record.recordName} />
           <DetailRow label="Record ID" value={record.id} />
-          <DetailRow label="Record Type" value={record.mimeType} />
+          <DetailRow label="Record Type" value={record.recordType} />
           <DetailRow label="Origin" value={record.origin} />
           <DetailRow label="Indexing Status" value={record.indexingStatus} />
           <DetailRow label="Version" value={record.version?.toString()} />

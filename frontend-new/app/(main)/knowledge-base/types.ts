@@ -423,14 +423,12 @@ export interface AllRecordsPagination {
   hasPrev: boolean;
 }
 
-// More Connectors link item (for external connector links)
+// More Connectors link item (navigates to connectors page with the connector panel open)
 export interface MoreConnectorLink {
   id: string;
   name: string;
   type: ConnectorType;
-  icon: string;
-  url: string;
-  isExternal: boolean;
+  connectorTypeParam: string;
 }
 
 // ============================================================================

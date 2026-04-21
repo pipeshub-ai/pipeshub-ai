@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthMethodMeta, AuthMethodState, ConfigurableMethod, ConfigStatus } from '../types';
@@ -35,6 +36,7 @@ export function AuthMethodRow({
   onToggle,
   onConfigure,
 }: AuthMethodRowProps) {
+  const { t } = useTranslation();
   const isConfigurable = meta.configurable;
   const isConfigured = isConfigurable
     ? configStatus[state.type as keyof ConfigStatus] ?? false
@@ -47,13 +49,13 @@ export function AuthMethodRow({
   if (isEditing) {
     if (meta.requiresSmtp && !smtpConfigured) {
       toggleDisabled = true;
-      disabledReason = 'Requires SMTP configuration. Configure SMTP in the Mail settings first.';
+      disabledReason = t('workspace.authentication.disabledReasons.requiresSmtp');
     } else if (isConfigurable && !isConfigured) {
       toggleDisabled = true;
-      disabledReason = 'Configure this method first before enabling it.';
+      disabledReason = t('workspace.authentication.disabledReasons.notConfigured');
     } else if (!state.enabled && anotherMethodEnabled) {
       toggleDisabled = true;
-      disabledReason = 'Disable the currently active method before enabling this one.';
+      disabledReason = t('workspace.authentication.disabledReasons.anotherActive');
     }
   }
 
@@ -61,7 +63,7 @@ export function AuthMethodRow({
 
   // ── Badge colour ─────────────────────────────────────────
   const badgeColor = isConfigured ? 'green' : 'orange';
-  const badgeLabel = isConfigured ? 'Configured' : 'Not Configured';
+  const badgeLabel = isConfigured ? t('workspace.authentication.badges.configured') : t('workspace.authentication.badges.notConfigured');
 
   return (
     <Flex
@@ -129,7 +131,7 @@ export function AuthMethodRow({
 
         {/* Gear / configure button */}
         {showConfigureButton && (
-          <Tooltip content="Configure">
+          <Tooltip content={t('workspace.aiModels.configure')}>
             <IconButton
               variant="ghost"
               color="gray"

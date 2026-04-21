@@ -14,7 +14,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.sources.external.redshift.redshift_ import RedshiftDataSource
@@ -134,7 +134,17 @@ class GetTablesSchemaInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/redshift.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/redshift.svg")
+        .add_documentation_link(DocumentationLink(
+            "Amazon Redshift Documentation",
+            "https://docs.aws.amazon.com/redshift/latest/gsg/new-user-serverless.html",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/redshift/redshift",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Redshift:
     """Redshift tools exposed to agents."""

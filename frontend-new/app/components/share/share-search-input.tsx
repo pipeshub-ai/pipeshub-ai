@@ -39,11 +39,10 @@ export function ShareSearchInput({
   onEmailSubmit,
 }: ShareSearchInputProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const roleAnchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <Flex
-      ref={containerRef}
       align="center"
       onClick={() => inputRef.current?.focus()}
       style={{
@@ -136,11 +135,11 @@ export function ShareSearchInput({
 
       {/* Role picker - fixed on the right (shown when items are selected and roles are supported) */}
       {selections.length > 0 && supportsRoles && (
-        <Box style={{ flexShrink: 0, paddingRight: 4 }}>
+        <Box ref={roleAnchorRef} style={{ flexShrink: 0, paddingRight: 4 }}>
           <RoleDropdownMenu
             role={selectedRole}
             onRoleChange={onRoleChange}
-            anchorRef={containerRef}
+            anchorRef={roleAnchorRef}
           />
         </Box>
       )}

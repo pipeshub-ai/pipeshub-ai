@@ -3,6 +3,7 @@
 import React, { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from './store';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { getOnboardingStatus, updateOnboardingStatus } from './api';
@@ -24,7 +25,10 @@ import type { OnboardingStepId } from './types';
 function OnboardingPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { t } = useTranslation();
   const [onboardingGate, setOnboardingGate] = useState<'checking' | 'allowed'>('checking');
+  const [embeddingDefaultDialog, setEmbeddingDefaultDialog] = useState(false);
+  const [embeddingRegistryHasDefault, setEmbeddingRegistryHasDefault] = useState(false);
 
   const {
     steps,
@@ -48,6 +52,13 @@ function OnboardingPageInner() {
 
   // Read step from URL
   const stepFromUrl = (searchParams.get('step') as OnboardingStepId | null) ?? 'ai-model';
+
+  useEffect(() => {
+    if (stepFromUrl !== 'embedding-model') {
+      setEmbeddingDefaultDialog(false);
+      setEmbeddingRegistryHasDefault(false);
+    }
+  }, [stepFromUrl]);
 
   // Only allow this route when org onboarding is still required (matches layout gate semantics).
   useEffect(() => {
@@ -162,9 +173,12 @@ function OnboardingPageInner() {
   // Highlight Next button when the current step has been saved
   const isCurrentStepCompleted = completedStepIds.includes(stepFromUrl);
 
-  // Embedding step is optional: Next is allowed without a configured model
-  const isMiddleNextEnabled =
-    stepFromUrl === 'embedding-model' || isCurrentStepCompleted;
+  const isMiddleNextEnabled = isCurrentStepCompleted;
+
+  const showSkipEmbeddingDefault =
+    stepFromUrl === 'embedding-model' &&
+    !isCurrentStepCompleted &&
+    embeddingRegistryHasDefault;
 
   const showPrev = !isFirstStep && !isLoadingStep;
   const showNext = !isLoadingStep;
@@ -191,6 +205,9 @@ function OnboardingPageInner() {
           <StepEmbeddingModel
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
+            embeddingDefaultDialog={embeddingDefaultDialog}
+            setEmbeddingDefaultDialog={setEmbeddingDefaultDialog}
+            onRegistryHasSystemDefaultEmbedding={setEmbeddingRegistryHasDefault}
           />
         );
       case 'storage':
@@ -356,22 +373,42 @@ function OnboardingPageInner() {
                 )}
               </Button>
             ) : (
-              <Button
-                variant="solid"
-                disabled={!isMiddleNextEnabled}
-                onClick={handleNext}
-                style={{
-                  cursor: isMiddleNextEnabled ? 'pointer' : 'not-allowed',
-                  backgroundColor: isMiddleNextEnabled ? 'var(--accent-9)' : 'var(--gray-4)',
-                  color: isMiddleNextEnabled ? 'white' : 'var(--gray-9)',
-                  opacity: 1,
-                }}
-              >
-                Next
-                <span className="material-icons-outlined" style={{ fontSize: '16px' }}>
-                  arrow_forward
-                </span>
-              </Button>
+              <Flex align="center" gap="3" wrap="wrap" justify="end">
+                {showSkipEmbeddingDefault ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    title={t('onboarding.skipEmbeddingTitle')}
+                    onClick={() => setEmbeddingDefaultDialog(true)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    {t('onboarding.skipEmbeddingDefault')}
+                  </Button>
+                ) : null}
+                <Button
+                  variant="solid"
+                  disabled={!isMiddleNextEnabled}
+                  onClick={handleNext}
+                  title={
+                    !isMiddleNextEnabled && stepFromUrl === 'embedding-model'
+                      ? embeddingRegistryHasDefault
+                        ? t('onboarding.nextDisabledEmbeddingHint')
+                        : t('onboarding.nextDisabledEmbeddingHintNoRegistryDefault')
+                      : undefined
+                  }
+                  style={{
+                    cursor: isMiddleNextEnabled ? 'pointer' : 'not-allowed',
+                    backgroundColor: isMiddleNextEnabled ? 'var(--accent-9)' : 'var(--gray-4)',
+                    color: isMiddleNextEnabled ? 'white' : 'var(--gray-9)',
+                    opacity: 1,
+                  }}
+                >
+                  Next
+                  <span className="material-icons-outlined" style={{ fontSize: '16px' }}>
+                    arrow_forward
+                  </span>
+                </Button>
+              </Flex>
             )
           ) : (
             <Box />

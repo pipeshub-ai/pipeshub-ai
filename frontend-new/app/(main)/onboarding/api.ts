@@ -111,7 +111,7 @@ export async function saveLlmConfig(form: AiModelFormData): Promise<void> {
 }
 
 // ===============================
-// Step 2 — Embedding Model — OPTIONAL
+// Step 2 — Embedding Model — required for onboarding and skip adds the default model(configure or use system default when available)
 // ===============================
 
 /**

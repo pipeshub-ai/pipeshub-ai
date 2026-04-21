@@ -34,6 +34,33 @@ export interface MergedConfig {
  * We prefer (1) when present. For (2), we use the schema field names as an
  * allowlist so we never accidentally treat API metadata as form values.
  */
+/**
+ * API often returns `oauthConfigId` / `oauthInstanceName` on `config.auth` alongside
+ * `values: { ... }` or without listing those keys in the schema allowlist — always merge
+ * so edit-mode OAuth UI can resolve the linked app registration.
+ */
+function mergeFlatOAuthRegistrationMetadata(
+  target: Record<string, unknown>,
+  configAuth: Partial<ConnectorAuthConfig> | undefined
+) {
+  if (!configAuth) return;
+  const flat = configAuth as Record<string, unknown>;
+  const id = flat.oauthConfigId;
+  if (typeof id === 'string' && id.trim()) {
+    if (target.oauthConfigId === undefined || target.oauthConfigId === '') {
+      target.oauthConfigId = id.trim();
+    }
+  }
+  const name =
+    (typeof flat.oauthInstanceName === 'string' && flat.oauthInstanceName) ||
+    (typeof flat.oauth_instance_name === 'string' && flat.oauth_instance_name);
+  if (name && String(name).trim()) {
+    if (target.oauthInstanceName === undefined || target.oauthInstanceName === '') {
+      target.oauthInstanceName = String(name).trim();
+    }
+  }
+}
+
 function extractAuthValues(
   configAuth: Partial<ConnectorAuthConfig> | undefined,
   schema: ConnectorSchemaResponse['schema'],
@@ -43,7 +70,9 @@ function extractAuthValues(
 
   // Case 1 — values sub-object exists and is non-empty
   if (configAuth.values && Object.keys(configAuth.values).length > 0) {
-    return { ...configAuth.values };
+    const result = { ...configAuth.values };
+    mergeFlatOAuthRegistrationMetadata(result, configAuth);
+    return result;
   }
 
   // Case 2 — flat auth object: use schema field names as an allowlist
@@ -58,10 +87,13 @@ function extractAuthValues(
     for (const key of fieldNames) {
       if (key in flat) result[key] = flat[key];
     }
+    mergeFlatOAuthRegistrationMetadata(result, configAuth);
     return result;
   }
 
-  return {};
+  const fallback: Record<string, unknown> = {};
+  mergeFlatOAuthRegistrationMetadata(fallback, configAuth);
+  return fallback;
 }
 
 /**
