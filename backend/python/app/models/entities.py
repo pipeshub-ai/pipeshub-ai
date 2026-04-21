@@ -3,7 +3,7 @@ import os
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 from jinja2 import Template
 from app.modules.qna.prompt_templates import (
@@ -28,6 +28,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+
+class LlmTextContent(BaseModel):
+    """A single LLM message-content item produced by ``to_llm_full_context``."""
+
+    type: Literal["text"]
+    text: str
+
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
@@ -380,7 +388,7 @@ class FileRecord(Record):
 
         return "\n".join(lines)
 
-    def to_llm_full_context(self) -> list[dict[str, Any]]:
+    def to_llm_full_context(self) -> list[LlmTextContent]:
         """
         Convert a record JSON object to message content format matching get_message_content.
 
@@ -395,13 +403,13 @@ class FileRecord(Record):
         try:
             from app.utils.chat_helpers import valid_group_labels, build_group_blocks
 
-            content = []
+            content: list[LlmTextContent] = []
             context_metadata = f"record/{self.id}"
-            content.append({
-                "type": "text",
-                "text": f"""<record>\n{context_metadata}
-    Record blocks (sorted):\n\n"""
-            })
+            content.append(LlmTextContent(
+                type="text",
+                text=f"""<record>\n{context_metadata}
+    Record blocks (sorted):\n\n""",
+            ))
             # Process blocks
             block_containers = self.block_containers
             blocks = block_containers.blocks
@@ -420,10 +428,10 @@ class FileRecord(Record):
                 if block_type == BlockType.IMAGE.value:
                     continue
                 elif block_type == BlockType.TEXT.value and block.parent_index is None:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Type: {block_type}\n* Block Content: {data}\n\n"
-                    })
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
                 elif block_type == BlockType.TABLE_ROW.value:
                     block_group_index = block.parent_index
                     block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
@@ -437,35 +445,11 @@ class FileRecord(Record):
                         data = corresponding_block_group.data or {}
 
                         if block_type == GroupType.TABLE.value:
-                            table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
-
                             children = corresponding_block_group.children
                             rows_to_be_included_list = []
                             if children:
-                                if hasattr(children, "block_ranges"):
-                                    block_ranges = children.block_ranges or []
-                                elif isinstance(children, dict):
-                                    block_ranges = children.get("block_ranges", []) or []
-                                else:
-                                    block_ranges = []
-
-                                for range_obj in block_ranges:
-                                    if hasattr(range_obj, "start"):
-                                        start = range_obj.start
-                                        end = range_obj.end
-                                    elif isinstance(range_obj, dict):
-                                        start = range_obj.get("start")
-                                        end = range_obj.get("end")
-                                    else:
-                                        continue
-                                    if start is not None and end is not None:
-                                        rows_to_be_included_list.extend(range(start, end + 1))
-
-                                if not rows_to_be_included_list and isinstance(children, list):
-                                    rows_to_be_included_list = [
-                                        child.block_index for child in children
-                                        if getattr(child, "block_index", None) is not None
-                                    ]
+                                for range_obj in children.block_ranges:
+                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
 
                             child_results = []
                             for row_index in rows_to_be_included_list:
@@ -488,10 +472,10 @@ class FileRecord(Record):
                                     label=GroupType.TABLE.value,
                                     blocks=child_results,
                                 )
-                                content.append({
-                                    "type": "text",
-                                    "text": f"{rendered_form}\n\n"
-                                })
+                                content.append(LlmTextContent(
+                                    type="text",
+                                    text=f"{rendered_form}\n\n",
+                                ))
                 elif block.parent_index is not None:
                     parent_index = block.parent_index
                     block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
@@ -516,10 +500,10 @@ class FileRecord(Record):
                         label=block_group_type,
                         blocks=group_blocks,
                     )
-                    content.append({
-                        "type": "text",
-                        "text": f"{rendered_form}\n\n"
-                    })
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"{rendered_form}\n\n",
+                    ))
                 else:
                     continue
 

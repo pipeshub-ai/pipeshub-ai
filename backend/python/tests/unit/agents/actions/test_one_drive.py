@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.actions.util.parse_file import ParseErrorPayload
+from app.models.entities import LlmTextContent
 from app.agents.actions.microsoft.one_drive.one_drive import (
     OneDrive,
     _generate_word_docx_bytes,
@@ -1389,7 +1391,9 @@ class TestGetFileContentTool:
             return_value=_mock_response(success=True, data=b"hello")
         )
         mock_parser = MagicMock()
-        mock_parser.parse = AsyncMock(return_value=(True, [{"content": "ok"}]))
+        mock_parser.parse = AsyncMock(
+            return_value=(True, [LlmTextContent(type="text", text="ok")])
+        )
         with patch(
             "app.agents.actions.microsoft.one_drive.one_drive.FileContentParser",
             return_value=mock_parser,
@@ -1878,7 +1882,9 @@ class TestGetFileContentMoreBranches:
             return_value=_mock_response(success=True, data=b"hello")
         )
         mock_parser = MagicMock()
-        mock_parser.parse = AsyncMock(return_value=(False, [{"error": "parse err"}]))
+        mock_parser.parse = AsyncMock(
+            return_value=(False, [ParseErrorPayload(error="parse err")])
+        )
         with patch(
             "app.agents.actions.microsoft.one_drive.one_drive.FileContentParser",
             return_value=mock_parser,

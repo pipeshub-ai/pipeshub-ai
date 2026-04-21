@@ -1909,9 +1909,10 @@ class OneDrive:
                     model_key,
                     configuration_service,
                 )
+                serialized = [item.model_dump() for item in payload]
                 if status:
-                    return True, json.dumps(payload)
-                return False, json.dumps(payload)
+                    return True, json.dumps(serialized)
+                return False, json.dumps(serialized)
             return False, _response_json(response)
         except Exception as e:
             logger.error("Failed to get content for item %s: %s", item_id, e)

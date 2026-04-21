@@ -17,15 +17,14 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
-from typing import Final, Optional
-from typing import Any
+from typing import Final, Optional, Union
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
 from app.config.configuration_service import ConfigurationService
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, LlmTextContent
 from app.models.blocks import BlockType, BlocksContainer
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -81,8 +80,11 @@ class ParseErrorPayload(BaseModel):
     error: str
 
 
-def _error_list(message: str) -> list[dict[str, str]]:
-    return [ParseErrorPayload(error=message).model_dump()]
+LlmContextItem = Union[LlmTextContent, ParseErrorPayload]
+
+
+def _error_list(message: str) -> list[ParseErrorPayload]:
+    return [ParseErrorPayload(error=message)]
 
 
 def _validate_magic(data: bytes, ext: str) -> None:
@@ -194,7 +196,7 @@ class FileContentParser:
         model_name: Optional[str],
         model_key: Optional[str],
         configuration_service: ConfigurationService,
-        data: list[dict[str, Any]],
+        data: list[LlmTextContent],
     ) -> bool:
         if not data:
             return True
@@ -205,17 +207,11 @@ class FileContentParser:
         context_length = (model_config or {}).get("contextLength") or 128_000
         max_allowed_tokens = int(context_length * _TOKEN_LIMIT_SAFETY_FACTOR)
 
-        token_count = 0
-        for message in data:
-            if not isinstance(message, dict):
-                continue
-            text_content = (
-                message.get("text", "")
-                if message.get("type") == "text"
-                else ""
-            )
-            if text_content:
-                token_count += count_tokens_text(text_content, None)
+        token_count = sum(
+            count_tokens_text(message.text, None)
+            for message in data
+            if message.type == "text" and message.text
+        )
         return token_count < max_allowed_tokens
 
     async def parse(
@@ -225,8 +221,8 @@ class FileContentParser:
         model_name: Optional[str],
         model_key: Optional[str],
         configuration_service: ConfigurationService,
-    ) -> tuple[bool, list[dict[str, Any]]]:
-        """Return ``(True, llm_context)`` on success, or ``(False, error_message)``."""
+    ) -> tuple[bool, list[LlmContextItem]]:
+        """Return ``(True, llm_context)`` on success, or ``(False, error_list)``."""
         try:
             ext_n = (file_record.extension or "").strip().lower().lstrip(".")
             if not ext_n or not self.is_supported_extension(ext_n):

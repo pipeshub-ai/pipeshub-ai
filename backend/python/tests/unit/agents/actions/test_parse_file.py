@@ -14,6 +14,7 @@ import pytest
 
 from app.agents.actions.util.parse_file import (
     FileContentParser,
+    LlmContextItem,
     SUPPORTED_EXTENSIONS,
     _docling_document_name,
     _validate_magic,
@@ -22,6 +23,8 @@ from app.agents.actions.util.parse_file import (
     _MAGIC_ZIP,
 )
 from app.models.blocks import Block, BlockType, BlocksContainer, ImageMetadata
+from app.models.entities import LlmTextContent
+from app.agents.actions.util.parse_file import ParseErrorPayload
 
 
 # ---------------------------------------------------------------------------
@@ -48,13 +51,16 @@ def _make_parser():
     return parser
 
 
+_LLM_CONTEXT = [LlmTextContent(type="text", text="llm context")]
+
+
 def _make_file_record(extension="txt", record_name="doc", mime_type="text/plain"):
     rec = MagicMock()
     rec.extension = extension
     rec.record_name = record_name
     rec.mime_type = mime_type
     rec.block_containers = None
-    rec.to_llm_full_context = MagicMock(return_value="llm context")
+    rec.to_llm_full_context = MagicMock(return_value=_LLM_CONTEXT)
     return rec
 
 
@@ -232,7 +238,7 @@ class TestCheckTokenLimit:
     async def test_empty_data(self):
         parser = _make_parser()
         result = await parser.check_token_limit(
-            model_name=None, model_key=None, configuration_service=MagicMock(), data=""
+            model_name=None, model_key=None, configuration_service=MagicMock(), data=[]
         )
         assert result is True
 
@@ -247,13 +253,14 @@ class TestCheckTokenLimit:
             "app.agents.actions.util.parse_file.count_tokens_text",
             return_value=1000,
         ):
+            data = [LlmTextContent(type="text", text="data")]
             result = await parser.check_token_limit(
-                model_name="gpt-4", model_key="k", configuration_service=MagicMock(), data="data"
+                model_name="gpt-4", model_key="k", configuration_service=MagicMock(), data=data
             )
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_within_limit_dict_messages(self):
+    async def test_within_limit_typed_messages(self):
         parser = _make_parser()
         with patch(
             "app.agents.actions.util.parse_file.get_model_config",
@@ -263,7 +270,7 @@ class TestCheckTokenLimit:
             "app.agents.actions.util.parse_file.count_tokens_text",
             return_value=10,
         ):
-            data = [{"type": "text", "text": "hello"}]
+            data = [LlmTextContent(type="text", text="hello")]
             result = await parser.check_token_limit(
                 model_name="gpt-4", model_key="k", configuration_service=MagicMock(), data=data
             )
@@ -280,7 +287,7 @@ class TestCheckTokenLimit:
             "app.agents.actions.util.parse_file.count_tokens_text",
             return_value=900,  # 900 > 800 (80% of 1000)
         ):
-            data = [{"type": "text", "text": "hello"}]
+            data = [LlmTextContent(type="text", text="hello")]
             result = await parser.check_token_limit(
                 model_name="gpt-4", model_key="k", configuration_service=MagicMock(), data=data
             )
@@ -297,7 +304,7 @@ class TestCheckTokenLimit:
             "app.agents.actions.util.parse_file.count_tokens_text",
             return_value=10,
         ):
-            data = [{"type": "text", "text": "x"}]
+            data = [LlmTextContent(type="text", text="x")]
             result = await parser.check_token_limit(
                 model_name=None, model_key=None, configuration_service=MagicMock(), data=data
             )
@@ -314,25 +321,29 @@ class TestCheckTokenLimit:
             "app.agents.actions.util.parse_file.count_tokens_text",
             return_value=1,
         ):
-            data = [{"type": "text", "text": "x"}]
+            data = [LlmTextContent(type="text", text="x")]
             result = await parser.check_token_limit(
                 model_name=None, model_key=None, configuration_service=MagicMock(), data=data
             )
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_non_text_messages_ignored(self):
+    async def test_empty_text_items_not_counted(self):
+        """Items whose text is empty string do not contribute to token count."""
         parser = _make_parser()
         with patch(
             "app.agents.actions.util.parse_file.get_model_config",
             new_callable=AsyncMock,
             return_value=({"contextLength": 1000}, None),
-        ):
-            # No "type": "text" entries → token_count stays 0
-            data = [{"type": "image"}, "not a dict"]
+        ), patch(
+            "app.agents.actions.util.parse_file.count_tokens_text",
+            return_value=999,
+        ) as mock_count:
+            data = [LlmTextContent(type="text", text="")]
             result = await parser.check_token_limit(
                 model_name=None, model_key=None, configuration_service=MagicMock(), data=data
             )
+            mock_count.assert_not_called()
             assert result is True
 
 
@@ -347,7 +358,8 @@ class TestParse:
         rec = _make_file_record(extension="exe")
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "not supported" in msg[0]["error"]
+        assert isinstance(msg[0], ParseErrorPayload)
+        assert "not supported" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_missing_extension(self):
@@ -355,6 +367,7 @@ class TestParse:
         rec = _make_file_record(extension="")
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
+        assert isinstance(msg[0], ParseErrorPayload)
 
     @pytest.mark.asyncio
     async def test_parse_to_block_container_fails(self):
@@ -363,7 +376,7 @@ class TestParse:
         parser.parse_to_block_container = AsyncMock(side_effect=RuntimeError("bad"))
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "Parse failed" in msg[0]["error"]
+        assert "Parse failed" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_to_llm_context_fails(self):
@@ -375,7 +388,7 @@ class TestParse:
         )
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "Context build failed" in msg[0]["error"]
+        assert "Context build failed" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_token_check_fails(self):
@@ -387,7 +400,7 @@ class TestParse:
         parser.check_token_limit = AsyncMock(side_effect=RuntimeError("tok err"))
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "Token check failed" in msg[0]["error"]
+        assert "Token check failed" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_within_limit_returns_success(self):
@@ -399,7 +412,8 @@ class TestParse:
         parser.check_token_limit = AsyncMock(return_value=True)
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is True
-        assert msg == "llm context"
+        assert msg == _LLM_CONTEXT
+        assert all(isinstance(item, LlmTextContent) for item in msg)
 
     @pytest.mark.asyncio
     async def test_exceeds_limit_returns_failure(self):
@@ -411,7 +425,7 @@ class TestParse:
         parser.check_token_limit = AsyncMock(return_value=False)
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "Token limit exceeded" in msg[0]["error"]
+        assert "Token limit exceeded" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_outer_exception_wrapped(self):
@@ -422,7 +436,7 @@ class TestParse:
         ):
             ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
-        assert "Failed to parse file" in msg[0]["error"]
+        assert "Failed to parse file" in msg[0].error
 
 
 # ============================================================================
