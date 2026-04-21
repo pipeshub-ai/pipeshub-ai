@@ -1512,10 +1512,12 @@ function KnowledgeBasePageContent() {
       const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
       if (isKnowledgeHubNode) {
-        // Handle KnowledgeHubNode - support all container types: kb, app, folder, recordGroup
-        const containerTypes: NodeType[] = ['kb', 'app', 'folder', 'recordGroup'];
+        const containerTypes: NodeType[] = ['app', 'folder', 'recordGroup'];
+        const isNavigableContainer =
+          containerTypes.includes(item.nodeType) ||
+          (item.nodeType === 'record' && item.hasChildren);
 
-        if (containerTypes.includes(item.nodeType)) {
+        if (isNavigableContainer) {
           // Reset filters and search when navigating into a container
           if (isAllRecordsMode) {
             clearAllRecordsFilter();

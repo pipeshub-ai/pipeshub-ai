@@ -610,7 +610,13 @@ export function KbGridView({
               isSelected={selectedItems.has(item.id)}
               onSelect={() => onSelectItem(item.id)}
               onClick={() => onItemClick(item)}
-              onOpen={() => onItemClick(item)}
+              onOpen={() => {
+                const openDetails =
+                  (isKnowledgeHubNode(item) && item.nodeType === 'record') ||
+                  (!isKnowledgeHubNode(item) && item.type === 'file');
+                if (openDetails && onPreview) onPreview(item);
+                else onItemClick(item);
+              }}
               onPreview={onPreview}
               onRename={onRename}
               onReindex={onReindex}
