@@ -10,7 +10,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { ensureConnectorSyncActiveThenResync } from '../../utils/connector-sync-actions';
+import { startConnectorSync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
@@ -109,7 +109,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
     if (!connectorId || isStartingSync) return;
     try {
       setIsStartingSync(true);
-      await ensureConnectorSyncActiveThenResync({
+      await startConnectorSync({
         _key: connectorId,
         type: instance.type,
       });

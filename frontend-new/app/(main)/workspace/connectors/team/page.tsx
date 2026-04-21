@@ -9,7 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
+import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -343,7 +343,7 @@ function TeamConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        await ensureConnectorSyncActiveThenResync({
+        await startConnectorSync({
           _key: instance._key,
           type: instance.type,
         });
@@ -401,7 +401,7 @@ function TeamConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
+      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),

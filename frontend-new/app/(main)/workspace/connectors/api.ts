@@ -261,21 +261,15 @@ export const ConnectorsApi = {
 
   // ── Instance Details ──
 
-  /** Fetch a specific connector instance */
+  /** Fetch a specific connector instance. Backend returns `{ success, connector }`. */
   async getConnectorInstance(connectorId: string): Promise<Connector> {
-    const { data } = await apiClient.get<Connector>(
+    const { data } = await apiClient.get<{ success: boolean; connector: Connector }>(
       `${BASE_URL}/${connectorId}`
     );
-    return data;
-  },
-
-  /** Start sync for a connector instance */
-  async startSync(connectorId: string) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/toggle`,
-      { type: 'sync' }
-    );
-    return data;
+    if (!data?.connector) {
+      throw new Error(`getConnectorInstance: empty response for ${connectorId}`);
+    }
+    return data.connector;
   },
 
   // ── Reindex Failed ──
@@ -285,6 +279,9 @@ export const ConnectorsApi = {
    * `connectorType` must be the connector **type** (e.g. "Google Drive"), matching the legacy UI.
    */
   async resyncConnector(connectorId: string, connectorType: string, fullSync?: boolean) {
+    if (!connectorType) {
+      throw new Error('resyncConnector: connectorType is required');
+    }
     const { data } = await apiClient.post(
       '/api/v1/knowledgeBase/resync/connector',
       {
