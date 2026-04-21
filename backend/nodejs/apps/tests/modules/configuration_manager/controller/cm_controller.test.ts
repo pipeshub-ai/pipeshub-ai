@@ -1224,7 +1224,11 @@ describe('ConfigurationManager Controller', () => {
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves('encrypted:data'),
       })
-      const handler = updateDefaultAIModel(kvs, createMockEventService(), { cmBackend: 'http://cm' } as any)
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { healthy: true },
+      })
+      const handler = updateDefaultAIModel(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
       const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k2' } })
       const res = createMockResponse()
       const next = createMockNext()
