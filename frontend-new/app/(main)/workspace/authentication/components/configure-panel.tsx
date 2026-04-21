@@ -66,7 +66,7 @@ export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: Configu
 
   if (!method) return null;
 
-  const panelTitleKey = `workspace.authentication.panels.${method === 'samlSso' ? 'saml' : method === 'oauth' ? 'oauth2' : method}` as const;
+  const panelTitleKey = `workspace.authentication.panels.${method}` as const;
 
   const docButton = (
     <Button

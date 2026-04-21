@@ -935,14 +935,41 @@
       "actionSetDefault": "Set default",
       "actionDelete": "Delete",
       "capabilities": {
-        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "For LLMs" },
-        "embedding": { "label": "Embedding", "badge": "Embedding", "sectionTab": "For Embedding" },
-        "image_generation": { "label": "Image Generation", "badge": "Image", "sectionTab": "For Image Generation" },
-        "reasoning": { "label": "Reasoning", "badge": "Reasoning" },
-        "ocr": { "label": "OCR", "badge": "" },
-        "tts": { "label": "Text to Speech", "badge": "" },
-        "stt": { "label": "Speech to Text", "badge": "" },
-        "video": { "label": "Video", "badge": "Multimodal" }
+        "text_generation": {
+          "label": "LLM",
+          "badge": "LLM",
+          "sectionTab": "For LLMs"
+        },
+        "embedding": {
+          "label": "Embedding",
+          "badge": "Embedding",
+          "sectionTab": "For Embedding"
+        },
+        "image_generation": {
+          "label": "Image Generation",
+          "badge": "Image",
+          "sectionTab": "For Image Generation"
+        },
+        "reasoning": {
+          "label": "Reasoning",
+          "badge": "Reasoning"
+        },
+        "ocr": {
+          "label": "OCR",
+          "badge": ""
+        },
+        "tts": {
+          "label": "Text to Speech",
+          "badge": ""
+        },
+        "stt": {
+          "label": "Speech to Text",
+          "badge": ""
+        },
+        "video": {
+          "label": "Video",
+          "badge": "Multimodal"
+        }
       }
     },
     "filters": {
@@ -1007,16 +1034,17 @@
         "my": "My actions",
         "browse": "Browse catalog"
       },
-      "personalAdminHint": "Admins manage the organization catalog under Workspace \u2192 Actions.",
+      "personalAdminHint": "Admins manage the organization catalog under Workspace → Actions.",
       "cta": {
         "setup": "Setup",
         "configure": "Configure",
         "authenticate": "Authenticate",
+        "manage": "Manage",
         "unavailable": "Not available",
         "notConfigured": "Not configured"
       },
       "trailingYourActions": "Your actions",
-      "loading": "Loading actions\u2026",
+      "loading": "Loading actions…",
       "loadError": "Could not load actions. Try again.",
       "empty": "No actions match your filters.",
       "createSuccess": "Action instance created.",
@@ -1037,7 +1065,7 @@
       "oauthAppLabel": "OAuth application",
       "oauthAppNew": "Create new OAuth app",
       "linkedOAuthAppHeading": "Selected OAuth application",
-      "linkedOAuthAppHint": "This instance will use the saved credentials below. To enter different client credentials, choose \u201cCreate new OAuth app\u201d.",
+      "linkedOAuthAppHint": "This instance will use the saved credentials below. To enter different client credentials, choose “Create new OAuth app”.",
       "linkedOAuthSecretStored": "Stored (hidden)",
       "oauthClientId": "Client ID",
       "oauthClientSecret": "Client secret",
@@ -1066,10 +1094,10 @@
         "empty": "No instances for this action yet.",
         "instancesHeading": "Instances ({{count}})",
         "refresh": "Refresh list",
-        "refreshingList": "Updating list\u2026",
-        "searchInstances": "Search instances\u2026",
-        "teamInstanceInfo": "Authenticate against your organization\u2019s action instances. Authenticated actions can be added to your agents.",
-        "personalInstanceInfo": "Authenticate against your organization\u2019s action instances. Once authenticated, you can use these actions in your agents.",
+        "refreshingList": "Updating list…",
+        "searchInstances": "Search instances…",
+        "teamInstanceInfo": "Authenticate against your organization’s action instances. Authenticated actions can be added to your agents.",
+        "personalInstanceInfo": "Authenticate against your organization’s action instances. Once authenticated, you can use these actions in your agents.",
         "instanceTabs": {
           "all": "All ({{count}})",
           "authenticated": "Authenticated ({{count}})",
@@ -1095,8 +1123,8 @@
       "manage": {
         "panelTitle": "Manage action configuration",
         "oauthAppHeading": "OAuth app",
-        "clientIdHint": "The OAuth2 client ID from your provider\u2019s developer console.",
-        "clientSecretHint": "The OAuth2 client secret from your provider\u2019s developer console.",
+        "clientIdHint": "The OAuth2 client ID from your provider’s developer console.",
+        "clientSecretHint": "The OAuth2 client secret from your provider’s developer console.",
         "secretPlaceholder": "Leave blank to keep the existing secret",
         "showSecret": "Show secret",
         "hideSecret": "Hide secret",
@@ -1230,6 +1258,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "Configure",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1258,8 +1287,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1381,6 +1410,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "Records Selected",
+        "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1424,7 +1455,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1437,6 +1471,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1471,6 +1531,31 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1489,8 +1574,18 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1512,7 +1607,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1521,8 +1620,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1542,7 +1650,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1552,6 +1661,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1608,7 +1719,12 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      }
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
     }
   },
   "filePreview": {
@@ -1631,7 +1747,7 @@
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organisation.",
     "serviceAccountShareTooltip": "Service agents are always shared with the organisation.",
-    "saving": "Saving\u2026",
+    "saving": "Saving…",
     "saveChanges": "Save changes",
     "createAgent": "Create agent",
     "nameRequired": "Enter a name to continue.",
@@ -1651,7 +1767,7 @@
     "paletteActionBlockedViewOnly": "View only. This org service agent cannot be changed here.",
     "viewerPaletteDragBlocked": "View only. Flow is locked; authenticate toolsets under Tools.",
     "paletteViewerAuthenticateInTools": "View only. Canvas drag is off; sign in to toolsets under Tools.",
-    "searchNodes": "Search nodes\u2026",
+    "searchNodes": "Search nodes…",
     "aiModels": "AI models",
     "knowledge": "Knowledge",
     "tools": "Tools",
@@ -1718,15 +1834,15 @@
     "svcAcctCreateDesc": "You are creating a shared service agent: available across your organisation, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
     "svcAcctConvertLabel": "Convert to service agent",
     "svcAcctCreateLabel": "Create service agent",
-    "svcAcctConvertBusy": "Converting\u2026",
-    "svcAcctCreateBusy": "Creating agent\u2026",
+    "svcAcctConvertBusy": "Converting…",
+    "svcAcctCreateBusy": "Creating agent…",
     "svcAcctAgentLabel": "Agent",
     "svcAcctUnnamed": "(unnamed)",
     "svcAcctKnowledgeTitle": "Knowledge sources",
-    "svcAcctKnowledgeNote1": "Only knowledge sources you connect in the builder are used\u2014not your entire workspace. Search and responses use your permissions as the person who saved this agent.",
+    "svcAcctKnowledgeNote1": "Only knowledge sources you connect in the builder are used—not your entire workspace. Search and responses use your permissions as the person who saved this agent.",
     "svcAcctKnowledgeNote2": "Users in your organisation may see answers drawn from content you can access in those sources, even when they would not normally have access to that content themselves.",
-    "svcAcctToolsetsTitle": "Toolsets use the agent\u2019s credentials",
-    "svcAcctToolsetsNote1": "This agent keeps its own credentials for each toolset on the flow. When someone chats with the agent, tool calls run on behalf of the agent using those stored credentials\u2014not each visitor\u2019s personal toolset sign-in. Use the key icon in the left palette to connect or refresh credentials for each toolset after you finish here.",
+    "svcAcctToolsetsTitle": "Toolsets use the agent’s credentials",
+    "svcAcctToolsetsNote1": "This agent keeps its own credentials for each toolset on the flow. When someone chats with the agent, tool calls run on behalf of the agent using those stored credentials—not each visitor’s personal toolset sign-in. Use the key icon in the left palette to connect or refresh credentials for each toolset after you finish here.",
     "svcAcctToolsetsNote2Convert": "Before you convert, remove any toolset nodes on the canvas that still use per-user sign-in. Add them back afterward and store credentials for this agent using the key icon.",
     "svcAcctOrgTitle": "Organisation-wide access",
     "svcAcctOrgDesc": "Anyone in your organisation can find, open, and run this agent. There is no separate private copy.",
@@ -1743,7 +1859,7 @@
     "toolsetCredentialsTitle": "Agent toolset credentials",
     "toolsetCredentialsBadge": "Service agent",
     "toolsetCredentialsDesc": "Stored for this agent only. Runs use these credentials for everyone.",
-    "loadingSchema": "Loading schema\u2026",
+    "loadingSchema": "Loading schema…",
     "fillRequiredFields": "Please fill in all required fields.",
     "fieldRequired": "{{field}} is required",
     "oauthConnectedDesc": "OAuth is connected for this agent. Use Reconnect to sign in again, or Disconnect to end this session for this agent.",
@@ -1763,7 +1879,7 @@
     "disconnectOAuthDesc": "This ends the OAuth session for {{name}} on this agent. The toolset remains on the agent but is not authenticated until you sign in again.",
     "disconnectOAuthProgress": "Disconnecting…",
     "removeCredentials": "Remove credentials",
-    "savingCredentials": "Saving\u2026",
+    "savingCredentials": "Saving…",
     "updateCredentials": "Save changes",
     "saveCredentials": "Save credentials",
     "noCredentialsRequired": "No credentials are required for this toolset.",

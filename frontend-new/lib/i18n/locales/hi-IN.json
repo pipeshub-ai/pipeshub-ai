@@ -1257,6 +1257,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "कॉन्फ़िगर करें",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1285,8 +1286,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1408,6 +1409,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "चयनित रिकॉर्ड",
+        "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1451,7 +1454,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1464,6 +1470,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1498,6 +1530,31 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1516,8 +1573,18 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1539,7 +1606,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1548,8 +1619,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1569,7 +1649,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1579,6 +1660,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1635,7 +1718,12 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      }
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
     }
   },
   "filePreview": {

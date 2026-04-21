@@ -131,7 +131,7 @@ export function AuthMethodRow({
 
         {/* Gear / configure button */}
         {showConfigureButton && (
-          <Tooltip content={t('workspace.aiModels.configure')}>
+          <Tooltip content={t('workspace.authentication.configure')}>
             <IconButton
               variant="ghost"
               color="gray"
