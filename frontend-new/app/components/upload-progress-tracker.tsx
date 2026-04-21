@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
+import { Flex, Box, Text, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useUploadStore } from '@/lib/store/upload-store';
@@ -20,6 +20,11 @@ interface UploadItemRowProps {
 
 function UploadItemRow({ item }: UploadItemRowProps) {
   const [isHovered, setIsHovered] = useState(false);
+
+  const isFailed = item.status === 'failed';
+  const failureTooltipText = isFailed
+    ? item.error?.trim() || 'Upload failed. Try again or use a supported file type.'
+    : null;
 
   const getStatusIcon = () => {
     switch (item.status) {
@@ -63,7 +68,9 @@ function UploadItemRow({ item }: UploadItemRowProps) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              cursor: 'help',
             }}
+            aria-hidden
           >
             <MaterialIcon name="error" size={16} color="var(--red-9)" />
           </Box>
@@ -82,7 +89,7 @@ function UploadItemRow({ item }: UploadItemRowProps) {
     }
   };
 
-  return (
+  const row = (
     <Flex
       align="center"
       justify="between"
@@ -92,8 +99,18 @@ function UploadItemRow({ item }: UploadItemRowProps) {
         padding: '12px',
         background: isHovered ? 'var(--olive-4)' : 'var(--olive-2)',
         borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--olive-3)',
+        border:
+          item.status === 'failed'
+            ? '1px solid var(--red-a6)'
+            : '1px solid var(--olive-3)',
+        cursor: isFailed ? 'help' : 'default',
       }}
+      role="group"
+      aria-label={
+        isFailed
+          ? `${item.name}, upload failed${item.error?.trim() ? `. ${item.error.trim()}` : ''}`
+          : `${item.name}, ${item.status}`
+      }
     >
       <Flex align="center" gap="3">
         <Box
@@ -117,7 +134,7 @@ function UploadItemRow({ item }: UploadItemRowProps) {
           <Text
             size="2"
             style={{
-              color: 'var(--slate-12)',
+              color: item.status === 'failed' ? 'var(--red-11)' : 'var(--slate-12)',
               maxWidth: '180px',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -127,18 +144,38 @@ function UploadItemRow({ item }: UploadItemRowProps) {
             {item.name}
           </Text>
           <Text size="1" style={{ color: 'var(--slate-9)' }}>
-            {formatSize(item.size)}
+            {item.status === 'failed' ? `${formatSize(item.size)} · failed` : formatSize(item.size)}
           </Text>
         </Flex>
       </Flex>
       {getStatusIcon()}
     </Flex>
   );
+
+  if (isFailed) {
+    return (
+      <Tooltip
+        content={
+          <Text as="p" size="1" style={{ margin: 0, maxWidth: 300, whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
+            {failureTooltipText}
+          </Text>
+        }
+      >
+        <Box style={{ width: '100%' }} tabIndex={0}>
+          {row}
+        </Box>
+      </Tooltip>
+    );
+  }
+
+  return row;
 }
 
 export function UploadProgressTracker() {
   const { items, isVisible, isCollapsed, totalSize, completedCount, totalCount, setCollapsed, clearAll } =
     useUploadStore();
+
+  const failedCount = items.reduce((n, i) => n + (i.status === 'failed' ? 1 : 0), 0);
 
   if (!isVisible || items.length === 0) {
     return null;
@@ -182,10 +219,12 @@ export function UploadProgressTracker() {
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {completedCount}/{totalCount} uploads complete
+              {failedCount > 0
+                ? `${completedCount} completed · ${failedCount} failed`
+                : `${completedCount}/${totalCount} uploads complete`}
             </Text>
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
-              Total: {formatSize(totalSize)}
+              {failedCount > 0 ? `${totalCount} files · ${formatSize(totalSize)}` : `Total: ${formatSize(totalSize)}`}
             </Text>
           </Flex>
           <Flex align="center" gap="4">

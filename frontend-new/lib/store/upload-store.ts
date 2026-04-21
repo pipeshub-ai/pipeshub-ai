@@ -167,6 +167,7 @@ export const useUploadStore = create<UploadStore>()(
           if (item) {
             item.status = 'completed';
             item.progress = 100;
+            item.error = undefined;
           }
           state.completedCount = state.items.filter((i) => i.status === 'completed').length;
         }),
@@ -178,6 +179,7 @@ export const useUploadStore = create<UploadStore>()(
             item.status = 'failed';
             item.error = error;
           }
+          state.completedCount = state.items.filter((i) => i.status === 'completed').length;
         }),
     })),
     { name: 'UploadStore' }
