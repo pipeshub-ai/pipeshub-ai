@@ -2638,6 +2638,11 @@ components:
 
     Filters:
       type: object
+      description: |
+        App connector types and knowledge-base UUIDs that narrow retrieval scope for a turn.
+        Streaming clients SHOULD always send this object on SSE stream requests (including
+        `{ "apps": [], "kb": [] }` when using full default org scope) so the service does not
+        infer filters from partial client state.
       properties:
         apps:
           type: array
@@ -2691,12 +2696,7 @@ components:
             format: objectId
           description: Filter by department IDs to scope the search
         filters:
-          allOf:
-            - $ref: '#/components/schemas/Filters'
-          description: |
-            App and knowledge-base scope for this turn. Streaming clients SHOULD always send
-            this object (use empty arrays for full default scope) so the service does not
-            infer filters from partial client state.
+          $ref: '#/components/schemas/Filters'
         modelKey:
           type: string
           description: |
@@ -2740,11 +2740,7 @@ components:
           description: The follow-up question or message content
           example: "Can you elaborate on the revenue trends?"
         filters:
-          allOf:
-            - $ref: '#/components/schemas/Filters'
-          description: |
-            App and knowledge-base scope for this message. Streaming clients SHOULD always
-            send this object (empty arrays = default org scope).
+          $ref: '#/components/schemas/Filters'
         modelKey:
           type: string
           description: Override the model for this specific message
