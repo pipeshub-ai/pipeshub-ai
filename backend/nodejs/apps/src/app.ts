@@ -278,6 +278,20 @@ export class Application {
           );
           return;
         }
+
+        // `/record/<recordId>` URLs (shared links, backend citation links,
+        // etc.) can't be pre-rendered per id under `output: 'export'` since
+        // `generateStaticParams()` would have to enumerate every record id.
+        // Serve the single `/record/` HTML shell directly — the client reads
+        // the id from `window.location.pathname` — so the URL stays intact
+        // (no redirect, no visible `?recordId=` query param) and matches the
+        // pattern used above for OAuth callback slugs.
+        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        if (recordMatch) {
+          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          return;
+        }
+
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 
