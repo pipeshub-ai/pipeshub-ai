@@ -912,14 +912,41 @@
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
       "capabilities": {
-        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "Für LLMs" },
-        "embedding": { "label": "Embedding", "badge": "Embedding", "sectionTab": "Für Embeddings" },
-        "image_generation": { "label": "Bildgenerierung", "badge": "Bild", "sectionTab": "Für Bildgenerierung" },
-        "reasoning": { "label": "Reasoning", "badge": "Reasoning" },
-        "ocr": { "label": "OCR", "badge": "" },
-        "tts": { "label": "Text zu Sprache", "badge": "" },
-        "stt": { "label": "Sprache zu Text", "badge": "" },
-        "video": { "label": "Video", "badge": "Multimodal" }
+        "text_generation": {
+          "label": "LLM",
+          "badge": "LLM",
+          "sectionTab": "Für LLMs"
+        },
+        "embedding": {
+          "label": "Embedding",
+          "badge": "Embedding",
+          "sectionTab": "Für Embeddings"
+        },
+        "image_generation": {
+          "label": "Bildgenerierung",
+          "badge": "Bild",
+          "sectionTab": "Für Bildgenerierung"
+        },
+        "reasoning": {
+          "label": "Reasoning",
+          "badge": "Reasoning"
+        },
+        "ocr": {
+          "label": "OCR",
+          "badge": ""
+        },
+        "tts": {
+          "label": "Text zu Sprache",
+          "badge": ""
+        },
+        "stt": {
+          "label": "Sprache zu Text",
+          "badge": ""
+        },
+        "video": {
+          "label": "Video",
+          "badge": "Multimodal"
+        }
       }
     },
     "common": {
@@ -975,9 +1002,9 @@
     },
     "actions": {
       "title": "Aktionen",
-      "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datens\u00e4tzen, Aktualisieren von Feldern oder Ausl\u00f6sen von Workflows. Jede App bietet eine Aktion, die auf ihre unterst\u00fctzten Funktionen zugeschnitten ist.",
+      "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datensätzen, Aktualisieren von Feldern oder Auslösen von Workflows. Jede App bietet eine Aktion, die auf ihre unterstützten Funktionen zugeschnitten ist.",
       "yourActionsTitle": "Ihre Aktionen",
-      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator f\u00fcr Ihr Konto bereitgestellt hat.",
+      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator für Ihr Konto bereitgestellt hat.",
       "tabs": {
         "all": "Alle",
         "configured": "Konfiguriert",
@@ -989,42 +1016,42 @@
         "my": "Meine Aktionen",
         "browse": "Katalog durchsuchen"
       },
-      "personalAdminHint": "Administratoren verwalten den Organisationskatalog unter Arbeitsbereich \u2192 Aktionen.",
+      "personalAdminHint": "Administratoren verwalten den Organisationskatalog unter Arbeitsbereich → Aktionen.",
       "cta": {
         "setup": "Einrichten",
         "configure": "Konfigurieren",
         "authenticate": "Authentifizieren",
-        "unavailable": "Nicht verf\u00fcgbar",
+        "unavailable": "Nicht verfügbar",
         "notConfigured": "Nicht konfiguriert"
       },
       "trailingYourActions": "Ihre Aktionen",
-      "loading": "Aktionen werden geladen\u2026",
+      "loading": "Aktionen werden geladen…",
       "loadError": "Aktionen konnten nicht geladen werden. Bitte erneut versuchen.",
       "empty": "Keine Aktionen entsprechen Ihren Filtern.",
       "createSuccess": "Aktionsinstanz erstellt.",
       "adminCreateTitle": "{{name}} erstellen",
-      "adminCreateSubtitle": "Erstellen Sie eine organisationsweite Aktionsinstanz. Benutzer k\u00f6nnen sich auf ihrer pers\u00f6nlichen Aktionen-Seite dagegen authentifizieren.",
+      "adminCreateSubtitle": "Erstellen Sie eine organisationsweite Aktionsinstanz. Benutzer können sich auf ihrer persönlichen Aktionen-Seite dagegen authentifizieren.",
       "instanceName": "Instanzname",
-      "instanceNamePlaceholder": "z.\u00a0B. Produktions-Slack",
+      "instanceNamePlaceholder": "z. B. Produktions-Slack",
       "authType": "Authentifizierungstyp",
       "baseUrlOptional": "Basis-URL (optional)",
       "createInstance": "Instanz erstellen",
       "configPanelTitle": "Aktionskonfiguration",
       "documentation": "Dokumentation",
       "redirectUri": "Redirect-URI",
-      "redirectUriHint": "Registrieren Sie diese URL bei Ihrem OAuth-Anbieter als zul\u00e4ssige Redirect-URI.",
+      "redirectUriHint": "Registrieren Sie diese URL bei Ihrem OAuth-Anbieter als zulässige Redirect-URI.",
       "copyRedirectUri": "Kopieren",
       "redirectUriCopied": "Redirect-URI kopiert",
       "configurationHeading": "Konfiguration",
       "oauthAppLabel": "OAuth-Anwendung",
       "oauthAppNew": "Neue OAuth-App erstellen",
-      "linkedOAuthAppHeading": "Ausgew\u00e4hlte OAuth-Anwendung",
-      "linkedOAuthAppHint": "Diese Instanz verwendet die unten gespeicherten Anmeldedaten. Um andere Client-Anmeldedaten einzugeben, w\u00e4hlen Sie \u201eNeue OAuth-App erstellen\u201c.",
+      "linkedOAuthAppHeading": "Ausgewählte OAuth-Anwendung",
+      "linkedOAuthAppHint": "Diese Instanz verwendet die unten gespeicherten Anmeldedaten. Um andere Client-Anmeldedaten einzugeben, wählen Sie „Neue OAuth-App erstellen“.",
       "linkedOAuthSecretStored": "Gespeichert (ausgeblendet)",
       "oauthClientId": "Client-ID",
       "oauthClientSecret": "Client-Geheimnis",
-      "availableActions": "Verf\u00fcgbare Aktionen",
-      "setupInfoCallout": "Nach dem Erstellen dieser Aktion k\u00f6nnen sich Benutzer unter \u201eIhre Aktionen\u201c anmelden, wenn sie Zugriff ben\u00f6tigen.",
+      "availableActions": "Verfügbare Aktionen",
+      "setupInfoCallout": "Nach dem Erstellen dieser Aktion können sich Benutzer unter „Ihre Aktionen“ anmelden, wenn sie Zugriff benötigen.",
       "postCreateAuth": {
         "title": "Aktionsinstanz ist eingerichtet und erfordert eine Authentifizierung",
         "body": "Jeder Benutzer muss sich zuerst selbst authentifizieren, bevor er das Toolset nutzen kann.",
@@ -1038,26 +1065,26 @@
         "inactiveMany": "{{count}} inaktive Instanzen",
         "authenticatedOne": "1 authentifiziert",
         "authenticatedMany": "{{count}} authentifiziert",
-        "needsAuthOne": "1 ben\u00f6tigt Anmeldung",
-        "needsAuthMany": "{{count}} ben\u00f6tigen Anmeldung"
+        "needsAuthOne": "1 benötigt Anmeldung",
+        "needsAuthMany": "{{count}} benötigen Anmeldung"
       },
       "typeDetail": {
         "scopeTeam": "Aktionen",
         "scopePersonal": "Ihre Aktionen",
-        "addInstance": "Instanz hinzuf\u00fcgen",
-        "empty": "F\u00fcr diese Aktion gibt es noch keine Instanzen.",
+        "addInstance": "Instanz hinzufügen",
+        "empty": "Für diese Aktion gibt es noch keine Instanzen.",
         "instancesHeading": "Instanzen ({{count}})",
         "refresh": "Liste aktualisieren",
-        "refreshingList": "Liste wird aktualisiert\u2026",
-        "searchInstances": "Instanzen suchen\u2026",
-        "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen k\u00f6nnen Ihren Agenten hinzugef\u00fcgt werden.",
-        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung k\u00f6nnen Sie diese Aktionen in Ihren Agenten verwenden.",
+        "refreshingList": "Liste wird aktualisiert…",
+        "searchInstances": "Instanzen suchen…",
+        "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen können Ihren Agenten hinzugefügt werden.",
+        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung können Sie diese Aktionen in Ihren Agenten verwenden.",
         "instanceTabs": {
           "all": "Alle ({{count}})",
           "authenticated": "Authentifiziert ({{count}})",
           "notAuthenticated": "Nicht authentifiziert ({{count}})"
         },
-        "paginationPrevious": "Zur\u00fcck",
+        "paginationPrevious": "Zurück",
         "paginationNext": "Weiter",
         "paginationPage": "Seite {{current}} von {{total}}"
       },
@@ -1067,12 +1094,12 @@
         "badgeNeedsAuth": "Anmeldung erforderlich",
         "authenticateCta": "Authentifizieren",
         "configureCta": "Verbindung verwalten",
-        "configure": "Details \u00f6ffnen",
+        "configure": "Details öffnen",
         "manage": "Konfiguration verwalten",
-        "availableActionsLabel": "VERF\u00dcGBARE AKTIONEN",
+        "availableActionsLabel": "VERFÜGBARE AKTIONEN",
         "enabledByLabel": "AKTIVIERT VON",
         "authBannerTitle": "Konto authentifizieren",
-        "authBannerBody": "Melden Sie sich an, um diese Aktion mit Ihrer Identit\u00e4t und Ihren Berechtigungen zu nutzen."
+        "authBannerBody": "Melden Sie sich an, um diese Aktion mit Ihrer Identität und Ihren Berechtigungen zu nutzen."
       },
       "manage": {
         "panelTitle": "Aktionskonfiguration verwalten",
@@ -1082,16 +1109,16 @@
         "secretPlaceholder": "Leer lassen, um das bestehende Geheimnis zu behalten",
         "showSecret": "Geheimnis anzeigen",
         "hideSecret": "Geheimnis ausblenden",
-        "oauthImpact": "\u00c4nderungen an der OAuth-Konfiguration melden alle Benutzer ab, die diese Aktion verbunden hatten. Sie m\u00fcssen sich erneut authentifizieren.",
-        "nonOAuthHint": "Benutzeranmeldedaten werden pro Person verwaltet. Nutzen Sie \u201eAuthentifizieren\u201c, damit Ihr Konto diese Aktion verwenden kann.",
+        "oauthImpact": "Änderungen an der OAuth-Konfiguration melden alle Benutzer ab, die diese Aktion verbunden hatten. Sie müssen sich erneut authentifizieren.",
+        "nonOAuthHint": "Benutzeranmeldedaten werden pro Person verwaltet. Nutzen Sie „Authentifizieren“, damit Ihr Konto diese Aktion verwenden kann.",
         "dangerZone": "Gefahrenbereich",
-        "deleteInstance": "Instanz l\u00f6schen",
+        "deleteInstance": "Instanz löschen",
         "deleteDescription": "Diese {{name}}-Instanz dauerhaft aus der Organisation entfernen.",
-        "deleteConfirmTitle": "Diese Instanz l\u00f6schen?",
-        "deleteConfirmBody": "Dadurch wird die Organisationsinstanz entfernt. Benutzer k\u00f6nnen sich nicht mehr dagegen authentifizieren. Dies kann nicht r\u00fcckg\u00e4ngig gemacht werden.",
-        "deleteSuccess": "Instanz gel\u00f6scht.",
-        "saveSuccess": "\u00c4nderungen gespeichert.",
-        "saveDeauthNotice": "Gespeichert. {{count}} Benutzer wurde(n) abgemeldet und m\u00fcssen sich erneut authentifizieren.",
+        "deleteConfirmTitle": "Diese Instanz löschen?",
+        "deleteConfirmBody": "Dadurch wird die Organisationsinstanz entfernt. Benutzer können sich nicht mehr dagegen authentifizieren. Dies kann nicht rückgängig gemacht werden.",
+        "deleteSuccess": "Instanz gelöscht.",
+        "saveSuccess": "Änderungen gespeichert.",
+        "saveDeauthNotice": "Gespeichert. {{count}} Benutzer wurde(n) abgemeldet und müssen sich erneut authentifizieren.",
         "missingInstance": "Dieser Aktion fehlt eine Instanz-ID. Versuchen Sie, die Seite zu aktualisieren.",
         "copyFailed": "In die Zwischenablage kopieren ist fehlgeschlagen."
       },
@@ -1102,15 +1129,15 @@
     "archivedChats": {
       "title": "Archivierte Chats",
       "emptyList": "Keine archivierten Chats",
-      "selectPrompt": "W\u00e4hlen Sie einen archivierten Chat zur Vorschau",
+      "selectPrompt": "Wählen Sie einen archivierten Chat zur Vorschau",
       "restore": "Wiederherstellen",
-      "permanentlyDelete": "Endg\u00fcltig l\u00f6schen",
-      "deleteConfirmMessage": "Dieser Chat wird dauerhaft aus Pipeshub gel\u00f6scht. Gemeinsamer Zugriff geht verloren.",
+      "permanentlyDelete": "Endgültig löschen",
+      "deleteConfirmMessage": "Dieser Chat wird dauerhaft aus Pipeshub gelöscht. Gemeinsamer Zugriff geht verloren.",
       "restoreSuccess": "Chat wiederhergestellt",
       "restoreError": "Chat konnte nicht wiederhergestellt werden",
-      "deleteSuccess": "Erfolgreich gel\u00f6scht",
-      "deleteSuccessDescription": "Ihr Chat wurde dauerhaft gel\u00f6scht",
-      "deleteError": "Chat konnte nicht gel\u00f6scht werden"
+      "deleteSuccess": "Erfolgreich gelöscht",
+      "deleteSuccessDescription": "Ihr Chat wurde dauerhaft gelöscht",
+      "deleteError": "Chat konnte nicht gelöscht werden"
     },
     "general": {
       "subtitle": "Your company general information",
@@ -1211,15 +1238,15 @@
       }
     },
     "authentication": {
-      "loading": "Loading authentication settings\u2026",
+      "loading": "Loading authentication settings…",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
       "methodsSubtitle": "Select the authentication method users will use to sign in",
       "policyHeading": "Authentication Method Policy",
       "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
-      "smtpWarning": "\u26a0 SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace \u2192 Mail.",
-      "loadingConfig": "Loading configuration\u2026",
+      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
+      "loadingConfig": "Loading configuration…",
       "toasts": {
         "configureSuccess": "{{label}} Auth successfully configured!",
         "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
@@ -1250,9 +1277,9 @@
     },
     "connectors": {
       "subtitle": "Connect and manage integrations with external services",
-      "loadingConfig": "Loading configuration\u2026",
-      "loadingConnectors": "Loading connectors\u2026",
-      "loadingInstances": "Loading instances\u2026",
+      "loadingConfig": "Loading configuration…",
+      "loadingConnectors": "Loading connectors…",
+      "loadingInstances": "Loading instances…",
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
@@ -1293,7 +1320,7 @@
       },
       "selectRecords": {
         "title": "Select Records",
-        "loading": "Loading records\u2026",
+        "loading": "Loading records…",
         "emptyState": "No records available",
         "addRecords": "Add Records"
       },
@@ -1376,7 +1403,7 @@
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
-      "loading": "Loading bots\u2026",
+      "loading": "Loading bots…",
       "defaultAssistant": "Default Assistant",
       "createBot": "Create Bot",
       "emptyTitle": "No Bots",
@@ -1406,7 +1433,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1419,6 +1449,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1433,7 +1489,7 @@
       "errors": {
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
-        "portInvalid": "Enter a valid port (1\u201365535)",
+        "portInvalid": "Enter a valid port (1–65535)",
         "fromEmailRequired": "From email is required"
       },
       "configPanel": {
@@ -1452,7 +1508,32 @@
         "usernamePlaceholder": "Enter SMTP username",
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
-        "passwordPlaceholder": "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+        "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1471,11 +1552,21 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
-      "loading": "Loading web search settings\u2026",
+      "loading": "Loading web search settings…",
       "title": "Web Search Configuration",
       "subtitle": "Configure web search providers for the chatbot to use when searching the web",
       "methodsHeading": "Different Web Search Methods",
@@ -1494,7 +1585,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1503,8 +1598,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1524,7 +1628,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1534,6 +1639,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1544,10 +1651,10 @@
         "validityNote": "Please check if the new company email address is valid.",
         "emailLabel": "Enter the new email address",
         "emailPlaceholder": "eg: name@company.com",
-        "validating": "Validating\u2026",
+        "validating": "Validating…",
         "validate": "Validate",
         "validSuccess": "{{email}} is valid. Please proceed to receive the verification link.",
-        "sending": "Sending\u2026",
+        "sending": "Sending…",
         "sendVerification": "Send verification link"
       },
       "changePassword": {
@@ -1590,7 +1697,12 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      }
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
     }
   },
   "filePreview": {
@@ -1601,20 +1713,20 @@
     "agentName": "Agentenname",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
     "serviceAccountBadge": "Servicemitarbeiter",
-    "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff f\u00fcr alle Nutzer.",
+    "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff für alle Nutzer.",
     "convertToServiceAccount": "In Service-Agent umwandeln",
-    "convertToServiceAccountTooltip": "Dauerhaft umwandeln \u2014 dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht r\u00fckg\u00e4ngig gemacht werden.",
+    "convertToServiceAccountTooltip": "Dauerhaft umwandeln — dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht rükgängig gemacht werden.",
     "convertToServiceAccountTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent mit agentbezogenen Toolsets und organisationsweitem Wissenszugriff.",
     "createAsServiceAccount": "Service-Agent",
     "createAsServiceAccountTooltip": "Als Service-Agent mit eigenen Toolset-Anmeldedaten und vollem Wissenszugriff erstellen.",
-    "agentActionsMenuAria": "Agentenmen\u00fc",
+    "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
     "shareWithOrg": "Mit allen teilen",
     "shareWithOrgTooltip": "Diesen Agenten mit allen in Ihrer Organisation teilen.",
     "serviceAccountShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
-    "saving": "Wird gespeichert\u2026",
-    "saveChanges": "\u00c4nderungen speichern",
+    "saving": "Wird gespeichert…",
+    "saveChanges": "Änderungen speichern",
     "createAgent": "Agenten erstellen",
     "nameRequired": "Name ist erforderlich",
     "saveAsServiceAccountFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
@@ -1641,8 +1753,8 @@
     "noCollections": "Keine Sammlungen verfügbar",
     "collapse": "Einklappen",
     "expand": "Ausklappen",
-    "serviceAccountCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schl\u00fcssel-Symbol in der Palette.",
-    "serviceAccountConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schl\u00fcssel-Symbol in der Palette.",
+    "serviceAccountCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
+    "serviceAccountConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
     "agentUpdated": "Agent aktualisiert",
     "agentCreated": "Agent erstellt",
     "coreNodeTitle": "Agent",
@@ -1697,37 +1809,37 @@
     "svcAcctNextStepsLabel": "Nächste Schritte:",
     "svcAcctConvertTitle": "In Service-Agent umwandeln",
     "svcAcctCreateTitle": "Service-Agent erstellen",
-    "svcAcctConvertDesc": "Dieser Agent wird ein gemeinsamer Service-Agent: organisationsweit verf\u00fcgbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschr\u00e4nkt sich auf das, was Sie im Ablauf anbinden.",
-    "svcAcctCreateDesc": "Sie erstellen einen gemeinsamen Service-Agenten: organisationsweit verf\u00fcgbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschr\u00e4nkt sich auf das, was Sie im Ablauf anbinden.",
+    "svcAcctConvertDesc": "Dieser Agent wird ein gemeinsamer Service-Agent: organisationsweit verfügbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden.",
+    "svcAcctCreateDesc": "Sie erstellen einen gemeinsamen Service-Agenten: organisationsweit verfügbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden.",
     "svcAcctConvertLabel": "In Service-Agent umwandeln",
     "svcAcctCreateLabel": "Service-Agent erstellen",
-    "svcAcctConvertBusy": "Wird umgewandelt\u2026",
-    "svcAcctCreateBusy": "Agent wird erstellt\u2026",
+    "svcAcctConvertBusy": "Wird umgewandelt…",
+    "svcAcctCreateBusy": "Agent wird erstellt…",
     "svcAcctAgentLabel": "Agent",
     "svcAcctUnnamed": "(unbenannt)",
     "svcAcctKnowledgeTitle": "Wissensquellen",
-    "svcAcctKnowledgeNote1": "Verwendet werden nur Wissensquellen, die Sie im Builder anbinden\u2014nicht der gesamte Arbeitsbereich. Suche und Antworten nutzen Ihre Berechtigungen als Person, die diesen Agenten gespeichert hat.",
-    "svcAcctKnowledgeNote2": "Benutzer in Ihrer Organisation k\u00f6nnen Antworten sehen, die aus Inhalten stammen, auf die Sie in diesen Quellen Zugriff haben\u2014auch wenn sie auf diese Inhalte selbst sonst keine Berechtigung h\u00e4tten.",
+    "svcAcctKnowledgeNote1": "Verwendet werden nur Wissensquellen, die Sie im Builder anbinden—nicht der gesamte Arbeitsbereich. Suche und Antworten nutzen Ihre Berechtigungen als Person, die diesen Agenten gespeichert hat.",
+    "svcAcctKnowledgeNote2": "Benutzer in Ihrer Organisation können Antworten sehen, die aus Inhalten stammen, auf die Sie in diesen Quellen Zugriff haben—auch wenn sie auf diese Inhalte selbst sonst keine Berechtigung hätten.",
     "svcAcctToolsetsTitle": "Toolsets nutzen die Anmeldedaten des Agenten",
-    "svcAcctToolsetsNote1": "Dieser Agent speichert eigene Anmeldedaten f\u00fcr jedes Toolset im Ablauf. Wenn jemand mit dem Agenten chattet, laufen Toolset-Aufrufe im Namen des Agenten mit diesen gespeicherten Anmeldedaten\u2014nicht mit der pers\u00f6nlichen Toolset-Anmeldung des jeweiligen Besuchers. Nutzen Sie das Schl\u00fcssel-Symbol in der linken Palette, um f\u00fcr jedes Toolset nach Abschluss hier Anmeldedaten zu verbinden oder zu aktualisieren.",
-    "svcAcctToolsetsNote2Convert": "Entfernen Sie vor der Umwandlung alle Toolset-Knoten auf der Arbeitsfl\u00e4che, die noch eine Anmeldung pro Benutzer nutzen. F\u00fcgen Sie sie danach wieder hinzu und legen Sie die Anmeldedaten f\u00fcr diesen Agenten mit dem Schl\u00fcssel-Symbol fest.",
+    "svcAcctToolsetsNote1": "Dieser Agent speichert eigene Anmeldedaten für jedes Toolset im Ablauf. Wenn jemand mit dem Agenten chattet, laufen Toolset-Aufrufe im Namen des Agenten mit diesen gespeicherten Anmeldedaten—nicht mit der persönlichen Toolset-Anmeldung des jeweiligen Besuchers. Nutzen Sie das Schlüssel-Symbol in der linken Palette, um für jedes Toolset nach Abschluss hier Anmeldedaten zu verbinden oder zu aktualisieren.",
+    "svcAcctToolsetsNote2Convert": "Entfernen Sie vor der Umwandlung alle Toolset-Knoten auf der Arbeitsfläche, die noch eine Anmeldung pro Benutzer nutzen. Fügen Sie sie danach wieder hinzu und legen Sie die Anmeldedaten für diesen Agenten mit dem Schlüssel-Symbol fest.",
     "svcAcctOrgTitle": "Zugriff in der Organisation",
-    "svcAcctOrgDesc": "Jede Person in Ihrer Organisation kann den Agenten finden, \u00f6ffnen und ausf\u00fchren. Es gibt keine separate private Kopie.",
-    "svcAcctRemoveToolsetsTitle": "Zuerst Toolset-Knoten von der Arbeitsfl\u00e4che entfernen",
-    "svcAcctRemoveToolsetsDesc": "Toolset-Knoten im Ablauf nutzen noch Anmeldedaten pro Benutzer und sind mit einem Service-Agenten nicht vereinbar. Entfernen Sie sie von der Arbeitsfl\u00e4che und dann {{action}} Sie den Agenten. F\u00fcgen Sie die Toolsets erneut hinzu und legen Sie mit dem Schl\u00fcssel-Symbol in der Palette Anmeldedaten auf Agentenebene fest.",
+    "svcAcctOrgDesc": "Jede Person in Ihrer Organisation kann den Agenten finden, öffnen und ausführen. Es gibt keine separate private Kopie.",
+    "svcAcctRemoveToolsetsTitle": "Zuerst Toolset-Knoten von der Arbeitsfläche entfernen",
+    "svcAcctRemoveToolsetsDesc": "Toolset-Knoten im Ablauf nutzen noch Anmeldedaten pro Benutzer und sind mit einem Service-Agenten nicht vereinbar. Entfernen Sie sie von der Arbeitsfläche und dann {{action}} Sie den Agenten. Fügen Sie die Toolsets erneut hinzu und legen Sie mit dem Schlüssel-Symbol in der Palette Anmeldedaten auf Agentenebene fest.",
     "svcAcctConvertAction": "konvertieren Sie",
     "svcAcctCreateAction": "erstellen Sie",
-    "svcAcctConfirmTitle": "Zum Fortfahren best\u00e4tigen",
-    "svcAcctAckKnowledge": "Ich verstehe, welches Wissen gilt, dass die Suche mit meinen Berechtigungen als Person l\u00e4uft, die diesen Agenten gespeichert hat, und dass Nutzer in meiner Organisation Antworten aus Inhalten sehen k\u00f6nnen, auf die ich in diesen Quellen Zugriff habe.",
-    "svcAcctAckToolsets": "Ich verstehe, dass Toolsets die f\u00fcr diesen Agenten gespeicherten Anmeldedaten (Schl\u00fcssel-Symbol in der Palette) verwenden und dass Nutzer bei Toolset-Aufrufen nicht ihre pers\u00f6nliche Toolset-Anmeldung verwenden.",
-    "svcAcctAckOrg": "Ich verstehe, dass dieser Agent f\u00fcr alle in meiner Organisation verf\u00fcgbar ist.",
-    "svcAcctCheckboxHintConvert": "Aktivieren Sie alle drei Kontrollk\u00e4stchen, um umzuwandeln.",
-    "svcAcctCheckboxHintCreate": "Aktivieren Sie alle drei Kontrollk\u00e4stchen, um zu erstellen.",
+    "svcAcctConfirmTitle": "Zum Fortfahren bestätigen",
+    "svcAcctAckKnowledge": "Ich verstehe, welches Wissen gilt, dass die Suche mit meinen Berechtigungen als Person läuft, die diesen Agenten gespeichert hat, und dass Nutzer in meiner Organisation Antworten aus Inhalten sehen können, auf die ich in diesen Quellen Zugriff habe.",
+    "svcAcctAckToolsets": "Ich verstehe, dass Toolsets die für diesen Agenten gespeicherten Anmeldedaten (Schlüssel-Symbol in der Palette) verwenden und dass Nutzer bei Toolset-Aufrufen nicht ihre persönliche Toolset-Anmeldung verwenden.",
+    "svcAcctAckOrg": "Ich verstehe, dass dieser Agent für alle in meiner Organisation verfügbar ist.",
+    "svcAcctCheckboxHintConvert": "Aktivieren Sie alle drei Kontrollkästchen, um umzuwandeln.",
+    "svcAcctCheckboxHintCreate": "Aktivieren Sie alle drei Kontrollkästchen, um zu erstellen.",
     "toolsetCredentialsTitle": "Agenten-Toolset-Anmeldedaten",
     "toolsetCredentialsBadge": "Service-Agent",
-    "toolsetCredentialsDesc": "Anmeldedaten gelten nur f\u00fcr diesen Agenten. Alle Aufrufe dieses Toolsets \u00fcber den Agenten verwenden diese Anmeldedaten.",
-    "loadingSchema": "Schema wird geladen\u2026",
-    "fillRequiredFields": "Bitte f\u00fcllen Sie alle Pflichtfelder aus.",
+    "toolsetCredentialsDesc": "Anmeldedaten gelten nur für diesen Agenten. Alle Aufrufe dieses Toolsets über den Agenten verwenden diese Anmeldedaten.",
+    "loadingSchema": "Schema wird geladen…",
+    "fillRequiredFields": "Bitte füllen Sie alle Pflichtfelder aus.",
     "fieldRequired": "{{field}} ist erforderlich",
     "oauthConnectedDesc": "OAuth ist für diesen Agenten verbunden. Nutzen Sie „Erneut verbinden“, um sich erneut anzumelden, oder „Verbindung trennen“, um diese Sitzung für diesen Agenten zu beenden.",
     "oauthPendingDesc": "Melden Sie sich in einem Popup mit OAuth an. Nachdem Sie fertig sind, erkennt dieser Dialog den Abschluss.",
@@ -1746,8 +1858,8 @@
     "disconnectOAuthDesc": "Dies beendet die OAuth-Sitzung für {{name}} auf diesem Agenten. Das Toolset bleibt zugewiesen, ist aber nicht authentifiziert, bis Sie sich erneut anmelden.",
     "disconnectOAuthProgress": "Verbindung wird getrennt…",
     "removeCredentials": "Anmeldedaten entfernen",
-    "savingCredentials": "Wird gespeichert\u2026",
-    "updateCredentials": "\u00c4nderungen speichern",
+    "savingCredentials": "Wird gespeichert…",
+    "updateCredentials": "Änderungen speichern",
     "saveCredentials": "Anmeldedaten speichern",
     "noCredentialsRequired": "Für dieses Toolset sind keine Anmeldedaten erforderlich.",
     "noCredentialFields": "Für diesen Authentifizierungstyp wurden keine Anmeldedatenfelder zurückgegeben. Wenn dies anhält, überprüfen Sie das Toolset-Registry-Schema.",

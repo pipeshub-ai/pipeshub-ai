@@ -23,7 +23,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
   const [btnHovered, setBtnHovered] = useState(false);
 
   return (
-    <SettingsSection title={t('workspace.profile.passwordSecurity')}>
+    <SettingsSection title={t('workspace.profile.passwordSecurity.title')}>
       <Flex align="center" justify="between" style={{ width: '100%' }}>
 
         {/* Left: icon + label + description */}
@@ -47,7 +47,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
               weight="medium"
               style={{ color: 'var(--gray-12)', display: 'block' }}
             >
-              Account Password
+              {t('workspace.profile.passwordSecurity.accountPassword')}
             </Text>
             <Text
               size="1"
@@ -59,7 +59,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
                 fontWeight: 300,
               }}
             >
-              Please follow the instructions in the email to finish setting your password
+              {t('workspace.profile.passwordSecurity.followEmailDescription')}
             </Text>
           </Box>
         </Flex>
@@ -84,7 +84,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
             transition: 'background-color 120ms ease',
           }}
         >
-          Change Password
+          {t('workspace.profile.passwordSecurity.changePassword')}
         </button>
 
       </Flex>

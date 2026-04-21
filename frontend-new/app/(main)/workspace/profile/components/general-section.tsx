@@ -50,12 +50,12 @@ export function GeneralSection({
 }: GeneralSectionProps) {
   const { t } = useTranslation();
   return (
-    <SettingsSection title={t('workspace.profile.general')}>
+    <SettingsSection title={t('workspace.profile.general.title')}>
 
       {/* Your Display Picture */}
       <SettingsRow
-        label={t('workspace.profile.fields.displayPicture')}
-        description={t('workspace.profile.fields.displayPictureHint')}
+        label={t('workspace.profile.general.avatarLabel')}
+        description={t('workspace.profile.general.avatarDescription')}
       >
         <AvatarUploadWidget
           src={avatarUrl}
@@ -67,10 +67,10 @@ export function GeneralSection({
       </SettingsRow>
 
       {/* Full Name */}
-      <SettingsRow label={t('workspace.profile.fields.fullName')} description={t('workspace.profile.fields.fullNameHint')}>
+      <SettingsRow label={t('workspace.profile.general.fullName')} description={t('workspace.profile.general.fullNameDescription')}>
         <Flex direction="column" gap="1">
           <TextField.Root
-            placeholder={t('workspace.profile.fields.fullNamePlaceholder')}
+            placeholder={t('workspace.profile.general.fullNamePlaceholder')}
             value={fullName}
             onChange={(e) => onFullNameChange(e.target.value)}
             color={fullNameError ? 'red' : undefined}
@@ -84,9 +84,9 @@ export function GeneralSection({
       </SettingsRow>
 
       {/* Designation */}
-      <SettingsRow label={t('workspace.profile.fields.designation')} description={t('workspace.profile.fields.designationHint')}>
+      <SettingsRow label={t('workspace.profile.general.designation')} description={t('workspace.profile.general.designationDescription')}>
         <TextField.Root
-          placeholder={t('workspace.profile.fields.designationPlaceholder')}
+          placeholder={t('workspace.profile.general.designationPlaceholder')}
           value={designation}
           onChange={(e) => onDesignationChange(e.target.value)}
         />
@@ -94,8 +94,8 @@ export function GeneralSection({
 
       {/* Company Email — read-only; Change Email logic ready but UI not implemented */}
       <SettingsRow
-        label={t('workspace.profile.fields.email')}
-        description={t('workspace.profile.fields.emailHint')}
+        label={t('workspace.profile.general.companyEmail')}
+        description={t('workspace.profile.general.companyEmailDescription')}
       >
         <TextField.Root
           value={emailLoading ? t('common.loading') : email}
