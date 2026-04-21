@@ -139,6 +139,8 @@ _CITATION_SYSTEM_RULES = (
     "- Cite by embedding the block's Citation ID as a markdown link: [source](ref1).\n"
     "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
     "- Do NOT manually assign citation numbers — the system numbers them automatically.\n"
+    "- Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item.\n"
+    "- Do NOT repeat the same Citation ID within the same paragraph or group. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location rather than repeating it on every item.\n"
     "- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.\n"
 )
 

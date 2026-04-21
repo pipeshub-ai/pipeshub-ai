@@ -7061,7 +7061,7 @@ def _build_tool_results_context(
         )
     elif has_retrieval:
         parts.append(
-            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](ref1). The system assigns citation numbers automatically.\n"
+            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with citations [source](ref1). The system assigns citation numbers automatically.\n"
         )
     else:
         parts.append(
@@ -7092,7 +7092,7 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "Return ONLY JSON matching MODE 3:\n"
-            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
+            "{\"answer\": \"...with [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
@@ -7100,7 +7100,7 @@ def _build_tool_results_context(
     elif has_retrieval:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
+            "{\"answer\": \"...with [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
         )
@@ -7901,7 +7901,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
-   - For retrieval/internal knowledge: Include inline citations as markdown links [source](ref1) after key facts. Limit to the most relevant citations — do NOT cite every sentence. The system assigns citation numbers automatically.
+   - For retrieval/internal knowledge: Include citations as markdown links [source](ref1). Limit to the most relevant citations — do NOT cite every sentence. The system assigns citation numbers automatically.
    - Store technical IDs in referenceData for follow-up queries.
 
 ## Execution Policy (MANDATORY)
@@ -8012,12 +8012,13 @@ to target. If unsure → search ALL sources.
 ## Citation Rules
 
 When you have internal knowledge from retrieval tools:
-1. Cite key facts inline: "Revenue grew 29% [source](ref5)." Focus on the most important claims — do NOT cite every sentence.
+1. Cite key facts: "Revenue grew 29% [source](ref5)." Focus on the most important claims — do NOT cite every sentence.
 2. Use the EXACT Citation ID from the context as a markdown link: [source](ref1). Do NOT manually number citations — the system assigns numbers automatically.
 3. One citation per markdown link. Do NOT club multiple Citation IDs in one link.
 4. Limit to the most relevant citations overall.
-5. Do NOT put citations at end of paragraph — inline after the specific fact
-6. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
+5. Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item.
+6. Do NOT repeat the same Citation ID within the same paragraph or group. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location rather than repeating it on every item.
+7. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
