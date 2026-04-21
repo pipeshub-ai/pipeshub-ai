@@ -243,6 +243,11 @@ body {
 .radix-themes [role="menuitem"][data-highlighted] {
   background-color: var(--olive-6) !important;
 }
+
+/* Red hover for destructive (delete) menu items */
+.radix-themes [role="menuitem"][data-accent-color="red"][data-highlighted] {
+  background-color: var(--red-3) !important;
+}
 .rt-DropdownMenuViewport {
   padding: 4px !important;
   border-radius: 3px !important;

@@ -58,7 +58,7 @@ export function ChatItemMenu({
           style={{
             appearance: 'none',
             border: 'none',
-            background: isMeatballHovered ? 'var(--olive-5)' : 'transparent',
+            background: isMeatballHovered || isOpen ? 'var(--olive-5)' : 'transparent',
             borderRadius: 'var(--radius-1)',
             padding: 2,
             display: 'flex',
@@ -84,9 +84,9 @@ export function ChatItemMenu({
               onRename();
             }}
           >
-            <Flex align="center" gap="2">
+            <Flex align="center" gap="1">
               <MaterialIcon name="drive_file_rename_outline" size={16} color="var(--slate-11)" />
-              <Text size="2">{t('chat.rename')}</Text>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.rename')}</Text>
             </Flex>
           </DropdownMenu.Item>
         )}
@@ -97,9 +97,9 @@ export function ChatItemMenu({
               onArchive();
             }}
           >
-            <Flex align="center" gap="2">
+            <Flex align="center" gap="1">
               <MaterialIcon name="archive" size={16} color="var(--slate-11)" />
-              <Text size="2">{t('chat.archive')}</Text>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.archive')}</Text>
             </Flex>
           </DropdownMenu.Item>
         )}
@@ -110,7 +110,7 @@ export function ChatItemMenu({
             onDelete();
           }}
         >
-          <Flex align="center" gap="2">
+          <Flex align="center" gap="1">
             <MaterialIcon name="delete" size={16} color="var(--red-11)" />
             <Text size="2" style={{ color: 'var(--red-11)' }}>{t('chat.deleteChat')}</Text>
           </Flex>
