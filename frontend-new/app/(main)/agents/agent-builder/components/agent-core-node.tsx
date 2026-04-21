@@ -69,6 +69,14 @@ function getModelLabel(cfg: Record<string, unknown> | undefined): string {
   return ((cfg.modelName as string) || '').trim();
 }
 
+/** Prefer configured instance name so multiple toolsets of the same type stay distinguishable. */
+function toolsetConnectionChipLabel(n: FlowNodeData): string {
+  const c = (n.config || {}) as Record<string, unknown>;
+  const inst = String(c.instanceName ?? '').trim();
+  const disp = String(c.displayName ?? '').trim();
+  return normalizeDisplayName(inst || disp || n.label);
+}
+
 type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets';
 
 function inboundHandleForEdge(
@@ -492,7 +500,7 @@ export function AgentCoreNode({
               <ConnectedChips
                 nodes={connected.toolsets}
                 max={MAX_VISIBLE.toolsets}
-                labelOf={(n) => (n.config?.displayName as string) || n.label}
+                labelOf={toolsetConnectionChipLabel}
                 chipIconKind="toolset"
               />
             ) : (

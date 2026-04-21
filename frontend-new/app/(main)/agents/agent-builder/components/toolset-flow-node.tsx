@@ -53,7 +53,16 @@ export function ToolsetFlowNode({
   const chrome = useMemo(() => getFlowNodeChrome(data.type), [data.type]);
 
   const cfg = (data.config || {}) as Record<string, unknown>;
-  const displayName = (cfg.displayName as string) || data.label;
+  const instanceName = String(cfg.instanceName ?? '').trim();
+  const productLabel = String(cfg.displayName ?? '').trim() || String(cfg.toolsetName ?? '').trim();
+  const primaryTitle = instanceName
+    ? normalizeDisplayName(instanceName)
+    : normalizeDisplayName(productLabel || data.label);
+  const productLine = productLabel ? normalizeDisplayName(productLabel) : '';
+  const secondarySubtitle =
+    instanceName && productLine && primaryTitle !== productLine
+      ? productLine
+      : t('agentBuilder.toolsetNodeSubtitle');
 
   const tools = (cfg.tools as ToolsetFlowTool[]) || [];
   const availableTools = useMemo(() => {
@@ -177,10 +186,10 @@ export function ToolsetFlowNode({
                 weight="medium"
                 style={{ color: 'var(--agent-flow-text)', lineHeight: '20px', fontSize: 14 }}
               >
-                {normalizeDisplayName(displayName)}
+                {primaryTitle}
               </Text>
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', lineHeight: '16px' }}>
-                {t('agentBuilder.toolsetNodeSubtitle')}
+                {secondarySubtitle}
               </Text>
             </Flex>
           </Flex>

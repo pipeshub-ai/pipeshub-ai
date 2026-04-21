@@ -9,7 +9,7 @@ import {
   ConversationsListResponse,
   ChatSlot,
   MAX_SLOTS,
-  SearchResultItem
+  SearchResultItem,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
@@ -145,8 +145,36 @@ interface ChatState {
   agentConversationsError: string | null;
   isAgentMoreChatsPanelOpen: boolean;
   agentMoreChatsPagination: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null;
-  /** Tool fullNames for agent SSE payloads (from GET /agents/:id) */
-  agentStreamTools: string[];
+  /**
+   * Selected tool `fullName`s for the next agent stream. `null` = all tools (runtime expands
+   * to `agentToolCatalogFullNames` in JSON `tools`). `[]` = none. Non-empty = explicit subset.
+   */
+  agentStreamTools: string[] | null;
+  /** Every tool fullName from the loaded agent — drives the Actions tab and “select all”. */
+  agentToolCatalogFullNames: string[];
+  /** Connector rows scoped to the agent (for Connectors tab labels + icons). */
+  agentChatConnectors: Array<{ id: string; label: string; connectorKind: string }>;
+  /** Distinct KB / collection ids the agent can use (Collections tab). */
+  agentChatKbIds: string[];
+  /** Agent KB rows with labels from the knowledge graph (record groups). */
+  agentKnowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+  /** Toolsets for grouped Actions UI (`label` prefers per-instance `instanceName`, else `displayName` / `name`). */
+  agentChatToolGroups: Array<{
+    label: string;
+    fullNames: string[];
+    /** Maps tool `fullName` → API description (for search / optional UI). */
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    iconPath?: string;
+  }>;
+  /** Default knowledge scope derived from the agent graph (used to reset UI). */
+  agentKnowledgeDefaults: { apps: string[]; kb: string[] };
+  /**
+   * Optional override of connector / collection ids for agent streams. `null` means “use
+   * `agentKnowledgeDefaults`” (same as the panel when nothing is narrowed); runtime still
+   * sends explicit `filters` built from defaults or this scope.
+   */
+  agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
@@ -222,7 +250,24 @@ interface ChatState {
   closeAgentMoreChatsPanel: () => void;
   setAgentMoreChatsPagination: (p: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null) => void;
   appendAgentConversations: (convs: Conversation[]) => void;
-  setAgentStreamTools: (tools: string[]) => void;
+  setAgentStreamTools: (tools: string[] | null) => void;
+  /** Reset catalog + knowledge UI when GET /agents/:id succeeds (or null to clear). */
+  hydrateAgentChatResources: (payload: {
+    toolCatalogFullNames: string[];
+    toolGroups: Array<{
+      /** Primary row title — instance label when present (matches agent builder). */
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      iconPath?: string;
+    }>;
+    connectors: Array<{ id: string; label: string; connectorKind: string }>;
+    kbIds: string[];
+    knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+    knowledgeDefaults: { apps: string[]; kb: string[] };
+  } | null) => void;
+  setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
@@ -291,7 +336,20 @@ const initialState = {
   agentConversationsError: null as string | null,
   isAgentMoreChatsPanelOpen: false,
   agentMoreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
-  agentStreamTools: [] as string[],
+  agentStreamTools: null as string[] | null,
+  agentToolCatalogFullNames: [] as string[],
+  agentChatConnectors: [] as Array<{ id: string; label: string; connectorKind: string }>,
+  agentChatKbIds: [] as string[],
+  agentKnowledgeCollectionRows: [] as Array<{ id: string; name: string; sourceType?: string }>,
+  agentChatToolGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    iconPath?: string;
+  }>,
+  agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
+  agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
 
@@ -502,7 +560,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentConversationsError: null,
           isAgentMoreChatsPanelOpen: false,
           agentMoreChatsPagination: null,
-          agentStreamTools: [],
+          agentStreamTools: null,
+          agentToolCatalogFullNames: [],
+          agentChatConnectors: [],
+          agentChatKbIds: [],
+          agentKnowledgeCollectionRows: [],
+          agentChatToolGroups: [],
+          agentKnowledgeDefaults: { apps: [], kb: [] },
+          agentKnowledgeScope: null,
           agentContextDisplayName: null,
           agentContextAccess: null,
           isAgentsSidebarOpen: false,
@@ -518,7 +583,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentConversationsError: null,
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        agentStreamTools: [],
+        agentStreamTools: null,
+        agentToolCatalogFullNames: [],
+        agentChatConnectors: [],
+        agentChatKbIds: [],
+        agentKnowledgeCollectionRows: [],
+        agentChatToolGroups: [],
+        agentKnowledgeDefaults: { apps: [], kb: [] },
+        agentKnowledgeScope: null,
         agentContextDisplayName: null,
         agentContextAccess: null,
         isAgentsSidebarOpen: false,
@@ -577,6 +649,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   setAgentStreamTools: (tools) => set({ agentStreamTools: tools }),
+
+  hydrateAgentChatResources: (payload) =>
+    set((state) =>
+      payload
+        ? {
+            agentToolCatalogFullNames: payload.toolCatalogFullNames,
+            agentChatToolGroups: payload.toolGroups,
+            agentChatConnectors: payload.connectors,
+            agentChatKbIds: payload.kbIds,
+            agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
+            agentKnowledgeDefaults: payload.knowledgeDefaults,
+            agentKnowledgeScope: null,
+            agentStreamTools: null,
+            collectionNamesCache: (() => {
+              const patch: Record<string, string> = {};
+              for (const r of payload.knowledgeCollectionRows) {
+                patch[r.id] = r.name;
+              }
+              return { ...state.collectionNamesCache, ...patch };
+            })(),
+          }
+        : {
+            agentToolCatalogFullNames: [],
+            agentChatToolGroups: [],
+            agentChatConnectors: [],
+            agentChatKbIds: [],
+            agentKnowledgeCollectionRows: [],
+            agentKnowledgeDefaults: { apps: [], kb: [] },
+            agentKnowledgeScope: null,
+            agentStreamTools: null,
+          }
+    ),
+
+  setAgentKnowledgeScope: (scope) => set({ agentKnowledgeScope: scope }),
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
@@ -788,7 +894,16 @@ if (typeof window !== 'undefined') {
     'pendingConversations', 'isMoreChatsPanelOpen', 'moreChatsSectionType', 'isAgentsSidebarOpen', 'moreChatsPagination',
     'agentSidebarAgentId', 'agentConversations', 'agentConversationsPagination',
     'isAgentConversationsLoading', 'agentConversationsError', 'isAgentMoreChatsPanelOpen', 'agentMoreChatsPagination',
-    'agentStreamTools', 'agentContextDisplayName', 'agentContextAccess',
+    'agentStreamTools',
+    'agentToolCatalogFullNames',
+    'agentChatConnectors',
+    'agentChatKbIds',
+    'agentKnowledgeCollectionRows',
+    'agentChatToolGroups',
+    'agentKnowledgeDefaults',
+    'agentKnowledgeScope',
+    'agentContextDisplayName',
+    'agentContextAccess',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'collectionNamesCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',

@@ -80,7 +80,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         AgentsApi.getAgent(agentId),
         AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: AGENT_CONVERSATIONS_PAGE_SIZE }),
       ]);
-      setAgentStreamTools(agentRes.toolFullNames);
+      setAgentStreamTools(null);
       setAgentContextAccess(
         agentRes.agent ? getAgentSidebarRowMenuAccess(agentRes.agent) : null,
       );
@@ -90,7 +90,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       setAgentConversationsError(t('chat.failedToLoad'));
       setAgentConversations([]);
       setAgentConversationsPagination(null);
-      setAgentStreamTools([]);
+      setAgentStreamTools(null);
       setAgentContextAccess(null);
     } finally {
       setIsAgentConversationsLoading(false);

@@ -110,8 +110,12 @@ export interface AgentToolDefinition {
 export interface AgentToolset {
   _key: string;
   displayName: string;
+  /** Optional per-instance label (e.g. sidebar instance name) — distinct from integration `name`. */
+  instanceName?: string;
   instanceId: string;
   name: string;
+  /** Optional branded icon URL/path from the API (same convention as agent builder). */
+  iconPath?: string;
   selectedTools: unknown[] | null;
   tools: AgentToolDefinition[];
   type: string;
