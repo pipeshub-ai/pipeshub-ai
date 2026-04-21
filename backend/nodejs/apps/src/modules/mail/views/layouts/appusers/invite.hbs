@@ -1,48 +1,87 @@
 <!DOCTYPE html>
-
 <html>
   {{>head}}
   <main>
     <body>
-      <table
- {{{containerstyle}}}
-      >
+      <table {{{containerstyle}}}>
         <tr>
           <td>{{> header}}</td>
         </tr>
         <tr>
           <td>
-            <table
-             class="mobile-width"
- {{{bodytablestyle}}}
-            >
+            <table class='mobile-width' {{{bodytablestyle}}}>
               <tr>
-                <td>
-                  <div {{{divstyle}}}>
-                    <p>Dear User,</p>
-                    <p>
-                      You are invited by {{invitee}} to join {{orgName}} platform
-                    </p>
-                    <br />
-                    <p>
-                      Welcome aboard <br />
-                      Click the button below to start using the platform.
-                    </p>
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style='
+                      font-size: 20px;
+                      font-weight: 500;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    '
+                  >
+                    <strong style='font-weight: 700;'>{{invitee}}</strong>
+                    invited you to join
+                    <strong style='font-weight: 700;'>{{orgName}}</strong>
+                    on PipesHub
                   </div>
-
-                  <div {{{divstyle}}}>
-                    <p {{{pstyle}}}>
-                      <a href= {{link}} target="_blank">
-                        <button {{{buttonstyle}}}>Click to Login</button>
-                      </a>
-                    </p>
+                  <div
+                    style='
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 40px 0;
+                    '
+                  >
+                    You&rsquo;ll be able to access shared knowledge, search
+                    across tools, and collaborate with your team.
+                  </div>
+                  <div style='margin: 0 0 40px 0;'>
+                    <a
+                      href='{{link}}'
+                      target='_blank'
+                      style="
+                        display: inline-block;
+                        background-color: #006949;
+                        color: #ffffff;
+                        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                        font-size: 16px;
+                        font-weight: 500;
+                        line-height: 24px;
+                        text-decoration: none;
+                        padding: 8px 16px;
+                        border-radius: 3px;
+                      "
+                    >Accept invitation</a>
+                  </div>
+                  <div
+                    style='
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                    '
+                  >
+                    If you have any questions while you&rsquo;re getting
+                    started, reach out to us at
+                    <a
+                      href='mailto:support@pipeshub.com'
+                      style='color: #1155cc; text-decoration: none;'
+                    >support@pipeshub.com</a>.
                   </div>
                 </td>
               </tr>
             </table>
           </td>
         </tr>
-
         <tr>
           <td>{{> footer}}</td>
         </tr>

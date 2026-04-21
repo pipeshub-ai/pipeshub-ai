@@ -6,10 +6,8 @@ export const addStyling =( templateData:Record<string,any>) => {
         cellpadding="0"
         align="center"
         valign="middle"`;
-  const bodytablestyle = `  style="border: 0; border-spacing: 0; font-size: 13px; color: #333; border-collapse: collapse; overflow: hidden; margin: 0 auto; border-color: #b3b3b3; border: 3; width:560px ;
-	max-width: 560px; background-color: #f5f5f5; padding: 15px;"
+  const bodytablestyle = `  style="border: 0; border-spacing: 0; font-size: 13px; color: #333; border-collapse: collapse; overflow: hidden; margin: 0 auto; width: 560px; max-width: 560px; background-color: #ffffff;"
               class="mobile-width"
-               
               cellspacing="0"
               cellpadding="0"
               align="center"
