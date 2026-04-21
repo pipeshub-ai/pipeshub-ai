@@ -16314,6 +16314,43 @@ class Neo4jProvider(IGraphDBProvider):
             )
             agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
 
+            # Get linked MCP servers with their tools
+            mcp_server_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            mcp_tool_label = collection_to_label(CollectionNames.AGENT_MCP_TOOLS.value)
+            agent_has_mcp_server_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_server_has_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+
+            mcp_servers_query = f"""
+            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_mcp_server_rel}]->(ms:{mcp_server_label})
+            OPTIONAL MATCH (ms)-[tr:{mcp_server_has_tool_rel}]->(tool:{mcp_tool_label})
+            WITH agent, ms, collect(DISTINCT CASE
+                WHEN tool IS NOT NULL THEN {{
+                    _key: tool.id,
+                    name: tool.name,
+                    namespacedName: tool.namespacedName,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema
+                }}
+                ELSE null
+            END) AS tools_raw
+            WITH agent, ms, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+            RETURN {{
+                _key: ms.id,
+                name: ms.name,
+                displayName: ms.displayName,
+                type: ms.type,
+                instanceId: ms.instanceId,
+                selectedTools: ms.selectedTools,
+                tools: tools
+            }} AS mcpServer
+            """
+            mcp_servers_result = await self.client.execute_query(
+                mcp_servers_query,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            agent["mcpServers"] = [r["mcpServer"] for r in mcp_servers_result] if mcp_servers_result else []
+
             # Get linked knowledge with filters
             knowledge_query = f"""
             MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})

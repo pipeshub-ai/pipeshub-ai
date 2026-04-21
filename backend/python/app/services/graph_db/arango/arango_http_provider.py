@@ -18416,6 +18416,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
+            // Get linked MCP servers with their tools
+            LET linked_mcp_servers = (
+                FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                    FILTER edge._from == agent_path
+                    LET mcp_server = DOCUMENT(edge._to)
+                    FILTER mcp_server != null
+
+                    LET mcp_tools = (
+                        FOR tool_edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                            FILTER tool_edge._from == edge._to
+                            LET tool = DOCUMENT(tool_edge._to)
+                            FILTER tool != null
+                            RETURN {{
+                                _key: tool._key,
+                                name: tool.name,
+                                namespacedName: tool.namespacedName,
+                                description: tool.description,
+                                inputSchema: tool.inputSchema
+                            }}
+                    )
+
+                    RETURN {{
+                        _key: mcp_server._key,
+                        name: mcp_server.name,
+                        displayName: mcp_server.displayName,
+                        type: mcp_server.type,
+                        instanceId: mcp_server.instanceId,
+                        selectedTools: mcp_server.selectedTools,
+                        tools: mcp_tools
+                    }}
+            )
+
             // shareWithOrg: when org_id is provided match the specific org node;
             // when org_id is absent check whether any Orgs collection node has a
             // permission edge to this agent (source collection check, not type field)
@@ -18439,6 +18471,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
+                mcpServers: linked_mcp_servers,
                 knowledge: linked_knowledge,
                 shareWithOrg: share_with_org
             }})

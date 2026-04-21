@@ -18,8 +18,14 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   loadMoreToolsets,
   toolsetsHasMore,
   toolsetsLoadingMore,
+  mcpServers,
+  refreshMcpServers,
+  loadMoreMcpServers,
+  mcpServersHasMore,
+  mcpServersLoadingMore,
   isBusiness,
   activeToolsetTypes = [],
+  activeMcpServerTypes = [],
   nodes,
   edges,
   onNodesChange,
@@ -70,8 +76,14 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
         loadMoreToolsets={loadMoreToolsets}
         toolsetsHasMore={toolsetsHasMore}
         toolsetsLoadingMore={toolsetsLoadingMore}
+        mcpServers={mcpServers}
+        refreshMcpServers={refreshMcpServers}
+        loadMoreMcpServers={loadMoreMcpServers}
+        mcpServersHasMore={mcpServersHasMore}
+        mcpServersLoadingMore={mcpServersLoadingMore}
         isBusiness={isBusiness}
         activeToolsetTypes={activeToolsetTypes}
+        activeMcpServerTypes={activeMcpServerTypes}
         isServiceAccount={isServiceAccount}
         agentKey={agentKey}
         onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}

@@ -32,6 +32,7 @@ import {
   groupToolsByConnectorType,
 } from './sidebar/index';
 import { SidebarToolsetsSection } from './sidebar/sidebar-toolsets-section';
+import { SidebarMcpServersSection } from './sidebar/sidebar-mcp-servers-section';
 import { SidebarSkeleton } from '../skeleton-loader';
 
 interface FlowBuilderSidebarProps {
@@ -49,6 +50,13 @@ interface FlowBuilderSidebarProps {
   toolsetsLoadingMore: boolean;
   isBusiness: boolean;
   activeToolsetTypes?: string[];
+  // MCP Servers
+  mcpServers?: any[];
+  refreshMcpServers?: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  loadMoreMcpServers?: () => Promise<void>;
+  mcpServersHasMore?: boolean;
+  mcpServersLoadingMore?: boolean;
+  activeMcpServerTypes?: string[];
   // Service account support
   isServiceAccount?: boolean;
   agentKey?: string;
@@ -70,7 +78,12 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   toolsetsLoadingMore,
   isBusiness,
   activeToolsetTypes = [],
-  // userId is kept for backward compat but unused (toolsets are passed pre-loaded)
+  mcpServers = [],
+  refreshMcpServers,
+  loadMoreMcpServers,
+  mcpServersHasMore = false,
+  mcpServersLoadingMore = false,
+  activeMcpServerTypes = [],
   isServiceAccount = false,
   agentKey,
   onManageAgentToolsetCredentials,
@@ -82,6 +95,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     'LLM Models': false,
     Knowledge: false,
     Tools: true,
+    'MCP Servers': true,
   });
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
 
@@ -232,6 +246,11 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       icon: CATEGORY_ICONS.processing,
       categories: ['tools', 'connectors'],
     },
+    {
+      name: 'MCP Servers',
+      icon: CATEGORY_ICONS.processing,
+      categories: ['mcp-servers'],
+    },
   ];
 
   const isDark = theme.palette.mode === 'dark';
@@ -306,6 +325,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
               const hasItems =
                 config.name === 'Tools'
                   ? Object.keys(toolsGroupedByConnectorType).length > 0
+                  : config.name === 'MCP Servers'
+                  ? mcpServers.length > 0
                   : categoryTemplates.length > 0;
 
               return (
@@ -370,6 +391,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                             ? Object.keys(toolsGroupedByConnectorType).length
                             : config.name === 'Knowledge'
                             ? knowledgeCount
+                            : config.name === 'MCP Servers'
+                            ? mcpServers.length
                             : categoryTemplates.length}
                         </Typography>
                       )}
@@ -405,6 +428,21 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         isServiceAccount={isServiceAccount}
                         agentKey={agentKey}
                         onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
+                      />
+                    ) : config.name === 'MCP Servers' ? (
+                      <SidebarMcpServersSection
+                        expandedApps={expandedApps}
+                        onAppToggle={handleAppToggle}
+                        mcpServers={mcpServers}
+                        refreshMcpServers={refreshMcpServers || (async () => {})}
+                        onSearch={(q) => refreshMcpServers?.(agentKey, isServiceAccount, q)}
+                        onLoadMore={loadMoreMcpServers || (async () => {})}
+                        hasMore={mcpServersHasMore}
+                        loadingMore={mcpServersLoadingMore}
+                        loading={loading}
+                        activeMcpServerTypes={activeMcpServerTypes}
+                        isServiceAccount={isServiceAccount}
+                        agentKey={agentKey}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>

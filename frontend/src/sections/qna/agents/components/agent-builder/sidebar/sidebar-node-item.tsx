@@ -35,6 +35,31 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
     
     // For tools
     if (sectionType === 'tools') {
+      // Check if this is an MCP tool (has type === 'mcp-tool' in defaultConfig)
+      if (template.defaultConfig?.type === 'mcp-tool') {
+        const serverType = template.defaultConfig.serverType || '';
+        event.dataTransfer.setData('application/reactflow', `mcp-server-${serverType.toLowerCase()}`);
+        event.dataTransfer.setData('type', 'mcp-tool');
+        event.dataTransfer.setData('name', serverType);
+        event.dataTransfer.setData('displayName', template.defaultConfig.displayName?.split(' - ')[0] || serverType);
+        event.dataTransfer.setData('instanceId', template.defaultConfig.instanceId || '');
+        event.dataTransfer.setData('instanceName', template.defaultConfig.instanceName || '');
+        event.dataTransfer.setData('serverType', serverType);
+        event.dataTransfer.setData('iconPath', template.defaultConfig.iconPath || '');
+        event.dataTransfer.setData('isConfigured', String(template.defaultConfig.isConfigured ?? false));
+        event.dataTransfer.setData('isAuthenticated', String(template.defaultConfig.isAuthenticated ?? false));
+        event.dataTransfer.setData('mcpToolName', template.defaultConfig.toolName || '');
+        event.dataTransfer.setData('mcpNamespacedName', template.defaultConfig.namespacedName || '');
+        event.dataTransfer.setData('mcpToolDescription', template.defaultConfig.description || '');
+        if (template.defaultConfig.allTools) {
+          const allToolsStr = typeof template.defaultConfig.allTools === 'string'
+            ? template.defaultConfig.allTools
+            : JSON.stringify(template.defaultConfig.allTools);
+          event.dataTransfer.setData('tools', allToolsStr);
+        }
+        return;
+      }
+
       // Check if this is a toolset tool (has toolsetName in defaultConfig)
       if (template.defaultConfig?.toolsetName) {
         // This is a tool from a toolset

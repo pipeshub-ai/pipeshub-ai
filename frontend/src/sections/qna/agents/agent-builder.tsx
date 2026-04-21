@@ -260,6 +260,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadMoreToolsets,
     toolsetsHasMore,
     toolsetsLoadingMore,
+    mcpServers,
+    refreshMcpServers,
+    loadMoreMcpServers,
+    mcpServersHasMore,
+    mcpServersLoadingMore,
   } = useAgentBuilderData(editingAgent);
 
   const {isBusiness} = useAccountType();
@@ -664,6 +669,14 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           }
         }
 
+        // MCP server nodes must connect to agent's mcpServers handle
+        if (sourceType.startsWith('mcp-server-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'mcpServers') {
+            setError('MCP servers must be connected to the agent\'s MCP Servers handle');
+            return;
+          }
+        }
+
         // Individual tools can also connect directly to agent's toolsets handle
         if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
           if (connection.targetHandle !== 'toolsets') {
@@ -765,9 +778,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       event.stopPropagation();
       event.preventDefault();
 
-      // Don't open config dialog for toolset nodes
+      // Don't open config dialog for toolset or MCP server nodes
       if (node.data.type.startsWith('toolset-') || node.data.category === 'toolset') {
-        return; // Toolset nodes don't need config dialog
+        return;
+      }
+      if (node.data.type.startsWith('mcp-server-') || node.data.category === 'mcp-server') {
+        return;
       }
 
       if (node.data.type !== 'agent-core' && !configDialogOpen && !selectedNode) {
@@ -869,6 +885,29 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
                 config.toolsetName ||
                 (typeof node.data?.type === 'string'
                   ? node.data.type.replace(/^toolset-/, '')
+                  : '')
+              );
+            })
+            .filter(Boolean)
+            .map((value) => String(value))
+        )
+      ),
+    [nodes]
+  );
+
+  const activeMcpServerTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          nodes
+            .filter((node) => node.data?.type?.startsWith('mcp-server-'))
+            .map((node) => {
+              const config = (node.data?.config as Record<string, any>) || {};
+              return (
+                config.mcpServerName ||
+                config.name ||
+                (typeof node.data?.type === 'string'
+                  ? node.data.type.replace(/^mcp-server-/, '')
                   : '')
               );
             })
@@ -987,8 +1026,16 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         loadMoreToolsets={loadMoreToolsets}
         toolsetsHasMore={toolsetsHasMore}
         toolsetsLoadingMore={toolsetsLoadingMore}
+        mcpServers={mcpServers}
+        refreshMcpServers={(agentKey?: string, svcAccount?: boolean, search?: string) =>
+          refreshMcpServers(agentKey, svcAccount, search)
+        }
+        loadMoreMcpServers={loadMoreMcpServers}
+        mcpServersHasMore={mcpServersHasMore}
+        mcpServersLoadingMore={mcpServersLoadingMore}
         isBusiness={isBusiness}
         activeToolsetTypes={activeToolsetTypes}
+        activeMcpServerTypes={activeMcpServerTypes}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
