@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { ConfirmationDialog, SettingsSaveBar } from '../components';
 import {
@@ -10,6 +11,7 @@ import {
   RolesPermissionsSection,
   PasswordSecuritySection,
 } from './components';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useProfilePage } from './hooks/use-profile-page';
 
 // ========================================
@@ -17,6 +19,7 @@ import { useProfilePage } from './hooks/use-profile-page';
 // ========================================
 
 export default function ProfilePage() {
+  const { t } = useTranslation();
   const {
     avatarInputRef,
     userId,
@@ -38,19 +41,20 @@ export default function ProfilePage() {
     setField,
     setErrors,
     setDiscardDialogOpen,
-    isDirty,
+    isFormDirty,
     handleSave,
     handlePasswordChangeSuccess,
     handleEmailVerificationSent,
     handleDiscard,
     handleDiscardConfirm,
     handleAvatarChange,
+    handleAvatarDelete,
   } = useProfilePage();
 
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-        <Text size="2" style={{ color: 'var(--gray-9)' }}>Loading...</Text>
+        <LottieLoader variant="loader" size={48} showLabel />
       </Flex>
     );
   }
@@ -72,10 +76,10 @@ export default function ProfilePage() {
         {/* ── Page header ── */}
         <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Profile
+            {t('workspace.profile.title')}
           </Heading>
           <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
-            Manage all your personal profile details here
+            {t('workspace.profile.subtitle')}
           </Text>
         </Box>
 
@@ -86,6 +90,7 @@ export default function ProfilePage() {
             avatarInitial={avatarInitial}
             avatarUploading={avatarUploading}
             onEditAvatarClick={() => avatarInputRef.current?.click()}
+            onDeleteAvatarClick={handleAvatarDelete}
             fullName={form.fullName}
             fullNameError={errors.fullName}
             onFullNameChange={(value) => {
@@ -132,17 +137,17 @@ export default function ProfilePage() {
       <ConfirmationDialog
         open={discardDialogOpen}
         onOpenChange={setDiscardDialogOpen}
-        title="Discard changes?"
-        message="If you discard, your edits won't be saved"
-        confirmLabel="Discard"
-        cancelLabel="Continue Editing"
+        title={t('workspace.profile.discardTitle')}
+        message={t('workspace.profile.discardMessage')}
+        confirmLabel={t('workspace.profile.discardConfirm')}
+        cancelLabel={t('workspace.profile.discardCancel')}
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
       />
 
       {/* ── Settings Save Bar (visible when form has unsaved changes) ── */}
       <SettingsSaveBar
-        visible={isDirty()}
+        visible={isFormDirty}
         onDiscard={handleDiscard}
         onSave={handleSave}
       />

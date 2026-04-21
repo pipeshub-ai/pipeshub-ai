@@ -13,7 +13,7 @@
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { buildStreamRequestModeFields, type ConversationMessage, type StreamChatRequest } from './types';
 import {
@@ -151,9 +151,18 @@ export function buildExternalStoreConfig(
         }
       }
 
+      // Resolve the model for the CURRENT context (agent or assistant) so the
+      // submitted payload matches exactly what the chat input pill shows.
+      const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
+      const effectiveModel = getEffectiveModel(modelCtxKey) ?? {
+        modelKey: '',
+        modelName: '',
+        modelFriendlyName: '',
+      };
+
       const request: StreamChatRequest = {
         query,
-        ...(currentState.settings.selectedModel ?? currentState.settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' }),
+        ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
         filters: {
           // KB-origin nodes from knowledge-hub/nodes have nodeType "app" and

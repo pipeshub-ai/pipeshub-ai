@@ -26,8 +26,24 @@ export interface User {
   role?: string;
   /** Number of groups the user belongs to (excluding "everyone") */
   groupCount?: number;
+  /** Data URI for profile picture, if available */
+  profilePicture?: string;
   /** Inline groups from with-groups API */
   userGroups?: Array<{ _id?: string; name: string; type: string }>;
+
+  /** Account blocked (credentials); from GET /api/v1/users?blocked=true merge */
+  isBlocked?: boolean;
+}
+
+/** Single row from GET /api/v1/users?blocked=true */
+export interface BlockedUserRecord {
+  _id: string;
+  email: string;
+  fullName?: string;
+  hasLoggedIn?: boolean;
+  orgId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // ========================================
@@ -47,8 +63,18 @@ export interface WithGroupsUser {
 // API response shapes
 // ========================================
 
-/** Pagination shape returned by the API */
+/** Pagination from MongoDB-backed endpoints (GET /api/v1/users) */
 export interface UsersPagination {
+  page: number;
+  limit: number;
+  totalCount: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+/** Pagination from graph-backed endpoints (GET /api/v1/users/graph/list) */
+export interface GraphPagination {
   page: number;
   limit: number;
   total: number;
@@ -57,12 +83,20 @@ export interface UsersPagination {
   hasPrev: boolean;
 }
 
-/** Response from GET /api/v1/users/graph/list */
+/** Response from GET /api/v1/users (MongoDB) */
 export interface UsersListResponse {
   status: string;
   message: string;
   users: User[];
   pagination: UsersPagination;
+}
+
+/** Response from GET /api/v1/users/graph/list */
+export interface GraphUsersListResponse {
+  status: string;
+  message: string;
+  users: User[];
+  pagination: GraphPagination;
 }
 
 // ========================================
@@ -74,7 +108,7 @@ import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 export interface UsersFilter {
   roles?: string[];
   groups?: string[];
-  statuses?: ('Active' | 'Pending')[];
+  statuses?: ('Active' | 'Pending' | 'Blocked')[];
   lastActiveAfter?: string;
   lastActiveBefore?: string;
   lastActiveDateType?: DateFilterType;

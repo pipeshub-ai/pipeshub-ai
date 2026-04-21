@@ -60,11 +60,11 @@ def _unique_stream(base: str) -> str:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRedisProducerConsumerE2E:
     """Use the actual RedisStreamsProducer and RedisStreamsConsumer classes
     to verify produce → consume delivers every event."""
 
-    @pytest.mark.asyncio
     async def test_single_record_event(self, redis_stream_cleanup):
         topic = _unique_stream("e2e-record")
         redis_stream_cleanup.append(topic)
@@ -105,7 +105,6 @@ class TestRedisProducerConsumerE2E:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_all_record_event_types(self, redis_stream_cleanup):
         topic = _unique_stream("e2e-all-records")
         redis_stream_cleanup.append(topic)
@@ -151,7 +150,6 @@ class TestRedisProducerConsumerE2E:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_all_entity_event_types(self, redis_stream_cleanup):
         topic = _unique_stream("e2e-all-entity")
         redis_stream_cleanup.append(topic)
@@ -196,7 +194,6 @@ class TestRedisProducerConsumerE2E:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_all_sync_event_types(self, redis_stream_cleanup):
         topic = _unique_stream("e2e-all-sync")
         redis_stream_cleanup.append(topic)
@@ -290,11 +287,11 @@ class TestRedisProducerConsumerE2E:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestKafkaProducerConsumerE2E:
     """Use the actual KafkaMessagingProducer and KafkaMessagingConsumer classes
     to verify produce → consume delivers every event."""
 
-    @pytest.mark.asyncio
     async def test_single_record_event(self):
         topic = f"e2e-kafka-record-{uuid.uuid4().hex[:8]}"
         brokers = _kafka_brokers().split(",")
@@ -339,7 +336,6 @@ class TestKafkaProducerConsumerE2E:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_all_event_types_across_topics(self):
         """Produce every event type to its respective topic, consume from each."""
         suffix = uuid.uuid4().hex[:8]
@@ -505,10 +501,10 @@ class TestKafkaProducerConsumerE2E:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRedisNegative:
     """Redis Streams: edge cases and failure paths."""
 
-    @pytest.mark.asyncio
     async def test_consumer_receives_nothing_on_empty_stream(
         self, redis_client, redis_stream_cleanup
     ):
@@ -525,7 +521,6 @@ class TestRedisNegative:
         )
         assert len(received) == 0
 
-    @pytest.mark.asyncio
     async def test_consumer_ignores_non_value_fields(
         self, redis_client, redis_stream_cleanup
     ):
@@ -543,7 +538,6 @@ class TestRedisNegative:
         )
         assert len(received) == 0
 
-    @pytest.mark.asyncio
     async def test_consumer_skips_malformed_json(self, redis_stream_cleanup):
         """Invalid JSON doesn't crash the RedisStreamsConsumer; valid messages still arrive."""
         stream = _unique_stream("neg-bad-json")
@@ -585,7 +579,6 @@ class TestRedisNegative:
         finally:
             await consumer.stop()
 
-    @pytest.mark.asyncio
     async def test_handler_returning_false_leaves_message_pending(
         self, redis_client, redis_stream_cleanup
     ):
@@ -610,7 +603,6 @@ class TestRedisNegative:
         pending = await redis_client.xpending(stream, group)
         assert pending["pending"] >= 1
 
-    @pytest.mark.asyncio
     async def test_handler_exception_does_not_crash_consumer(
         self, redis_stream_cleanup
     ):
@@ -650,7 +642,6 @@ class TestRedisNegative:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_producer_auto_creates_stream(self, redis_stream_cleanup):
         """XADD to a non-existent stream creates it."""
         stream = _unique_stream("neg-autocreate")
@@ -667,7 +658,6 @@ class TestRedisNegative:
         finally:
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_consumer_stops_gracefully_mid_processing(self, redis_stream_cleanup):
         """Calling stop() inside the handler exits cleanly."""
         stream = _unique_stream("neg-stop-mid")
@@ -703,7 +693,6 @@ class TestRedisNegative:
                 await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_duplicate_consumer_group_is_idempotent(self, redis_stream_cleanup):
         """Creating the same consumer group twice doesn't raise."""
         stream = _unique_stream("neg-dup-group")
@@ -732,10 +721,10 @@ class TestRedisNegative:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestKafkaNegative:
     """Kafka: edge cases and failure paths."""
 
-    @pytest.mark.asyncio
     async def test_consumer_receives_nothing_on_empty_topic(
         self, kafka_consumer_factory
     ):
@@ -745,7 +734,6 @@ class TestKafkaNegative:
         received = await consume_kafka_messages(consumer, expected=1, timeout=5.0)
         assert len(received) == 0
 
-    @pytest.mark.asyncio
     async def test_consumer_skips_malformed_json(self):
         """Invalid JSON doesn't crash the KafkaMessagingConsumer."""
         topic = f"neg-bad-json-{uuid.uuid4().hex[:8]}"
@@ -784,7 +772,6 @@ class TestKafkaNegative:
         finally:
             await consumer.stop()
 
-    @pytest.mark.asyncio
     async def test_handler_returning_false_does_not_crash(self):
         """Handler returning False doesn't crash the consumer loop."""
         topic = f"neg-nack-{uuid.uuid4().hex[:8]}"
@@ -825,7 +812,6 @@ class TestKafkaNegative:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_handler_exception_does_not_crash_consumer(self):
         """Handler raising an exception doesn't bring down the consumer loop."""
         topic = f"neg-exc-{uuid.uuid4().hex[:8]}"
@@ -864,7 +850,6 @@ class TestKafkaNegative:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_producer_auto_creates_topic(self):
         """Sending to a non-existent topic auto-creates it."""
         topic = f"neg-autocreate-{uuid.uuid4().hex[:8]}"
@@ -881,7 +866,6 @@ class TestKafkaNegative:
         finally:
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_consumer_stops_gracefully_mid_processing(self):
         """Calling stop() inside the handler exits cleanly."""
         topic = f"neg-stop-mid-{uuid.uuid4().hex[:8]}"
@@ -928,10 +912,10 @@ OVERLOAD_COUNT = 200
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.asyncio(loop_scope="session")
 class TestRedisOverloadAndRecovery:
     """Redis Streams: behaviour under slow handlers, overload, and crash recovery."""
 
-    @pytest.mark.asyncio
     async def test_slow_handler_does_not_drop_messages(self, redis_stream_cleanup):
         """When the handler is slower than the producer, no messages are lost."""
         stream = _unique_stream("overload-slow")
@@ -980,7 +964,6 @@ class TestRedisOverloadAndRecovery:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_intermittent_handler_failure_and_pel_recovery(
         self, redis_stream_cleanup
     ):
@@ -995,6 +978,7 @@ class TestRedisOverloadAndRecovery:
             client_id="fail-recover-c",
             group_id="fail-recover-g",
             topics=[stream],
+            claim_min_idle_ms=1000,
         )
 
         producer = RedisStreamsProducer(logger, RedisStreamsConfig(**base_config))
@@ -1034,6 +1018,9 @@ class TestRedisOverloadAndRecovery:
 
         assert len(first_pass_ok) == 5
 
+        # Wait for messages to become idle (claim_min_idle_ms = 1000ms)
+        await asyncio.sleep(1.5)
+
         # Phase 2: new consumer with same group — _drain_pending picks up the 5 rejected messages
         second_pass: list[StreamMessage] = []
         second_done = asyncio.Event()
@@ -1059,7 +1046,6 @@ class TestRedisOverloadAndRecovery:
             f"Missing {sent_ids - all_received_ids} after PEL recovery"
         )
 
-    @pytest.mark.asyncio
     async def test_consumer_crash_and_restart_recovers_pending(
         self, redis_stream_cleanup
     ):
@@ -1074,6 +1060,7 @@ class TestRedisOverloadAndRecovery:
             client_id="crash-c",
             group_id="crash-g",
             topics=[stream],
+            claim_min_idle_ms=1000,
         )
 
         producer = RedisStreamsProducer(logger, RedisStreamsConfig(**base_config))
@@ -1123,7 +1110,6 @@ class TestRedisOverloadAndRecovery:
             f"PEL recovery missed {sent_ids - recovered_ids}"
         )
 
-    @pytest.mark.asyncio
     async def test_burst_then_trickle(self, redis_stream_cleanup):
         """Burst of messages followed by slow trickle — consumer handles both patterns."""
         stream = _unique_stream("overload-burst")
@@ -1182,10 +1168,10 @@ class TestRedisOverloadAndRecovery:
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.asyncio(loop_scope="session")
 class TestKafkaOverloadAndRecovery:
     """Kafka: behaviour under slow handlers and overload."""
 
-    @pytest.mark.asyncio
     async def test_slow_handler_does_not_drop_messages(self):
         """When the handler is slower than the producer, no messages are lost."""
         topic = f"overload-slow-{uuid.uuid4().hex[:8]}"
@@ -1238,7 +1224,6 @@ class TestKafkaOverloadAndRecovery:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_handler_failure_continues_processing(self):
         """Failed messages don't block subsequent messages from being processed."""
         topic = f"overload-fail-{uuid.uuid4().hex[:8]}"
@@ -1295,7 +1280,6 @@ class TestKafkaOverloadAndRecovery:
             await consumer.stop()
             await producer.cleanup()
 
-    @pytest.mark.asyncio
     async def test_burst_then_trickle(self):
         """Burst followed by slow trickle — consumer handles both."""
         topic = f"overload-burst-{uuid.uuid4().hex[:8]}"

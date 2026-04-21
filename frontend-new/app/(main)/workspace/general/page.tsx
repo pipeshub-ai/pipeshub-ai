@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Box,
   Flex,
@@ -9,6 +10,7 @@ import {
   Switch,
   TextField,
   Avatar,
+  IconButton,
 } from '@radix-ui/themes';
 import {
   ConfirmationDialog,
@@ -22,6 +24,7 @@ import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
 import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
@@ -34,6 +37,7 @@ interface ReadOnlyGeneralPageProps {
 }
 
 function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
+  const { t } = useTranslation();
   const logoInitial = form.displayName
     ? form.displayName.charAt(0).toUpperCase()
     : form.registeredName
@@ -45,15 +49,15 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
       <Box style={{ padding: '64px 100px' }}>
         <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            General
+            {t('workspace.sidebar.nav.general')}
           </Heading>
           <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
-            Your company general information
+            {t('workspace.general.subtitle')}
           </Text>
         </Box>
 
-        <SettingsSection title="Company Profile">
-          <SettingsRow label="Logo" description="Recommended size is 256px by 256px">
+        <SettingsSection title={t('workspace.general.companyProfile')}>
+          <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
             <Avatar
               src={logoUrl ?? undefined}
               fallback={logoInitial}
@@ -63,20 +67,20 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
             />
           </SettingsRow>
 
-          <SettingsRow label="Registered Name" description="Legal name of the company">
+          <SettingsRow label={t('workspace.general.registeredName')} description={t('workspace.general.registeredNameDescription')}>
             <TextField.Root value={form.registeredName} readOnly />
           </SettingsRow>
 
           <SettingsRow
-            label="Display Name"
-            description="This is how your company name will be displayed"
+            label={t('workspace.general.displayName')}
+            description={t('workspace.general.displayNameDescription')}
           >
             <TextField.Root value={form.displayName} readOnly />
           </SettingsRow>
 
           <SettingsRow
-            label="Contact Email"
-            description="Primary contact email from the company"
+            label={t('workspace.general.contactEmail')}
+            description={t('workspace.general.contactEmailDescription')}
           >
             <TextField.Root value={form.contactEmail} readOnly />
           </SettingsRow>
@@ -91,14 +95,17 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
 // ========================================
 
 export default function GeneralPage() {
+  const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Holds the File the user picked — not uploaded until Save is clicked
-  const pendingLogoRef = useRef<File | null>(null);
   // Blob URL for the currently saved logo (fetched via auth)
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  /** True when the org has a logo on the server (controls delete visibility). */
+  const [hasServerLogo, setHasServerLogo] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoDeleting, setLogoDeleting] = useState(false);
   // Last server-confirmed logo URL — used to revert preview on discard
   const savedLogoUrlRef = useRef<string | null>(null);
 
@@ -154,6 +161,7 @@ export default function GeneralPage() {
           setForm(loaded);
           setLogoUrl(logoObjectUrl);
           savedLogoUrlRef.current = logoObjectUrl;
+          setHasServerLogo(logoObjectUrl !== null);
         } else {
           const [org, logoObjectUrl] = await Promise.all([
             OrgApi.getOrg(),
@@ -174,12 +182,13 @@ export default function GeneralPage() {
           setForm(loaded);
           setLogoUrl(logoObjectUrl);
           savedLogoUrlRef.current = logoObjectUrl;
+          setHasServerLogo(logoObjectUrl !== null);
         }
       } catch {
         addToast({
           variant: 'error',
-          title: 'Failed to load organization',
-          description: 'Could not fetch your organization details',
+          title: t('workspace.general.toasts.loadError'),
+          description: t('workspace.general.toasts.loadErrorDescription'),
         });
       } finally {
         setLoading(false);
@@ -193,10 +202,10 @@ export default function GeneralPage() {
   const validate = useCallback((): boolean => {
     const newErrors: { contactEmail?: string; zipCode?: string } = {};
     if (form.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contactEmail)) {
-      newErrors.contactEmail = 'Please enter a valid email address';
+      newErrors.contactEmail = t('form.invalidEmail');
     }
     if (form.zipCode && !/^[A-Za-z0-9\s\-]{3,10}$/.test(form.zipCode)) {
-      newErrors.zipCode = 'Please add a valid postal code';
+      newErrors.zipCode = t('workspace.general.errors.invalidPostalCode');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -220,17 +229,7 @@ export default function GeneralPage() {
         dataCollectionConsent: form.dataCollection,
       });
 
-      // 2. Upload logo if a new file was selected
-      if (pendingLogoRef.current) {
-        await OrgApi.uploadLogo(pendingLogoRef.current);
-        pendingLogoRef.current = null;
-        // Refresh the displayed logo from the server
-        const freshUrl = await OrgApi.getLogoUrl();
-        setLogoUrl(freshUrl);
-        savedLogoUrlRef.current = freshUrl;
-      }
-
-      // 3. Toggle metrics collection if the value changed
+      // 2. Toggle metrics collection if the value changed
       if (form.dataCollection !== savedForm.dataCollection) {
         await MetricsApi.toggleMetricsCollection(form.dataCollection);
       }
@@ -238,14 +237,14 @@ export default function GeneralPage() {
       markSaved();
       addToast({
         variant: 'success',
-        title: 'Company profile details saved',
-        description: 'You can also edit it in the future',
+        title: t('workspace.general.toasts.saveSuccess'),
+        description: t('workspace.general.toasts.saveSuccessDescription'),
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save',
-        description: 'Could not update organization details',
+        title: t('workspace.general.toasts.saveError'),
+        description: t('workspace.general.toasts.saveErrorDescription'),
       });
     }
   }, [form, savedForm, validate, markSaved, addToast]);
@@ -255,31 +254,80 @@ export default function GeneralPage() {
   }, [setDiscardDialogOpen]);
 
   const handleDiscardConfirm = useCallback(() => {
-    pendingLogoRef.current = null; // clear any staged logo file
-    setLogoUrl(savedLogoUrlRef.current); // revert preview to last saved logo
+    setLogoUrl(savedLogoUrlRef.current);
     discardChanges();
     addToast({
       variant: 'success',
-      title: 'Discarded edits',
-      description: 'You can fill the input fields again',
+      title: t('workspace.general.toasts.discardSuccess'),
+      description: t('workspace.general.toasts.discardSuccessDescription'),
     });
   }, [discardChanges, addToast]);
 
-  // Stage the selected logo file — it will be uploaded when the user clicks Save
-  // Show a local preview immediately from the picked file
   const handleFileChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      pendingLogoRef.current = file;
-      setField('logoFileName', file.name);
-      // Show a local preview right away (no upload yet)
+      e.target.value = '';
+
+      const previousSavedUrl = savedLogoUrlRef.current;
       const previewUrl = URL.createObjectURL(file);
       setLogoUrl(previewUrl);
-      e.target.value = ''; // allow re-select of same file
+
+      setLogoUploading(true);
+      try {
+        await OrgApi.uploadLogo(file);
+        const freshUrl = await OrgApi.getLogoUrl();
+        setLogoUrl(freshUrl);
+        savedLogoUrlRef.current = freshUrl;
+        setHasServerLogo(freshUrl !== null);
+        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
+        addToast({
+          variant: 'success',
+          title: t('workspace.general.toasts.logoUpdated'),
+          description: t('workspace.general.toasts.logoUpdatedDescription'),
+        });
+      } catch {
+        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+        setLogoUrl(savedLogoUrlRef.current);
+        addToast({
+          variant: 'error',
+          title: t('workspace.general.toasts.logoUploadError'),
+          description: t('workspace.general.toasts.logoUploadErrorDescription'),
+        });
+      } finally {
+        setLogoUploading(false);
+      }
     },
-    [setField]
+    [addToast]
   );
+
+  const handleDeleteLogo = useCallback(async () => {
+    const saved = savedLogoUrlRef.current;
+    const preview = logoUrl;
+    setLogoDeleting(true);
+    try {
+      await OrgApi.deleteLogo();
+      if (saved?.startsWith('blob:')) URL.revokeObjectURL(saved);
+      if (preview?.startsWith('blob:') && preview !== saved) URL.revokeObjectURL(preview);
+      savedLogoUrlRef.current = null;
+      setLogoUrl(null);
+      setHasServerLogo(false);
+      addToast({
+        variant: 'success',
+        title: t('workspace.general.toasts.logoRemoved'),
+        description: t('workspace.general.toasts.logoRemovedDescription'),
+      });
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.general.toasts.logoRemoveError'),
+        description: t('workspace.general.toasts.logoRemoveErrorDescription'),
+      });
+    } finally {
+      setLogoDeleting(false);
+    }
+  }, [logoUrl, addToast]);
 
   const logoInitial = form.displayName
     ? form.displayName.charAt(0).toUpperCase()
@@ -319,29 +367,51 @@ export default function GeneralPage() {
         {/* Page header */}
         <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            General
+            {t('workspace.sidebar.nav.general')}
           </Heading>
           <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-            Manage your company profile
+            {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── Company Profile Section ── */}
         <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title="Company Profile">
+          <SettingsSection title={t('workspace.general.companyProfile')}>
             {/* Logo */}
-            <SettingsRow label="Logo" description="Recommended size is 256px by 256px">
-              <AvatarUploadWidget
-                src={logoUrl}
-                initial={logoInitial}
-                onEditClick={() => fileInputRef.current?.click()}
-              />
+            <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
+              <Flex align="center" justify="end" gap="2" style={{ width: '100%' }}>
+                <AvatarUploadWidget
+                  src={logoUrl}
+                  initial={logoInitial}
+                  uploading={logoUploading || logoDeleting}
+                  onEditClick={() => {
+                    if (logoUploading || logoDeleting) return;
+                    fileInputRef.current?.click();
+                  }}
+                />
+                {hasServerLogo && (
+                  <IconButton
+                    type="button"
+                    variant="soft"
+                    color="red"
+                    size="2"
+                    onClick={handleDeleteLogo}
+                    disabled={logoUploading || logoDeleting}
+                    aria-label={t('workspace.general.removeLogoAria')}
+                    style={{
+                      cursor: logoUploading || logoDeleting ? 'wait' : 'pointer',
+                    }}
+                  >
+                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+                  </IconButton>
+                )}
+              </Flex>
             </SettingsRow>
 
             {/* Registered Name */}
-            <SettingsRow label="Registered Name" description="Legal name of the company">
+            <SettingsRow label={t('workspace.general.registeredName')} description={t('workspace.general.registeredNameDescription')}>
               <TextField.Root
-                placeholder="eg: Paypal Co. LLC"
+                placeholder={t('workspace.general.registeredNamePlaceholder')}
                 value={form.registeredName}
                 onChange={(e) => setField('registeredName', e.target.value)}
               />
@@ -349,11 +419,11 @@ export default function GeneralPage() {
 
             {/* Display Name */}
             <SettingsRow
-              label="Display Name"
-              description="This is how your company name will be displayed"
+              label={t('workspace.general.displayName')}
+              description={t('workspace.general.displayNameDescription')}
             >
               <TextField.Root
-                placeholder="eg: Paypal"
+                placeholder={t('workspace.general.displayNamePlaceholder')}
                 value={form.displayName}
                 onChange={(e) => setField('displayName', e.target.value)}
               />
@@ -361,12 +431,12 @@ export default function GeneralPage() {
 
             {/* Contact Email */}
             <SettingsRow
-              label="Contact Email"
-              description="Primary contact email from the company"
+              label={t('workspace.general.contactEmail')}
+              description={t('workspace.general.contactEmailDescription')}
             >
               <Flex direction="column" gap="1">
                 <TextField.Root
-                  placeholder="eg: elon@paypal.com"
+                  placeholder={t('workspace.general.contactEmailPlaceholder')}
                   value={form.contactEmail}
                   onChange={(e) => setField('contactEmail', e.target.value)}
                   color={errors.contactEmail ? 'red' : undefined}
@@ -383,38 +453,38 @@ export default function GeneralPage() {
 
         {/* ── Company Address Section ── */}
         <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title="Company Address">
+          <SettingsSection title={t('workspace.general.companyAddress')}>
             {/* Street Address */}
-            <SettingsRow label="Street Address" description="Company's location address">
+            <SettingsRow label={t('workspace.general.streetAddress')} description={t('workspace.general.streetAddressDescription')}>
               <TextField.Root
-                placeholder="Street Address"
+                placeholder={t('workspace.general.streetAddressPlaceholder')}
                 value={form.streetAddress}
                 onChange={(e) => setField('streetAddress', e.target.value)}
               />
             </SettingsRow>
 
             {/* Country */}
-            <SettingsRow label="Country" description="Company's country">
+            <SettingsRow label={t('workspace.general.country')} description={t('workspace.general.countryDescription')}>
               <TextField.Root
-                placeholder="eg: United States"
+                placeholder={t('workspace.general.countryPlaceholder')}
                 value={form.country}
                 onChange={(e) => setField('country', e.target.value)}
               />
             </SettingsRow>
 
             {/* State/Province */}
-            <SettingsRow label="State/Province" description="Company's state or province">
+            <SettingsRow label={t('workspace.general.stateProvince')} description={t('workspace.general.stateProvinceDescription')}>
               <TextField.Root
-                placeholder="eg: California"
+                placeholder={t('workspace.general.stateProvincePlaceholder')}
                 value={form.state}
                 onChange={(e) => setField('state', e.target.value)}
               />
             </SettingsRow>
 
             {/* City */}
-            <SettingsRow label="City" description="Company's city">
+            <SettingsRow label={t('workspace.general.city')} description={t('workspace.general.cityDescription')}>
               <TextField.Root
-                placeholder="eg: San Francisco"
+                placeholder={t('workspace.general.cityPlaceholder')}
                 value={form.city}
                 onChange={(e) => setField('city', e.target.value)}
               />
@@ -422,12 +492,12 @@ export default function GeneralPage() {
 
             {/* Zip/Postal Code */}
             <SettingsRow
-              label="Zip/Postal Code"
-              description="Write your company's postal code"
+              label={t('workspace.general.postalCode')}
+              description={t('workspace.general.postalCodeDescription')}
             >
               <Flex direction="column" gap="1">
                 <TextField.Root
-                  placeholder="eg: 94107"
+                  placeholder={t('workspace.general.postalCodePlaceholder')}
                   value={form.zipCode}
                   onChange={(e) => setField('zipCode', e.target.value)}
                   color={errors.zipCode ? 'red' : undefined}
@@ -446,7 +516,7 @@ export default function GeneralPage() {
         {/* Extra bottom padding so save bar doesn't overlap last section */}
         <Box style={{ marginBottom: 80 }}>
           <SettingsSection
-            title="Data Collection Settings"
+            title={t('workspace.general.dataCollection')}
             rightAction={
               <Flex align="center" gap="2">
                 <Switch
@@ -455,7 +525,7 @@ export default function GeneralPage() {
                   size="2"
                 />
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                  Enable
+                  {t('workspace.general.enableDataCollection')}
                 </Text>
               </Flex>
             }
@@ -465,17 +535,16 @@ export default function GeneralPage() {
                 size="2"
                 style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 12 }}
               >
-                PipesHub collects and processes personal information for a variety of business
-                purposes.
+                {t('workspace.general.dataCollectionDescription')}
               </Text>
               <Flex direction="column" gap="2" style={{ paddingLeft: 4 }}>
                 {[
-                  'To provide customer service and support for our products',
-                  'To send marketing communications',
-                  'To manage your subscription to newsletters or other updates',
-                  'For security and fraud prevention purposes',
-                  'To personalize your user experience',
-                  'To enhance and improve our products and services',
+                  t('workspace.general.dataCollectionReason1'),
+                  t('workspace.general.dataCollectionReason2'),
+                  t('workspace.general.dataCollectionReason3'),
+                  t('workspace.general.dataCollectionReason4'),
+                  t('workspace.general.dataCollectionReason5'),
+                  t('workspace.general.dataCollectionReason6'),
                 ].map((item) => (
                   <Flex key={item} align="start" gap="2">
                     <Box
@@ -503,10 +572,10 @@ export default function GeneralPage() {
       <ConfirmationDialog
         open={discardDialogOpen}
         onOpenChange={setDiscardDialogOpen}
-        title="Discard changes?"
-        message="If you discard, your edits won't be saved"
-        confirmLabel="Discard"
-        cancelLabel="Continue Editing"
+        title={t('workspace.general.discardDialog.title')}
+        message={t('workspace.general.discardDialog.message')}
+        confirmLabel={t('workspace.general.discardDialog.confirm')}
+        cancelLabel={t('workspace.general.discardDialog.cancel')}
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
       />

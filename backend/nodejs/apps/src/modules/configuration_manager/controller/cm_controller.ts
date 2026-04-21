@@ -3482,3 +3482,93 @@ export const setCustomSystemPrompt =
       next(error);
     }
   };
+
+// ---------------------------------------------------------------------------
+// AI Model Registry proxy (forwards to Python backend)
+// ---------------------------------------------------------------------------
+
+async function proxyAiBackendGet(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  path: string,
+  options: { query?: URLSearchParams; logMessage: string },
+): Promise<void> {
+  try {
+    const qs = options.query?.toString();
+    const url = `${appConfig.aiBackend}${path}${qs ? `?${qs}` : ''}`;
+
+    const headers: Record<string, string> = {};
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios.get(url, { timeout: 10000, headers });
+    res.status(response.status).json(response.data);
+  } catch (error: any) {
+    logger.error(options.logMessage, { error });
+    if (error?.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      next(new ServiceUnavailableError('AI model registry service is unavailable'));
+    }
+  }
+}
+
+export const getAIModelRegistry =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const { search, capability } = req.query;
+    const params = new URLSearchParams();
+    if (search) params.set('search', String(search));
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(appConfig, req, res, next, '/api/v1/ai-models/registry', {
+      query: params,
+      logMessage: 'Error proxying AI model registry request',
+    });
+  };
+
+export const getAIModelRegistryCapabilities =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      '/api/v1/ai-models/registry/capabilities',
+      { logMessage: 'Error proxying AI model capabilities request' },
+    );
+  };
+
+export const getAIModelProviderSchema =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const providerId = req.params.providerId ?? '';
+    const { capability } = req.query;
+    const params = new URLSearchParams();
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
+      { query: params, logMessage: 'Error proxying AI model provider schema request' },
+    );
+  };

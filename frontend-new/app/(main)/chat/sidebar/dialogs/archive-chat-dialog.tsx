@@ -2,6 +2,7 @@
 
 import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 interface ArchiveChatDialogProps {
   open: boolean;
@@ -79,13 +80,14 @@ export function ArchiveChatDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button
+            <LoadingButton
               color="jade"
               onClick={handleConfirm}
-              disabled={isArchiving}
+              loading={isArchiving}
+              loadingLabel={t('chat.archiving')}
             >
-              {isArchiving ? t('chat.archiving') : t('chat.archive')}
-            </Button>
+              {t('chat.archive')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

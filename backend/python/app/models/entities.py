@@ -79,6 +79,7 @@ class RecordType(str, Enum):
     DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
+    CODE_FILE = "CODE_FILE"
     OTHERS = "OTHERS"
 
 
@@ -1609,15 +1610,16 @@ class SharePointPageRecord(Record):
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
-    assignee: list[str] | None= Field(default_factory=list)
+    assignee: list[str] | None = Field(default_factory=list)
     assignee_email: list[str] | None = Field(default_factory=list)
     creator_email: str | None = None
-    creator_name: str | None =None
-    review_email:list[str] | None = Field(default_factory=list)
+    creator_name: str | None = None
+    review_email: list[str] | None = Field(default_factory=list)
     review_name: list[str] | None = Field(default_factory=list)
-    mergeable:str | None=None
-    merged_by:str | None=None
-    labels:list[str] | None = Field(default_factory=list)
+    mergeable: str | None = None
+    merged_by: str | None = None
+    labels: list[str] | None = Field(default_factory=list)
+    last_commit_sha: str | None = Field(default=None)
 
     def to_kafka_record(self) -> dict:
         return {
@@ -1634,6 +1636,7 @@ class PullRequestRecord(Record):
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "lastCommitSha": self.last_commit_sha,
         }
     def to_arango_record(self) -> dict:
         return {
@@ -1649,6 +1652,7 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "lastCommitSha": self.last_commit_sha,
         }
 
 class RecordGroup(BaseModel):
@@ -1711,6 +1715,66 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
         )
+
+class CodeFileRecord(Record):
+    """Record class for Code Files"""
+
+    file_path: str | None = None
+    file_hash: str | None = None
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "filePath": self.file_path,
+            "fileHash": self.file_hash,
+        }
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "filePath": self.file_path,
+            "fileHash": self.file_hash,
+        }
+
+    @staticmethod
+    def from_arango_record(
+        arango_base_code_file_record: dict, arango_base_record: dict
+    ) -> "CodeFileRecord":
+        """Create CodeFileRecord from ArangoDB documents (records + codeFiles collections)"""
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+        return CodeFileRecord(
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
+            org_id=arango_base_record["orgId"],
+            record_name=arango_base_record["recordName"],
+            record_type=RecordType(arango_base_record["recordType"]),
+            external_record_id=arango_base_record["externalRecordId"],
+            file_path=arango_base_code_file_record.get("filePath"),
+            file_hash=arango_base_code_file_record.get("fileHash"),
+            origin=OriginTypes(arango_base_record["origin"]),
+            connector_name=connector_name,
+            connector_id=arango_base_record.get("connectorId"),
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=arango_base_record.get("webUrl"),
+        )
+
 
 class Anyone(BaseModel):
     id: str = Field(description="Unique identifier for the anyone", default_factory=lambda: str(uuid4()))

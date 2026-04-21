@@ -3013,6 +3013,7 @@ class ConfluenceDataSource:
         _body = body
         rel_path = '/pages/{id}/title'
         url = self.base_url + _safe_format_url(rel_path, _path)
+        
         req = HTTPRequest(
             method='PUT',
             url=url,
@@ -4788,25 +4789,47 @@ class ConfluenceDataSource:
 
     async def create_space(
         self,
+        space_key: Optional[str] = None,
+        name: Optional[str] = None,
+        description: str = "",
         body: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Create space\n\nHTTP POST /spaces\nBody: application/json (Any)"""
+        """Create space using v1 API (v2 is restricted to RBAC-enabled sites).
+        
+        Args:
+            space_key: The space key (uppercase alphanumeric)
+            name: The display name for the space
+            description: Optional description for the space
+            body: Optional full body payload (overrides space_key/name/description if provided)
+            headers: Optional headers
+            
+        Returns:
+            HTTPResponse from the create operation
+        """
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
+
+        if body is None:
+            if not space_key or not name:
+                raise ValueError("Either provide body or both space_key and name")
+            body = {
+                "key": space_key,
+                "name": name,
+                "description": {"plain": {"value": description, "representation": "plain"}}
+            }
+
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/space"
         _headers: Dict[str, Any] = dict(headers or {})
-        _path: Dict[str, Any] = {}
-        _query: Dict[str, Any] = {}
-        _body = body
-        rel_path = '/spaces'
-        url = self.base_url + _safe_format_url(rel_path, _path)
+
         req = HTTPRequest(
             method='POST',
             url=url,
-            headers=_as_str_dict(_headers),
-            path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
-            body=_body,
+            headers=_as_str_dict(_headers) if _headers else self._client.headers.copy(),
+            path={},
+            query={},
+            body=body,
         )
         resp = await self._client.execute(req)
         return resp
@@ -8135,6 +8158,54 @@ class ConfluenceDataSource:
         return resp
 
 # ---- Helpers used by generated methods ----
+
+    async def delete_space(self, space_key: str) -> HTTPResponse:
+        """Delete a space by key. Uses v1 REST API.
+        
+        Args:
+            space_key: The space key to delete
+            
+        Returns:
+            HTTPResponse from the delete operation
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/space/{space_key}"
+        req = HTTPRequest(
+            method='DELETE',
+            url=url,
+            headers=self._client.headers.copy(),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def move_page(self, page_id: str, new_parent_id: str) -> HTTPResponse:
+        """Move a page under a new parent. Uses v1 REST API.
+        
+        Args:
+            page_id: The ID of the page to move
+            new_parent_id: The ID of the new parent page
+            
+        Returns:
+            HTTPResponse from the move operation
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/content/{page_id}/move/append/{new_parent_id}"
+        req = HTTPRequest(
+            method='PUT',
+            url=url,
+            headers=self._client.headers.copy(),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
 
 def _format_cql_date_with_offset(iso_date: str, offset_hours: int = 0) -> str:
     """Convert ISO 8601 datetime to CQL format with an optional time offset.

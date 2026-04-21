@@ -1,10 +1,15 @@
 'use client';
 
-import { useEffect, useCallback, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
+import { startConnectorSync } from '../utils/connector-sync-actions';
+import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
+import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -12,17 +17,8 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import type { Connector, ConnectorInstance, PersonalFilterTab } from '../types';
-
-// ========================================
-// Constants
-// ========================================
-
-const PERSONAL_TABS = [
-  { value: 'all', label: 'All' },
-  { value: 'active', label: 'Active' },
-  { value: 'inactive', label: 'Inactive' },
-];
 
 // ========================================
 // Page
@@ -32,6 +28,13 @@ function PersonalConnectorsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
+  const { t } = useTranslation();
+
+  const personalTabs = [
+    { value: 'all', label: t('workspace.actions.tabs.all') },
+    { value: 'active', label: t('status.active') },
+    { value: 'inactive', label: t('status.inactive') },
+  ];
 
   // The connectorType query param determines whether we show the instance page
   const connectorType = searchParams.get('connectorType');
@@ -61,11 +64,20 @@ function PersonalConnectorsPageContent() {
     setConnectorTypeInfo,
     setInstanceConfig,
     setInstanceStats,
+    upsertConnectorInstance,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    catalogRefreshToken,
+    bumpCatalogRefresh,
+    setSelectedScope,
   } = useConnectorsStore();
+
+  // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
+  useLayoutEffect(() => {
+    setSelectedScope('personal');
+  }, [setSelectedScope]);
 
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
@@ -89,17 +101,19 @@ function PersonalConnectorsPageContent() {
       ]);
 
       if (registryRes.status === 'fulfilled') {
-        setRegistryConnectors(registryRes.value.connectors);
+        setRegistryConnectors(
+          filterConnectorsForScope(registryRes.value.connectors, 'personal')
+        );
       }
       if (activeRes.status === 'fulfilled') {
-        setActiveConnectors(activeRes.value.connectors);
+        setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'personal'));
       }
 
       if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
-        setError('Failed to load connectors');
+        setError(t('workspace.connectors.toasts.loadError'));
         addToast({
           variant: 'error',
-          title: 'Failed to load connectors',
+          title: t('workspace.connectors.toasts.loadError'),
         });
       }
     } catch {
@@ -111,73 +125,128 @@ function PersonalConnectorsPageContent() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, catalogRefreshToken]);
 
-  // ── Fetch instances when connectorType is present ───────────
-  // Filter active connectors by type client-side, then fetch config + stats per instance
+  /** Stable across upserts that only change fields on existing instances (same ids → same string). */
+  const instanceDetailKeys = useMemo(() => {
+    if (!connectorType) return '';
+    return activeConnectors
+      .filter((c) => c.type === connectorType && c._key)
+      .map((c) => c._key as string)
+      .sort()
+      .join('|');
+  }, [activeConnectors, connectorType]);
+
+  // ── Instance type page: keep list + header in sync (no loading) ──
   useEffect(() => {
     if (!connectorType) return;
 
-    // Prefer registry connector for type-level info (correct type name, not instance name)
     const registryInfo = registryConnectors.find((c) => c.type === connectorType) ?? null;
     const activeInfo = activeConnectors.find((c) => c.type === connectorType) ?? null;
     setConnectorTypeInfo(registryInfo ?? activeInfo);
 
-    // Filter active connectors by type
     const typeInstances = activeConnectors.filter(
       (c) => c.type === connectorType
     ) as ConnectorInstance[];
 
     setInstances(typeInstances);
-
-    // Fetch config and stats for each instance
-    const fetchInstanceDetails = async () => {
-      setIsLoadingInstances(true);
-      try {
-        const detailPromises = typeInstances.map(async (instance) => {
-          if (!instance._key) return;
-          const [configRes, statsRes] = await Promise.allSettled([
-            ConnectorsApi.getConnectorConfig(instance._key),
-            ConnectorsApi.getConnectorStats(instance._key),
-          ]);
-          if (configRes.status === 'fulfilled') {
-            setInstanceConfig(instance._key, configRes.value);
-          }
-          if (statsRes.status === 'fulfilled') {
-            setInstanceStats(instance._key, statsRes.value.data);
-          }
-        });
-        await Promise.allSettled(detailPromises);
-      } catch {
-        // Individual failures are handled per-instance above
-      } finally {
-        setIsLoadingInstances(false);
-      }
-    };
-
-    if (typeInstances.length > 0) {
-      fetchInstanceDetails();
-    } else {
-      setIsLoadingInstances(false);
-    }
   }, [
     connectorType,
     activeConnectors,
     registryConnectors,
     setConnectorTypeInfo,
-    setIsLoadingInstances,
     setInstances,
+  ]);
+
+  // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
+  useEffect(() => {
+    if (!connectorType) {
+      setIsLoadingInstances(false);
+      return;
+    }
+
+    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
+    if (instanceIds.length === 0) {
+      setIsLoadingInstances(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      setIsLoadingInstances(true);
+      try {
+        await Promise.allSettled(
+          instanceIds.map(async (id) => {
+            const [configRes, statsRes] = await Promise.allSettled([
+              ConnectorsApi.getConnectorConfig(id),
+              ConnectorsApi.getConnectorStats(id),
+            ]);
+            if (cancelled) return;
+            if (configRes.status === 'fulfilled') {
+              setInstanceConfig(id, configRes.value);
+            }
+            if (statsRes.status === 'fulfilled') {
+              setInstanceStats(id, statsRes.value.data);
+            }
+          })
+        );
+      } finally {
+        if (!cancelled) {
+          setIsLoadingInstances(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    connectorType,
+    catalogRefreshToken,
+    instanceDetailKeys,
+    setIsLoadingInstances,
     setInstanceConfig,
     setInstanceStats,
   ]);
+
+  const refreshConnectorRowQuiet = useCallback(
+    async (connectorId: string) => {
+      const fresh = await ConnectorsApi.getConnectorInstance(connectorId);
+      upsertConnectorInstance(fresh);
+      void ConnectorsApi.getConnectorStats(connectorId)
+        .then((res) => setInstanceStats(connectorId, res.data))
+        .catch(() => {});
+    },
+    [upsertConnectorInstance, setInstanceStats]
+  );
+
+  /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
+  const refreshConnectorsListsQuiet = useCallback(async () => {
+    const { registry, active } = await fetchFilteredConnectorLists('personal');
+    if (registry) setRegistryConnectors(registry);
+    if (active) setActiveConnectors(active);
+  }, [setRegistryConnectors, setActiveConnectors]);
 
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
     (connector: Connector) => {
       const connectorId = connector._key;
-      openPanel(connector, connectorId);
+      openPanel(connector, connectorId, 'personal');
     },
     [openPanel]
+  );
+
+  const handleAddInstanceFromCatalog = useCallback(
+    (connector: Connector) => {
+      const registry = registryConnectors.find((c) => c.type === connector.type);
+      const base = registry ?? connector;
+      const { _key: _omitInstanceKey, ...template } = base;
+      openPanel(template, undefined, 'personal');
+    },
+    [registryConnectors, openPanel]
   );
 
   const handleCardClick = useCallback(
@@ -211,13 +280,17 @@ function PersonalConnectorsPageContent() {
   const handleBackToList = useCallback(() => {
     setConnectorTypeInfo(null);
     clearInstanceData();
+    bumpCatalogRefresh();
     router.push('/workspace/connectors/personal/');
-  }, [router, setConnectorTypeInfo, clearInstanceData]);
+  }, [router, setConnectorTypeInfo, clearInstanceData, bumpCatalogRefresh]);
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
-    openPanel(connectorTypeInfo);
-  }, [connectorTypeInfo, openPanel]);
+    const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
+    const base = registry ?? connectorTypeInfo;
+    const { _key: _omitInstanceKey, ...template } = base;
+    openPanel(template, undefined, 'personal');
+  }, [connectorTypeInfo, registryConnectors, openPanel]);
 
   const handleOpenDocs = useCallback(() => {
     // Try config.documentationLinks first, then fall back to connectorInfo
@@ -240,30 +313,49 @@ function PersonalConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key) return;
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        await ConnectorsApi.startSync(instance._key);
+        await startConnectorSync({
+          _key: instance._key,
+          type: instance.type,
+        });
         addToast({
           variant: 'success',
-          title: `${connectorTypeInfo?.name ?? 'Connector'} is now syncing`,
-          description: 'Your records will be available shortly.',
+          title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'Connector' }),
+          description: t('workspace.connectors.toasts.syncStartedDescription'),
           duration: 3000,
         });
-        // Re-fetch active connectors and instance details
-        try {
-          const activeRes = await ConnectorsApi.getActiveConnectors('personal');
-          setActiveConnectors(activeRes.connectors);
-        } catch {
-          // Silently fail — the list will refresh on next navigation
-        }
+        await refreshConnectorRowQuiet(instance._key);
       } catch {
         addToast({
           variant: 'error',
-          title: 'Failed to start sync',
+          title: t('workspace.connectors.toasts.syncError'),
         });
       }
     },
-    [connectorTypeInfo, addToast, setActiveConnectors]
+    [connectorTypeInfo, addToast, refreshConnectorRowQuiet]
+  );
+
+  const handleToggleSyncActive = useCallback(
+    async (instance: ConnectorInstance) => {
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+      try {
+        await ConnectorsApi.toggleConnector(instance._key, 'sync');
+        addToast({
+          variant: 'success',
+          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
+          duration: 2500,
+        });
+        await refreshConnectorRowQuiet(instance._key);
+        await refreshConnectorsListsQuiet();
+      } catch {
+        addToast({
+          variant: 'error',
+          title: 'Could not update connector',
+        });
+      }
+    },
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
   );
 
   const handleInstanceChevron = useCallback(
@@ -281,32 +373,25 @@ function PersonalConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await ConnectorsApi.startSync(instanceId);
+      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
       addToast({
         variant: 'success',
-        title: `Your ${connectorTypeInfo?.name ?? 'connector'} instance is now syncing`,
-        description:
-          'This may take a few minutes. You\'ll be notified when it\'s done.',
+        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
+        description: t('workspace.connectors.toasts.syncStartedLongDescription'),
         duration: 3000,
       });
-      // Re-fetch active connectors to update the list
-      try {
-        const activeRes = await ConnectorsApi.getActiveConnectors('personal');
-        setActiveConnectors(activeRes.connectors);
-      } catch {
-        // Silently fail
-      }
+      await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to start sync',
+        title: t('workspace.connectors.toasts.syncError'),
       });
     }
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
     addToast,
-    setActiveConnectors,
+    refreshConnectorRowQuiet,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
   ]);
@@ -323,7 +408,7 @@ function PersonalConnectorsPageContent() {
         <ConnectorDetailsLayout
           connector={connectorTypeInfo}
           scope="personal"
-          scopeLabel="Connectors"
+          scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
           instanceStats={instanceStats}
@@ -333,6 +418,7 @@ function PersonalConnectorsPageContent() {
           onOpenDocs={handleOpenDocs}
           onManageInstance={handleManageInstance}
           onStartSync={handleStartSync}
+          onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
         />
         <ConnectorPanel />
@@ -350,16 +436,17 @@ function PersonalConnectorsPageContent() {
   return (
     <>
       <ConnectorCatalogLayout
-        title="Your Connectors"
-        subtitle="Connect and manage integrations with external services"
+        title={t('workspace.sidebar.nav.yourConnectors')}
+        subtitle={t('workspace.connectors.subtitle')}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        tabs={PERSONAL_TABS}
+        tabs={personalTabs}
         activeTab={personalFilterTab}
         onTabChange={handleTabChange}
         registryConnectors={registryConnectors}
         activeConnectors={activeConnectors}
         onSetup={handleSetup}
+        onAddInstance={handleAddInstanceFromCatalog}
         onCardClick={handleCardClick}
         isLoading={isLoading}
       />
@@ -370,8 +457,10 @@ function PersonalConnectorsPageContent() {
 
 export default function PersonalConnectorsPage() {
   return (
-    <Suspense>
-      <PersonalConnectorsPageContent />
-    </Suspense>
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <PersonalConnectorsPageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

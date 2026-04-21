@@ -7,10 +7,8 @@
  * /services/toolsets/{instanceId}/{agentKey} (not per-user).
  *
  * Supports:
- *   - Non-OAuth (API_TOKEN / BEARER_TOKEN / USERNAME_PASSWORD): enter credentials
- *   - OAuth: open popup → poll for success
- *   - Reauthenticate (clear stored tokens)
- *   - Remove credentials
+ *   - Non-OAuth (API_TOKEN / BEARER_TOKEN / USERNAME_PASSWORD): enter, update, or remove credentials
+ *   - OAuth: open popup → poll for success; re-authenticate or remove credentials
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -177,24 +175,7 @@ const AgentToolsetConfigDialog: React.FC<AgentToolsetConfigDialogProps> = ({
     load();
   }, [toolset.toolsetType]);
 
-  // ── Hydrate form with existing auth values ──
-  useEffect(() => {
-    if (!toolset.auth || authType === 'OAUTH' || authType === 'NONE') return;
-    const existingAuth = toolset.auth;
-    const hydrated: Record<string, any> = {};
-    (manageAuthSchema.fields || []).forEach((field: any) => {
-      const value = (existingAuth as Record<string, any>)[field.name];
-      if (value !== undefined && value !== null) {
-        hydrated[field.name] = Array.isArray(value) ? value.join(',') : value;
-      }
-    });
-    if (Object.keys(hydrated).length > 0) {
-      setFormData((prev) => ({ ...hydrated, ...prev }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolset.auth]);
-
-  // ── Schema helpers ──
+  // ── Schema helpers (before hydrate: fields come from loaded schema) ──
   const manageAuthSchema = useMemo(() => {
     if (!toolsetSchema || authType === 'OAUTH' || authType === 'NONE') return { fields: [] };
     const toolsetData = (toolsetSchema as any).toolset || toolsetSchema;
@@ -206,6 +187,27 @@ const AgentToolsetConfigDialog: React.FC<AgentToolsetConfigDialogProps> = ({
       fields: filterFieldsByUsage(rawSchema.fields || [], 'AUTHENTICATE'),
     };
   }, [toolsetSchema, authType]);
+
+  // ── Hydrate form with existing auth values (after schema loads) ──
+  useEffect(() => {
+    if (!toolset.auth || authType === 'OAUTH' || authType === 'NONE') return;
+    if (schemaLoading) return;
+    const existingAuth = toolset.auth;
+    const hydrated: Record<string, any> = {};
+    (manageAuthSchema.fields || []).forEach((field: any) => {
+      const value = (existingAuth as Record<string, any>)[field.name];
+      if (value !== undefined && value !== null) {
+        hydrated[field.name] = Array.isArray(value) ? value.join(',') : value;
+      }
+    });
+    if (Object.keys(hydrated).length > 0) {
+      setFormData((prev) => ({ ...hydrated, ...prev }));
+    }
+  }, [toolset.auth, authType, schemaLoading, manageAuthSchema]);
+
+  useEffect(() => {
+    setIsAuthenticated(toolset.isAuthenticated ?? false);
+  }, [toolset.isAuthenticated, toolset.instanceId]);
 
   // ── Validate form ──
   const validateForm = useCallback(() => {
@@ -457,7 +459,7 @@ const AgentToolsetConfigDialog: React.FC<AgentToolsetConfigDialogProps> = ({
       <Dialog
         open
         onClose={onClose}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
         PaperProps={{
           sx: {
@@ -930,53 +932,23 @@ const AgentToolsetConfigDialog: React.FC<AgentToolsetConfigDialogProps> = ({
               </>
             )}
 
-            {/* Non-OAuth: save credentials */}
+            {/* Non-OAuth: save / update credentials (no re-authenticate — use Update or Remove) */}
             {!isOAuth && authType !== 'NONE' && (
-              <>
-                {isAuthenticated && (
-                  <Button
-                    onClick={handleReauthenticate}
-                    disabled={isAnyActionInProgress}
-                    variant="outlined"
-                    startIcon={
-                      reauthenticating ? (
-                        <CircularProgress size={14} color="inherit" />
-                      ) : (
-                        <Iconify icon={refreshIcon} width={15} />
-                      )
-                    }
-                    sx={{
-                      textTransform: 'none',
-                      borderRadius: 1,
-                      px: 2,
-                      fontSize: '0.8125rem',
-                      borderColor: alpha(theme.palette.warning.main, 0.5),
-                      color: theme.palette.warning.main,
-                      '&:hover': {
-                        borderColor: theme.palette.warning.main,
-                        backgroundColor: alpha(theme.palette.warning.main, 0.07),
-                      },
-                    }}
-                  >
-                    {reauthenticating ? 'Clearing...' : 'Re-authenticate'}
-                  </Button>
-                )}
-                <Button
-                  onClick={handleSaveCredentials}
-                  disabled={isAnyActionInProgress}
-                  variant="contained"
-                  startIcon={
-                    saving ? (
-                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
-                    ) : (
-                      <Iconify icon={saveIcon} width={16} />
-                    )
-                  }
-                  sx={{ textTransform: 'none', borderRadius: 1, px: 2.5, boxShadow: 'none', '&:hover': { boxShadow: 'none' } }}
-                >
-                  {saving ? 'Saving...' : isAuthenticated ? 'Update Credentials' : 'Save Credentials'}
-                </Button>
-              </>
+              <Button
+                onClick={handleSaveCredentials}
+                disabled={isAnyActionInProgress}
+                variant="contained"
+                startIcon={
+                  saving ? (
+                    <CircularProgress size={14} sx={{ color: 'inherit' }} />
+                  ) : (
+                    <Iconify icon={saveIcon} width={16} />
+                  )
+                }
+                sx={{ textTransform: 'none', borderRadius: 1, px: 2.5, boxShadow: 'none', '&:hover': { boxShadow: 'none' } }}
+              >
+                {saving ? 'Saving...' : isAuthenticated ? 'Update Credentials' : 'Save Credentials'}
+              </Button>
             )}
           </Box>
         </DialogActions>

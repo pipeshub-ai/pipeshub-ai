@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { IconButton, Flex, Text, Box, Popover } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 // ── Sub-menu radio option ──
 
@@ -32,16 +33,28 @@ export interface RowAction {
   icon: string;
   /** Action label */
   label: string;
-  /** Callback when action is clicked (omit when using subMenu) */
-  onClick?: () => void;
+  /**
+   * Callback when the action is clicked (omit when using `subMenu`).
+   *
+   * May return a Promise. If it does, the popover stays open (showing a
+   * spinner in the clicked row) until the promise settles — giving the
+   * user visual feedback that the async operation is in flight.
+   */
+  onClick?: () => void | Promise<void>;
   /** Visual variant (danger renders in red) */
   variant?: 'default' | 'danger';
   /** Render a separator line before this item */
   separatorBefore?: boolean;
   /**
+   * External loading flag. When true, the row displays a spinner and the
+   * item cannot be clicked. Use this when the parent already tracks
+   * per-row loading state in a store (e.g. knowledge-base operations).
+   */
+  isLoading?: boolean;
+  /**
    * Optional sub-menu config. When present, clicking this action toggles
    * a role-picker panel (styled like the SelectDropdown in Invite User)
-   * below the action card — both remain visible simultaneously.
+   * which replaces the action card — the action card is hidden while the sub-menu is open.
    */
   subMenu?: SubMenuConfig;
 }
@@ -169,6 +182,10 @@ function ActionCard({
   /** Called to close the entire popover */
   onClose: () => void;
 }) {
+  // Index of the currently-running async action (if any). While set, the row
+  // shows a spinner and the popover stays open until the promise settles.
+  const [pendingIndex, setPendingIndex] = useState<number | null>(null);
+
   return (
     <Box
       style={{
@@ -182,6 +199,32 @@ function ActionCard({
     >
       {actions.map((action, i) => {
         const isDanger = action.variant === 'danger';
+        const isPending = pendingIndex === i || action.isLoading === true;
+        const anyPending = pendingIndex !== null;
+        const iconColor = isDanger ? 'var(--red-11)' : 'var(--slate-11)';
+
+        const handleClick = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (isPending || (anyPending && pendingIndex !== i)) return;
+          if (action.subMenu) {
+            onActionClick(action);
+            return;
+          }
+          const maybePromise = action.onClick?.();
+          if (
+            maybePromise &&
+            typeof (maybePromise as Promise<void>).then === 'function'
+          ) {
+            setPendingIndex(i);
+            (maybePromise as Promise<void>).finally(() => {
+              setPendingIndex(null);
+              onClose();
+            });
+          } else {
+            onClose();
+          }
+        };
+
         return (
           <React.Fragment key={i}>
             {action.separatorBefore && (
@@ -196,16 +239,11 @@ function ActionCard({
             <Flex
               align="center"
               gap="2"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (action.subMenu) {
-                  onActionClick(action);
-                } else {
-                  action.onClick?.();
-                  onClose();
-                }
-              }}
+              aria-busy={isPending || undefined}
+              aria-disabled={isPending || (anyPending && pendingIndex !== i) || undefined}
+              onClick={handleClick}
               onMouseEnter={(e) => {
+                if (isPending) return;
                 (e.currentTarget as HTMLElement).style.backgroundColor =
                   isDanger ? 'var(--red-a4)' : 'var(--slate-a3)';
               }}
@@ -217,7 +255,12 @@ function ActionCard({
                 height: 24,
                 padding: '0 8px',
                 borderRadius: 'var(--radius-1)',
-                cursor: 'pointer',
+                cursor: isPending
+                  ? 'wait'
+                  : anyPending && pendingIndex !== i
+                    ? 'not-allowed'
+                    : 'pointer',
+                opacity: anyPending && pendingIndex !== i ? 0.55 : 1,
                 ...(isDanger
                   ? {
                       backgroundColor: 'var(--red-a3)',
@@ -226,11 +269,11 @@ function ActionCard({
                   : {}),
               }}
             >
-              <MaterialIcon
-                name={action.icon}
-                size={16}
-                color={isDanger ? 'var(--red-11)' : 'var(--slate-11)'}
-              />
+              {isPending ? (
+                <Spinner size={14} color={iconColor} />
+              ) : (
+                <MaterialIcon name={action.icon} size={16} color={iconColor} />
+              )}
               <Text size="2">{action.label}</Text>
             </Flex>
           </React.Fragment>
@@ -243,14 +286,15 @@ function ActionCard({
 // ────────────────────────────────────────────────────────────────
 // EntityRowActionMenu
 //
-// Single Popover containing two visual "cards" stacked vertically:
+// Single Popover that switches between two visual "cards":
 //   1. Action card   — compact list (View Profile, Change Role, …)
 //   2. Role picker   — radio options (Admin / Member / Guest)
 //
-// Both cards are visible simultaneously when "Change Role" is
-// clicked. The Popover.Content itself is transparent — each card
-// has its own background / border / shadow so they look like two
-// separate floating panels, right-aligned to the ⋯ trigger.
+// Only one card is visible at a time: the action card is hidden when
+// "Change Role" is clicked and the role picker takes its place.
+// The Popover.Content itself is transparent — each card has its own
+// background / border / shadow so they look like separate floating
+// panels, right-aligned to the ⋯ trigger.
 //
 // Collision-aware: Radix Popover flips top ↔ bottom automatically.
 // ────────────────────────────────────────────────────────────────
@@ -297,12 +341,14 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
         }}
       >
         <Flex direction="column" gap="1">
-          {/* ── Card 1: Action items ── */}
-          <ActionCard
-            actions={visibleActions}
-            onActionClick={() => setShowRolePicker((v) => !v)}
-            onClose={() => handleOpenChange(false)}
-          />
+          {/* ── Card 1: Action items (hidden when role picker is open) ── */}
+          {!showRolePicker && (
+            <ActionCard
+              actions={visibleActions}
+              onActionClick={() => setShowRolePicker((v) => !v)}
+              onClose={() => handleOpenChange(false)}
+            />
+          )}
 
           {/* ── Card 2: Role picker (visible when "Change Role" is clicked) ── */}
           {showRolePicker && subMenuAction?.subMenu && (

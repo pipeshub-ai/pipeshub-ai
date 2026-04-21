@@ -3,6 +3,7 @@ import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
 import type {
   Connector,
+  ConnectorScope,
   TeamFilterTab,
   PersonalFilterTab,
   ConnectorConfig,
@@ -18,7 +19,11 @@ import type {
 } from './types';
 import { mergeConfigWithSchema, initializeFormData } from './utils/config-merge';
 import { evaluateConditionalDisplay } from './utils/conditional-display';
-import { isNoneAuthType } from './utils/auth-helpers';
+import {
+  isNoneAuthType,
+  isOAuthType,
+  isConnectorConfigAuthenticated,
+} from './utils/auth-helpers';
 
 // ========================================
 // Store shape
@@ -44,6 +49,8 @@ interface ConnectorsState {
   panelConnectorId: string | null;
   panelActiveTab: PanelTab;
   panelView: PanelView;
+  /** Bumped after OAuth completes so Authorize tab remounts with fresh config. */
+  oauthAuthorizeUiEpoch: number;
 
   // ── Schema + Config ───────────────────────────────────────────
   connectorSchema: ConnectorSchemaResponse['schema'] | null;
@@ -98,6 +105,8 @@ interface ConnectorsState {
   showConfigSuccessDialog: boolean;
   /** Newly created connector ID (for success dialog) */
   newlyConfiguredConnectorId: string | null;
+  /** Bumped after connector list should refetch (create/save/delete). */
+  catalogRefreshToken: number;
 
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
@@ -109,7 +118,14 @@ interface ConnectorsState {
   setError: (error: string | null) => void;
 
   // Panel actions
-  openPanel: (connector: Connector, connectorId?: string) => void;
+  openPanel: (connector: Connector, connectorId?: string, scope?: ConnectorScope) => void;
+  bumpCatalogRefresh: () => void;
+  bumpOAuthAuthorizeUiEpoch: () => void;
+  /**
+   * After GET /config proves OAuth (or not), mirror `isAuthenticated` onto the open panel row
+   * and matching catalog/instance rows so Authorize/Configure gates update before list refetch.
+   */
+  syncConnectorInstanceAuthFlags: (instanceId: string, authenticated: boolean) => void;
   closePanel: () => void;
   setPanelActiveTab: (tab: PanelTab) => void;
   setPanelView: (view: PanelView) => void;
@@ -140,13 +156,16 @@ interface ConnectorsState {
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
-  resetPanelState: () => void;
   reset: () => void;
 
   // Instance page actions
   setInstances: (instances: ConnectorInstance[]) => void;
   setInstanceConfig: (connectorId: string, config: ConnectorConfig) => void;
   setInstanceStats: (connectorId: string, stats: ConnectorStatsResponse['data']) => void;
+  /** Merge one connector into active list + instance list + selected instance (no full refetch). */
+  upsertConnectorInstance: (updated: Connector) => void;
+  /** Drop cached config/stats for one instance (e.g. after delete starts). */
+  removeConnectorInstanceCaches: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -197,6 +216,7 @@ const initialState = {
   panelConnectorId: null as string | null,
   panelActiveTab: 'authenticate' as PanelTab,
   panelView: 'tabs' as PanelView,
+  oauthAuthorizeUiEpoch: 0,
 
   // Schema + Config
   connectorSchema: null as ConnectorSchemaResponse['schema'] | null,
@@ -241,6 +261,7 @@ const initialState = {
   connectorTypeInfo: null as Connector | null,
   showConfigSuccessDialog: false,
   newlyConfiguredConnectorId: null as string | null,
+  catalogRefreshToken: 0,
 };
 
 // Panel-specific fields to reset when closing
@@ -250,6 +271,7 @@ const panelResetState = {
   panelConnectorId: null as string | null,
   panelActiveTab: 'authenticate' as PanelTab,
   panelView: 'tabs' as PanelView,
+  oauthAuthorizeUiEpoch: 0,
   connectorSchema: null as ConnectorSchemaResponse['schema'] | null,
   connectorConfig: null as ConnectorConfig | null,
   isLoadingSchema: false,
@@ -263,7 +285,7 @@ const panelResetState = {
   isAuthTypeImmutable: false,
   instanceName: '',
   instanceNameError: null as string | null,
-  selectedScope: 'team' as 'personal' | 'team',
+  /** Intentionally omitted: closing the panel must not reset catalog scope (personal vs team). */
   selectedRecords: [] as string[],
   availableRecords: [] as { id: string; name: string }[],
   isLoadingRecords: false,
@@ -320,19 +342,92 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       // ── Panel actions ──
 
-      openPanel: (connector, connectorId) =>
+      openPanel: (connector, connectorId, scope) =>
         set((s) => {
           s.isPanelOpen = true;
           s.panelConnector = connector;
           s.panelConnectorId = connectorId ?? null;
-          // For existing connectors that are already authenticated/configured,
-          // open directly to the configure tab
-          s.panelActiveTab =
-            connectorId && (connector.isAuthenticated || connector.isConfigured)
-              ? 'configure'
-              : 'authenticate';
+          if (scope) {
+            s.selectedScope = scope;
+          }
+          // Open tab: authenticated → Configure; OAuth pending consent → Authorize; else → Authenticate.
+          const listAuthType = connector.authType ?? '';
+          const rowAuthenticated = isConnectorConfigAuthenticated(connector);
+          if (
+            connectorId &&
+            (rowAuthenticated ||
+              (isNoneAuthType(listAuthType) && connector.isConfigured === true))
+          ) {
+            s.panelActiveTab = 'configure';
+          } else if (connectorId && isOAuthType(listAuthType) && !rowAuthenticated) {
+            s.panelActiveTab = 'authorize';
+          } else {
+            s.panelActiveTab = 'authenticate';
+          }
           s.panelView = 'tabs';
           s.isAuthTypeImmutable = !!connectorId;
+
+          // Existing instance: drop cached schema/config immediately so we never use another
+          // instance's `isAuthenticated` before GET /config returns (fixes wrong Authorize tab).
+          if (connectorId) {
+            s.selectedAuthType = connector.authType ?? '';
+            s.connectorSchema = null;
+            s.connectorConfig = null;
+            s.isLoadingSchema = true;
+            s.isLoadingConfig = true;
+          }
+
+          // New instance: clear any previous panel schema/config/form so we never
+          // flash or save against another instance's state.
+          if (!connectorId) {
+            s.connectorSchema = null;
+            s.connectorConfig = null;
+            s.isLoadingSchema = false;
+            s.isLoadingConfig = false;
+            s.schemaError = null;
+            s.formData = { ...defaultFormData };
+            s.formErrors = {};
+            s.conditionalDisplay = {};
+            s.selectedAuthType = '';
+            s.authState = 'empty';
+            s.instanceName = '';
+            s.instanceNameError = null;
+            s.selectedRecords = [];
+            s.availableRecords = [];
+            s.isLoadingRecords = false;
+            s.isSavingAuth = false;
+            s.isSavingConfig = false;
+            s.saveError = null;
+          }
+        }),
+
+      bumpCatalogRefresh: () =>
+        set((s) => {
+          s.catalogRefreshToken += 1;
+        }),
+
+      bumpOAuthAuthorizeUiEpoch: () =>
+        set((s) => {
+          s.oauthAuthorizeUiEpoch += 1;
+        }),
+
+      syncConnectorInstanceAuthFlags: (instanceId, authenticated) =>
+        set((s) => {
+          if (!instanceId) return;
+          if (s.panelConnectorId === instanceId && s.panelConnector) {
+            s.panelConnector.isAuthenticated = authenticated;
+          }
+          const acIdx = s.activeConnectors.findIndex((c) => c._key === instanceId);
+          if (acIdx >= 0) {
+            s.activeConnectors[acIdx].isAuthenticated = authenticated;
+          }
+          const inIdx = s.instances.findIndex((i) => i._key === instanceId);
+          if (inIdx >= 0) {
+            s.instances[inIdx].isAuthenticated = authenticated;
+          }
+          if (s.selectedInstance?._key === instanceId) {
+            s.selectedInstance.isAuthenticated = authenticated;
+          }
         }),
 
       closePanel: () =>
@@ -373,7 +468,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.conditionalDisplay = conditionalDisplay;
 
           // Set auth state based on existing config
-          if (config?.isAuthenticated) {
+          if (isConnectorConfigAuthenticated(config)) {
             s.authState = 'success';
           } else if (isNoneAuthType(authType)) {
             s.authState = 'success';
@@ -384,7 +479,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setAuthFormValue: (name, value) =>
         set((s) => {
-          s.formData.auth[name] = value;
+          if (value === undefined) {
+            delete s.formData.auth[name];
+          } else {
+            s.formData.auth[name] = value;
+          }
           // Clear error for this field
           delete s.formErrors[name];
           // Re-evaluate conditional display
@@ -406,7 +505,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setFilterFormValue: (section, name, value) =>
         set((s) => {
-          s.formData.filters[section][name] = value;
+          if (value === undefined) {
+            delete s.formData.filters[section][name];
+          } else {
+            s.formData.filters[section][name] = value;
+          }
         }),
 
       setSelectedAuthType: (authType) =>
@@ -507,16 +610,16 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.formData.sync.scheduledConfig.intervalMinutes = minutes;
         }),
 
-      resetPanelState: () =>
-        set((s) => {
-          Object.assign(s, panelResetState);
-        }),
-
       // ── Instance page actions ──
 
       setInstances: (instances) =>
         set((s) => {
           s.instances = instances;
+          const sid = s.selectedInstance?._key;
+          if (sid) {
+            const updated = instances.find((i) => i._key === sid);
+            if (updated) s.selectedInstance = updated;
+          }
         }),
 
       setInstanceConfig: (connectorId, config) =>
@@ -527,6 +630,37 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setInstanceStats: (connectorId, stats) =>
         set((s) => {
           s.instanceStats[connectorId] = stats;
+        }),
+
+      upsertConnectorInstance: (updated) =>
+        set((s) => {
+          const id = updated._key;
+          if (!id) return;
+
+          const mergeRow = <T extends Connector>(row: T): T => ({ ...row, ...updated } as T);
+
+          const acIdx = s.activeConnectors.findIndex((c) => c._key === id);
+          if (acIdx >= 0) {
+            s.activeConnectors[acIdx] = mergeRow(s.activeConnectors[acIdx]);
+          } else {
+            s.activeConnectors.push({ ...updated });
+          }
+
+          const inIdx = s.instances.findIndex((c) => c._key === id);
+          if (inIdx >= 0) {
+            s.instances[inIdx] = mergeRow(s.instances[inIdx] as ConnectorInstance);
+          }
+
+          if (s.selectedInstance?._key === id) {
+            s.selectedInstance = mergeRow(s.selectedInstance as ConnectorInstance);
+          }
+        }),
+
+      removeConnectorInstanceCaches: (connectorId) =>
+        set((s) => {
+          if (!connectorId) return;
+          delete s.instanceConfigs[connectorId];
+          delete s.instanceStats[connectorId];
         }),
 
       clearInstanceData: () =>

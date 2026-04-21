@@ -3,6 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Box } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
   KbDataTable,
@@ -25,7 +26,7 @@ import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 // import KnowledgeBaseSidebar from './sidebar';
-import { useKnowledgeBaseStore } from './store';
+import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -57,28 +58,10 @@ import {
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
+import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-
-/** MIME types for PowerPoint presentation files (.ppt, .pptx) */
-const PPT_MIME_TYPES = [
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-];
-
-/**
- * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
- * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
- * on the streaming API before they can be previewed in the browser.
- */
-function isPresentationFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType && PPT_MIME_TYPES.includes(mimeType)) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'ppt' || ext === 'pptx') return true;
-  }
-  return false;
-}
 
 function KnowledgeBasePageContent() {
   const router = useRouter();
@@ -389,7 +372,7 @@ function KnowledgeBasePageContent() {
 
   // Single delete confirmation dialog state (sidebar)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string; nodeType?: NodeType; rootKbId?: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   // Bulk delete confirmation dialog state
@@ -404,6 +387,8 @@ function KnowledgeBasePageContent() {
     id: string;
     name: string;
     url: string;
+    /** Raw Blob — populated for DOCX so `DocxRenderer` can skip the blob-URL round-trip. */
+    blob?: Blob;
     type: string;
     size?: number;
     isLoading?: boolean;
@@ -415,8 +400,6 @@ function KnowledgeBasePageContent() {
   // Upload store actions
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, updateItemStatus, bulkUpdateItemStatus } = useUploadStore();
 
-  // Refs to track previous page values (to detect user-initiated page changes vs initial mount)
-  const prevCollectionsPageRef = useRef(collectionsPagination.page);
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
 
   // Sync current folder from URL params (Collections mode only).
@@ -448,7 +431,6 @@ function KnowledgeBasePageContent() {
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         // Use toast rather than overwriting the table error state
-        const { toast } = await import('@/lib/store/toast-store');
         toast.error('Failed to load sidebar', {
           description: 'Could not load app sections. Please refresh the page.',
         });
@@ -560,6 +542,10 @@ function KnowledgeBasePageContent() {
     // They are still in deps so fetchAllRecordsTableData re-memoizes when they change, triggering the fetch effect.
     allRecordsFilter,
     allRecordsSort,
+    setIsLoadingAllRecordsTable,
+    setAllRecordsTableError,
+    setAllRecordsTableData,
+    syncAllRecordsPaginationMeta,
   ]);
 
   // Extract stable primitive values from URL to avoid re-firing effects
@@ -592,6 +578,22 @@ function KnowledgeBasePageContent() {
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
+  // All Records mode: Re-fetch when pagination page changes
+  useEffect(() => {
+    if (isAllRecordsMode) {
+      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
+      prevAllRecordsPageRef.current = allRecordsPagination.page;
+      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
+    }
+  }, [allRecordsPagination.page]);
+
+  // All Records mode: Re-fetch when pagination limit changes
+  useEffect(() => {
+    if (isAllRecordsMode && allRecordsPagination.limit !== DEFAULT_PAGE_SIZE) {
+      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
+    }
+  }, [allRecordsPagination.limit]);
+
   // All Records mode: Transform API response items to include source display info
   const allRecordsItems = useMemo(() => {
     if (!isAllRecordsMode) return [];
@@ -611,6 +613,15 @@ function KnowledgeBasePageContent() {
     // Apply client-side filters (size, date) since API may not support them
     return applyClientSideFilters(transformed, allRecordsFilter);
   }, [isAllRecordsMode, allRecordsTableData, appNodes, appChildrenCache, allRecordsFilter]);
+
+  // Shared 403 handler: clears stale table state, notifies user, refreshes the
+  // sidebar tree, and navigates away from the now-inaccessible collection.
+  const handleAccessRevoked = useCallback(async () => {
+    clearTableData();
+    toast.error('You no longer have access to this collection');
+    await refreshKbTree();
+    router.push('/knowledge-base');
+  }, [clearTableData, refreshKbTree, router]);
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
@@ -776,16 +787,34 @@ function KnowledgeBasePageContent() {
         }
 
       } catch (error) {
-        console.error('Failed to fetch table data:', error);
-        setTableDataError('Failed to load items. Please try again.');
-        setTableData(null);
+        // ProcessedError from apiClient interceptor has statusCode (not response.status)
+        const status = (error as { statusCode?: number })?.statusCode;
+        if (status === 403) {
+          await handleAccessRevoked();
+        } else {
+          console.error('Failed to fetch table data:', error);
+          setTableDataError('Failed to load items. Please try again.');
+          setTableData(null);
+        }
       } finally {
         setIsLoadingTableData(false);
       }
     },
-    // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
-    // They are still in deps so fetchTableData re-memoizes when they change, triggering the fetch effect.
-    [filter, sort, setTableData, setIsLoadingTableData, setTableDataError, setSelectedNode, setCollectionsPagination, setCurrentFolderId, expandFolderExclusive, cacheNodeChildren, addNodes, setCategorizedNodes]
+    // Pagination/filter/sort read via getState() — keep this callback stable so the searchParams
+    // effect is the only collections refetch trigger (avoids double fetch with page/limit effects).
+    [
+      setTableData,
+      setIsLoadingTableData,
+      setTableDataError,
+      setSelectedNode,
+      setCollectionsPagination,
+      setCurrentFolderId,
+      expandFolderExclusive,
+      cacheNodeChildren,
+      addNodes,
+      setCategorizedNodes,
+      handleAccessRevoked,
+    ]
   );
 
   // Helper to build navigation URLs that preserve view mode
@@ -853,11 +882,11 @@ function KnowledgeBasePageContent() {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     } else {
-      const { type, nodeId, nodeName, nodeType } = pendingSidebarAction;
+      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
       if (type === 'reindex') {
         handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
       } else if (type === 'delete') {
-        setItemToDelete({ id: nodeId, name: nodeName });
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
         setIsDeleteDialogOpen(true);
       }
     }
@@ -875,39 +904,7 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
   }, [pageViewMode, setSearchQuery, setAllRecordsSearchQuery]);
 
-  // Collections mode: Re-fetch when pagination page changes
-  useEffect(() => {
-    if (!isAllRecordsMode && selectedNode) {
-      // Skip if page hasn't actually changed (initial mount)
-      if (collectionsPagination.page === prevCollectionsPageRef.current) return;
-      prevCollectionsPageRef.current = collectionsPagination.page;
-      fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
-  }, [collectionsPagination.page]);
-
-  // All Records mode: Re-fetch when pagination page changes
-  useEffect(() => {
-    if (isAllRecordsMode) {
-      // Skip if page hasn't actually changed (initial mount)
-      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-      prevAllRecordsPageRef.current = allRecordsPagination.page;
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
-  }, [allRecordsPagination.page]);
-
-  // Collections mode: Re-fetch when pagination limit changes
-  useEffect(() => {
-    if (!isAllRecordsMode && selectedNode && collectionsPagination.limit !== 50) {
-      fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
-  }, [collectionsPagination.limit]);
-
-  // All Records mode: Re-fetch when pagination limit changes
-  useEffect(() => {
-    if (isAllRecordsMode && allRecordsPagination.limit !== 50) {
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
-  }, [allRecordsPagination.limit]);
+  // Collections: page/limit changes go through URL sync → searchParams; no separate pagination effects (avoids double fetch).
 
   // Helper function to convert EnhancedFolderTreeNode to FolderTreeNode format for move dialog
   const convertEnhancedToFolderTree = useCallback(
@@ -967,11 +964,6 @@ function KnowledgeBasePageContent() {
     urlParams.set('nodeId', collectionId);
 
     router.push(`/knowledge-base?${urlParams.toString()}`);
-  }, [router]);
-
-  // Handle navigation back to home
-  const _handleHome = useCallback(() => {
-    router.push('/');
   }, [router]);
 
   // Handle find - opens search bar
@@ -1091,12 +1083,6 @@ function KnowledgeBasePageContent() {
     }
   }, [tableData]);
 
-  // Handle add from sidebar PRIVATE section - always creates root collection
-  const _handleAddPrivateCollection = useCallback(() => {
-    setCreateFolderContext({ type: 'collection' });
-    setIsCreateFolderDialogOpen(true);
-  }, []);
-
   // Handle create folder submission
   const handleCreateFolderSubmit = useCallback(
     async (name: string, description: string) => {
@@ -1121,8 +1107,7 @@ function KnowledgeBasePageContent() {
           );
 
           // Show success toast
-          const { toast } = await import('@/lib/store/toast-store');
-          toast.success('Folder created successfully', {
+            toast.success('Folder created successfully', {
             description: `"${name.trim()}" has been created`,
           });
 
@@ -1163,7 +1148,6 @@ function KnowledgeBasePageContent() {
         setIsCreatingFolder(false);
 
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to create folder', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1366,6 +1350,12 @@ function KnowledgeBasePageContent() {
     return createKBShareAdapter(nodeId);
   }, [selectedNode?.nodeId, selectedNode?.nodeType]);
 
+  // Share controls are owner-only for collections.
+  const isSelectedKbOwner = !isAllRecordsMode && tableData?.permissions?.role === 'OWNER';
+  const canManageSelectedKbSharing = !!shareAdapter && isSelectedKbOwner;
+  const canEditSelectedNode = !isAllRecordsMode && tableData?.permissions?.canEdit !== false;
+  const canDeleteSelectedNode = !isAllRecordsMode && tableData?.permissions?.canDelete !== false;
+
   // Whether the selected KB is in the private section (no shared members to fetch)
   // TODO - consider using a json map ds instead of an array for more efficient lookups as the number of nodes grows
   const isSelectedKbPrivate = useMemo(() => {
@@ -1375,13 +1365,20 @@ function KnowledgeBasePageContent() {
   }, [selectedNode?.nodeId, selectedNode?.nodeType, categorizedNodes]);
 
   const handleShare = useCallback(() => {
-    if (!shareAdapter) return;
+    if (!canManageSelectedKbSharing) return;
     setIsShareSidebarOpen(true);
-  }, [shareAdapter]);
+  }, [canManageSelectedKbSharing]);
 
-  // Load shared members whenever the selected KB changes
   useEffect(() => {
-    if (!shareAdapter || isSelectedKbPrivate) {
+    if (!canManageSelectedKbSharing && isShareSidebarOpen) {
+      setIsShareSidebarOpen(false);
+    }
+  }, [canManageSelectedKbSharing, isShareSidebarOpen]);
+
+  // Load shared members whenever the selected KB changes.
+  // If we get a 403, access was revoked — navigate the user away.
+  useEffect(() => {
+    if (!canManageSelectedKbSharing || isSelectedKbPrivate) {
       setSharedMembers([]);
       return;
     }
@@ -1389,10 +1386,15 @@ function KnowledgeBasePageContent() {
       setSharedMembers(
       members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
       );
-    }).catch(() => {
+    }).catch(async (error) => {
       setSharedMembers([]);
+      // ProcessedError from apiClient interceptor has statusCode (not response.status)
+      const status = (error as { statusCode?: number })?.statusCode;
+      if (status === 403) {
+        await handleAccessRevoked();
+      }
     });
-  }, [shareAdapter, isSelectedKbPrivate]);
+  }, [canManageSelectedKbSharing, isSelectedKbPrivate, handleAccessRevoked, shareAdapter]);
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -1425,15 +1427,19 @@ function KnowledgeBasePageContent() {
           KnowledgeBaseApi.streamRecord(item.id, streamOptions),
         ]);
 
-        // 3. Create object URL from blob
-        const url = URL.createObjectURL(blob);
+        // 3. For DOCX we hand the Blob straight through to DocxRenderer.
+        //    All other renderers still expect a URL.
+        const resolvedType = recordDetails.record.mimeType || item.extension || '';
+        const isDocx = isDocxFile(resolvedType, item.name);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
 
-        // 4. Update state with actual file URL
+        // 4. Update state with actual file URL and/or Blob
         setPreviewFile({
           id: item.id,
           name: item.name,
           url,
-          type: recordDetails.record.mimeType || item.extension || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
@@ -1471,13 +1477,18 @@ function KnowledgeBasePageContent() {
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
         ]);
-        const url = URL.createObjectURL(blob);
-        
+
+        // DOCX uses the Blob directly; other types stay on URLs.
+        const resolvedType = recordDetails.record.mimeType || item.fileType || '';
+        const isDocx = isDocxFile(resolvedType, item.name);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
+
         setPreviewFile({
           id: item.id,
           name: item.name,
           url,
-          type: recordDetails.record.mimeType || item.fileType || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
@@ -1501,10 +1512,12 @@ function KnowledgeBasePageContent() {
       const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
       if (isKnowledgeHubNode) {
-        // Handle KnowledgeHubNode - support all container types: kb, app, folder, recordGroup
-        const containerTypes: NodeType[] = ['kb', 'app', 'folder', 'recordGroup'];
+        const containerTypes: NodeType[] = ['app', 'folder', 'recordGroup'];
+        const isNavigableContainer =
+          containerTypes.includes(item.nodeType) ||
+          (item.nodeType === 'record' && item.hasChildren);
 
-        if (containerTypes.includes(item.nodeType)) {
+        if (isNavigableContainer) {
           // Reset filters and search when navigating into a container
           if (isAllRecordsMode) {
             clearAllRecordsFilter();
@@ -1545,7 +1558,6 @@ function KnowledgeBasePageContent() {
     item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
     newName: string
   ) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     try {
       const isHub = 'nodeType' in item && 'origin' in item;
@@ -1554,7 +1566,12 @@ function KnowledgeBasePageContent() {
         const hubItem = item as KnowledgeHubNode;
         if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup') {
           if (!selectedKbId) throw new Error('No collection context for rename');
-          await KnowledgeBaseApi.renameFolder(selectedKbId, hubItem.id, newName);
+          await KnowledgeBaseApi.renameNode({
+            nodeId: hubItem.id,
+            newName,
+            nodeType: hubItem.nodeType,
+            rootKbId: selectedKbId,
+          });
         } else if (hubItem.nodeType === 'record') {
           await KnowledgeBaseApi.renameRecord(hubItem.id, newName);
         }
@@ -1588,12 +1605,16 @@ function KnowledgeBasePageContent() {
     nodeType: string,
     newName: string
   ) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     try {
       if (nodeType === 'folder' || nodeType === 'recordGroup') {
         if (!selectedKbId) throw new Error('No collection context for rename');
-        await KnowledgeBaseApi.renameFolder(selectedKbId, nodeId, newName);
+        await KnowledgeBaseApi.renameNode({
+          nodeId,
+          newName,
+          nodeType,
+          rootKbId: selectedKbId,
+        });
       }
 
       toast.success('Renamed successfully', {
@@ -1634,7 +1655,6 @@ function KnowledgeBasePageContent() {
 
   // Handle reindex - directly reindexes the item with loading/success/error toasts
   const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
-    const { toast } = await import('@/lib/store/toast-store');
 
     const toastId = toast.loading('Re-indexing...', {
       description: `Collection ${item.name} is getting re-indexed. This may take a few seconds`,
@@ -1701,7 +1721,6 @@ function KnowledgeBasePageContent() {
         );
 
         // Show success toast
-        const { toast } = await import('@/lib/store/toast-store');
         toast.success('Item moved successfully', {
           description: `"${itemToMove.name}" has been moved`,
         });
@@ -1717,7 +1736,6 @@ function KnowledgeBasePageContent() {
         console.error('Failed to move item:', error);
 
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to move item', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1752,7 +1770,6 @@ function KnowledgeBasePageContent() {
         );
 
         // Show success toast
-        const { toast } = await import('@/lib/store/toast-store');
         toast.success('File replaced successfully', {
           description: `"${item.name}" has been replaced with "${newFile.name}"`,
         });
@@ -1767,7 +1784,6 @@ function KnowledgeBasePageContent() {
         console.error('Failed to replace file:', error);
         
         // Show error toast
-        const { toast } = await import('@/lib/store/toast-store');
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
           description: err?.response?.data?.message || err?.message || 'An error occurred',
@@ -1781,7 +1797,6 @@ function KnowledgeBasePageContent() {
 
   // Handle download
   const handleDownload = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
-    const { toast } = await import('@/lib/store/toast-store');
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.id, item.name);
     } catch (error: unknown) {
@@ -1802,58 +1817,16 @@ function KnowledgeBasePageContent() {
   // Sidebar Action Handlers
   // ========================================
 
-  // Helper to find a node in categorized trees
-  const findNodeInTrees = useCallback((nodeId: string): EnhancedFolderTreeNode | null => {
-    if (!categorizedNodes) return null;
-    const searchTree = (nodes: EnhancedFolderTreeNode[]): EnhancedFolderTreeNode | null => {
-      for (const node of nodes) {
-        if (node.id === nodeId) return node;
-        const found = searchTree(node.children as EnhancedFolderTreeNode[]);
-        if (found) return found;
-      }
-      return null;
-    };
-    return searchTree(categorizedNodes.shared) || searchTree(categorizedNodes.private);
-  }, [categorizedNodes]);
-
-  // Sidebar: Reindex handler
-  const _handleSidebarReindex = useCallback((nodeId: string) => {
-    const node = findNodeInTrees(nodeId);
-    if (node) {
-      handleReindexClick({ id: node.id, name: node.name, nodeType: node.nodeType } as KnowledgeHubNode);
-    }
-  }, [findNodeInTrees, handleReindexClick]);
-
-  // Sidebar: Rename handler
-  const _handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
-    const { toast } = await import('@/lib/store/toast-store');
-    try {
-      await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-      toast.success('Collection renamed successfully');
-      await refreshData();
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || 'Failed to rename collection');
-      throw error;
-    }
-  }, [refreshData]);
-
-  // Sidebar: Delete handler
-  const _handleSidebarDelete = useCallback((nodeId: string) => {
-    const node = findNodeInTrees(nodeId);
-    if (node) {
-      setItemToDelete({ id: node.id, name: node.name });
-      setIsDeleteDialogOpen(true);
-    }
-  }, [findNodeInTrees]);
-
   // Sidebar: Delete confirm handler
   const handleSidebarDeleteConfirm = useCallback(async () => {
     if (!itemToDelete) return;
     setIsDeleting(true);
-    const { toast } = await import('@/lib/store/toast-store');
     try {
-      await KnowledgeBaseApi.deleteKnowledgeBase(itemToDelete.id);
+      await KnowledgeBaseApi.deleteNode({
+        nodeId: itemToDelete.id,
+        nodeType: itemToDelete.nodeType,
+        rootKbId: itemToDelete.rootKbId,
+      });
       toast.success(`"${itemToDelete.name}" deleted successfully`);
       setIsDeleteDialogOpen(false);
 
@@ -1868,6 +1841,9 @@ function KnowledgeBasePageContent() {
       setItemToDelete(null);
 
       if (deletedCurrentView) {
+        // Clear selectedNode immediately to prevent stale API calls
+        // (e.g. permissions fetch for the now-deleted node)
+        clearTableData();
         await refreshKbTree();
         router.push(buildNavUrl({}));
       } else {
@@ -1875,11 +1851,11 @@ function KnowledgeBasePageContent() {
       }
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || 'Failed to delete collection');
+      toast.error(err?.response?.data?.message || `Failed to delete ${itemToDelete.nodeType === 'folder' ? 'folder' : 'collection'}`);
     } finally {
       setIsDeleting(false);
     }
-  }, [itemToDelete, refreshData, refreshKbTree, searchParams, tableData?.breadcrumbs, router, buildNavUrl]);
+  }, [itemToDelete, refreshData, refreshKbTree, clearTableData, searchParams, tableData?.breadcrumbs, router, buildNavUrl]);
 
   // Handle create sub-folder from move dialog
   // ========================================
@@ -2014,10 +1990,10 @@ function KnowledgeBasePageContent() {
               // Collections mode only props
               onCreateFolder={handleCreateFolder}
               onUpload={handleUpload}
-              onShare={shareAdapter ? handleShare : undefined}
+              onShare={canManageSelectedKbSharing ? handleShare : undefined}
               sharedMembers={sharedMembers}
               onRename={
-                (isAllRecordsMode ? allRecordsTableData?.permissions?.canEdit : tableData?.permissions?.canEdit) !== false
+                !isAllRecordsMode && tableData?.permissions?.canEdit !== false
                   ? handleBreadcrumbRename
                   : undefined
               }
@@ -2076,14 +2052,14 @@ function KnowledgeBasePageContent() {
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
           onRename={
-            (isAllRecordsMode ? allRecordsTableData?.permissions?.canEdit : tableData?.permissions?.canEdit) !== false
+            canEditSelectedNode
               ? handleRename
               : undefined
           }
           onReindex={handleReindexClick}
-          onReplace={isAllRecordsMode ? undefined : (item) => handleReplaceClick(item as KnowledgeHubNode)}
-          onMove={isAllRecordsMode ? undefined : handleMoveClick}
-          onDelete={isAllRecordsMode ? undefined : handleDelete}
+          onReplace={canEditSelectedNode ? (item) => handleReplaceClick(item as KnowledgeHubNode) : undefined}
+          onMove={canEditSelectedNode ? handleMoveClick : undefined}
+          onDelete={canDeleteSelectedNode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
           onUpload={isAllRecordsMode ? undefined : handleUpload}
@@ -2132,7 +2108,7 @@ function KnowledgeBasePageContent() {
           }}
           onConfirm={handleSidebarDeleteConfirm}
           itemName={itemToDelete.name}
-          itemType="KB"
+          itemType={itemToDelete.nodeType === 'folder' ? 'folder' : 'KB'}
           isDeleting={isDeleting}
         />
       )}
@@ -2189,15 +2165,17 @@ function KnowledgeBasePageContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
-              // Clean up blob URL
+              // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
               if (previewFile.url && previewFile.url.startsWith('blob:')) {
                 URL.revokeObjectURL(previewFile.url);
               }
@@ -2215,13 +2193,15 @@ function KnowledgeBasePageContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           onClose={() => {
-            // Clean up blob URL
+            // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
             if (previewFile.url && previewFile.url.startsWith('blob:')) {
               URL.revokeObjectURL(previewFile.url);
             }
@@ -2247,7 +2227,7 @@ function KnowledgeBasePageContent() {
       />
 
       {/* Share Sidebar */}
-      {shareAdapter && (
+      {canManageSelectedKbSharing && shareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
           onOpenChange={setIsShareSidebarOpen}
@@ -2263,6 +2243,9 @@ function KnowledgeBasePageContent() {
                   type: m.type,
                 }))
               );
+            }).catch(() => {
+              // Access may have been revoked — clear stale members silently
+              setSharedMembers([]);
             });
           }}
         />
@@ -2273,8 +2256,10 @@ function KnowledgeBasePageContent() {
 
 export default function KnowledgeBasePage() {
   return (
-    <Suspense>
-      <KnowledgeBasePageContent />
-    </Suspense>
+    <ServiceGate services={['query', 'connector']}>
+      <Suspense>
+        <KnowledgeBasePageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

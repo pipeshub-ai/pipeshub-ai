@@ -56,7 +56,17 @@ export interface ShareTeam {
 
 /** Org user (for suggestions) */
 export interface ShareUser {
+  /**
+   * The identifier expected by the current entity's share endpoint.
+   * For collections/KB this is the graph UUID; for chat this is the MongoDB ObjectID.
+   */
   id: string;
+  /**
+   * The graph UUID for this user. Always set when available and used by flows that
+   * operate on UUIDs regardless of which adapter produced the list (e.g. team creation,
+   * which requires UUIDs even when the surrounding entity uses MongoDB IDs).
+   */
+  uuid?: string;
   name: string;
   email?: string;
   avatarUrl?: string;
@@ -99,4 +109,15 @@ export interface ShareAdapter {
    * (e.g. chat uses MongoDB ObjectIDs, collections use UUIDs).
    */
   getSharingUsers?: () => Promise<ShareUser[]>;
+
+  /**
+   * Paginated user fetcher for the share sidebar search/suggestions.
+   * When provided, enables infinite scroll instead of loading all users at once.
+   * Takes priority over getSharingUsers.
+   */
+  getSharingUsersPaginated?: (params: {
+    page: number;
+    limit: number;
+    search?: string;
+  }) => Promise<{ users: ShareUser[]; totalCount: number }>;
 }

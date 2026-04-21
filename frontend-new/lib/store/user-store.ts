@@ -11,7 +11,7 @@
  *   1. JWT token  → userId
  *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn
  *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === 'admin')
- *   4. GET /api/v1/users/:userId/logo    → avatarUrl (blob → object URL, silent fail)
+ *   4. GET /api/v1/users/dp              → avatarUrl (data URL; silent fail if none)
  *
  * The profile (excluding avatarUrl) is persisted to localStorage for instant
  * avatar initials on reload. The initializer still fetches fresh data on mount.

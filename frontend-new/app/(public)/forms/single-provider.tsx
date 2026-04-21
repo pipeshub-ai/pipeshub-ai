@@ -3,6 +3,7 @@
 import React, { useRef, useState } from 'react';
 import { Box, Flex, Text, Button, Callout } from '@radix-ui/themes';
 import { isValidEmail } from '@/lib/utils/validators';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import AuthTitleSection from '../components/auth-title-section';
 import {
   EmailField,
@@ -183,20 +184,21 @@ export default function SingleProvider({
 
             <Flex gap="2">
 
-              <Button
+              <LoadingButton
                 type="submit"
                 size="3"
-                disabled={auth.loading || !password || !email.trim() || !isValidEmail(email.trim())}
+                disabled={!password || !email.trim() || !isValidEmail(email.trim())}
+                loading={auth.loading}
+                loadingLabel="Signing in…"
                 style={{
                   flex: 1,
                   backgroundColor: 'var(--accent-9)',
                   color: 'white',
                   fontWeight: 500,
-                  cursor: auth.loading ? 'not-allowed' : 'pointer',
                 }}
               >
-                {auth.loading ? 'Signing in…' : 'Sign In'}
-              </Button>
+                Sign In
+              </LoadingButton>
             </Flex>
           </Flex>
         </form>

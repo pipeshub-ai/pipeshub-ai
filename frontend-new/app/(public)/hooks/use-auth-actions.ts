@@ -228,7 +228,9 @@ export function useAuthActions({
       typeof window !== 'undefined'
         ? sessionStorage.getItem('auth_session_token')
         : null;
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    // Default to '' so a missing build-time env var resolves to a same-origin
+    // URL instead of the literal string "undefined" in the path.
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
     let url = `${baseUrl}/api/v1/saml/signIn?email=${encodeURIComponent(email)}`;
     if (sessionToken) {
       url += `&sessionToken=${encodeURIComponent(sessionToken)}`;

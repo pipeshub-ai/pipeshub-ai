@@ -7,6 +7,7 @@ import i18n from '@/lib/i18n/config';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { ToastContainer } from '@/app/components/feedback';
 import { ThemeProvider, ThemeScript } from '@/app/components/theme-provider';
+import { AuthHydrator } from '@/lib/store/auth-hydrator';
 
 export default function PublicLayout({
   children,
@@ -40,6 +41,7 @@ export default function PublicLayout({
       <body>
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
+            <AuthHydrator />
             {children}
             <ToastContainer />
           </ThemeProvider>

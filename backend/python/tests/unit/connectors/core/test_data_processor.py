@@ -126,25 +126,25 @@ class TestInitialize:
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
-        config_svc.get_config = AsyncMock(return_value={
-            "brokers": "broker1:9092,broker2:9092",
-            "client_id": "test",
-            "ssl": False,
-            "sasl": None,
-        })
 
         proc = DataSourceEntitiesProcessor(logger, data_store, config_svc)
 
         tx_store = _make_tx_store()
-        # Set up context manager mock
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
         ctx.__aexit__ = AsyncMock(return_value=False)
         data_store.transaction.return_value = ctx
 
-        with patch(
-            "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
-        ) as MockFactory:
+        with (
+            patch(
+                "app.services.messaging.utils.MessagingUtils.create_producer_config_from_service",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
+            ) as MockFactory,
+        ):
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 
@@ -159,12 +159,6 @@ class TestInitialize:
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
-        config_svc.get_config = AsyncMock(return_value={
-            "brokers": "broker1:9092",
-            "client_id": "test",
-            "ssl": False,
-            "sasl": None,
-        })
 
         proc = DataSourceEntitiesProcessor(logger, data_store, config_svc)
 
@@ -175,9 +169,16 @@ class TestInitialize:
         ctx.__aexit__ = AsyncMock(return_value=False)
         data_store.transaction.return_value = ctx
 
-        with patch(
-            "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
-        ) as MockFactory:
+        with (
+            patch(
+                "app.services.messaging.utils.MessagingUtils.create_producer_config_from_service",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
+            ) as MockFactory,
+        ):
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 
@@ -190,12 +191,6 @@ class TestInitialize:
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
-        config_svc.get_config = AsyncMock(return_value={
-            "bootstrap_servers": ["broker1:9092"],
-            "client_id": "test",
-            "ssl": False,
-            "sasl": None,
-        })
 
         proc = DataSourceEntitiesProcessor(logger, data_store, config_svc)
 
@@ -205,9 +200,16 @@ class TestInitialize:
         ctx.__aexit__ = AsyncMock(return_value=False)
         data_store.transaction.return_value = ctx
 
-        with patch(
-            "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
-        ) as MockFactory:
+        with (
+            patch(
+                "app.services.messaging.utils.MessagingUtils.create_producer_config_from_service",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
+            ) as MockFactory,
+        ):
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 

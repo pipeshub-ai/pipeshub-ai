@@ -4405,10 +4405,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
 
-        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
-
+        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
+        # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
+        # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
         if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
+
+        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
 
         logger.info(f"Filters: {filters}")
 

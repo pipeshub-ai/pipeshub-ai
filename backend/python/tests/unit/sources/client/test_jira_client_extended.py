@@ -80,6 +80,7 @@ class TestBuildFromServicesBearerToken:
             "auth": {
                 "authType": "BEARER_TOKEN",
                 "bearerToken": "bearer123",
+                "baseUrl": "https://mysite.atlassian.net",
             }
         })
         logger = logging.getLogger("test")
@@ -97,7 +98,7 @@ class TestBuildFromServicesOAuth:
     async def test_oauth(self):
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://mysite.atlassian.net"},
             "credentials": {"access_token": "oauth_token"},
         })
         logger = logging.getLogger("test")
@@ -132,6 +133,7 @@ class TestBuildFromToolsetOAuth:
         toolset_config = {
             "authType": "OAUTH",
             "isAuthenticated": True,
+            "auth": {"baseUrl": "https://mysite.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         }
         logger = logging.getLogger("test")

@@ -500,6 +500,20 @@ pull_request_record_schema = {
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
+            "lastCommitSha": {"type": ["string", "null"]},
+        },
+    },
+}
+
+code_file_record_schema={
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "filePath": {"type": "string", "minLength": 0},
+            "fileHash": {"type": "string", "minLength": 0},
         },
     },
 }

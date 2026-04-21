@@ -6,10 +6,16 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import type { AgentStrategy } from '@/chat/types';
 
-const STRATEGIES: AgentStrategy[] = ['auto', 'quick', 'verify', 'deep'];
+/** Canonical strategy order for dropdowns and mode panels — single source of truth. */
+export const AGENT_STRATEGIES: readonly AgentStrategy[] = [
+  'auto',
+  'quick',
+  'verify',
+  'deep',
+];
 
 /** Material Icons names (outlined set) per strategy */
-const AGENT_STRATEGY_ICONS: Record<AgentStrategy, string> = {
+export const AGENT_STRATEGY_ICONS: Record<AgentStrategy, string> = {
   auto: 'auto_awesome',
   quick: 'bolt',
   verify: 'fact_check',
@@ -73,7 +79,7 @@ export function AgentStrategyDropdown({
         align="end"
         style={{ minWidth: 'min(320px, calc(100vw - 32px))', maxWidth: '360px' }}
       >
-        {STRATEGIES.map((id) => (
+        {AGENT_STRATEGIES.map((id) => (
           <DropdownMenu.Item
             key={id}
             data-agent-strategy-row=""

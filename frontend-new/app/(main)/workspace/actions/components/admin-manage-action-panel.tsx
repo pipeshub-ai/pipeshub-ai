@@ -1,0 +1,649 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+  AlertDialog,
+  Badge,
+  Button,
+  Callout,
+  Flex,
+  IconButton,
+  Separator,
+  Text,
+  TextField,
+} from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import {
+  ToolsetsApi,
+  type BuilderSidebarToolset,
+  type ToolsetOauthConfigListRow,
+} from '@/app/(main)/toolsets/api';
+import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
+import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
+import {
+  apiErrorDetail,
+  configureAuthFieldsForType,
+  getToolsetAuthConfigFromSchema,
+  oauthConfigureSeedValuesFromListRow,
+  stableStringifyRecord,
+} from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
+import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
+import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
+import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
+import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
+import {
+  useWorkspaceDrawerNestedModalHost,
+  WORKSPACE_DRAWER_POPPER_Z_INDEX,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
+
+/** Pick the OAuth app row for this instance when id is missing or stale. */
+function resolveLinkedOauthConfig(
+  list: ToolsetOauthConfigListRow[],
+  inst: Pick<BuilderSidebarToolset, 'oauthConfigId' | 'instanceName' | 'displayName'>
+): ToolsetOauthConfigListRow | undefined {
+  if (!list.length) return undefined;
+  const id = inst.oauthConfigId?.trim();
+  if (id) {
+    const byId = list.find((c) => c._id === id);
+    if (byId) return byId;
+  }
+  const instKey = (inst.instanceName || inst.displayName || '').trim().toLowerCase();
+  if (instKey) {
+    const byName = list.find((c) => (c.oauthInstanceName || '').trim().toLowerCase() === instKey);
+    if (byName) return byName;
+  }
+  if (list.length === 1) return list[0];
+  return undefined;
+}
+
+function asAuthRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+/** Prefer full GET /instances/:id auth; else list-row `auth` when present. */
+function resolvedStoredAuth(
+  fromGet: Record<string, unknown> | null,
+  fromSidebar: unknown
+): Record<string, unknown> {
+  const g = fromGet && Object.keys(fromGet).length > 0 ? fromGet : null;
+  return g ?? asAuthRecord(fromSidebar) ?? {};
+}
+
+export interface AdminManageActionPanelProps {
+  instance: BuilderSidebarToolset;
+  onClose: () => void;
+  onSaved: () => void;
+  onDeleted: () => void;
+  onNotify?: (message: string) => void;
+}
+
+export function AdminManageActionPanel({
+  instance,
+  onClose,
+  onSaved,
+  onDeleted,
+  onNotify,
+}: AdminManageActionPanelProps) {
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(true);
+  const { t } = useTranslation();
+  const instanceId = instance.instanceId ?? '';
+  const toolsetType = (instance.toolsetType || '').trim();
+  const authType = (instance.authType || 'NONE').toUpperCase();
+  const oauth = isOAuthType(authType);
+
+  const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
+  const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
+
+  const [instanceName, setInstanceName] = useState(instance.instanceName || instance.displayName || '');
+  const [oauthFieldValues, setOauthFieldValues] = useState<Record<string, unknown>>({});
+  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState('');
+  const [clientSecretWasSet, setClientSecretWasSet] = useState(false);
+
+  const [nonOauthValues, setNonOauthValues] = useState<Record<string, unknown>>({});
+  /** Instance document `auth` from GET /instances/:id (admin); my-toolsets rows often omit this. */
+  const [instanceAuthFromGet, setInstanceAuthFromGet] = useState<Record<string, unknown> | null>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const lastOauthHydrateKeyRef = useRef<string>('');
+
+  const toolNames = useMemo(() => {
+    const fromSchema = toolNamesFromSchema(schemaRaw);
+    if (fromSchema.length) return fromSchema;
+    return (instance.tools || []).map((x) => x.name).filter(Boolean);
+  }, [schemaRaw, instance.tools]);
+
+  const authConfigSchema = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
+
+  const oauthFields = useMemo(() => {
+    if (!oauth) return [];
+    return configureAuthFieldsForType(authConfigSchema, 'OAUTH').filter(
+      (f) => f.name.toLowerCase() !== 'redirecturi'
+    );
+  }, [oauth, authConfigSchema]);
+
+  const nonOauthConfigureFields = useMemo(() => {
+    if (oauth || isNoneAuthType(authType)) return [];
+    return configureAuthFieldsForType(authConfigSchema, authType).filter(
+      (f) => f.name.toLowerCase() !== 'redirecturi'
+    );
+  }, [oauth, authType, authConfigSchema]);
+
+  const redirectUri = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    return toolsetRedirectUri(window.location.origin, toolsetType);
+  }, [toolsetType]);
+
+  const linkedOauthRow = useMemo(
+    () =>
+      resolveLinkedOauthConfig(oauthConfigs, {
+        oauthConfigId: instance.oauthConfigId,
+        instanceName: instance.instanceName,
+        displayName: instance.displayName,
+      }),
+    [oauthConfigs, instance.oauthConfigId, instance.instanceName, instance.displayName]
+  );
+
+  const linkedOauthName = useMemo(() => {
+    return linkedOauthRow?.oauthInstanceName || instance.instanceName || instance.displayName || '';
+  }, [linkedOauthRow, instance.instanceName, instance.displayName]);
+
+  useEffect(() => {
+    lastOauthHydrateKeyRef.current = '';
+  }, [instance.instanceId]);
+
+  useEffect(() => {
+    setInstanceName(instance.instanceName || instance.displayName || '');
+  }, [instance.instanceName, instance.displayName]);
+
+  useEffect(() => {
+    if (!instanceId) {
+      setInstanceAuthFromGet(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const doc = await ToolsetsApi.getToolsetInstance(instanceId);
+        if (cancelled) return;
+        setInstanceAuthFromGet(asAuthRecord(doc.auth));
+      } catch {
+        if (!cancelled) setInstanceAuthFromGet(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [instanceId]);
+
+  useEffect(() => {
+    if (!toolsetType) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await ToolsetsApi.getToolsetRegistrySchema(toolsetType);
+        if (!cancelled) setSchemaRaw(s);
+      } catch {
+        if (!cancelled) setSchemaRaw(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [toolsetType]);
+
+  useEffect(() => {
+    if (!oauth || !toolsetType) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await ToolsetsApi.listToolsetOAuthConfigs(toolsetType);
+        if (!cancelled) setOauthConfigs(list);
+      } catch {
+        if (!cancelled) setOauthConfigs([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [oauth, toolsetType]);
+
+  useEffect(() => {
+    if (!oauth || !oauthFields.length) return;
+    const row = linkedOauthRow;
+    const hydrateKey = `${instance.instanceId}:${row?._id ?? 'none'}:${oauthFields.map((f) => f.name).join(',')}`;
+    if (hydrateKey === lastOauthHydrateKeyRef.current) return;
+    const seeded = oauthConfigureSeedValuesFromListRow(row, oauthFields);
+    setOauthFieldValues(seeded);
+    setInitialOauthSnapshot(stableStringifyRecord(seeded));
+    setClientSecretWasSet(
+      Boolean(row?.clientSecretSet) || Boolean(String(seeded.clientSecret ?? '').trim())
+    );
+    lastOauthHydrateKeyRef.current = hydrateKey;
+  }, [oauth, oauthFields, linkedOauthRow, instance.instanceId]);
+
+  useEffect(() => {
+    if (oauth || !nonOauthConfigureFields.length) {
+      setNonOauthValues({});
+      return;
+    }
+    const src = resolvedStoredAuth(instanceAuthFromGet, instance.auth);
+    const next: Record<string, unknown> = {};
+    for (const f of nonOauthConfigureFields) {
+      const v = src[f.name];
+      if (v !== undefined && v !== null) {
+        next[f.name] = Array.isArray(v) ? v.join(',') : v;
+      }
+    }
+    setNonOauthValues(next);
+  }, [oauth, nonOauthConfigureFields, instance.instanceId, instance.auth, instanceAuthFromGet]);
+
+  const verifyOAuthComplete = useCallback(async (): Promise<boolean> => {
+    try {
+      const row = await ToolsetsApi.findMyToolsetByInstanceId(instanceId);
+      return Boolean(row?.isAuthenticated);
+    } catch {
+      return false;
+    }
+  }, [instanceId]);
+
+  const { authenticating, beginOAuth, stopOAuthUi } = useToolsetOauthPopupFlow({
+    t,
+    verifyAuthenticated: verifyOAuthComplete,
+    onVerified: () => {
+      onNotify?.(t('agentBuilder.oauthSuccessNotify'));
+      onSaved();
+    },
+    onNotify,
+    onIncomplete: () => setError(t('agentBuilder.oauthSignInIncomplete')),
+    onOAuthPopupError: (msg) => setError(msg),
+  });
+
+  useEffect(
+    () => () => {
+      stopOAuthUi();
+    },
+    [stopOAuthUi]
+  );
+
+  const oauthFieldForDisplay = useCallback(
+    (f: AuthSchemaField): AuthSchemaField => {
+      if (!linkedOauthRow) return f;
+      const ln = f.name.toLowerCase();
+      if (ln === 'clientid' || ln === 'clientsecret') {
+        return {
+          ...f,
+          required: false,
+          placeholder:
+            ln === 'clientsecret' ? t('workspace.actions.manage.secretPlaceholder') : f.placeholder,
+        };
+      }
+      return f;
+    },
+    [linkedOauthRow, t]
+  );
+
+  const showOauthImpactCallout =
+    oauth && oauthFields.length > 0 && stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot;
+
+  const copyRedirect = useCallback(async () => {
+    if (!redirectUri) return;
+    try {
+      await navigator.clipboard.writeText(redirectUri);
+      onNotify?.(t('workspace.actions.redirectUriCopied'));
+    } catch {
+      setError(t('workspace.actions.manage.copyFailed'));
+    }
+  }, [onNotify, redirectUri, t]);
+
+  const handleSave = useCallback(async () => {
+    if (!instanceId) return;
+    const name = instanceName.trim();
+    if (!name) {
+      setError(t('workspace.actions.errors.instanceNameRequired'));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      if (oauth) {
+        const authConfig: Record<string, unknown> = { type: 'OAUTH' };
+        for (const f of oauthFields) {
+          const ln = f.name.toLowerCase();
+          if (ln === 'redirecturi' || ln === 'baseurl') continue;
+          const raw = oauthFieldValues[f.name];
+          if (ln === 'clientsecret' && (!raw || !String(raw).trim())) {
+            if (clientSecretWasSet) continue;
+          }
+          if (raw === undefined || raw === null || String(raw).trim() === '') continue;
+          if (ln === 'scopes' && typeof raw === 'string') {
+            authConfig[f.name] = raw
+              .split(',')
+              .map((s: string) => s.trim())
+              .filter(Boolean);
+          } else {
+            authConfig[f.name] = raw;
+          }
+        }
+        const res = await ToolsetsApi.updateToolsetInstance(instanceId, {
+          instanceName: name,
+          authConfig,
+        });
+        const n = res.deauthenticatedUserCount ?? 0;
+        if (n > 0) {
+          onNotify?.(t('workspace.actions.manage.saveDeauthNotice', { count: n }));
+        } else {
+          onNotify?.(t('workspace.actions.manage.saveSuccess'));
+        }
+        onSaved();
+        onClose();
+        return;
+      }
+
+      // Backend PUT replaces instance.auth like POST create assigns new_instance["auth"] (no merge).
+      // Build one object per configure field: form wins when set; otherwise keep prior instance auth.
+      const src = resolvedStoredAuth(instanceAuthFromGet, instance.auth);
+      const authCfg: Record<string, unknown> = {};
+      for (const f of nonOauthConfigureFields) {
+        const raw = nonOauthValues[f.name];
+        if (Object.prototype.hasOwnProperty.call(nonOauthValues, f.name)) {
+          if (raw === null || raw === undefined || String(raw).trim() === '') {
+            continue;
+          }
+          authCfg[f.name] = Array.isArray(raw) ? raw.join(',') : raw;
+          continue;
+        }
+        const prev = src[f.name];
+        if (prev !== undefined && prev !== null && String(prev).trim() !== '') {
+          authCfg[f.name] = Array.isArray(prev) ? (prev as unknown[]).join(',') : prev;
+        }
+      }
+      const putRes = await ToolsetsApi.updateToolsetInstance(instanceId, {
+        instanceName: name,
+        ...(nonOauthConfigureFields.length > 0 ? { authConfig: authCfg } : {}),
+      });
+      const updatedAuth = asAuthRecord(putRes.instance?.auth);
+      if (updatedAuth) {
+        setInstanceAuthFromGet(updatedAuth);
+      } else if (nonOauthConfigureFields.length > 0) {
+        try {
+          const doc = await ToolsetsApi.getToolsetInstance(instanceId);
+          setInstanceAuthFromGet(asAuthRecord(doc.auth));
+        } catch {
+          /* ignore */
+        }
+      }
+      onNotify?.(t('workspace.actions.manage.saveSuccess'));
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(apiErrorDetail(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    clientSecretWasSet,
+    instance.auth,
+    instanceAuthFromGet,
+    instanceId,
+    instanceName,
+    nonOauthConfigureFields,
+    nonOauthValues,
+    oauth,
+    oauthFieldValues,
+    oauthFields,
+    onClose,
+    onNotify,
+    onSaved,
+    t,
+  ]);
+
+  const handleDelete = useCallback(async () => {
+    if (!instanceId) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await ToolsetsApi.deleteToolsetInstance(instanceId);
+      onNotify?.(t('workspace.actions.manage.deleteSuccess'));
+      setDeleteOpen(false);
+      onDeleted();
+      onClose();
+    } catch (e) {
+      setError(apiErrorDetail(e));
+    } finally {
+      setDeleting(false);
+    }
+  }, [instanceId, onClose, onDeleted, onNotify, t]);
+
+  const handleAuthenticate = useCallback(async () => {
+    setError(null);
+    await beginOAuth(
+      async () => {
+        const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
+          instanceId,
+          typeof window !== 'undefined' ? window.location.origin : undefined
+        );
+        if (!result.success || !result.authorizationUrl) {
+          throw new Error(t('agentBuilder.oauthUrlFailed'));
+        }
+        return {
+          authorizationUrl: result.authorizationUrl,
+          windowName: 'oauth_admin_toolset',
+        };
+      },
+      {
+        onTimeout: () => setError(t('agentBuilder.authTimeout')),
+        onOpenError: (e) => setError(apiErrorDetail(e)),
+      }
+    );
+  }, [beginOAuth, instanceId, t]);
+
+  if (!instanceId) {
+    return (
+      <Text size="2" color="gray">
+        {t('workspace.actions.manage.missingInstance')}
+      </Text>
+    );
+  }
+
+  return (
+    <Flex direction="column" gap="4" style={{ width: '100%' }}>
+      {oauth ? (
+        <>
+          <Flex direction="column" gap="2">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.redirectUri')}
+            </Text>
+            <Flex align="center" gap="2">
+              <TextField.Root
+                readOnly
+                value={redirectUri}
+                style={{ flex: 1 }}
+                onClick={() => void copyRedirect()}
+              />
+              <IconButton type="button" variant="soft" color="gray" onClick={() => void copyRedirect()}>
+                <MaterialIcon name="content_copy" size={16} color="var(--gray-11)" />
+              </IconButton>
+            </Flex>
+            <Text size="1" color="gray">
+              {t('workspace.actions.redirectUriHint')}
+            </Text>
+          </Flex>
+
+          <Separator size="4" />
+
+          <Flex direction="column" gap="1">
+            <Text size="2" weight="medium" color="gray">
+              {t('workspace.actions.manage.oauthAppHeading')}
+            </Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {linkedOauthName}
+            </Text>
+          </Flex>
+        </>
+      ) : null}
+
+      <Flex direction="column" gap="2">
+        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+          {t('workspace.actions.instanceName')}
+        </Text>
+        <TextField.Root
+          value={instanceName}
+          onChange={(e) => setInstanceName(e.target.value)}
+          placeholder={t('workspace.actions.instanceNamePlaceholder')}
+        />
+      </Flex>
+
+      {oauth ? (
+        <>
+          {oauthFields.length > 0 ? (
+            <Flex direction="column" gap="3" mt="1">
+              {oauthFields.map((field) => (
+                <SchemaFormField
+                  key={field.name}
+                  field={oauthFieldForDisplay(field) as SchemaField}
+                  value={oauthFieldValues[field.name]}
+                  onChange={(name, val) => setOauthFieldValues((p) => ({ ...p, [name]: val }))}
+                  selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+                />
+              ))}
+            </Flex>
+          ) : (
+            <Callout.Root color="amber" variant="surface" size="1">
+              <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
+            </Callout.Root>
+          )}
+        </>
+      ) : nonOauthConfigureFields.length > 0 ? (
+        <Flex direction="column" gap="3" mt="1">
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {t('workspace.actions.configurationHeading')}
+          </Text>
+          {nonOauthConfigureFields.map((field) => (
+            <SchemaFormField
+              key={field.name}
+              field={field as SchemaField}
+              value={nonOauthValues[field.name]}
+              onChange={(name, val) => setNonOauthValues((p) => ({ ...p, [name]: val }))}
+              selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+            />
+          ))}
+        </Flex>
+      ) : !isNoneAuthType(authType) ? (
+        <Callout.Root color="blue">
+          <Callout.Icon>
+            <MaterialIcon name="info" size={16} />
+          </Callout.Icon>
+          <Callout.Text>{t('workspace.actions.manage.nonOAuthHint')}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      {oauth && showOauthImpactCallout ? (
+        <Callout.Root color="amber">
+          <Callout.Icon>
+            <MaterialIcon name="warning" size={16} />
+          </Callout.Icon>
+          <Callout.Text>{t('workspace.actions.manage.oauthImpact')}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      {toolNames.length > 0 ? (
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {t('workspace.actions.availableActions')} ({toolNames.length})
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            {toolNames.map((n) => (
+              <Badge key={n} size="1" variant="soft" color="gray">
+                {n}
+              </Badge>
+            ))}
+          </Flex>
+        </Flex>
+      ) : null}
+
+      <Separator size="4" />
+
+      <Flex
+        direction="column"
+        gap="2"
+        p="3"
+        style={{
+          borderRadius: 'var(--radius-3)',
+          border: '1px solid var(--red-a6)',
+          backgroundColor: 'var(--red-a2)',
+        }}
+      >
+        <Text size="2" weight="bold" color="red">
+          {t('workspace.actions.manage.dangerZone')}
+        </Text>
+        <Flex align="center" justify="between" gap="3" wrap="wrap">
+          <Text size="2" color="gray" style={{ maxWidth: 420 }}>
+            {t('workspace.actions.manage.deleteDescription', {
+              name: instance.displayName || instance.toolsetType || '',
+            })}
+          </Text>
+          <Button color="red" variant="soft" onClick={() => setDeleteOpen(true)}>
+            {t('workspace.actions.manage.deleteInstance')}
+          </Button>
+        </Flex>
+      </Flex>
+
+      {error ? (
+        <Callout.Root color="red">
+          <Callout.Text>{error}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      <Flex justify="end" gap="2" pt="2" style={{ borderTop: '1px solid var(--gray-a4)' }}>
+        <Button type="button" variant="soft" color="gray" onClick={onClose}>
+          {t('action.cancel')}
+        </Button>
+        {oauth ? (
+          <Button
+            type="button"
+            variant="soft"
+            color="gray"
+            loading={authenticating}
+            onClick={() => void handleAuthenticate()}
+          >
+            {t('workspace.actions.cta.authenticate')}
+          </Button>
+        ) : null}
+        <Button type="button" color="jade" loading={saving} onClick={() => void handleSave()}>
+          {t('action.save')}
+        </Button>
+      </Flex>
+
+      {nestedModalHost ? (
+        <AlertDialog.Root open={deleteOpen} onOpenChange={setDeleteOpen}>
+          <AlertDialog.Content container={nestedModalHost} style={{ maxWidth: 440 }}>
+            <AlertDialog.Title>{t('workspace.actions.manage.deleteConfirmTitle')}</AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              {t('workspace.actions.manage.deleteConfirmBody')}
+            </AlertDialog.Description>
+            <Flex gap="3" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <Button color="red" loading={deleting} onClick={() => void handleDelete()}>
+                {t('workspace.actions.manage.deleteInstance')}
+              </Button>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      ) : null}
+    </Flex>
+  );
+}

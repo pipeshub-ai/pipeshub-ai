@@ -8,6 +8,13 @@ import { useTextHighlighter } from '../use-text-highlighter';
 interface DocxRendererProps {
   fileUrl: string;
   fileName: string;
+  /**
+   * Optional in-memory Blob for the DOCX file. When provided, the renderer
+   * skips `fetch(fileUrl)` and hands the Blob's ArrayBuffer straight to
+   * `docx-preview`. This is what fixes the "blank preview" symptom we saw
+   * when rendering from a freshly-minted `URL.createObjectURL` blob URL.
+   */
+  fileBlob?: Blob;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
   onHighlightClick?: (citationId: string) => void;
@@ -33,7 +40,7 @@ const DOCX_PREVIEW_OPTIONS = {
   renderAltChunks: true,
 };
 
-export function DocxRenderer({ fileUrl, fileName: _fileName, citations, activeCitationId, onHighlightClick }: DocxRendererProps) {
+export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations, activeCitationId, onHighlightClick }: DocxRendererProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [documentReady, setDocumentReady] = useState(false);
@@ -47,8 +54,11 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, citations, activeCi
 
   // ── Step 1: Fetch buffer & render with docx-preview ───────────────
   useEffect(() => {
-    if (!fileUrl || fileUrl.trim() === '') {
-      setError('File URL not available');
+    const hasBlob = fileBlob instanceof Blob;
+    const hasUrl = !!fileUrl && fileUrl.trim() !== '';
+
+    if (!hasBlob && !hasUrl) {
+      setError('File data not available');
       setIsLoading(false);
       return;
     }
@@ -60,15 +70,30 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, citations, activeCi
         setIsLoading(true);
         setDocumentReady(false);
 
-        const response = await fetch(fileUrl);
-        if (!response.ok) throw new Error('Failed to fetch document');
-        const arrayBuffer = await response.arrayBuffer();
+        // Prefer the in-memory Blob when present — avoids a redundant
+        // round-trip through a `URL.createObjectURL` blob URL, which was
+        // the root cause of the blank DOCX preview.
+        let arrayBuffer: ArrayBuffer;
+        if (hasBlob) {
+          if (fileBlob.size === 0) {
+            throw new Error('Received an empty file from the server.');
+          }
+          arrayBuffer = await fileBlob.arrayBuffer();
+        } else {
+          const response = await fetch(fileUrl);
+          if (!response.ok) throw new Error('Failed to fetch document');
+          arrayBuffer = await response.arrayBuffer();
+        }
+
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+          throw new Error('Document is empty.');
+        }
 
         if (cancelled || !containerRef.current) return;
 
         // Dynamic import to avoid SSR issues (docx-preview uses DOM APIs)
         const docxPreview = await import('docx-preview');
-        
+
         if (cancelled || !containerRef.current) return;
 
         // Clear any previous content
@@ -78,8 +103,17 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, citations, activeCi
 
         if (cancelled) return;
 
-        // Add IDs to elements for highlight targeting
+        // If docx-preview produced no output (invalid file, silent failure,
+        // etc.) show a concrete error instead of a blank pane.
         const container = containerRef.current;
+        const renderedNodes = container.childElementCount;
+        if (renderedNodes === 0) {
+          throw new Error(
+            'Unable to render this document. It may not be a valid .docx file (legacy .doc files are not supported).'
+          );
+        }
+
+        // Add IDs to elements for highlight targeting
         let idCounter = 0;
         const addIds = (selector: string, prefix: string) => {
           container.querySelectorAll(selector).forEach((el) => {
@@ -104,7 +138,7 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, citations, activeCi
 
     renderDocument();
     return () => { cancelled = true; };
-  }, [fileUrl]);
+  }, [fileUrl, fileBlob]);
 
   // ── Step 2: Apply citation highlights once document is rendered ────
   useEffect(() => {

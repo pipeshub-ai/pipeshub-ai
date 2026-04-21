@@ -10,13 +10,14 @@
  *   1. JWT decode    → userId
  *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn
  *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === 'admin')
- *   4. GET /api/v1/users/:userId/logo    → avatarUrl (blob, silent fail)
+ *   4. GET /api/v1/users/dp              → avatarUrl (data URL from image bytes; silent fail if none)
  *
  * Idempotent: skips if already initialized unless `force = true`.
  * Called by <UserProfileInitializer> in the (main) layout.
  */
 
 import { useCallback, useRef } from 'react';
+import { ProfileApi } from '@/app/(main)/workspace/profile/api';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useUserStore } from '@/lib/store/user-store';
 import { apiClient } from '@/lib/api';
@@ -67,11 +68,12 @@ export function useInitializeUserProfile() {
         // Capture userId at the start of this async chain to detect staleness
         const capturedUserId = userId;
 
-        // ── Parallel: profile + admin groups ──────────────────
-        console.debug(LOG, 'Fetching user profile + groups in parallel…');
-        const [userResult, groupsResult] = await Promise.allSettled([
+        // ── Parallel: profile + admin groups + display picture (JWT-scoped GET /users/dp)
+        console.debug(LOG, 'Fetching user profile + groups + avatar in parallel…');
+        const [userResult, groupsResult, avatarResult] = await Promise.allSettled([
           apiClient.get(`/api/v1/users/${userId}`),
           apiClient.get(`/api/v1/userGroups/users/${userId}`),
+          ProfileApi.getAvatar(),
         ]);
 
         const user =
@@ -99,6 +101,12 @@ export function useInitializeUserProfile() {
           console.debug(LOG, 'Groups API OK, count:', Array.isArray(groups) ? groups.length : 0);
         }
 
+        const avatarUrl =
+          avatarResult.status === 'fulfilled' ? avatarResult.value : null;
+        if (avatarResult.status === 'rejected') {
+          console.warn(LOG, 'Avatar (GET /users/dp) failed:', avatarResult.reason);
+        }
+
         const isAdmin = Array.isArray(groups)
           ? groups.some((g) => g.type === 'admin')
           : null;
@@ -114,10 +122,12 @@ export function useInitializeUserProfile() {
         }
 
         const email = user?.email ?? null;
+        // Keep fullName strictly reflective of the backend — no email-prefix
+        // fallback, so the FullNameDialog gate in the layout can correctly detect
+        // users who haven't set a name yet.
         const fullName =
           user?.fullName ??
-          ([user?.firstName, user?.lastName].filter(Boolean).join(' ') || null) ??
-          (email ? email.split('@')[0] : null);
+          ([user?.firstName, user?.lastName].filter(Boolean).join(' ') || null);
 
         const resolvedProfile = {
           userId,
@@ -129,7 +139,7 @@ export function useInitializeUserProfile() {
           hasLoggedIn: user?.hasLoggedIn ?? false,
         };
 
-        setProfile({ ...resolvedProfile, avatarUrl: null });
+        setProfile({ ...resolvedProfile, avatarUrl });
         setInitialized(true);
         setLoading(false);
         if (process.env.NODE_ENV !== 'production') {

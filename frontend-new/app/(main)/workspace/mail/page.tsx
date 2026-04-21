@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -12,6 +13,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SmtpApi } from './api';
@@ -23,27 +25,22 @@ import type { SmtpConfig } from './types';
 // ============================================================
 
 export default function MailPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+
+  const [isConfigured, setIsConfigured] = useState(false);
+  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
   }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
-  const [isConfigured, setIsConfigured] = useState(false);
-  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [panelOpen, setPanelOpen] = useState(false);
 
   // ── Load SMTP status ──────────────────────────────────────
   const loadSmtpConfig = useCallback(async () => {
@@ -60,8 +57,9 @@ export default function MailPage() {
   }, []);
 
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     loadSmtpConfig();
-  }, [loadSmtpConfig]);
+  }, [isProfileInitialized, isAdmin, loadSmtpConfig]);
 
   // ── Save SMTP config ──────────────────────────────────────
   const handleSave = useCallback(
@@ -79,10 +77,24 @@ export default function MailPage() {
     setIsConfigured(!!config?.host && !!config?.fromEmail);
     addToast({
       variant: 'success',
-      title: 'SMTP configuration saved',
-      description: 'Your email server settings have been updated',
+      title: t('workspace.mail.toasts.saved'),
+      description: t('workspace.mail.toasts.savedDescription'),
     });
   }, [addToast]);
+
+  // Prevent rendering while profile is unresolved or for non-admin (redirect above).
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
+
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} showLabel />
+      </Flex>
+    );
+  }
 
   // ── Render ────────────────────────────────────────────────
   return (
@@ -92,10 +104,10 @@ export default function MailPage() {
         <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Mail Settings
+              {t('workspace.mail.title')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Email server configuration for OTP and notifications
+              {t('workspace.mail.subtitle')}
             </Text>
           </Box>
 
@@ -109,7 +121,7 @@ export default function MailPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -126,25 +138,18 @@ export default function MailPage() {
           {/* Section header */}
           <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-              Server Configuration
+              {t('workspace.mail.serverConfig')}
             </Text>
             <Text
               size="1"
               style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
-              Configure email and other server settings for authentication
+              {t('workspace.mail.serverConfigDescription')}
             </Text>
           </Box>
 
           {/* SMTP row */}
           <Box style={{ padding: '12px 14px' }}>
-            {isLoading ? (
-              <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-                <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                  Loading…
-                </Text>
-              </Flex>
-            ) : (
               <Flex
                 align="center"
                 gap="3"
@@ -177,7 +182,7 @@ export default function MailPage() {
                     weight="medium"
                     style={{ color: 'var(--slate-12)', display: 'block' }}
                   >
-                    SMTP
+                    {t('workspace.mail.smtp')}
                   </Text>
                   <Text
                     size="1"
@@ -191,7 +196,7 @@ export default function MailPage() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Email server configuration for OTP and notifications
+                    {t('workspace.mail.subtitle')}
                   </Text>
                 </Box>
 
@@ -202,7 +207,7 @@ export default function MailPage() {
                   size="1"
                   style={{ flexShrink: 0 }}
                 >
-                  {isConfigured ? 'Configured' : 'Not Configured'}
+                  {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
                 </Badge>
 
                 {/* Settings / configure button */}
@@ -216,7 +221,6 @@ export default function MailPage() {
                   <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
                 </IconButton>
               </Flex>
-            )}
           </Box>
         </Flex>
       </Box>

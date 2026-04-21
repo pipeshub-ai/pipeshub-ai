@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Flex, Button } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { isValidEmail } from '@/lib/utils/validators';
 import AuthTitleSection from '../components/auth-title-section';
 import { EmailField } from './form-components';
 import { AuthApi, type AuthInitResponse } from '../api';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -86,20 +87,21 @@ export default function EmailStep({ onNext, initialEmail = '' }: EmailStepProps)
             autoFocus
           />
 
-          <Button
+          <LoadingButton
             type="submit"
             size="3"
-            disabled={loading || !email.trim()}
+            disabled={!email.trim()}
+            loading={loading}
+            loadingLabel="Checking…"
             style={{
               width: '100%',
               backgroundColor: email.trim() ? 'var(--accent-9)' : undefined,
               color: email.trim() ? 'white' : undefined,
               fontWeight: 500,
-              cursor: loading ? 'wait' : 'pointer',
             }}
           >
-            {loading ? 'Checking…' : 'Continue'}
-          </Button>
+            Continue
+          </LoadingButton>
         </Flex>
       </form>
     </Flex>

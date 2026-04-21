@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import type { Connector } from '../types';
@@ -17,8 +18,13 @@ interface ConnectorCardProps {
   activeInstanceCount?: number;
   /** Number of instances with isActive=false. */
   inactiveInstanceCount?: number;
-  /** Fired when "+ Setup" or "+" is clicked. */
+  /** Fired when "+ Setup" is clicked (registry / first-time setup). */
   onSetup?: (connector: Connector) => void;
+  /**
+   * Fired when the "+" control is clicked on an active connector card
+   * (add another instance — must not reuse an existing instance `_key`).
+   */
+  onAddInstance?: (connector: Connector) => void;
   /** Fired when the card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
 }
@@ -33,6 +39,7 @@ export function ConnectorCard({
   activeInstanceCount = 0,
   inactiveInstanceCount = 0,
   onSetup,
+  onAddInstance,
   onCardClick,
 }: ConnectorCardProps) {
   const [isHovered, setIsHovered] = useState(false);
@@ -104,7 +111,13 @@ export function ConnectorCard({
         <ActiveInstanceBar
           activeCount={activeInstanceCount}
           inactiveCount={inactiveInstanceCount}
-          onAdd={() => onSetup?.(connector)}
+          onAdd={() => {
+            if (onAddInstance) {
+              onAddInstance(connector);
+            } else {
+              onSetup?.(connector);
+            }
+          }}
           onBadgeClick={() => onCardClick?.(connector)}
         />
       )}
@@ -119,6 +132,7 @@ export function ConnectorCard({
 /** "+ Setup" button for registry / unconfigured connectors. */
 function SetupButton({ onClick }: { onClick?: () => void }) {
   const [isHovered, setIsHovered] = useState(false);
+  const { t } = useTranslation();
 
   return (
     <button
@@ -156,7 +170,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
           color: 'var(--gray-11)',
         }}
       >
-        Setup
+        {t('workspace.actions.cta.setup')}
       </span>
     </button>
   );
@@ -175,6 +189,7 @@ function ActiveInstanceBar({
   onBadgeClick?: () => void;
 }) {
   const [isAddHovered, setIsAddHovered] = useState(false);
+  const { t } = useTranslation();
   const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
 
   const handleBadgeClick = (e: React.MouseEvent) => {
@@ -208,7 +223,7 @@ function ActiveInstanceBar({
             }}
           >
             <Text size="1" weight="medium" style={{ color: 'var(--green-a11)', whiteSpace: 'nowrap' }}>
-              {activeCount === 1 ? '1 Active Instance' : `${activeCount} Active Instances`}
+              {activeCount === 1 ? t('workspace.actions.card.activeOne') : t('workspace.actions.card.activeMany', { count: activeCount })}
             </Text>
           </Flex>
         )}
@@ -230,7 +245,7 @@ function ActiveInstanceBar({
             }}
           >
             <Text size="1" weight="medium" style={{ color: 'var(--red-a11)', whiteSpace: 'nowrap' }}>
-              {inactiveCount === 1 ? '1 Inactive Instance' : `${inactiveCount} Inactive Instances`}
+              {inactiveCount === 1 ? t('workspace.actions.card.inactiveOne') : t('workspace.actions.card.inactiveMany', { count: inactiveCount })}
             </Text>
           </Flex>
         )}

@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { ShareCommonApi } from './api';
 import type { ShareUser, CreateTeamPayload } from './types';
 import { toast } from '@/lib/store/toast-store';
@@ -100,10 +101,17 @@ export function CreateTeamView({
 
     setIsCreating(true);
     try {
+      // The teams endpoint expects graph UUIDs. Some adapters (e.g. chat) expose
+      // users keyed by MongoDB ObjectID in `id`, so resolve each selection to its
+      // UUID from the source list before building the payload.
+      const usersById = new Map(allUsers.map((u) => [u.id, u]));
       const payload: CreateTeamPayload = {
         name: teamName.trim(),
         description: teamDescription.trim(),
-        userRoles: selectedUserIds.map((userId) => ({ userId, role: 'MEMBER' })),
+        userRoles: selectedUserIds.map((selectedId) => ({
+          userId: usersById.get(selectedId)?.uuid ?? selectedId,
+          role: 'MEMBER',
+        })),
       };
       await ShareCommonApi.createTeam(payload);
       toast.success('Team created', { description: `"${teamName.trim()}" team has been created` });
@@ -534,14 +542,16 @@ export function CreateTeamView({
         <Button variant="outline" color="gray" size="2" onClick={onBack}>
           Cancel
         </Button>
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={handleCreate}
-          disabled={!teamName.trim() || isCreating}
+          disabled={!teamName.trim()}
+          loading={isCreating}
+          loadingLabel="Creating..."
         >
-          {isCreating ? 'Creating...' : 'Create Team'}
-        </Button>
+          Create Team
+        </LoadingButton>
       </Flex>
     </Flex>
   );

@@ -3,7 +3,9 @@
 import { useEffect } from 'react';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
 import type { SearchRequest } from '@/chat/types';
 
@@ -16,6 +18,30 @@ let currentSearchAbort: AbortController | null = null;
  */
 export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
+  const effectiveAgentId = useEffectiveAgentId();
+  const isAgentChat = Boolean(effectiveAgentId);
+
+  useEffect(() => {
+    if (!isAgentChat) return;
+    const store = useChatStore.getState();
+    store.setQueryMode('agent');
+    if (store.settings.mode === 'search') {
+      store.setMode('chat');
+      store.clearSearchResults();
+    }
+  }, [isAgentChat]);
+
+  // Make sure models for the EFFECTIVE context (URL or slot agent) are loaded
+  // and validated, regardless of which URL the page was opened on. This keeps
+  // the pill + submit in sync when the active slot carries an agent that the
+  // URL doesn't reflect (e.g. navigating into an existing agent conversation).
+  // The fetch util dedupes so this is cheap when page.tsx already ran.
+  useEffect(() => {
+    const ctxKey = ctxKeyFromAgent(effectiveAgentId);
+    fetchModelsForContext(ctxKey).catch((err) => {
+      console.error('Failed to fetch models for effective context', ctxKey, err);
+    });
+  }, [effectiveAgentId]);
 
   useEffect(() => {
     return () => {
@@ -72,8 +98,8 @@ export function ChatInputWrapper() {
 
     const store = useChatStore.getState();
 
-    // Search mode: direct API call, no slots/runtime
-    if (store.settings.mode === 'search') {
+    // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
+    if (store.settings.mode === 'search' && !isAgentChat) {
       handleSearchSubmit(message.trim());
       return;
     }
@@ -133,5 +159,5 @@ export function ChatInputWrapper() {
     }
   };
 
-  return <ChatInput onSend={handleSend} />;
+  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} agentId={effectiveAgentId} />;
 }

@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { Box, Flex, Text, Button } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { isValidEmail } from '@/lib/utils/validators';
+import { LoadingButton } from '@/app/components/ui/loading-button';
+import { Spinner } from '@/app/components/ui/spinner';
 import { EmailField, OtpField, OTP_LENGTH } from './form-components';
 import type { AuthError } from '../hooks/use-auth-actions';
 
@@ -130,27 +132,37 @@ export default function OtpSignInFlow({
                   textDecoration: canSendOtp ? 'underline' : 'none',
                   font: 'inherit',
                   fontWeight: 500,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
                 }}
               >
-                {otpSendLoading ? 'Sending…' : 'Send OTP'}
+                {otpSendLoading ? (
+                  <>
+                    <Spinner size={12} />
+                    Sending…
+                  </>
+                ) : (
+                  'Send OTP'
+                )}
               </button>
             </Text>
           </Flex>
 
-          <Button
+          <LoadingButton
             type="submit"
             size="3"
-            disabled={otpVerifyLoading}
+            loading={otpVerifyLoading}
+            loadingLabel="Signing in…"
             style={{
               width: '100%',
               backgroundColor: 'var(--accent-9)',
               color: 'white',
               fontWeight: 500,
-              cursor: otpVerifyLoading ? 'not-allowed' : 'pointer',
             }}
           >
-            {otpVerifyLoading ? 'Signing in…' : 'Sign In'}
-          </Button>
+            Sign In
+          </LoadingButton>
         </Flex>
       </form>
     </Box>

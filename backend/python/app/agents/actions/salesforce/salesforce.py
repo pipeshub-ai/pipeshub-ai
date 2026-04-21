@@ -94,6 +94,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.salesforce.salesforce import SalesforceClient, SalesforceResponse
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
 
@@ -146,7 +147,17 @@ logger = logging.getLogger(__name__)
             app_description="Salesforce OAuth application for agent integration",
         ),
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/salesforce.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/salesforce.svg")
+        .add_documentation_link(DocumentationLink(
+            "Salesforce OAuth Setup",
+            "https://help.salesforce.com/s/articleView?id=xcloud.create_a_local_external_client_app.htm&type=5",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/salesforce/salesforce",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Salesforce:
     """Salesforce CRM tools exposed to agents using SalesforceDataSource."""

@@ -2,13 +2,14 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { ChatApi } from '@/chat/api';
+import type { Conversation } from '@/chat/types';
 import { Box, Flex, Text, TextField, Theme } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useChatStore } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { groupConversationsByTime, getNonEmptyGroups } from '@/chat/sidebar/time-group';
@@ -17,8 +18,12 @@ import { TimeGroupedSkeleton, SearchResultsSkeleton } from './skeleton';
 import { ChatRow } from './chat-row';
 import { SearchResultRow } from './search-result-row';
 import { CommandPalette } from './command-palette';
+import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
 
 // ── Constants ──
+
+/** Page size for browse + search inside the ⌘+K overlay */
+const OVERLAY_CONVERSATIONS_LIMIT = 50;
 
 /** Translations for time-group labels */
 const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
@@ -26,6 +31,15 @@ const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Previous 7 Days': 'timeGroup.previous7Days',
   'Older': 'timeGroup.older',
 };
+
+function isAbortOrCancelError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string };
+  return (
+    e.name === 'AbortError' ||
+    e.name === 'CanceledError' ||
+    e.code === 'ERR_CANCELED'
+  );
+}
 
 // ── Main component ──
 
@@ -37,48 +51,29 @@ interface ChatSearchProps {
 /**
  * Chat search overlay — triggered by ⌘+K.
  *
- * Shows a centered floating panel with:
- * - Search input
- * - Command Palette row (New Chat action, ⌘+Shift+K)
- * - Recent chats grouped by "Today" / "Previous 7 Days"
- * - Loading skeleton while conversations are loading
- * - "Coming Soon" toast when search is attempted
- *
- * Uses the same chat conversations from the sidebar store.
+ * Lists come from `ChatApi.fetchConversations` (browse: no search; query: `search` param).
  * Rendered via React Portal to avoid z-index issues.
  */
 export function ChatSearch({ open, onClose }: ChatSearchProps) {
   const { appearance } = useThemeAppearance();
   const { t } = useTranslation();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const agentId = searchParams.get('agentId');
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const addToast = useToastStore((s) => s.addToast);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [contentLeft, setContentLeft] = useState(0);
-  const [isSearching, setIsSearching] = useState(false);
 
-  // Track whether we've already shown the local-search toast this session
-  const localSearchToastShownRef = useRef(false);
+  const [browseConversations, setBrowseConversations] = useState<Conversation[]>([]);
+  const [searchResults, setSearchResults] = useState<Conversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
 
-  // ── Store selectors ──
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
-  const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const dispatch = useCommandStore((s) => s.dispatch);
 
-  // Merge shared + own conversations for display
-  const allConversations = useMemo(
-    () => [...sharedConversations, ...conversations],
-    [sharedConversations, conversations],
-  );
-
-  // Group by time only the two groups to show (Today, Previous 7 Days)
-  const timeGroups = useMemo(() => {
-    const grouped = groupConversationsByTime(allConversations);
-    return getNonEmptyGroups(grouped);
-  }, [allConversations]);
+  const debouncedQuery = useDebouncedSearch(searchQuery.trim(), 350);
 
   // ── Measure main content area offset ──
   useEffect(() => {
@@ -96,13 +91,62 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
     return () => window.removeEventListener('resize', measure);
   }, [open]);
 
+  // Reset input when overlay opens (debounced value follows via useDebouncedSearch; empty clears immediately)
+  useEffect(() => {
+    if (!open) return;
+    setSearchQuery('');
+  }, [open]);
+
+  // Browse (no search) vs search: same API; param omitted when debounced query is empty
+  useEffect(() => {
+    if (!open) return;
+
+    const q = debouncedQuery;
+    const isSearch = q.length > 0;
+
+    const ac = new AbortController();
+    setConversationsLoading(true);
+
+    (async () => {
+      try {
+        const result = await ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
+          ...(isSearch ? { search: q } : {}),
+          signal: ac.signal,
+        });
+        const merged = [
+          ...result.sharedConversations,
+          ...result.conversations,
+        ];
+        if (isSearch) {
+          setSearchResults(merged);
+        } else {
+          setBrowseConversations(merged);
+          setSearchResults([]);
+        }
+      } catch (err: unknown) {
+        if (isAbortOrCancelError(err)) return;
+        addToast({
+          variant: 'error',
+          title: t('message.error'),
+          description:
+            err instanceof Error
+              ? err.message
+              : isSearch
+                ? 'Search failed'
+                : 'Could not load conversations',
+        });
+        if (isSearch) setSearchResults([]);
+      } finally {
+        setConversationsLoading(false);
+      }
+    })();
+
+    return () => ac.abort();
+  }, [open, debouncedQuery, addToast, t]);
+
   // ── Focus input on open ──
   useEffect(() => {
     if (open) {
-      setSearchQuery('');
-      setIsSearching(false);
-      localSearchToastShownRef.current = false;
-      // Small delay to ensure portal is mounted
       requestAnimationFrame(() => {
         inputRef.current?.focus();
       });
@@ -133,6 +177,18 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
     };
   }, [open]);
 
+  const timeGroups = useMemo(() => {
+    const grouped = groupConversationsByTime(browseConversations);
+    return getNonEmptyGroups(grouped);
+  }, [browseConversations]);
+
+  const trimmedInput = searchQuery.trim();
+  const inSearchMode = trimmedInput.length > 0;
+  /** True while debounce hasn’t caught up to the input, or a search request is in flight */
+  const searchPending =
+    inSearchMode &&
+    (debouncedQuery !== trimmedInput || conversationsLoading);
+
   // ── Handlers ──
   const handleNewChat = useCallback(() => {
     onClose();
@@ -142,44 +198,23 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
   const handleSelectConversation = useCallback(
     (id: string) => {
       onClose();
-      router.push(buildChatHref({ conversationId: id }));
+      router.push(
+        buildChatHref({
+          agentId: agentId || undefined,
+          conversationId: id,
+        })
+      );
     },
-    [onClose, router],
+    [onClose, router, agentId]
   );
 
-  const handleSearchSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-    },
-    [],
-  );
+  const handleSearchSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+  }, []);
 
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchQuery(e.target.value);
-    // Local filtering is instant — no loading state needed
-    setIsSearching(false);
   }, []);
-
-  // ── Filter conversations by search query (client-side only) ──
-  const filteredConversations = useMemo(() => {
-    if (!searchQuery.trim()) return null;
-    const q = searchQuery.toLowerCase();
-    return allConversations.filter((c) =>
-      c.title.toLowerCase().includes(q),
-    );
-  }, [searchQuery, allConversations]);
-
-  // ── Show "Coming Soon / Currently using local search" toast once per session ──
-  useEffect(() => {
-    if (filteredConversations !== null && !localSearchToastShownRef.current) {
-      localSearchToastShownRef.current = true;
-      addToast({
-        variant: 'info',
-        title: t('chat.comingSoon'),
-        description: 'Currently using local search',
-      });
-    }
-  }, [filteredConversations, addToast, t]);
 
   if (!open) return null;
 
@@ -253,16 +288,12 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
               padding: '0 var(--space-3) var(--space-3)',
             }}
           >
-            {/* Loading state */}
-            {isConversationsLoading && !filteredConversations ? (
-              <TimeGroupedSkeleton />
-            ) : isSearching ? (
-              <SearchResultsSkeleton />
-            ) : filteredConversations ? (
-              /* Search results */
-              filteredConversations.length > 0 ? (
+            {inSearchMode ? (
+              searchPending ? (
+                <SearchResultsSkeleton />
+              ) : searchResults.length > 0 ? (
                 <Flex direction="column" gap="1">
-                  {filteredConversations.map((conv) => (
+                  {searchResults.map((conv) => (
                     <SearchResultRow
                       key={conv.id}
                       conversation={conv}
@@ -277,12 +308,12 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                   </Text>
                 </Flex>
               )
+            ) : conversationsLoading ? (
+              <TimeGroupedSkeleton />
             ) : (
-              /* Default: time-grouped recent chats */
               <Flex direction="column" gap="2">
                 {timeGroups.map(([groupKey, groupConversations]) => (
                   <Flex key={groupKey} direction="column">
-                    {/* Group header */}
                     <Flex
                       align="center"
                       style={{
@@ -301,7 +332,6 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                       </Text>
                     </Flex>
 
-                    {/* Chat items */}
                     <Flex direction="column" gap="1">
                       {groupConversations.map((conv) => (
                         <ChatRow
@@ -315,7 +345,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                   </Flex>
                 ))}
 
-                {timeGroups.length === 0 && !isConversationsLoading && (
+                {timeGroups.length === 0 && !conversationsLoading && (
                   <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
                     <Text size="2" style={{ color: 'var(--slate-a9)' }}>
                       {t('chat.noChatsYet')}
@@ -328,7 +358,6 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
         </Flex>
       </div>
 
-      {/* Pulse animation for skeleton */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 0.4; }

@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Flex, Box, Text, Button, IconButton, TextField, Dialog, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import { renderTreeLines } from '@/app/(main)/knowledge-base/sidebar/section-element';
@@ -504,10 +505,12 @@ export function MoveFolderSidebar({
             backdropFilter: 'blur(8px)',
           }}
         >
-          <Button
+          <LoadingButton
             variant="solid"
             size="2"
-            disabled={!selectedFolderId || isMoving}
+            disabled={!selectedFolderId}
+            loading={isMoving}
+            loadingLabel="Moving..."
             onClick={handleMove}
             style={{
               background: 'var(--emerald-9)',
@@ -519,8 +522,8 @@ export function MoveFolderSidebar({
               size={16}
               color="white"
             />
-            {isMoving ? 'Moving...' : 'Move'}
-          </Button>
+            Move
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>
