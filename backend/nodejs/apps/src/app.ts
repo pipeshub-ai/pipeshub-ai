@@ -278,6 +278,19 @@ export class Application {
           );
           return;
         }
+
+        // Legacy `/record/<recordId>` URLs (from shared links, emails, backend
+        // citations) are preserved by redirecting to the query-param route that
+        // the static-export build ships. The dynamic `[recordId]` segment was
+        // removed because `output: 'export'` requires `generateStaticParams()`
+        // and record IDs are unbounded runtime values.
+        const recordMatch = _req.path.match(/^\/record\/([^/]+)\/?$/);
+        if (recordMatch && recordMatch[1]) {
+          const recordId = encodeURIComponent(recordMatch[1]);
+          res.redirect(302, `/record/?recordId=${recordId}`);
+          return;
+        }
+
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 

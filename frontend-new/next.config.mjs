@@ -14,6 +14,12 @@ const nextConfig = {
             { source: '/toolsets/oauth/callback/:slug/', destination: '/toolsets/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug', destination: '/connectors/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug/', destination: '/connectors/oauth/callback/' },
+            // Legacy `/record/<recordId>` URLs (from shared links, emails, backend citations)
+            // map to the query-param route since `output: 'export'` can't ship a dynamic
+            // `[recordId]` segment. Production static hosts get the same behavior from the
+            // Node.js backend SPA fallback.
+            { source: '/record/:recordId', destination: '/record/?recordId=:recordId' },
+            { source: '/record/:recordId/', destination: '/record/?recordId=:recordId' },
         ];
     },
     webpack: (config) => {
