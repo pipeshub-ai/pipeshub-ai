@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Flex, Box, Text, TextField, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
@@ -25,8 +26,6 @@ interface SmtpConfigurePanelProps {
 // ============================================================
 // Helpers
 // ============================================================
-
-type TFunction = (key: string) => string;
 
 function validate(form: SmtpFormData, t: TFunction): SmtpFormErrors {
   const errors: SmtpFormErrors = {};

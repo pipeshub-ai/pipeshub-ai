@@ -611,6 +611,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "Configure",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -639,8 +640,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
