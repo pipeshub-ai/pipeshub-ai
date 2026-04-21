@@ -35,7 +35,7 @@ function RecordPageSuspenseFallback() {
   return (
     <Box p="4">
       <Text size="2" color="gray">
-        {t('recordView.loading')}
+        {t('recordView.loading', 'Loading...')}
       </Text>
     </Box>
   );
