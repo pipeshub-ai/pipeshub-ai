@@ -146,6 +146,12 @@ export function FilterDropdown({
   const hasSelection = selectedValues.length > 0;
   const isServerSearch = !!onSearch;
 
+  const optionLabelByValue = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of options) map.set(o.value, o.label);
+    return map;
+  }, [options]);
+
   // Filter options by search query (only when not using server search)
   const filteredOptions = useMemo(() => {
     if (isServerSearch) return options; // server already filtered
@@ -284,8 +290,7 @@ export function FilterDropdown({
               </Flex>
               <Flex wrap="wrap" gap="1" align="start">
                 {selectedValues.map((val) => {
-                  const opt = options.find((o) => o.value === val);
-                  const text = opt?.label ?? val;
+                  const text = optionLabelByValue.get(val) ?? val;
                   return (
                     <Badge
                       key={val}
@@ -373,8 +378,7 @@ export function FilterDropdown({
                 }}
               >
                 {selectedValues.map((val) => {
-                  const opt = options.find((o) => o.value === val);
-                  const text = opt?.label ?? val;
+                  const text = optionLabelByValue.get(val) ?? val;
                   return (
                     <Badge
                       key={val}
