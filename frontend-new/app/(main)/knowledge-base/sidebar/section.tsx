@@ -109,10 +109,10 @@ export function AppSection({
       </Flex>
 
       {/* Children — same tree structure as Collections */}
-      <Box className="no-scrollbar" style={{ overflowX: 'auto', marginTop: 'var(--space-1)' }}>
+      <Box className="no-scrollbar" style={{ overflow: 'hidden', marginTop: '4px' }}>
       <Flex direction="column" gap="0">
         {isLoading ? (
-          <Flex align="center" gap="2" style={{ padding: 'var(--space-2) var(--space-6)' }}>
+          <Flex align="center" gap="2" style={{ padding: '8px 24px' }}>
             <LottieLoader variant="loader" size={16} />
           </Flex>
         ) : categorizedTree ? (
@@ -148,7 +148,7 @@ export function AppSection({
               )}
             </>
           ) : (
-            <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
+            <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
               No items
             </Text>
           )
@@ -188,7 +188,7 @@ export function AppSection({
             )}
           </>
         ) : (
-          <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
+          <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
             No items
           </Text>
         )}

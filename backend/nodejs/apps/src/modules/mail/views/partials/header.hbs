@@ -1,62 +1,95 @@
-<header>
+<header style='margin-top: 20px'>
   <table
-    width="560"
-    cellspacing="0"
-    cellpadding="0"
-    border="0"
-    class="mobile-width"
-    align="center"
-    valign="top"
-    style="
+    width='560px'
+    cellspacing='0'
+    cellpadding='0'
+    class='mobile-width'
+    border='0'
+    style='
+      padding-top: 15px;
+      font-size: 13px;
+      color: #333;
       border-collapse: collapse;
+      border-top-left-radius: 20px;
+      border-top-right-radius: 20px;
+      overflow: hidden;
+      background-color: #f5f5f5;
       width: 560px;
       max-width: 560px;
-      background-color: #ffffff;
-    "
+    '
+    align='center'
+    valign='middle'
   >
     <tr>
-      <td
-        style="
-          padding: 40px 30px 0 30px;
-          font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        "
-      >
-        {{#if orgName}}
-          <div
-            style="
-              font-size: 24px;
-              font-weight: 700;
-              color: #1d1c1d;
-              letter-spacing: -0.25px;
-              line-height: 28px;
-            "
-          >
-            {{orgName}}
-          </div>
-          <div
-            style="
-              font-size: 12px;
-              font-weight: 400;
-              color: #5e5e5e;
-              line-height: 20px;
-              margin-top: 4px;
-            "
-          >
-            Powered by PipesHub
-          </div>
-        {{else}}
-          <div
-            style="
-              font-size: 24px;
-              font-weight: 700;
-              color: #1d1c1d;
-              letter-spacing: -0.25px;
-              line-height: 28px;
-            "
-          >
-            PipesHub
-          </div>
-        {{/if}}
+      <td style='max-width: 600px; margin: 0 auto; width: 100%'>
+        <!-- Dark Background Strip -->
+        <div
+          style='background-color: #003768; min-height: 17px; width: 100%'
+        ></div>
+
+        <!-- Inner Container -->
+        <table
+          width='100%'
+          cellspacing='0'
+          cellpadding='0'
+          style='border-collapse: collapse; text-align: center'
+        >
+          <tr>
+            <td style='width: 100%; text-align: center; padding-top: 6px'>
+              <div style='margin-top: 30px; margin-bottom: -5px'>
+                {{#if orgName}}
+                  <!-- Organization name when provided -->
+                  <div
+                    class='mobile-font'
+                    style="
+                      font-weight: 550;
+                      font-family: 'DM Sans', sans-serif;
+                      font-size: 40px;
+                      letter-spacing: 4px;
+                      line-height: 60px;
+                    "
+                  >
+                    {{orgName}}
+                  </div>
+
+                  <!-- Powered by tagline -->
+                  <div
+                    style="
+                    font-family: 'DM Sans', sans-serif;
+                    font-size: 10px;
+                    line-height: 15px;
+                    font-weight: 400;
+                    letter-spacing: 1px;
+                    margin-top: 2px;
+                    text-align: center;
+                    color: #666;
+                  "
+                  >
+                    Powered by PipesHub
+                  </div>
+                {{else}}
+                  <!-- Default platform name when no org name is provided -->
+                  <div
+                    class='mobile-font'
+                    style="
+                      font-weight: 550;
+                      font-family: 'DM Sans', sans-serif;
+                      font-size: 38px;
+                      letter-spacing: 2px;
+                      line-height: 58px;
+                    "
+                  >
+                    PipesHub
+                  </div>
+                {{/if}}
+              </div>
+
+              <hr
+                style='border-top: 1px solid #ddd; width: 90%; margin-top: 20px'
+              />
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
   </table>

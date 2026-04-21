@@ -16,26 +16,15 @@ from .common_fields import (
 # Azure AI
 # ---------------------------------------------------------------------------
 
-# The Azure AI Foundry endpoint differs per model family. A single placeholder
-# can't express both variants without being truncated inside the input, so we
-# keep the placeholder short and surface both URLs as labeled ``examples`` that
-# the frontend renders as a copyable note below the field.
 _AZURE_AI_ENDPOINT_LLM = AIModelField(
     name="endpoint",
     display_name="Endpoint URL",
     field_type="URL",
     required=True,
-    placeholder="https://<your-resource-name>.inference.ai.azure.com/anthropic",
-    examples=[
-        {
-            "label": "For Claude models",
-            "value": "https://<your-resource-name>.inference.ai.azure.com/anthropic",
-        },
-        {
-            "label": "For OpenAI / DeepSeek / other models",
-            "value": "https://<your-resource-name>.cognitiveservices.azure.com/openai/v1/",
-        },
-    ],
+    placeholder=(
+        "e.g., For Claude models: https://<your-resource-name>.inference.ai.azure.com/anthropic, "
+        "For other models: https://<your-resource-name>.cognitiveservices.azure.com/openai/v1/"
+    ),
 )
 
 _AZURE_AI_ENDPOINT_EMB = AIModelField(
@@ -43,13 +32,7 @@ _AZURE_AI_ENDPOINT_EMB = AIModelField(
     display_name="Endpoint URL",
     field_type="URL",
     required=True,
-    placeholder="https://<your-resource-name>.services.ai.azure.com/openai/v1/",
-    examples=[
-        {
-            "label": "Azure AI Foundry embeddings endpoint",
-            "value": "https://<your-resource-name>.services.ai.azure.com/openai/v1/",
-        },
-    ],
+    placeholder="e.g., https://<your-resource-name>.services.ai.azure.com/openai/v1/",
 )
 
 

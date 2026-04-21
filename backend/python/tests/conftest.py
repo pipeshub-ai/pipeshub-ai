@@ -34,10 +34,28 @@ class _MockFinder(importlib.abc.MetaPathFinder):
     """A meta-path finder that intercepts imports for mocked packages and
     auto-creates mock modules for any submodule access."""
 
-    def find_module(self, fullname, path=None):
+    def _matches(self, fullname: str) -> bool:
         for root in _MOCK_PACKAGE_ROOTS:
             if fullname == root or fullname.startswith(root + "."):
-                return self
+                return True
+        return False
+
+    def find_spec(self, fullname, path, target=None):
+        if not self._matches(fullname):
+            return None
+        # Ensure mock is installed in sys.modules
+        self.load_module(fullname)
+        return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+
+    def create_module(self, spec):
+        return sys.modules.get(spec.name)
+
+    def exec_module(self, module):
+        pass
+
+    def find_module(self, fullname, path=None):
+        if self._matches(fullname):
+            return self
         return None
 
     def load_module(self, fullname):
@@ -46,7 +64,7 @@ class _MockFinder(importlib.abc.MetaPathFinder):
         mod = MagicMock()
         mod.__path__ = []
         mod.__name__ = fullname
-        mod.__spec__ = importlib.machinery.ModuleSpec(fullname, None)
+        mod.__spec__ = importlib.machinery.ModuleSpec(fullname, self)
         mod.__file__ = None
         mod.__loader__ = self
         mod.__package__ = fullname
@@ -86,6 +104,17 @@ _OPTIONAL_PACKAGES = [
     "google.cloud",
     "google.cloud.storage",
     "azure.storage.fileshare",
+    "sentence_transformers",
+    "langchain_core",
+    "langchain_anthropic",
+    "langchain_openai",
+    "langchain_google_genai",
+    "langchain_aws",
+    "langchain_mistralai",
+    "langchain_qdrant",
+    "litellm",
+    "qdrant_client",
+    "fastembed",
 ]
 
 for _pkg in _OPTIONAL_PACKAGES:

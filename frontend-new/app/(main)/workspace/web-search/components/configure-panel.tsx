@@ -94,7 +94,7 @@ export function ConfigurePanel({
       color="gray"
       size="1"
       onClick={() => window.open(providerMeta.docUrl, '_blank')}
-      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
+      style={{ cursor: 'pointer', gap: 4 }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>
         open_in_new
@@ -176,7 +176,7 @@ export function ConfigurePanel({
             backgroundColor: 'var(--slate-2)',
             border: '1px solid var(--slate-5)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-2) var(--space-4)',
+            padding: '8px 16px',
             boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
           }}
         >

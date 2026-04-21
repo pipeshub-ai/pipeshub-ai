@@ -75,7 +75,7 @@ export function MessageSources({ sources }: MessageSourcesProps) {
                       style={{
                         backgroundColor: 'var(--accent-3)',
                         color: 'var(--accent-11)',
-                        padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
+                        padding: '2px 6px',
                         borderRadius: 'var(--radius-1)',
                       }}
                     >

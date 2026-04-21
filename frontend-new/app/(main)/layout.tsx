@@ -55,7 +55,7 @@ export default function RootLayout({
   }, [language])
 
   useEffect(() => {
-    document.title = "Pipeshub AI"
+    document.title = "PipesHub"
   }, [])
 
   const currentLang = mounted ? language : 'en'
@@ -71,7 +71,7 @@ export default function RootLayout({
       <head>
         <ThemeScript />
         <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
+          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
           rel="stylesheet"
         />
       </head>

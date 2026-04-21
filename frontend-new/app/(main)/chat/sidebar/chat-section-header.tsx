@@ -25,7 +25,7 @@ export function ChatSectionHeader({ title, onAdd, addAriaLabel, onTitleClick }: 
       justify="between"
       style={{
         height: ELEMENT_HEIGHT,
-        padding: '0 var(--space-3)',
+        padding: '0 12px',
       }}
     >
       <span
@@ -33,7 +33,7 @@ export function ChatSectionHeader({ title, onAdd, addAriaLabel, onTitleClick }: 
         style={{
           fontSize: 12,
           fontWeight: 500,
-          lineHeight: 'var(--line-height-1)',
+          lineHeight: '16px',
           letterSpacing: '0.04px',
           color: 'var(--slate-11)',
           cursor: onTitleClick ? 'pointer' : 'default',

@@ -1,89 +1,58 @@
 <!DOCTYPE html>
+
 <html>
   {{>head}}
-  <body>
-    <main>
-      <table {{{containerstyle}}}>
-        <tr>
+  <main>
+    <body>
+      <table
+ {{{containerstyle}}}
+    
+      >
+        <tr> 
           <td>{{> header}}</td>
         </tr>
         <tr>
-          <td>
-            <table class="mobile-width" {{{bodytablestyle}}}>
+          <td> 
+            <table
+              class="mobile-width"
+ {{{bodytablestyle}}}
+              
+            >
               <tr>
-                <td
-                  style="
-                    padding: 40px 30px;
-                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                  "
-                >
-                  <div
-                    style="
-                      font-size: 20px;
-                      font-weight: 700;
-                      color: #1d1c1d;
-                      letter-spacing: -0.25px;
-                      line-height: 28px;
-                      margin: 0 0 16px 0;
-                    "
-                  >
-                    Confirm your new email address
+                <td>
+                  <div {{{divstyle}}}>
+                  <p>Dear {{name}},</p>
+                      <p>A request to reset your email on the platform has been initiated.</p>
+                      
                   </div>
-                  <div
-                    style="
-                      font-size: 15px;
-                      font-weight: 400;
-                      color: #434245;
-                      line-height: 22px;
-                      margin: 0 0 40px 0;
-                    "
-                  >
-                    <div>Hi {{name}},</div>
-                    <div>We received a request to change the email address on
-                      your PipesHub account.</div>
-                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
-                    <div>If this was you, click the button below to verify this
-                      email. If you didn&rsquo;t request this, you can safely
-                      ignore this email &mdash; your email won&rsquo;t
-                      change.</div>
+
+                  <div {{{divstyle}}}>
+                    <p>Click the button below to validate your email</p>
+                    <p {{{pstyle}}}>
+                      <a href={{link}} target="_blank">
+                        <button
+                          {{{buttonstyle}}}
+                        >
+                          Verify Email
+                        </button>
+                      </a>
+                    </p>
+
+                   <p>If it wasn’t you who initiated the request, please contact the technical support at support@pipeshub.com</p> 
                   </div>
-                  <div style="margin: 0 0 40px 0;">
-                    <a
-                      href="{{link}}"
-                      target="_blank"
-                      style="
-                        display: inline-block;
-                        background-color: #006949;
-                        color: #ffffff;
-                        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                        font-size: 16px;
-                        font-weight: 500;
-                        line-height: 24px;
-                        text-decoration: none;
-                        padding: 8px 16px;
-                        border-radius: 3px;
-                      "
-                    >Verify email</a>
-                  </div>
-                  <div
-                    style="
-                      font-size: 15px;
-                      font-weight: 400;
-                      color: #434245;
-                      line-height: 22px;
-                    "
-                  >
-                    For security, this link will expire in 14 days.
-                  </div>
+ 
                 </td>
               </tr>
             </table>
           </td>
         </tr>
+
         <tr>
           <td>{{> footer}}</td>
         </tr>
       </table>
-    </main>
-  </body>
+    </body>
+  </main>
 </html>
+
+ 

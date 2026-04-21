@@ -7,7 +7,6 @@ import { FileIcon, FolderIcon } from '@/app/components/ui';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
-import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
 
 import type { 
   KnowledgeBaseItem, 
@@ -300,10 +299,10 @@ function GridCard({
           ? '1px solid var(--accent-5)'
           : '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        paddingLeft: 'var(--space-2)',
-        paddingRight: 'var(--space-4)',
-        paddingTop: 'var(--space-4)',
-        paddingBottom: 'var(--space-4)',
+        paddingLeft: '8px',
+        paddingRight: '16px',
+        paddingTop: '16px',
+        paddingBottom: '16px',
         cursor: 'pointer',
         userSelect: 'none',
         outline: 'none',
@@ -320,8 +319,8 @@ function GridCard({
       <Flex
         align="center"
         style={{
-          paddingTop: 'var(--space-1)',
-          paddingBottom: 'var(--space-1)',
+          paddingTop: '4px',
+          paddingBottom: '4px',
           flexShrink: 0,
           visibility: isHovered || isSelected ? 'visible' : 'hidden',
         }}
@@ -438,7 +437,7 @@ function GridCard({
                     whiteSpace: 'pre',
                     font: 'inherit',
                     fontSize: '14px',
-                    padding: 'var(--space-1) var(--space-2)',
+                    padding: '2px 6px',
                   }}
                 />
                 <input
@@ -462,7 +461,7 @@ function GridCard({
                     backgroundColor: 'var(--slate-1)',
                     border: '1px solid var(--accent-8)',
                     borderRadius: 'var(--radius-1)',
-                    padding: 'var(--space-1) var(--space-2)',
+                    padding: '2px 6px',
                     outline: 'none',
                     width: inputWidth ? `${inputWidth}px` : 'auto',
                     minWidth: '60px',
@@ -486,7 +485,7 @@ function GridCard({
                   wordBreak: 'break-word',
                   lineHeight: 'var(--line-height-2)',
                   cursor: onRename ? 'text' : 'default',
-                  padding: 'var(--space-1) var(--space-2)',
+                  padding: '2px 6px',
                   border: '1px solid transparent',
                 }}
               >
@@ -501,7 +500,7 @@ function GridCard({
                 background: 'var(--surface-1)',
                 border: '1px solid var(--slate-a7)',
                 borderRadius: 'var(--radius-2)',
-                padding: 'var(--space-1) var(--space-2)',
+                padding: '4px 8px',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
                 maxWidth: 'fit-content',
@@ -593,7 +592,7 @@ export function KbGridView({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: 'var(--space-4)',
+          padding: '16px',
         }}
       >
         {/* Grid container - 3 columns with gap */}
@@ -601,7 +600,7 @@ export function KbGridView({
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: 'var(--space-3)',
+            gap: '12px',
           }}
         >
           {items.map((item) => (
@@ -611,7 +610,7 @@ export function KbGridView({
               isSelected={selectedItems.has(item.id)}
               onSelect={() => onSelectItem(item.id)}
               onClick={() => onItemClick(item)}
-              onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
+              onOpen={() => onItemClick(item)}
               onPreview={onPreview}
               onRename={onRename}
               onReindex={onReindex}
@@ -630,7 +629,7 @@ export function KbGridView({
           justify="between"
           align="center"
           style={{
-            padding: 'var(--space-2) var(--space-4)',
+            padding: '8px 16px',
             borderTop: '1px solid var(--olive-3)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--olive-2)',
@@ -660,7 +659,7 @@ export function KbGridView({
             {/* Page Number Box */}
             <Box
               style={{
-                padding: 'var(--space-1) var(--space-3)',
+                padding: '4px 12px',
                 backgroundColor: 'var(--slate-3)',
                 borderRadius: 'var(--radius-2)',
                 minWidth: '32px',
@@ -698,7 +697,7 @@ export function KbGridView({
                   gap="1"
                   style={{
                     cursor: 'pointer',
-                    padding: 'var(--space-1) var(--space-2)',
+                    padding: '4px 8px',
                     backgroundColor: 'var(--slate-3)',
                     borderRadius: 'var(--radius-2)',
                   }}

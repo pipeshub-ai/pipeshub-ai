@@ -84,7 +84,7 @@ export function UserAvatar({
       radius={radius}
       fallback={getInitials({ fullName, firstName, lastName, email })}
       src={src ?? undefined}
-      style={{ width: `${size}px`, height: `${size}px`, flexShrink: 0, backgroundColor: 'var(--accent-a3)', color: 'var(--accent-a2)' }}
+      style={{ width: `${size}px`, height: `${size}px`, flexShrink: 0 }}
     />
   );
 }

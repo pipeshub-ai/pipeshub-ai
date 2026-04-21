@@ -34,7 +34,7 @@ export default function PublicLayout({
       <head>
         <ThemeScript />
         <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
+          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
           rel="stylesheet"
         />
       </head>

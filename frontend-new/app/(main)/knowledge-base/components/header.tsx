@@ -108,7 +108,7 @@ function BreadcrumbItem({
             backgroundColor: 'var(--slate-1)',
             border: '1px solid var(--accent-8)',
             borderRadius: 'var(--radius-1)',
-            padding: 'var(--space-1) var(--space-2)',
+            padding: '2px 6px',
             outline: 'none',
             minWidth: '100px',
           }}
@@ -241,7 +241,7 @@ export function Header({
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
-                padding: 'var(--space-1) var(--space-2)',
+                padding: '2px 6px',
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: 'var(--slate-a3)',
                 flexShrink: 0,
@@ -295,7 +295,7 @@ export function Header({
       justify="between"
       style={{
         height: '40px',
-        padding: '0 var(--space-3)',
+        padding: '0 12px',
         borderBottom: '1px solid var(--olive-3)',
         backdropFilter: 'blur(8px)',
         backgroundColor: 'var(--effects-translucent)',

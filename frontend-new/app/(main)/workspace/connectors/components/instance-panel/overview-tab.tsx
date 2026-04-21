@@ -10,11 +10,10 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { startConnectorSync } from '../../utils/connector-sync-actions';
+import { ensureConnectorSyncActiveThenResync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
-  ConnectorConfig,
   ConnectorStatsResponse,
   RecordsStatus,
 } from '../../types';
@@ -27,8 +26,6 @@ interface OverviewTabProps {
   instance: ConnectorInstance;
   /** Stats data from GET /knowledgeBase/stats/{connectorId} */
   stats?: ConnectorStatsResponse['data'] | null;
-  /** GET …/config — used to resolve auth type for OAuth-only UI rules */
-  connectorConfig?: ConnectorConfig;
 }
 
 // ========================================
@@ -68,7 +65,7 @@ function deriveRecordsStatus(
 // OverviewTab
 // ========================================
 
-export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabProps) {
+export function OverviewTab({ instance, stats }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
@@ -83,7 +80,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
   // Derive indexed records from byRecordType data
   const byRecordType = stats?.byRecordType ?? [];
 
-  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, connectorConfig);
+  const syncStatus = deriveSyncStatus(instance, stats ?? undefined);
   const isReadyToSync  = syncStatus === 'ready_to_sync';
   const isSyncing      = syncStatus === 'syncing';
   const isSyncFailed   = syncStatus === 'sync_failed';
@@ -112,7 +109,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
     if (!connectorId || isStartingSync) return;
     try {
       setIsStartingSync(true);
-      await startConnectorSync({
+      await ensureConnectorSyncActiveThenResync({
         _key: connectorId,
         type: instance.type,
       });
@@ -168,7 +165,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
           align="center"
           justify="between"
           style={{
-            padding: 'var(--space-3) var(--space-4)',
+            padding: '12px 16px',
             backgroundColor: 'var(--jade-a2)',
             border: '1px solid var(--jade-a4)',
             borderRadius: 'var(--radius-2)',
@@ -345,7 +342,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
                 align="center"
                 justify="between"
                 style={{
-                  padding: 'var(--space-2) 0',
+                  padding: '8px 0',
                   borderBottom: '1px solid var(--gray-a3)',
                 }}
               >
@@ -465,7 +462,7 @@ function StatCard({
       onMouseLeave={() => setIsHovered(false)}
       style={{
         flex: 1,
-        padding: 'var(--space-6) var(--space-4)',
+        padding: '24px 16px',
         backgroundColor: isHovered && isClickable ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',

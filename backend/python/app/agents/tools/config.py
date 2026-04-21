@@ -17,6 +17,7 @@ class ToolCategory(Enum):
     CALENDAR = "calendar"
     FILE_STORAGE = "file_storage"
     CODE_MANAGEMENT = "code_management"
+    CODE_EXECUTION = "code_execution"
     UTILITY = "utility"
     SEARCH = "search"
     KNOWLEDGE = "knowledge"
@@ -104,6 +105,13 @@ class ToolDiscoveryConfig:
         ),
         "knowledge_hub": AppConfiguration(
             app_name="knowledge_hub",
+        ),
+        # Sandbox toolsets (code execution, database)
+        "coding_sandbox": AppConfiguration(
+            app_name="coding_sandbox",
+        ),
+        "database_sandbox": AppConfiguration(
+            app_name="database_sandbox",
         ),
         "google": AppConfiguration(
             app_name="google",

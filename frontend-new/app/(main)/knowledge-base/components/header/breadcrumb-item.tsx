@@ -84,7 +84,7 @@ export function BreadcrumbItem({
             backgroundColor: 'var(--slate-1)',
             border: '1px solid var(--accent-8)',
             borderRadius: 'var(--radius-1)',
-            padding: 'var(--space-1) var(--space-2)',
+            padding: '2px 6px',
             outline: 'none',
             minWidth: '100px',
           }}

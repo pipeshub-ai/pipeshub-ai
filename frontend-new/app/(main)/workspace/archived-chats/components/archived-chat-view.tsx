@@ -66,7 +66,7 @@ function EmptyState() {
       direction="column"
       align="center"
       justify="center"
-      style={{ height: '100%', width: '100%', gap: 'var(--space-3)' }}
+      style={{ height: '100%', width: '100%', gap: 12 }}
     >
       <ChatPixelIcon
         size={72}
@@ -199,8 +199,8 @@ export function ArchivedChatView({
       <Box
         style={{
           position: 'absolute',
-          top: 'var(--space-3)',
-          right: 'var(--space-3)',
+          top: 12,
+          right: 12,
           zIndex: 10,
         }}
       >
@@ -260,7 +260,7 @@ export function ArchivedChatView({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '40px 0 var(--space-8)',
+          padding: '40px 0 32px',
           maxWidth: 720,
           width: '100%',
           margin: '0 auto',
@@ -269,7 +269,7 @@ export function ArchivedChatView({
         {messagePairs.length === 0 ? (
           <EmptyState />
         ) : (
-          <Flex direction="column" gap="6" style={{ padding: '0 var(--space-6)' }}>
+          <Flex direction="column" gap="6" style={{ padding: '0 24px' }}>
             {/* Message pairs */}
             {messagePairs.map((pair) => (
               <ChatResponse

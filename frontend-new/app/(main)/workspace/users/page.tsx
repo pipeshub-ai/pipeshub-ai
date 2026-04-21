@@ -118,8 +118,6 @@ function UsersPageContent() {
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
-  const [cancelInviteTarget, setCancelInviteTarget] = useState<User | null>(null);
-  const [isCancellingInvite, setIsCancellingInvite] = useState(false);
   const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
   const [isUnblocking, setIsUnblocking] = useState(false);
   // Admin group ref for role changes
@@ -706,32 +704,6 @@ function UsersPageContent() {
     }
   }, [removeTarget, fetchUsers, addToast, t]);
 
-  const handleCancelInvite = useCallback(async () => {
-    if (!cancelInviteTarget) return;
-    setIsCancellingInvite(true);
-    try {
-      await UsersApi.deleteUser(cancelInviteTarget.userId);
-      addToast({
-        variant: 'success',
-        title: t('workspace.users.actions.cancelInviteSuccess'),
-        description: t('workspace.users.actions.cancelInviteSuccessDescription', {
-          email: cancelInviteTarget.email || cancelInviteTarget.name || '',
-        }),
-        duration: 3000,
-      });
-      setCancelInviteTarget(null);
-      fetchUsers();
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.users.actions.cancelInviteError'),
-        duration: 5000,
-      });
-    } finally {
-      setIsCancellingInvite(false);
-    }
-  }, [cancelInviteTarget, fetchUsers, addToast, t]);
-
   const handleConfirmUnblock = useCallback(async () => {
     if (!unblockTarget) return;
     setIsUnblocking(true);
@@ -918,25 +890,12 @@ function UsersPageContent() {
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
+            onClick: showComingSoon,
           },
         ];
       } else if (isPendingExpired) {
-        // Expired invite — same as pending: resend or cancel
-        actions = [
-          {
-            icon: 'send',
-            label: t('workspace.users.actions.resendInvite'),
-            onClick: () => handleResendInvite(user),
-          },
-          {
-            icon: 'cancel_schedule_send',
-            label: t('workspace.users.actions.cancelInvite'),
-            variant: 'danger' as const,
-            separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
-          },
-        ];
+        // TODO: Handle expired invite — e.g. Resend Invite, Cancel Invite
+        actions = [];
       } else if (isDeactivated) {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];
@@ -1138,23 +1097,6 @@ function UsersPageContent() {
         confirmVariant="danger"
         isLoading={isRemoving}
         onConfirm={handleRemoveUser}
-      />
-
-      {/* Cancel Invite Confirmation Dialog */}
-      <ConfirmationDialog
-        open={!!cancelInviteTarget}
-        onOpenChange={(open) => {
-          if (!open) setCancelInviteTarget(null);
-        }}
-        title={t('workspace.users.actions.cancelInviteConfirmTitle')}
-        message={t('workspace.users.actions.cancelInviteConfirmMessage', {
-          email: cancelInviteTarget?.email || cancelInviteTarget?.name || '',
-        })}
-        confirmLabel={t('workspace.users.actions.cancelInvite')}
-        cancelLabel={t('workspace.users.actions.keepInviteButton')}
-        confirmVariant="danger"
-        isLoading={isCancellingInvite}
-        onConfirm={handleCancelInvite}
       />
 
       <DestructiveTypedConfirmationDialog

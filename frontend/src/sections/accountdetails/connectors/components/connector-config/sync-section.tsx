@@ -1,4 +1,4 @@
-import React, { useState, forwardRef } from 'react';
+import React, { forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -408,25 +408,43 @@ const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
                       },
                     }}
                     >
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-                      <SyncDocLinkIcon iconPath={connectorConfig.iconPath} />
                       <Typography
                         variant="body2"
                         sx={{
                           fontSize: '0.8125rem',
                           fontWeight: 500,
                           color: theme.palette.text.primary,
+                          flex: 1,
                         }}
                       >
                         {link.title}
                       </Typography>
-                    </Box>
-                    <Iconify
-                      icon={openInNewIcon}
-                      width={14}
-                      color={theme.palette.text.secondary}
-                      sx={{ opacity: 0.6 }}
-                    />
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            fontSize: '0.6875rem',
+                            fontWeight: 500,
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.3,
+                            color: theme.palette.info.main,
+                          }}
+                        >
+                          {link.type}
+                        </Typography>
+                        <Iconify
+                          icon={openInNewIcon}
+                          width={14}
+                          color={theme.palette.text.secondary}
+                          sx={{ opacity: 0.6 }}
+                        />
+                      </Box>
                     </Box>
                   ))}
                 </Box>
@@ -462,49 +480,5 @@ const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
 });
 
 SyncSection.displayName = 'SyncSection';
-
-function SyncDocLinkIcon({ iconPath }: { iconPath?: string }) {
-  const theme = useTheme();
-  const [iconError, setIconError] = useState(false);
-
-  if (!iconPath || iconError) {
-    return (
-      <Box
-        sx={{
-          p: 0.5,
-          borderRadius: 0.75,
-          bgcolor: alpha(theme.palette.info.main, 0.08),
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Iconify icon={bookIcon} width={14} color={theme.palette.info.main} />
-      </Box>
-    );
-  }
-
-  return (
-    <Box
-      sx={{
-        p: 0.5,
-        borderRadius: 0.75,
-        bgcolor: alpha(theme.palette.info.main, 0.08),
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <img
-        src={iconPath}
-        alt=""
-        width={14}
-        height={14}
-        style={{ objectFit: 'contain', display: 'block' }}
-        onError={() => setIconError(true)}
-      />
-    </Box>
-  );
-}
 
 export default SyncSection;

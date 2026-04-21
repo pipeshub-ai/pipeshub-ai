@@ -1,44 +1,15 @@
 {
-  "resetPassword": {
-    "failure": {
-      "missingTokenMessage": "This page is only accessible from a password-reset email link. Please use the Forgot Password option on the sign-in page.",
-      "inviteExpiredMessage": "This invite link has expired. Please ask your organization admin to send you a new invite.",
-      "resetExpiredMessage": "This password reset link has expired. Please request a new one from the Forgot Password option on the sign-in page.",
-      "backToSignIn": "Back to Sign In",
-      "genericLinkInvalidMessage": "This link may have expired. Please ask your organization admin to send you a new invite."
-    }
-  },
   "agents": {
     "createPageTitle": "Create agent",
     "createPageDescription": "This is the dedicated create-agent page. Connect your form or redirect to your agent builder here.",
     "pageTitle": "Agents",
     "comingSoon": "Coming soon",
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
-    "loading": "Loading…"
+    "loading": "Loading\u2026"
   },
   "chatStream": {
-    "thinkingFallback": "Thinking…",
-    "refiningResponse": "Refining response…"
-  },
-  "uploadProgress": {
-    "uploadFailedDefault": "Upload failed",
-    "uploadIncomplete": "Upload incomplete",
-    "genericFailureHint": "Upload failed. Try again or use a supported file type.",
-    "ariaFailed": "{{name}}, upload failed",
-    "ariaFailedWithDetail": "{{name}}, upload failed. {{detail}}",
-    "ariaItemStatus": "{{name}}, {{status}}",
-    "sizeWithFailed": "{{size}} \u00b7 failed",
-    "headerCompletedAndFailed": "{{completed}} completed \u00b7 {{failed}} failed",
-    "headerFailuresOnly": "{{count}} failed",
-    "headerAllComplete": "{{completed}}/{{total}} uploads complete",
-    "sessionFilesAndSize": "{{count}} files \u00b7 {{size}}",
-    "totalSizeLabel": "Total: {{size}}",
-    "status": {
-      "pending": "pending",
-      "uploading": "uploading",
-      "completed": "completed",
-      "failed": "failed"
-    }
+    "thinkingFallback": "Thinking\u2026",
+    "refiningResponse": "Refining response\u2026"
   },
   "onboarding": {
     "skipEmbeddingDefault": "Skip",
@@ -328,7 +299,7 @@
     "differentModesOfQuery": "Different Modes of Query",
     "askMore": "Ask More",
     "failedToLoad": "Failed to load",
-    "generatingTitle": "Generating Chat…",
+    "generatingTitle": "Generating Title…",
     "newChat": "New Chat",
     "startChat": "Start a chat",
     "searchAgents": "Search agents…",
@@ -426,44 +397,12 @@
       }
     },
     "defaultSuggestions": {
-      "1": {
-        "text": "Find all customer feedback from Slack mentioning latency issues.",
-        "icons": [
-          "slack"
-        ]
-      },
-      "2": {
-        "text": "List recurring blockers reported in Jira last month.",
-        "icons": [
-          "jira"
-        ]
-      },
-      "3": {
-        "text": "Compare notes from Notion and Slack about the new release.",
-        "icons": [
-          "notion"
-        ]
-      },
-      "4": {
-        "text": "Summarize Q3 revenue updates from Jira and Google Sheets",
-        "icons": [
-          "sheets",
-          "jira"
-        ]
-      },
-      "5": {
-        "text": "Show all documents tagged 'Compliance' from Confluence and Drive.",
-        "icons": [
-          "confluence"
-        ]
-      },
-      "6": {
-        "text": "Show activities updated in GitHub and Jira this week",
-        "icons": [
-          "jira",
-          "github"
-        ]
-      }
+      "1": { "text": "Find all customer feedback from Slack mentioning latency issues.", "icons": ["slack"] },
+      "2": { "text": "List recurring blockers reported in Jira last month.", "icons": ["jira"] },
+      "3": { "text": "Compare notes from Notion and Slack about the new release.", "icons": ["notion"] },
+      "4": { "text": "Summarize Q3 revenue updates from Jira and Google Sheets", "icons": ["sheets", "jira"] },
+      "5": { "text": "Show all documents tagged 'Compliance' from Confluence and Drive.", "icons": ["confluence"] },
+      "6": { "text": "Show activities updated in GitHub and Jira this week", "icons": ["jira", "github"] }
     },
     "askMoreQuestionSets": [
       [
@@ -552,12 +491,6 @@
         "resendInvite": "Resend Invite",
         "editInvite": "Edit Invite",
         "cancelInvite": "Cancel Invite",
-        "cancelInviteConfirmTitle": "Cancel invite?",
-        "cancelInviteConfirmMessage": "Are you sure you want to cancel the invite for {{email}}?",
-        "cancelInviteSuccess": "Invite cancelled",
-        "cancelInviteSuccessDescription": "The invitation to {{email}} has been cancelled",
-        "cancelInviteError": "Failed to cancel invite",
-        "keepInviteButton": "Keep Invite",
         "comingSoonTitle": "Not supported",
         "comingSoonDescription": "This Action is coming Soon",
         "unblock": "Unblock",
@@ -568,8 +501,7 @@
         "unblockConfirmAction": "Unblock",
         "unblockSuccess": "User unblocked successfully",
         "unblockError": "Failed to unblock user",
-        "unblocking": "Unblocking…",
-        "edit": "Edit"
+        "unblocking": "Unblocking…"
       },
       "profile": {
         "title": "Profile",
@@ -945,41 +877,14 @@
       "actionSetDefault": "Set default",
       "actionDelete": "Delete",
       "capabilities": {
-        "text_generation": {
-          "label": "LLM",
-          "badge": "LLM",
-          "sectionTab": "For LLMs"
-        },
-        "embedding": {
-          "label": "Embedding",
-          "badge": "Embedding",
-          "sectionTab": "For Embedding"
-        },
-        "image_generation": {
-          "label": "Image Generation",
-          "badge": "Image",
-          "sectionTab": "For Image Generation"
-        },
-        "reasoning": {
-          "label": "Reasoning",
-          "badge": "Reasoning"
-        },
-        "ocr": {
-          "label": "OCR",
-          "badge": ""
-        },
-        "tts": {
-          "label": "Text to Speech",
-          "badge": ""
-        },
-        "stt": {
-          "label": "Speech to Text",
-          "badge": ""
-        },
-        "video": {
-          "label": "Video",
-          "badge": "Multimodal"
-        }
+        "text_generation": { "label": "LLM", "badge": "LLM", "sectionTab": "For LLMs" },
+        "embedding": { "label": "Embedding", "badge": "Embedding", "sectionTab": "For Embedding" },
+        "image_generation": { "label": "Image Generation", "badge": "Image", "sectionTab": "For Image Generation" },
+        "reasoning": { "label": "Reasoning", "badge": "Reasoning" },
+        "ocr": { "label": "OCR", "badge": "" },
+        "tts": { "label": "Text to Speech", "badge": "" },
+        "stt": { "label": "Speech to Text", "badge": "" },
+        "video": { "label": "Video", "badge": "Multimodal" }
       }
     },
     "common": {
@@ -1054,7 +959,6 @@
         "setup": "Setup",
         "configure": "Configure",
         "authenticate": "Authenticate",
-        "manage": "Manage",
         "unavailable": "Not available",
         "notConfigured": "Not configured"
       },
@@ -1080,7 +984,7 @@
       "oauthAppLabel": "OAuth application",
       "oauthAppNew": "Create new OAuth app",
       "linkedOAuthAppHeading": "Selected OAuth application",
-      "linkedOAuthAppHint": "This instance will use the saved credentials below. To enter different client credentials, choose “Create new OAuth app”.",
+      "linkedOAuthAppHint": "This instance will use the saved credentials below. To enter different client credentials, choose \u201cCreate new OAuth app\u201d.",
       "linkedOAuthSecretStored": "Stored (hidden)",
       "oauthClientId": "Client ID",
       "oauthClientSecret": "Client secret",
@@ -1273,7 +1177,6 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
-      "configure": "Configure",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1302,8 +1205,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "saml": "Configure SAML SSO",
+        "oauth2": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1425,8 +1328,6 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
-        "recordsSelected": "Records Selected",
-        "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1470,10 +1371,7 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot",
-        "updateError": "Failed to update bot",
-        "createError": "Failed to create bot",
-        "credentialsError": "Please check your credentials and try again."
+        "deleteError": "Failed to delete bot"
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1486,32 +1384,6 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
-      },
-      "title": "Bots",
-      "noBots": "No Bots",
-      "setupFirstBot": "Setup your first Bot now",
-      "documentation": "Documentation",
-      "configPanelTitle": "Bot Configuration",
-      "selectBotSetup": "Select Bot Setup",
-      "comingSoon": "Coming soon",
-      "deleting": "Deleting...",
-      "saving": "Saving...",
-      "deleteConfirm": "Confirm Delete",
-      "typeLabels": {
-        "slack": "Slack Bot",
-        "discord": "Discord Bot",
-        "telegram": "Telegram Bot",
-        "github": "GitHub Bot"
-      },
-      "form": {
-        "editTitle": "Edit Slack Bot",
-        "newTitle": "New Slack Bot",
-        "namePlaceholder": "e.g. My Slack Bot",
-        "botToken": "Bot Token",
-        "signingSecret": "Signing Secret",
-        "signingSecretPlaceholder": "Enter signing secret",
-        "agent": "Agent",
-        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1527,8 +1399,7 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required",
-        "fromEmailInvalid": "Enter a valid email address"
+        "fromEmailRequired": "From email is required"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1547,31 +1418,6 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
-      },
-      "title": "Mail",
-      "serverConfig": "Server Configuration",
-      "serverConfigDescription": "Configure email and other server settings for authentication",
-      "smtp": "SMTP",
-      "notConfigured": "Not Configured",
-      "configured": "Configured",
-      "panelTitle": "Configure SMTP Settings",
-      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
-      "toasts": {
-        "saved": "Mail settings saved",
-        "savedDescription": "Your email server configuration has been updated."
-      },
-      "fields": {
-        "host": "SMTP Host *",
-        "hostHint": "The hostname of your SMTP server",
-        "port": "Port *",
-        "portHint": "Common ports: 25, 465, 587",
-        "fromEmail": "From Email Address *",
-        "fromEmailHint": "The email address that will appear as the sender",
-        "username": "Username (Optional)",
-        "usernameHint": "Username for SMTP authentication (if required)",
-        "usernamePlaceholder": "Enter SMTP username",
-        "password": "Password (Optional)",
-        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1590,18 +1436,8 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted",
-        "saved": "Prompt saved",
-        "savedDescription": "The system prompt has been updated",
-        "discarded": "Discarded changes",
-        "discardedDescription": "Your edits have been reverted",
-        "saveErrorDescription": "Failed to save prompt"
-      },
-      "heading": "Custom System Prompt",
-      "systemPrompt": "System Prompt",
-      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
-      "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+        "discardSuccessDescription": "Your edits have been reverted"
+      }
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1623,11 +1459,7 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting",
-        "saved": "Web search settings saved",
-        "savedDescription": "Your changes have been applied successfully.",
-        "oneProviderOnly": "Only one web search provider can be active at a time",
-        "settingError": "Failed to update setting"
+        "updateError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1636,17 +1468,8 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured",
-        "active": "Configured"
-      },
-      "heading": "Web Search Configuration",
-      "methodsSection": "Different Web Search Methods",
-      "methodsSectionDescription": "Select the method users will use for web search",
-      "policyTitle": "Web Search Provider Policy",
-      "verifying": "Verifying connection...",
-      "disabledReasonConfigure": "Configure this provider first before enabling it.",
-      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
-      "configureTip": "Configure"
+        "notConfigured": "Not Configured"
+      }
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1666,8 +1489,7 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company",
-        "title": "General"
+        "companyEmailDescription": "Primary work email from the company"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1677,8 +1499,6 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
-        "role": "Role",
-        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1735,12 +1555,7 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      },
-      "title": "Profile",
-      "discardTitle": "Discard changes?",
-      "discardMessage": "If you discard, your edits won't be saved",
-      "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      }
     }
   },
   "filePreview": {
@@ -1763,7 +1578,7 @@
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organization.",
     "serviceAccountShareTooltip": "Service agents are always shared with the organization.",
-    "saving": "Saving…",
+    "saving": "Saving\u2026",
     "saveChanges": "Save changes",
     "createAgent": "Create agent",
     "nameRequired": "Enter a name to continue.",
@@ -1783,7 +1598,7 @@
     "paletteActionBlockedViewOnly": "View only. This org service agent cannot be changed here.",
     "viewerPaletteDragBlocked": "View only. Flow is locked; authenticate toolsets under Tools.",
     "paletteViewerAuthenticateInTools": "View only. Canvas drag is off; sign in to toolsets under Tools.",
-    "searchNodes": "Search nodes…",
+    "searchNodes": "Search nodes\u2026",
     "aiModels": "AI models",
     "knowledge": "Knowledge",
     "tools": "Tools",
@@ -1819,7 +1634,7 @@
     "nodeDescUserMessages": "User messages",
     "nodeLabelChatOutput": "Chat output",
     "nodeDescChatReply": "User-visible reply",
-    "chatInputPlaceholder": "Type your message…",
+    "chatInputPlaceholder": "Type your message\u2026",
     "zoomInAria": "Zoom in",
     "zoomOutAria": "Zoom out",
     "fitViewAria": "Fit view",
@@ -1864,8 +1679,8 @@
     "addToolsAriaLabel": "Add tools",
     "removeNodeAriaLabel": "Remove node",
     "removeToolAriaLabel": "Remove {{name}}",
-    "searchToolsets": "Search toolsets…",
-    "noToolsetsMatch": "No toolsets match “{{query}}”.",
+    "searchToolsets": "Search toolsets\u2026",
+    "noToolsetsMatch": "No toolsets match \u201c{{query}}\u201d.",
     "noToolsetsAvailable": "No toolsets available.",
     "oauthSuccessNotify": "Authentication successful. Toolset list refreshed.",
     "toolsetNotConfiguredNotify": "{{name}} is not configured yet. Ask an administrator to add this toolset.",
@@ -1873,7 +1688,7 @@
     "toolsetDuplicateNotify": "Only one {{name}} toolset can be on the canvas at a time.",
     "toolsetAuthUpdated": "Toolset authentication updated.",
     "loadMore": "Load more",
-    "loadingMore": "Loading…",
+    "loadingMore": "Loading\u2026",
     "notConfiguredReason": "not configured",
     "notAuthenticatedReason": "not authenticated",
     "manageAgentCredentialsTooltip": "Manage agent credentials for this toolset",
@@ -1887,15 +1702,15 @@
     "svcAcctCreateDesc": "You are creating a shared service agent: available across your organization, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
     "svcAcctConvertLabel": "Convert to service agent",
     "svcAcctCreateLabel": "Create service agent",
-    "svcAcctConvertBusy": "Converting…",
-    "svcAcctCreateBusy": "Creating agent…",
+    "svcAcctConvertBusy": "Converting\u2026",
+    "svcAcctCreateBusy": "Creating agent\u2026",
     "svcAcctAgentLabel": "Agent",
     "svcAcctUnnamed": "(unnamed)",
     "svcAcctKnowledgeTitle": "Knowledge sources",
-    "svcAcctKnowledgeNote1": "Only knowledge sources you connect in the builder are used—not your entire workspace. Search and responses use your permissions as the person who saved this agent.",
+    "svcAcctKnowledgeNote1": "Only knowledge sources you connect in the builder are used\u2014not your entire workspace. Search and responses use your permissions as the person who saved this agent.",
     "svcAcctKnowledgeNote2": "Users in your organization may see answers drawn from content you can access in those sources, even when they would not normally have access to that content themselves.",
-    "svcAcctToolsetsTitle": "Toolsets use the agent’s credentials",
-    "svcAcctToolsetsNote1": "This agent keeps its own credentials for each toolset on the flow. When someone chats with the agent, tool calls run on behalf of the agent using those stored credentials—not each visitor’s personal toolset sign-in. Use the key icon in the left palette to connect or refresh credentials for each toolset after you finish here.",
+    "svcAcctToolsetsTitle": "Toolsets use the agent\u2019s credentials",
+    "svcAcctToolsetsNote1": "This agent keeps its own credentials for each toolset on the flow. When someone chats with the agent, tool calls run on behalf of the agent using those stored credentials\u2014not each visitor\u2019s personal toolset sign-in. Use the key icon in the left palette to connect or refresh credentials for each toolset after you finish here.",
     "svcAcctToolsetsNote2Convert": "Before you convert, remove any toolset nodes on the canvas that still use per-user sign-in. Add them back afterward and store credentials for this agent using the key icon.",
     "svcAcctOrgTitle": "Organization-wide access",
     "svcAcctOrgDesc": "Anyone in your organization can find, open, and run this agent. There is no separate private copy.",
@@ -1912,7 +1727,7 @@
     "toolsetCredentialsTitle": "Agent toolset credentials",
     "toolsetCredentialsBadge": "Service agent",
     "toolsetCredentialsDesc": "Stored for this agent only. Runs use these credentials for everyone.",
-    "loadingSchema": "Loading schema…",
+    "loadingSchema": "Loading schema\u2026",
     "fillRequiredFields": "Please fill in all required fields.",
     "fieldRequired": "{{field}} is required",
     "oauthConnectedDesc": "OAuth is connected for this agent. Use Reconnect to sign in again, or Disconnect to end this session for this agent.",
@@ -1924,29 +1739,29 @@
     "credentialUpdateHint": "The agent is authenticated. Enter new values and save to update stored credentials.",
     "availableToolsHeading": "Available tools ({{count}})",
     "authenticateOAuth": "Authenticate with OAuth",
-    "waitingOAuth": "Waiting for OAuth…",
+    "waitingOAuth": "Waiting for OAuth\u2026",
     "clearReauth": "Clear OAuth / re-authenticate",
-    "working": "Working…",
+    "working": "Working\u2026",
     "removeCredentials": "Remove credentials",
     "disconnectOAuth": "Disconnect",
     "disconnectOAuthTitle": "Disconnect {{name}}?",
     "disconnectOAuthDesc": "This ends the OAuth session for {{name}} on this agent. The toolset remains on the agent but is not authenticated until you sign in again.",
-    "disconnectOAuthProgress": "Disconnecting…",
-    "savingCredentials": "Saving…",
+    "disconnectOAuthProgress": "Disconnecting\u2026",
+    "savingCredentials": "Saving\u2026",
     "updateCredentials": "Save changes",
     "saveCredentials": "Save credentials",
     "noCredentialsRequired": "No credentials are required for this toolset.",
     "noCredentialFields": "No credential fields were returned for this auth type. If this persists, check the toolset registry schema.",
     "removeCredentialsTitle": "Remove credentials?",
     "removeCredentialsDesc": "This removes stored credentials for {{name}} on this agent until you configure them again.",
-    "removing": "Removing…",
+    "removing": "Removing\u2026",
     "authTimeout": "Authentication timed out. Please try again.",
     "authNotCompleted": "Authentication was not completed. Please try again.",
     "oauthSignInSuccess": "Toolset connected successfully.",
     "oauthSignInIncomplete": "Sign-in did not finish. The window may have been closed before completion — try again when you are ready.",
     "oauthSignInCancelled": "Sign-in was cancelled.",
     "toolsetOAuthCompletingTitle": "Completing toolset sign-in...",
-    "toolsetOAuthProcessing": "Completing toolset sign-in…",
+    "toolsetOAuthProcessing": "Completing toolset sign-in\u2026",
     "toolsetOAuthProcessingHint": "You can keep this window open until it closes automatically.",
     "toolsetOAuthProviderError": "OAuth error: {{error}}",
     "toolsetOAuthNoCode": "No authorization code was returned.",
@@ -1970,8 +1785,8 @@
     "nodeAppGroupSubtitleSingular": "{{count}} app",
     "nodeAppGroupSubtitle": "{{count}} apps",
     "toolsetStatusAuthenticated": "Authenticated and ready to use",
-    "toolsetStatusNeedsAuth": "Configured — sign in to authenticate",
-    "toolsetStatusRegistry": "Registry listing — not configured for your workspace",
+    "toolsetStatusNeedsAuth": "Configured \u2014 sign in to authenticate",
+    "toolsetStatusRegistry": "Registry listing \u2014 not configured for your workspace",
     "sidebarCollapseTools": "Collapse tools",
     "sidebarExpandTools": "Expand tools",
     "configureShort": "Configure",
@@ -1985,15 +1800,15 @@
     "llmLanguageModelSuffix": "{{provider}} language model",
     "llmProviderModel": "{{provider}} model",
     "toolsetWithToolCount": "{{name}} with {{count}} tools",
-    "toolsetNodeDescriptionTools": "{{name}} — {{count}} tools",
-    "connectorToolGroupTools": "{{type}} — {{count}} tools",
+    "toolsetNodeDescriptionTools": "{{name}} \u2014 {{count}} tools",
+    "connectorToolGroupTools": "{{type}} \u2014 {{count}} tools",
     "agentCoreFlowDescription": "Central orchestrator and decision engine",
     "placeholderModel": "Model",
     "placeholderAiModel": "AI Model",
     "placeholderTool": "Tool",
     "nodeCollectionFallbackName": "Collection",
     "connectorDataDescription": "Connect to {{name}} data and content",
-    "connectorGroupDescription": "{{type}} connector — tools or knowledge",
+    "connectorGroupDescription": "{{type}} connector \u2014 tools or knowledge",
     "appGroupTemplateDescription": "Connect app data ({{count}} connectors)",
     "kbGroupTemplateDescription": "{{count}} collections",
     "kbNodeTemplateDescription": "Collection for retrieval",
@@ -2006,104 +1821,23 @@
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user"
   },
-  "recordView": {
-    "sections": {
-      "documentSummary": "Summary",
-      "documentFields": "Document",
-      "recordMetadata": "Record information"
-    },
-    "metadata": {
-      "departments": "Departments",
-      "documentCategory": "Document category",
-      "subcategory1": "Sub-category level 1",
-      "subcategory2": "Sub-category level 2",
-      "subcategory3": "Sub-category level 3",
-      "topics": "Topics",
-      "languages": "Languages"
-    },
-    "mail": {
-      "from": "From",
-      "to": "To",
-      "cc": "Cc",
-      "labels": "Labels",
-      "date": "Date"
-    },
-    "emptyState": {
-      "noRecordMetadata": "No additional record metadata for this item."
-    },
-    "indexingReasonAria": "Indexing failure details",
-    "tabRecordInformation": "Record Information",
-    "tabDocumentDetails": "Document details",
-    "chat": "Chat",
-    "download": "Download",
-    "openFullscreen": "Open in Full Screen",
-    "exitFullscreen": "Exit full screen",
-    "close": "Close",
-    "forceReindex": "Force reindex",
-    "retryIndexing": "Retry indexing",
-    "startIndexing": "Start indexing",
-    "resumeIndexing": "Resume indexing",
-    "reindexLoading": "Submitting reindex request…",
-    "reindexSuccess": "Reindex request submitted successfully",
-    "reindexError": "Failed to submit reindex request",
-    "forceReindexTitle": "Force reindexing confirmation",
-    "forceReindexDescription": "This record is already indexed. Force reindexing will reprocess it and may incur additional processing costs.",
-    "deleteRecord": "Delete record",
-    "loading": "Loading…",
-    "loadFailed": "Could not load this record.",
-    "externalSource": "External source",
-    "collectionUpload": "Collection",
-    "openExternal": "Open",
-    "previewUnavailable": "Preview not available for this record type.",
-    "permissionOwner": "Owner",
-    "permissionReader": "Reader",
-    "permissionWriter": "Writer",
-    "labels": {
-      "name": "Name",
-      "fileName": "File name",
-      "fileSize": "File size",
-      "recordId": "Record ID",
-      "origin": "Origin",
-      "originConnector": "Connector",
-      "originUpload": "Collection upload",
-      "recordType": "Record type",
-      "version": "Version",
-      "createdAt": "Created at",
-      "updatedAt": "Updated at",
-      "collection": "Collection",
-      "permissions": "Permissions",
-      "noPermissions": "No permissions assigned",
-      "indexingStatus": "Indexing status",
-      "connector": "Origin",
-      "folder": "Folder",
-      "connectorId": "Connector ID",
-      "notAvailable": "N/A",
-      "typeEmail": "Email",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Web page",
-      "typeMessage": "Message",
-      "mailSubject": "Subject",
-      "ticketSummary": "Summary",
-      "ticketDescription": "Description"
-    }
-  },
   "oauthConsent": {
-    "loading": "Loading authorization request…",
+    "loading": "Loading authorization request\u2026",
     "missingParams": "Missing required OAuth parameters (client_id, redirect_uri).",
     "noData": "No authorization data available.",
     "noRedirect": "No redirect URL received from server.",
     "errorTitle": "Authorization error",
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
-    "legalNotice": "By clicking “Allow”, you authorize {{appName}} to access your data as described above.",
+    "legalNotice": "By clicking \u201cAllow\u201d, you authorize {{appName}} to access your data as described above.",
     "privacyPolicy": "Privacy Policy",
     "deny": "Deny",
     "allow": "Allow",
-    "submitting": "Processing…",
+    "submitting": "Processing\u2026",
     "outcomeSuccessTitle": "Connected",
     "outcomeSuccessLine1": "Authentication succeeded.",
     "outcomeSuccessLine2": "You can close this window.",
-    "outcomeErrorTitle": "Couldn’t connect",
+    "outcomeErrorTitle": "Couldn\u2019t connect",
     "tryAgain": "Try Again",
     "permissionsReviewHeading": "Permissions",
     "permissionStatusAllowed": "Allowed",
@@ -2121,9 +1855,9 @@
       "server_error": "Server error"
     },
     "errorHints": {
-      "invalid_scope": "The application requested scopes that are either not recognized or not allowed for this OAuth app. Check the app’s allowed scopes in Developer Settings.",
+      "invalid_scope": "The application requested scopes that are either not recognized or not allowed for this OAuth app. Check the app\u2019s allowed scopes in Developer Settings.",
       "invalid_request": "The redirect URI provided does not match any URI registered for this application. Verify the redirect URIs configured in Developer Settings.",
-      "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application’s configuration.",
+      "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application\u2019s configuration.",
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
   }

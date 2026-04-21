@@ -24,7 +24,6 @@ import {
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
-import { applyKnowledgeBaseUploadBatchResult } from './upload-batch-result';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 // import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
@@ -399,7 +398,7 @@ function KnowledgeBasePageContent() {
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
   // Upload store actions
-  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
+  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, updateItemStatus, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
 
@@ -1279,12 +1278,39 @@ function KnowledgeBasePageContent() {
             );
           }
 
-          applyKnowledgeBaseUploadBatchResult(
-            batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
-            responseData,
-            completeUpload,
-            failUpload
-          );
+          // Map response records back to individual file entries by index
+          const records: Record<string, unknown>[] = (responseData?.records as Record<string, unknown>[]) || [];
+          if (records.length > 0) {
+            records.forEach((_: Record<string, unknown>, idx: number) => {
+              const entry = batch[idx];
+              if (entry) completeUpload(entry.storeId);
+            });
+            // Files beyond the returned records count → upload incomplete
+            batch.slice(records.length).forEach((entry) =>
+              failUpload(entry.storeId, 'Upload incomplete')
+            );
+          } else {
+            // No record list returned — assume all succeeded
+            batch.forEach((entry) => completeUpload(entry.storeId));
+          }
+
+          // Handle any files the backend explicitly reports as failed
+          const failedFiles: Array<{ fileName?: string; filePath?: string; error?: string }> =
+            (responseData?.failedFilesDetails as Array<{ fileName?: string; filePath?: string; error?: string }>) || [];
+          failedFiles.forEach((ff) => {
+            // Prefer matching by full filePath to avoid basename collisions (e.g. a/readme.md vs b/readme.md)
+            let entry =
+              ff.filePath != null
+                ? batch.find((e) => e.filePath === ff.filePath)
+                : undefined;
+
+            if (!entry) {
+              const name = ff.fileName || ff.filePath?.split('/').pop();
+              if (name) entry = batch.find((e) => e.file.name === name);
+            }
+
+            if (entry) failUpload(entry.storeId, ff.error || 'Upload failed');
+          });
 
           anySuccess = true;
         } catch (error) {
@@ -1303,7 +1329,7 @@ function KnowledgeBasePageContent() {
         }, 3000);
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData, clearCompleted]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, updateItemStatus, bulkUpdateItemStatus, refreshData, clearCompleted]
   );
 
   // Handle folder info click
@@ -1414,10 +1440,7 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
-            undefined,
+          size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
         });
@@ -1466,10 +1489,7 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
-            undefined,
+          size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
         });
@@ -1492,12 +1512,10 @@ function KnowledgeBasePageContent() {
       const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
       if (isKnowledgeHubNode) {
-        const containerTypes: NodeType[] = ['app', 'folder', 'recordGroup'];
-        const isNavigableContainer =
-          containerTypes.includes(item.nodeType) ||
-          (item.nodeType === 'record' && item.hasChildren);
+        // Handle KnowledgeHubNode - support all container types: kb, app, folder, recordGroup
+        const containerTypes: NodeType[] = ['kb', 'app', 'folder', 'recordGroup'];
 
-        if (isNavigableContainer) {
+        if (containerTypes.includes(item.nodeType)) {
           // Reset filters and search when navigating into a container
           if (isAllRecordsMode) {
             clearAllRecordsFilter();
@@ -2062,7 +2080,7 @@ function KnowledgeBasePageContent() {
         <Box
           style={{ 
             position: 'absolute',
-            bottom: 'var(--space-6)',
+            bottom: '24px',
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,

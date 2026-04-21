@@ -38,7 +38,7 @@ export function SearchBar({
       align="center"
       style={{
         height: 'var(--space-10)',
-        padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-2)',
+        padding: '4px 12px 4px 8px',
         backgroundColor: 'var(--effects-translucent)',
         backdropFilter: 'blur(8px)',
         borderBottom: '1px solid var(--olive-3)',
@@ -50,7 +50,7 @@ export function SearchBar({
         style={{
           flex: 1,
           height: 'var(--space-6)',
-          padding: '0 var(--space-2)',
+          padding: '0 8px',
           backgroundColor: 'var(--slate-a3)',
           borderRadius: 'var(--radius-1)',
         }}

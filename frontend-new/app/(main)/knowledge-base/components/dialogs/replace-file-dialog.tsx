@@ -181,7 +181,7 @@ export function ReplaceFileDialog({
           align="center"
           justify="between"
           style={{
-            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
+            padding: '8px 8px 8px 16px',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
@@ -210,7 +210,7 @@ export function ReplaceFileDialog({
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            padding: 'var(--space-4)',
+            padding: '16px',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(25px)',
           }}
@@ -223,7 +223,7 @@ export function ReplaceFileDialog({
               </Text>
               <Box
                 style={{
-                  padding: 'var(--space-1) var(--space-3)',
+                  padding: '4px 12px',
                   backgroundColor: 'var(--slate-1)',
                   borderRadius: 'var(--radius-2)',
                   border: '1px solid var(--olive-3)',
@@ -339,7 +339,7 @@ export function ReplaceFileDialog({
                   onMouseEnter={() => setIsReplacementFileHovered(true)}
                   onMouseLeave={() => setIsReplacementFileHovered(false)}
                   style={{
-                    padding: 'var(--space-3)',
+                    padding: '12px',
                     backgroundColor: isReplacementFileHovered ? 'var(--slate-3)' : 'var(--slate-2)',
                     borderRadius: 'var(--radius-2)',
                     border: '1px solid var(--slate-5)',
@@ -414,7 +414,7 @@ export function ReplaceFileDialog({
                     border: `1px dashed ${isDragOver ? 'var(--accent-9)' : 'var(--slate-7)'}`,
                     borderRadius: 'var(--radius-2)',
                     background: isDragOver ? 'var(--accent-a2)' : 'rgba(255, 255, 255, 0.00)',
-                    padding: 'var(--space-8)',
+                    padding: '32px',
                     cursor: 'pointer',
                     transition: 'all 0.15s ease',
                     flex: 1,

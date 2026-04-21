@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
@@ -269,13 +269,13 @@ export default function WebSearchPage() {
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.webSearch.heading')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
-             {t('workspace.webSearch.subtitle')}
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+              {t('workspace.webSearch.subtitle')}
             </Text>
           </Box>
 
@@ -299,17 +299,17 @@ export default function WebSearchPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--olive-3)',
-            borderRadius: 'var(--radius-1)',
-            background: 'var(--olive-2)',
-            marginBottom: 'var(--space-5)',
+            border: '1px solid var(--slate-5)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--slate-2)',
+            marginBottom: 20,
           }}
         >
           {/* Section header */}
           <Flex
             align="center"
             justify="between"
-            style={{ padding: '14px 16px' }}
+            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
@@ -339,9 +339,6 @@ export default function WebSearchPage() {
               </Button>
             )}
           </Flex>
-           <Box px="4">
-                      <Box style={{ height: 1, background: 'var(--olive-3)' }} />
-                    </Box>
 
           {/* Provider rows */}
           <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
@@ -378,16 +375,18 @@ export default function WebSearchPage() {
 
         {/* ── Web Search Provider Policy info box ── */}
         <Flex
-          align="center"
+          align="start"
           gap="3"
           style={{
-            backgroundColor: 'var(--accent-a2)',
+            backgroundColor: 'var(--accent-2)',
+            border: '1px solid var(--accent-6)',
+            borderRadius: 'var(--radius-1)',
             padding: '12px 16px',
           }}
         >
-          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
-            <MaterialIcon name="info" size={16} color="var(--accent-11)" />
-          </IconButton>
+          <Box style={{ flexShrink: 0, marginTop: 2 }}>
+            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+          </Box>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.webSearch.policyTitle')}

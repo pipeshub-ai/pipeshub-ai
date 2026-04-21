@@ -59,7 +59,7 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
               background: hoveredIndex === index ? 'var(--olive-3)' : 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-1)',
-              padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+              padding: '8px 8px 8px 12px',
               cursor: 'pointer',
               transition: 'background-color 150ms ease',
               opacity: 0,
@@ -85,7 +85,7 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
               style={{
                 borderRadius: 'var(--radius-1)',
                 backgroundColor: 'var(--olive-4)',
-                marginLeft: 'var(--space-2)',
+                marginLeft: '8px',
                 flexShrink: 0,
               }}
             >

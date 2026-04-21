@@ -163,7 +163,7 @@ export function CreateTeamSidebar({
             )}
             style={{
               width: '100%',
-              height: 'var(--space-8)',
+              height: 32,
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -204,7 +204,7 @@ export function CreateTeamSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: 'var(--space-2)',
+              padding: '8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',

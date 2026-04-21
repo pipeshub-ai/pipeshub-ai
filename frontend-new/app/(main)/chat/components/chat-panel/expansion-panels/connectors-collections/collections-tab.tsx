@@ -54,7 +54,6 @@ export function CollectionsTab({
   onToggleKb,
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchFocused, setSearchFocused] = useState(false);
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -100,14 +99,14 @@ export function CollectionsTab({
   return (
     <Flex direction="column" gap="2" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Search bar */}
-      <Flex align="center" gap="1" style={{ width: '100%' }}>
+      <Flex align="center" gap="1" style={{ width: '98%' }}>
         <Flex
           align="center"
           gap="2"
           style={{
             flex: 1,
-            height: 'var(--space-6)',
-            border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
+            height: '36px',
+            border: '1px solid var(--slate-a5)',
             borderRadius: 'var(--radius-2)',
             paddingLeft: 'var(--space-2)',
             paddingRight: 'var(--space-2)',
@@ -121,11 +120,8 @@ export function CollectionsTab({
           />
           <input
             type="text"
-            className="collections-search-input"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
             placeholder={t('chat.searchCollections')}
             style={{
               flex: 1,
@@ -133,11 +129,19 @@ export function CollectionsTab({
               outline: 'none',
               backgroundColor: 'transparent',
               color: 'var(--slate-12)',
-              fontSize: 'var(--font-size-2)', /* was: 13px, delta: +1px */
+              fontSize: '13px',
               fontFamily: 'inherit',
             }}
           />
         </Flex>
+        {/* Filter button — no-op for v0 */}
+        <IconButton variant="ghost" color="gray" size="2" style={{width: 'var(--spacing-6)', marginLeft: 'var(--space-1)'}}>
+          <MaterialIcon
+            name="filter_list"
+            size={ICON_SIZES.SECONDARY}
+            color="var(--slate-11)"
+          />
+        </IconButton>
       </Flex>
 
       {/* Scrollable list */}
@@ -155,7 +159,7 @@ export function CollectionsTab({
           <Flex
             align="center"
             justify="center"
-            style={{ flex: 1, minHeight: 0 }}
+            style={{ padding: 'var(--space-4)' }}
           >
            <LottieLoader variant="loader" size={48} />
           </Flex>
@@ -201,7 +205,7 @@ export function CollectionsTab({
                   style={{
                     fontSize: 12,
                     fontWeight: 400,
-                    lineHeight: 'var(--line-height-1)',
+                    lineHeight: '16px',
                     letterSpacing: '0.04px',
                     color: 'var(--olive-9)',
                   }}

@@ -52,11 +52,11 @@ export function WorkspaceSidebarItem({
         // Layout
         display: 'flex',
         alignItems: 'center',
-        gap: 'var(--space-2)',
+        gap: 8,
         width: '100%',
         height: ELEMENT_HEIGHT,
         paddingLeft,
-        paddingRight: 'var(--space-3)',
+        paddingRight: 12,
         boxSizing: 'border-box',
         flexShrink: 0,
         // Visual

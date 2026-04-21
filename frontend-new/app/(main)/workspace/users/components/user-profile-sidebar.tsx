@@ -51,10 +51,10 @@ function ProfileField({ label, value, valueColor }: ProfileFieldProps) {
   return (
     <Box
       style={{
-        background: 'var(--olive-2)',
+        backgroundColor: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
-        padding: 'var(--space-3) var(--space-4)',
+        padding: '12px 16px',
       }}
     >
       <Flex direction="column" gap="1">
@@ -90,7 +90,7 @@ export function UserProfileSidebar() {
   // Map status to color for the profile display
   const statusColor =
     status === 'Active'
-      ? 'var(--accent-11)'
+      ? 'var(--jade-11)'
       : status === 'Pending'
         ? 'var(--amber-11)'
         : 'var(--slate-11)';
@@ -115,24 +115,24 @@ export function UserProfileSidebar() {
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-3) var(--space-4)',
+            padding: '12px 16px',
           }}
         >
-          <Flex align="center" justify="between">
-            <Flex direction="column" gap="1">
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                {t('workspace.users.profile.name')}
-              </Text>
+          <Flex direction="column" gap="1">
+            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              {t('workspace.users.profile.name')}
+            </Text>
+            <Flex align="center" justify="between">
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                 {nameWithSuffix}
               </Text>
+              <Avatar
+                size="2"
+                variant="soft"
+                fallback={getInitials(displayName)}
+                style={{ flexShrink: 0 }}
+              />
             </Flex>
-            <Avatar
-              size="2"
-              variant="soft"
-              fallback={getInitials(displayName)}
-              style={{ flexShrink: 0 }}
-            />
           </Flex>
         </Box>
 

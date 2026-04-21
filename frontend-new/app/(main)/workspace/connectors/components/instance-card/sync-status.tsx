@@ -26,7 +26,7 @@ interface SyncStatusPillProps {
 
 const pillStyle: React.CSSProperties = {
   height: 32,
-  padding: '0 var(--space-3) 0 var(--space-2)',
+  padding: '0 12px 0 8px',
   borderRadius: 'var(--radius-2)',
   backgroundColor: 'var(--gray-a2)',
   flexShrink: 0,
@@ -54,7 +54,7 @@ export function SyncStatusPill({
 
   if (status === 'sync_disabled') {
     return (
-      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 var(--space-3)', backgroundColor: 'var(--gray-a3)' }}>
+      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 12px', backgroundColor: 'var(--gray-a3)' }}>
         <MaterialIcon name="pause_circle" size={14} color="var(--gray-a10)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a10)', whiteSpace: 'nowrap' }}>
           {t('workspace.connectors.syncStatus.paused')}
@@ -69,7 +69,7 @@ export function SyncStatusPill({
 
   if (status === 'detecting_records') {
     return (
-      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 var(--space-3)' }}>
+      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 12px' }}>
         <MaterialIcon name="sync" size={20} color="var(--gray-a11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a11)', whiteSpace: 'nowrap' }}>
           {t('workspace.connectors.syncStatus.preparing')}

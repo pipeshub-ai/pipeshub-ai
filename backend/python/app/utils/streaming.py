@@ -1263,16 +1263,39 @@ async def handle_simple_mode(
 
 
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
-    """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
+    """Append ::download_conversation_task and ::artifact markers to the answer string.
+
+    Handles two task result shapes:
+    - Legacy: ``{"type": "csv_download", "fileName": ..., "signedUrl": ...}``
+    - Artifacts: ``{"type": "artifacts", "artifacts": [{"fileName": ..., "mimeType": ..., ...}]}``
+    """
     if not conversation_tasks:
         return answer
-    markers = "\n\n" + "  ".join(
-        f"::download_conversation_task[{t.get('fileName', 'Download')}]({t.get('signedUrl') or t.get('downloadUrl', '')})"
-        for t in conversation_tasks
-        if t.get("signedUrl") or t.get("downloadUrl")
-    )
 
-    return answer + markers
+    parts: list[str] = []
+    for t in conversation_tasks:
+        task_type = t.get("type", "")
+
+        if task_type == "artifacts":
+            for art in t.get("artifacts", []):
+                url = art.get("signedUrl") or art.get("downloadUrl", "")
+                if not url:
+                    continue
+                fname = art.get("fileName", "Download")
+                mime = art.get("mimeType", "application/octet-stream")
+                doc_id = art.get("documentId", "")
+                record_id = art.get("recordId", "")
+                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+        else:
+            url = t.get("signedUrl") or t.get("downloadUrl", "")
+            if url:
+                fname = t.get("fileName", "Download")
+                parts.append(f"::download_conversation_task[{fname}]({url})")
+
+    if not parts:
+        return answer
+
+    return answer + "\n\n" + "  ".join(parts)
 
 
 async def stream_llm_response_with_tools(

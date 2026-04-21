@@ -16,17 +16,6 @@ import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
 
-/** Duration must match `typing-reveal` animation duration in globals.css */
-const TYPING_ANIMATION_DURATION_MS = 400;
-
-function TypingTitle({ title }: { title: string }) {
-  return (
-    <span className="title-typing-animation">
-      {title}
-    </span>
-  );
-}
-
 interface ChatSectionElementProps {
   conversation: Conversation;
   isActive: boolean;
@@ -51,23 +40,9 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
-  const [isTypingTitle, setIsTypingTitle] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
-
-  const newlyResolvedIds = useChatStore((s) => s.newlyResolvedIds);
-  const clearNewlyResolvedId = useChatStore((s) => s.clearNewlyResolvedId);
-
-  useEffect(() => {
-    if (newlyResolvedIds.has(conversation.id)) {
-      setIsTypingTitle(true);
-      clearNewlyResolvedId(conversation.id);
-      const timer = setTimeout(() => setIsTypingTitle(false), TYPING_ANIMATION_DURATION_MS);
-      return () => clearTimeout(timer);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newlyResolvedIds]);
 
   const removeConversation = useChatStore((s) => s.removeConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
@@ -166,7 +141,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         align="center"
         style={{
           height: CHAT_ITEM_HEIGHT,
-          padding: '0 var(--space-3)',
+          padding: '0 12px',
           borderRadius: 'var(--radius-1)',
           backgroundColor: 'var(--olive-3)',
           border: '1px solid var(--olive-4)',
@@ -187,7 +162,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
             outline: 'none',
             fontSize: 14,
             fontWeight: 500,
-            lineHeight: 'var(--line-height-2)',
+            lineHeight: '20px',
             color: 'var(--slate-12)',
             font: 'inherit',
           }}
@@ -200,7 +175,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   return (
     <>
       <SidebarItem
-        label={isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title}
+        label={conversation.title}
         isActive={isActive}
         onClick={onClick}
         textColor="var(--slate-12)"
@@ -271,9 +246,17 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
       isActive={isActive}
       onClick={handleClick}
       label={
-        <span className="generating-shimmer">
-          <span className="generating-shimmer-base">{t('chat.generatingTitle')}</span>
-          <span className="generating-shimmer-overlay" aria-hidden="true">{t('chat.generatingTitle')}</span>
+        <span
+          style={{
+            background:
+              'linear-gradient(90deg, var(--accent-9) 0%, var(--accent-11) 40%, var(--accent-9) 60%, var(--accent-9) 100%)',
+            backgroundSize: '200% 100%',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            animation: 'shimmer-sweep 2s ease-in-out infinite',
+          }}
+        >
+          {t('chat.generatingTitle')}
         </span>
       }
       textColor="var(--slate-11)"
@@ -311,7 +294,7 @@ export function ChatItemSkeleton() {
       label={
         <Box
           style={{
-            height: 'var(--space-4)',
+            height: 16,
             backgroundColor: 'var(--slate-4)',
             borderRadius: 'var(--radius-1)',
             width: '75%',

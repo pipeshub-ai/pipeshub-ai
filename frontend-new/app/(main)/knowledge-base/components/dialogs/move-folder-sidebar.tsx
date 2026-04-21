@@ -81,7 +81,7 @@ function FolderTreeItem({
             width: '100%',
             height: '32px',
             paddingLeft: `${TREE_BASE_PADDING + indent}px`,
-            paddingRight: 'var(--space-3)',
+            paddingRight: '12px',
             cursor: isCurrent || isDisabled ? 'default' : 'pointer',
             borderRadius: 'var(--radius-2)',
             backgroundColor: isSelected ? 'var(--olive-3)' : isHovered && !isCurrent && !isDisabled ? 'var(--slate-3)' : 'transparent',
@@ -383,7 +383,7 @@ export function MoveFolderSidebar({
         <Box
           className="no-scrollbar"
           style={{
-            padding: 'var(--space-4)',
+            padding: '16px',
             flex: 1,
             overflowY: 'auto',
             background: 'var(--effects-translucent)',
@@ -406,7 +406,7 @@ export function MoveFolderSidebar({
                     width: '100%',
                     height: '32px',
                     paddingLeft: `${TREE_BASE_PADDING}px`,
-                    paddingRight: 'var(--space-3)',
+                    paddingRight: '12px',
                     cursor: isRootCurrent ? 'default' : 'pointer',
                     borderRadius: 'var(--radius-2)',
                     backgroundColor: isRootSelected ? 'var(--olive-3)' : isRootHovered && !isRootCurrent ? 'var(--slate-3)' : 'transparent',
@@ -485,7 +485,7 @@ export function MoveFolderSidebar({
               ))}
             </Flex>
           ) : (
-              <Flex align="center" justify="center" style={{ padding: 'var(--space-8)' }}>
+            <Flex align="center" justify="center" style={{ padding: '32px' }}>
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
                 {searchQuery ? 'No folders found' : 'No collection selected'}
               </Text>

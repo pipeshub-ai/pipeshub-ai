@@ -13,7 +13,6 @@ from app.sources.client.iclient import IClient
 from app.sources.external.common.atlassian import (
     AtlassianCloudResource,
     match_atlassian_cloud_resource,
-    resolve_preferred_site_with_fallback,
 )
 from app.utils.oauth_config import (
     fetch_oauth_config_by_id,
@@ -318,9 +317,8 @@ class ConfluenceClient(IClient):
                         )
                         if shared:
                             preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
-                preferred_site = await resolve_preferred_site_with_fallback(
-                    preferred_site, access_token, cls.get_accessible_resources, logger, "Confluence",
-                )
+                if not preferred_site:
+                    raise ValueError("Atlassian site URL (baseUrl) is required for OAuth auth")
                 base_url = await cls.get_confluence_base_url(access_token, preferred_site)
 
                 if not base_url:
@@ -403,9 +401,8 @@ class ConfluenceClient(IClient):
                         )
                         if shared:
                             preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
-                preferred_site = await resolve_preferred_site_with_fallback(
-                    preferred_site, access_token, cls.get_accessible_resources, logger, "Confluence",
-                )
+                if not preferred_site:
+                    raise ValueError("Atlassian site URL (baseUrl) is required for OAuth toolsets")
                 base_url = await cls.get_confluence_base_url(access_token, preferred_site)
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")

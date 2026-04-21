@@ -57,7 +57,7 @@ export function CollapsibleSection({
           // Layout
           display: 'flex',
           alignItems: 'center',
-          gap: 'var(--space-2)',
+          gap: 8,
           width: '100%',
           height: ELEMENT_HEIGHT,
           padding: '0 12px',

@@ -9,7 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { startConnectorSync } from '../utils/connector-sync-actions';
+import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -19,7 +19,6 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
-import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
 
 // ========================================
@@ -341,9 +340,9 @@ function TeamConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+      if (!instance._key) return;
       try {
-        await startConnectorSync({
+        await ensureConnectorSyncActiveThenResync({
           _key: instance._key,
           type: instance.type,
         });
@@ -366,7 +365,7 @@ function TeamConnectorsPageContent() {
 
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+      if (!instance._key) return;
       try {
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
         addToast({
@@ -401,7 +400,7 @@ function TeamConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
+      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
@@ -512,14 +511,14 @@ function NavigateButton({
       style={{
         appearance: 'none',
         margin: 0,
-        padding: '0 var(--space-3)',
+        padding: '0 12px',
         font: 'inherit',
         outline: 'none',
         border: 'none',
         display: 'flex',
         alignItems: 'center',
-        gap: 'var(--space-2)',
-        height: 'var(--space-8)',
+        gap: 8,
+        height: 32,
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
         cursor: 'pointer',

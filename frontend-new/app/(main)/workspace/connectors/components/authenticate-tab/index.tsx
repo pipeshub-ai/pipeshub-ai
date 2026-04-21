@@ -337,7 +337,7 @@ export function AuthenticateTab() {
   );
 
   return (
-    <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
+    <Flex direction="column" gap="6" style={{ padding: '4px 0' }}>
       {/* ── A. Setup Documentation ── */}
       {docLinks.length > 0 && (
         <DocumentationSection
@@ -417,7 +417,7 @@ export function AuthenticateTab() {
           style={{
             backgroundColor: 'var(--green-a3)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-3) var(--space-4)',
+            padding: '12px 16px',
           }}
         >
           <MaterialIcon name="check_circle" size={16} color="var(--green-a11)" />

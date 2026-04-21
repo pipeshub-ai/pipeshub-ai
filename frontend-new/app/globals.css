@@ -25,19 +25,20 @@
   --emerald-11: #035e44;
   --emerald-12: #0f3d2c;
 
-  /* Alpha variants  */
-  --emerald-a1: rgba(4, 120, 87, 0.024);
-  --emerald-a2: rgba(4, 120, 87, 0.06);
-  --emerald-a3: rgba(4, 120, 87, 0.13);
-  --emerald-a4: rgba(4, 120, 87, 0.22);
-  --emerald-a5: rgba(4, 120, 87, 0.32);
-  --emerald-a6: rgba(4, 120, 87, 0.44);
-  --emerald-a7: rgba(4, 120, 87, 0.58);
-  --emerald-a8: rgba(4, 120, 87, 0.76);
+  /* Alpha variants */
+  --emerald-a1: rgba(0, 192, 96, 0.02);
+  --emerald-a2: rgba(0, 160, 74, 0.04);
+  --emerald-a3: rgba(35, 173, 117, 0.687);
+  --emerald-a4: rgba(0, 162, 80, 0.19);
+  --emerald-a5: rgba(0, 152, 74, 0.26);
+  --emerald-a6: rgba(0, 154, 80, 0.35);
+  --emerald-a7: rgba(0, 146, 90, 0.46);
+  --emerald-a8: rgba(0, 144, 96, 0.62);
   --emerald-a9: rgba(4, 120, 87, 1);
-  --emerald-a10: rgba(16, 103, 76, 1);
-  --emerald-a11: rgba(3, 94, 68, 1);
-  --emerald-a12: rgba(15, 61, 44, 1);
+  --emerald-a10: rgba(3, 107, 78, 0.86);
+  --emerald-a11: rgba(24, 100, 70, 0.79);
+  --emerald-a12: rgba(0, 37, 21, 0.91);
+
   --emerald-contrast: #ffffff;
   --emerald-surface: rgba(245, 254, 251, 0.8);
   --emerald-indicator: #047857;
@@ -71,7 +72,7 @@
   /* Alpha variants */
   --emerald-a1: rgba(0, 222, 69, 0.02);
   --emerald-a2: rgba(0, 255, 168, 0.06);
-  --emerald-a3: rgba(0, 255, 162, 0.07); /* Figma Accent Alpha/3 = #00ffa212 */
+  --emerald-a3: rgba(0, 255, 153, 0.15);
   --emerald-a4: rgba(0, 255, 170, 0.21);
   --emerald-a5: rgba(0, 255, 176, 0.27);
   --emerald-a6: rgba(32, 255, 187, 0.33);
@@ -79,7 +80,7 @@
   --emerald-a8: rgba(66, 255, 203, 0.49);
   --emerald-a9: rgba(4, 120, 87, 1);
   --emerald-a10: rgba(80, 255, 208, 0.56);
-  --emerald-a11: rgba(136, 254, 206, 0.79); /* Figma Accent Alpha/11 = #88fececa */
+  --emerald-a11: rgba(107, 255, 216, 0.85);
   --emerald-a12: rgba(184, 255, 240, 0.94);
 
   --emerald-contrast: #ffffff;
@@ -370,42 +371,8 @@ summary {
   scrollbar-width: none;
 }
 
-/* Always-visible, themed scrollbar used by the upload data dialog so users
-   can clearly see when more files/folders are available below the fold
-   (macOS overlay scrollbars would otherwise stay hidden until the user
-   actively scrolls, making overflow invisible). */
-.upload-scroll-area {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-8) var(--olive-3);
-}
-.upload-scroll-area::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-  -webkit-appearance: none;
-}
-.upload-scroll-area::-webkit-scrollbar-track {
-  background: var(--olive-3);
-  border-radius: 8px;
-  margin: 2px 0;
-}
-.upload-scroll-area::-webkit-scrollbar-thumb {
-  background-color: var(--slate-8);
-  border-radius: 8px;
-  border: 2px solid var(--olive-3);
-  background-clip: padding-box;
-  min-height: 32px;
-}
-.upload-scroll-area::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-10);
-  background-clip: padding-box;
-}
-
 .kb-search-input::placeholder {
   color: var(--gray-10);
-}
-
-.collections-search-input::placeholder {
-  color: var(--slate-a9);
 }
 
 /* ========================
@@ -468,63 +435,9 @@ li > blockquote {
   }
 }
 
-@keyframes generatingShimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-.generating-shimmer {
-  position: relative;
-  display: inline-block;
-  white-space: nowrap;
-}
-
-.generating-shimmer-base {
-  color: var(--accent-a11);
-}
-
-.generating-shimmer-overlay {
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    transparent 35%,
-    var(--accent-12) 50%,
-    transparent 65%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  background-repeat: no-repeat;
-  -webkit-background-clip: text;
-          background-clip: text;
-  -webkit-text-fill-color: transparent;
-          color: transparent;
-  animation: generatingShimmer 1.5s linear infinite;
-  pointer-events: none;
-}
-
 @keyframes msgActionsIn {
   from { opacity: 0; }
   to   { opacity: 1; }
-}
-
-/* ========================
-   Sidebar title typing animation
-   Plays once when a new conversation title is revealed after generation.
-   ======================== */
-
-@keyframes typing-reveal {
-  from { width: 0; }
-  to   { width: 100%; }
-}
-
-.title-typing-animation {
-  display: inline-block;
-  overflow: hidden;
-  white-space: nowrap;
-  width: 0;
-  animation: typing-reveal 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
 
 /* ========================

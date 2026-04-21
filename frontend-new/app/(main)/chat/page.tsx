@@ -36,6 +36,46 @@ const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
+// Background decorative pattern
+const BackgroundPattern = ({ showNewChatView }: { showNewChatView: boolean }) => (
+  <Box
+    style={{
+      position: 'absolute',
+      inset: 0,
+      overflow: 'hidden',
+      pointerEvents: 'none',
+    }}
+  >
+    {showNewChatView ? (
+      <img
+        src="/background/chat-bg.svg"
+        alt=""
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: '100%',
+          height: 'auto',
+          opacity: 1,
+        }}
+      />
+    ) : (
+      <Box
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: '200%',
+          height: '300px',
+          opacity: 0.3,
+          background: 'radial-gradient(ellipse at center bottom, rgba(11, 122, 89, 0.15) 0%, transparent 70%)',
+        }}
+      />
+    )}
+  </Box>
+);
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -701,6 +741,7 @@ function ChatContent() {
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
+      <BackgroundPattern showNewChatView={showNewChatView} />
 
       {historyAndShareAgentId && (
         <AgentChatHeader
@@ -777,7 +818,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isInputCentered ? (isMobile ? 'var(--space-5)' : 'var(--space-6)') : isMobile ? 'var(--space-8)' : '48px',
+              marginBottom: isInputCentered ? (isMobile ? '20px' : '24px') : isMobile ? '32px' : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -786,14 +827,14 @@ function ChatContent() {
               size="4"
               weight="medium"
               style={{
-                color: 'var(--slate-12)',
+                color: 'var(--slate-11)',
                 display: 'block',
                 marginBottom: 'var(--space-1)',
               }}
             >
               {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
             </Text>
-            <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            <Text size="4" weight="medium" style={{ color: 'var(--slate-11)' }}>
               {t('chat.greeting')}
             </Text>
           </Box>
@@ -856,7 +897,7 @@ function ChatContent() {
       <Box
         style={{
           position: 'absolute',
-          bottom: isMobile ? 0 : 'var(--space-4)',
+          bottom: isMobile ? 0 : '24px',
           left: isMobile ? 0 : '50%',
           right: isMobile ? 0 : undefined,
           transform: isMobile ? undefined : 'translateX(-50%)',

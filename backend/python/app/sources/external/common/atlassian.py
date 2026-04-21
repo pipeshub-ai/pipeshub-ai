@@ -1,6 +1,4 @@
-import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
 
@@ -56,28 +54,3 @@ def match_atlassian_cloud_resource(
         f"{product}: This token has no access to that site ({preferred_host}). "
         "Check baseUrl matches the site you authorized."
     )
-
-
-async def resolve_preferred_site_with_fallback(
-    preferred_site: str,
-    access_token: str,
-    get_accessible_resources: Callable[[str], Awaitable[list[AtlassianCloudResource]]],
-    logger: logging.Logger,
-    product: str,
-) -> str:
-    """Return ``preferred_site`` if set; otherwise fall back to the first accessible
-    resource returned by the OAuth token. Raises ValueError only if the token has
-    zero accessible sites. Unblocks legacy connectors/toolsets whose configs predate
-    the ``baseUrl`` requirement."""
-    if preferred_site:
-        return preferred_site
-    resources = await get_accessible_resources(access_token)
-    if not resources:
-        raise ValueError(
-            f"Atlassian site URL (baseUrl) missing and OAuth token has no accessible {product} sites"
-        )
-    logger.warning(
-        "%s baseUrl missing from config; using accessible-resources[0] (%s)",
-        product, resources[0].url,
-    )
-    return resources[0].url

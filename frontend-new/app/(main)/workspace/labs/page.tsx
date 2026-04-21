@@ -9,14 +9,11 @@ import {
   Text,
   Heading,
   TextField,
-  IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   ConfirmationDialog,
   SettingsSaveBar,
-  SettingsSection,
-  SettingsRow,
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useLabsStore } from './store';
@@ -25,25 +22,90 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
-// Local Sub-components
+// Local Sub-components (mirror general/page.tsx patterns)
 // ========================================
 
-/** Accent-tinted info callout used as a standalone banner */
+interface SettingsSectionProps {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}
+
+function SettingsSection({ title, description, children }: SettingsSectionProps) {
+  return (
+    <Flex
+      direction="column"
+      gap="4"
+      style={{
+        border: '1px solid var(--slate-5)',
+        borderRadius: 'var(--radius-1)',
+        padding: 16,
+        backdropFilter: 'blur(25px)',
+        backgroundColor: 'var(--slate-2)',
+      }}
+    >
+      {/* Section header */}
+      <Flex direction="column" gap="1">
+        <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {title}
+        </Text>
+        {description && (
+          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+            {description}
+          </Text>
+        )}
+      </Flex>
+      {/* Divider */}
+      <Box style={{ height: 1, backgroundColor: 'var(--slate-5)', width: '100%' }} />
+      {/* Content */}
+      <Flex direction="column" gap="5">
+        {children}
+      </Flex>
+    </Flex>
+  );
+}
+
+interface SettingsRowProps {
+  label: string;
+  description?: string;
+  children: React.ReactNode;
+}
+
+function SettingsRow({ label, description, children }: SettingsRowProps) {
+  return (
+    <Flex align="center" justify="between" style={{ width: '100%' }}>
+      <Box style={{ flex: 1 }}>
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+          {label}
+        </Text>
+        {description && (
+          <Text
+            size="1"
+            style={{ color: 'var(--slate-9)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}
+          >
+            {description}
+          </Text>
+        )}
+      </Box>
+      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
+    </Flex>
+  );
+}
+
+/** Accent-tinted info callout used inside sections */
 function InfoCallout({ children }: { children: React.ReactNode }) {
   return (
     <Flex
       align="center"
-      gap="3"
+      gap="2"
       style={{
-        backgroundColor: 'var(--accent-a2)',
-        border: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--accent-2)',
+        border: '1px solid var(--accent-6)',
         borderRadius: 'var(--radius-1)',
-        padding: '12px',
+        padding: '10px 12px',
       }}
     >
-      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
-        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
-      </IconButton>
+      <MaterialIcon name="info" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
         {children}
       </Text>
@@ -56,18 +118,18 @@ function PlatformConfigNote() {
   const { t } = useTranslation();
   return (
     <Flex
-      align="center"
+      align="start"
       gap="3"
       style={{
-        backgroundColor: 'var(--accent-a2)',
-        border: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--accent-2)',
+        border: '1px solid var(--accent-6)',
         borderRadius: 'var(--radius-1)',
-        padding: 'var(--space-4)',
+        padding: '12px 16px',
       }}
     >
-      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
-        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
-      </IconButton>
+      <Box style={{ flexShrink: 0, marginTop: 1 }}>
+        <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+      </Box>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.labs.title')}
@@ -237,31 +299,21 @@ export default function LabsPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 'var(--space-6)' }}>
+        <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.labs')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
             {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
-        <Box style={{ marginBottom: 'var(--space-5)' }}>
-          <Flex direction="column" gap="3">
-            <SettingsSection>
-              <Flex align="center" justify="between" style={{ width: '100%' }}>
-                {/* Label + description */}
-                <Box style={{ flex: 1 }}>
-                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-                    {t('workspace.labs.fileUploadLimit')}
-                  </Text>
-                  <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}>
-                    {t('workspace.labs.fileUploadLimitDescription')}
-                  </Text>
-                </Box>
-                {/* Input — fixed 158px, right-aligned */}
-                <Flex direction="column" gap="1" style={{ width: 158, flexShrink: 0 }}>
+        <Box style={{ marginBottom: 20 }}>
+          <SettingsSection title={t('workspace.labs.fileUploadLimit')}>
+            <Flex direction="column" gap="2">
+              <SettingsRow label={t('workspace.labs.fileUploadLimitLabel')} description={t('workspace.labs.fileUploadLimitDescription')}>
+                <Flex direction="column" gap="1">
                   <TextField.Root
                     type="number"
                     placeholder={t('workspace.labs.fileUploadLimitPlaceholder')}
@@ -276,13 +328,13 @@ export default function LabsPage() {
                         align="center"
                         justify="center"
                         style={{
-                          backgroundColor: 'var(--accent-a3)',
+                          backgroundColor: 'var(--accent-3)',
                           borderRadius: 'var(--radius-1)',
                           padding: '2px 8px',
-                          height: 18,
+                          height: 24,
                         }}
                       >
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)' }}>
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
                           {t('units.mb')}
                         </Text>
                       </Flex>
@@ -294,12 +346,13 @@ export default function LabsPage() {
                     </Text>
                   )}
                 </Flex>
-              </Flex>
-                <InfoCallout>
-              {t('workspace.labs.callout')}
-            </InfoCallout>
-            </SettingsSection>
-          </Flex>
+              </SettingsRow>
+
+              <InfoCallout>
+                {t('workspace.labs.callout')}
+              </InfoCallout>
+            </Flex>
+          </SettingsSection>
         </Box>
 
         {/* ── Platform Configuration note ── */}

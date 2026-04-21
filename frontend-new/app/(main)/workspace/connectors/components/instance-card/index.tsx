@@ -18,7 +18,7 @@ import {
   ManualIndexButton,
 } from './primitives';
 import {
-  deriveSyncStatusState,
+  deriveSyncStatus,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
   getRecordsSelectedInfo,
@@ -27,7 +27,6 @@ import {
   getFailedRecords,
   getUnsupportedRecords,
 } from './utils';
-import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -123,8 +122,7 @@ export function InstanceCard({
   }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
-  const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
-    deriveSyncStatusState(instance, stats, config);
+  const effectiveStatus = deriveSyncStatus(instance, stats);
   const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
@@ -137,16 +135,16 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.supportsSync &&
     instance.isConfigured &&
-    !oauthAuthIncomplete &&
-    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
+    instance.isAuthenticated &&
+    instance.status !== 'DELETING';
 
   /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
   const syncToggleHelp: string | null =
-    instance.status === CONNECTOR_INSTANCE_STATUS.DELETING
+    instance.status === 'DELETING'
       ? 'This connector is being removed.'
       : !instance.isConfigured
         ? 'Finish configuration before you can enable sync.'
-        : oauthAuthIncomplete
+        : !instance.isAuthenticated
           ? 'Authenticate this connector before you can enable sync.'
           : null;
 
@@ -157,8 +155,7 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.isActive &&
     instance.isConfigured &&
-    !oauthAuthIncomplete &&
-    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
+    instance.isAuthenticated;
 
   const syncSwitchControl = (
     <Switch
@@ -363,7 +360,7 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatusState → sync_disabled. */}
+        {/* Indexing / sync actions — only when sync is enabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"
@@ -396,7 +393,7 @@ export function InstanceCard({
         <Flex
           align="center"
           justify="between"
-          style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--gray-a4)', backgroundColor: 'var(--gray-a2)' }}
+          style={{ padding: '12px 16px', borderTop: '1px solid var(--gray-a4)', backgroundColor: 'var(--gray-a2)' }}
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>

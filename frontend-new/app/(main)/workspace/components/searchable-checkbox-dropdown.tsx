@@ -211,9 +211,9 @@ export function SearchableCheckboxDropdown({
         style={{
           display: 'flex',
           alignItems: 'flex-start',
-          gap: 'var(--space-1)',
+          gap: 4,
           width: '100%',
-          minHeight: 'var(--space-8)',
+          minHeight: 32,
           padding: isOpen ? 3 : 4,
           backgroundColor: 'var(--color-surface)',
           border: `${isOpen ? 2 : 1}px solid ${isOpen ? 'var(--accent-8)' : 'var(--slate-a5)'}`,
@@ -319,7 +319,7 @@ export function SearchableCheckboxDropdown({
             display: 'flex',
             alignItems: 'center',
             flexShrink: 0,
-            height: 'var(--space-6)',
+            height: 24,
             marginTop: 2,
           }}
         >
@@ -340,8 +340,8 @@ export function SearchableCheckboxDropdown({
           style={{
             position: 'absolute',
             ...(openDirection === 'down'
-              ? { top: '100%', marginTop: 'var(--space-1)' }
-              : { bottom: '100%', marginBottom: 'var(--space-1)' }),
+              ? { top: '100%', marginTop: 4 }
+              : { bottom: '100%', marginBottom: 4 }),
             left: 0,
             right: 0,
             maxHeight: 216,
@@ -357,7 +357,7 @@ export function SearchableCheckboxDropdown({
             <Flex
               align="center"
               justify="center"
-              style={{ padding: 'var(--space-4)' }}
+              style={{ padding: '16px' }}
             >
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
                 {emptyText}
@@ -382,15 +382,15 @@ export function SearchableCheckboxDropdown({
                       'transparent';
                   }}
                   style={{
-                    padding: 'var(--space-2) var(--space-4)',
+                    padding: '8px 16px',
                     cursor: 'pointer',
                   }}
                 >
                   {/* Custom checkbox */}
                   <Box
                     style={{
-                      width: 'var(--space-4)',
-                      height: 'var(--space-4)',
+                      width: 16,
+                      height: 16,
                       borderRadius: 'var(--radius-1)',
                       border: isChecked
                         ? 'none'
@@ -421,8 +421,8 @@ export function SearchableCheckboxDropdown({
                         src={option.profilePicture}
                         fallback={getInitials(option.label)}
                         style={{
-                          width: 'var(--space-7)',
-                          height: 'var(--space-7)',
+                          width: 28,
+                          height: 28,
                           flexShrink: 0,
                         }}
                       />

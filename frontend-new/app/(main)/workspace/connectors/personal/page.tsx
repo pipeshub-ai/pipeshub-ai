@@ -7,7 +7,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { startConnectorSync } from '../utils/connector-sync-actions';
+import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -17,7 +17,6 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
-import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import type { Connector, ConnectorInstance, PersonalFilterTab } from '../types';
 
 // ========================================
@@ -313,9 +312,9 @@ function PersonalConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+      if (!instance._key) return;
       try {
-        await startConnectorSync({
+        await ensureConnectorSyncActiveThenResync({
           _key: instance._key,
           type: instance.type,
         });
@@ -338,7 +337,7 @@ function PersonalConnectorsPageContent() {
 
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+      if (!instance._key) return;
       try {
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
         addToast({
@@ -373,7 +372,7 @@ function PersonalConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
+      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),

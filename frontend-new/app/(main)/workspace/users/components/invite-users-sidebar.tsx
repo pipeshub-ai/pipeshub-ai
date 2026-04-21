@@ -295,10 +295,10 @@ export function InviteUsersSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 'var(--space-4)',
+          padding: 16,
           display: 'flex',
           flexDirection: 'column',
-          gap: 'var(--space-5)',
+          gap: 20,
         }}
       >
         {/* Email input */}

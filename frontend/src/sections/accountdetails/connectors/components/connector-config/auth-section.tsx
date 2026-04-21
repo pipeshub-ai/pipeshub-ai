@@ -1,4 +1,4 @@
-import React, { useMemo, useState, forwardRef } from 'react';
+import React, { useMemo, forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -692,10 +692,28 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                   }}
                 >
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <DocLinkIcon
-                      iconPath={connector.iconPath}
-                      linkType={link.type}
-                    />
+                    <Box
+                      sx={{
+                        p: 0.5,
+                        borderRadius: 0.75,
+                        bgcolor: alpha(theme.palette.info.main, 0.08),
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Iconify
+                        icon={
+                          link.type === 'setup'
+                            ? settingsIcon
+                            : link.type === 'api'
+                              ? codeIcon
+                              : descriptionIcon
+                        }
+                        width={14}
+                        color={theme.palette.info.main}
+                      />
+                    </Box>
                     <Typography
                       variant="body2"
                       sx={{
@@ -1665,50 +1683,5 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
 });
 
 AuthSection.displayName = 'AuthSection';
-
-function DocLinkIcon({ iconPath, linkType }: { iconPath?: string; linkType: string }) {
-  const theme = useTheme();
-  const [iconError, setIconError] = useState(false);
-
-  const fallback = (
-    <Iconify
-      icon={
-        linkType === 'setup'
-          ? settingsIcon
-          : linkType === 'api'
-            ? codeIcon
-            : descriptionIcon
-      }
-      width={14}
-      color={theme.palette.info.main}
-    />
-  );
-
-  return (
-    <Box
-      sx={{
-        p: 0.5,
-        borderRadius: 0.75,
-        bgcolor: alpha(theme.palette.info.main, 0.08),
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {iconPath && !iconError ? (
-        <img
-          src={iconPath}
-          alt=""
-          width={14}
-          height={14}
-          style={{ objectFit: 'contain', display: 'block' }}
-          onError={() => setIconError(true)}
-        />
-      ) : (
-        fallback
-      )}
-    </Box>
-  );
-}
 
 export default AuthSection;

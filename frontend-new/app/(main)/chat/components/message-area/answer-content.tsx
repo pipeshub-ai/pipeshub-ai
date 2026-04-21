@@ -1,15 +1,118 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Box, Text, Heading } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading } from '@radix-ui/themes';
+import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
-import type {
-  CitationMaps,
-  CitationCallbacks,
-  CitationData,
-} from './response-tabs/citations';
+import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
+import { useChatStore } from '../../store';
+
+interface ParsedArtifactMarker {
+  fileName: string;
+  url: string;
+  mimeType: string;
+  documentId: string;
+  recordId: string;
+}
+
+/** Strip ``::artifact`` and ``::download_conversation_task`` markers, returning cleaned text and parsed artifacts. */
+function stripArtifactMarkers(content: string): { text: string; artifacts: ParsedArtifactMarker[] } {
+  const artifacts: ParsedArtifactMarker[] = [];
+
+  const artifactRegex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g;
+  let text = content.replace(artifactRegex, (_, fileName, url, meta) => {
+    const parts = meta.split('|');
+    artifacts.push({
+      fileName: fileName?.trim() || 'Download',
+      url: (url ?? '').trim(),
+      mimeType: parts[0] || 'application/octet-stream',
+      documentId: parts[1] || '',
+      recordId: parts[2] || '',
+    });
+    return '';
+  });
+
+  const downloadRegex = /::download_conversation_task\[([^\]]+)\]\(([^)]+)\)/g;
+  text = text.replace(downloadRegex, (_, fileName, url) => {
+    artifacts.push({
+      fileName: fileName?.trim() || 'Download',
+      url: (url ?? '').trim(),
+      mimeType: 'text/csv',
+      documentId: '',
+      recordId: '',
+    });
+    return '';
+  });
+
+  return { text: text.trimEnd(), artifacts };
+}
+
+async function handleArtifactDownload(art: ParsedArtifactMarker): Promise<void> {
+  if (art.recordId) {
+    await KnowledgeBaseApi.streamDownloadRecord(art.recordId, art.fileName);
+  } else if (art.url) {
+    const link = document.createElement('a');
+    link.href = art.url;
+    link.download = art.fileName;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+}
+
+async function handleArtifactPreview(art: ParsedArtifactMarker): Promise<void> {
+  if (art.recordId) {
+    const blob = await KnowledgeBaseApi.streamRecord(art.recordId);
+    const objectUrl = URL.createObjectURL(blob);
+    useChatStore.getState().setPreviewFile({
+      id: art.recordId,
+      url: objectUrl,
+      name: art.fileName,
+      type: art.mimeType,
+      size: 0,
+    });
+  } else if (art.url) {
+    useChatStore.getState().setPreviewFile({
+      id: art.documentId || art.fileName,
+      url: art.url,
+      name: art.fileName,
+      type: art.mimeType,
+      size: 0,
+    });
+  }
+}
+
+/** Loads an image via the Record API and displays it once ready. */
+function ArtifactImage({ art, style }: { art: ParsedArtifactMarker; style?: React.CSSProperties }) {
+  const [src, setSrc] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!art.recordId) {
+      setSrc(art.url || undefined);
+      return;
+    }
+    let revoked = false;
+    KnowledgeBaseApi.streamRecord(art.recordId)
+      .then((blob) => {
+        if (revoked) return;
+        setSrc(URL.createObjectURL(blob));
+      })
+      .catch(() => {
+        if (!revoked && art.url) setSrc(art.url);
+      });
+    return () => {
+      revoked = true;
+      if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [art.recordId, art.url]);
+
+  return <img src={src} alt={art.fileName} style={style} />;
+}
 
 interface AnswerContentProps {
   content: string;
@@ -178,6 +281,8 @@ export function AnswerContent({
   citationMaps,
   citationCallbacks,
 }: AnswerContentProps) {
+  const { text: cleanContent, artifacts: inlineArtifacts } = stripArtifactMarkers(content);
+
   // Custom components for react-markdown
   const components = {
     h1: ({ children }: { children?: React.ReactNode }) => (
@@ -191,14 +296,14 @@ export function AnswerContent({
       </Heading>
     ),
     h3: ({ children }: { children?: React.ReactNode }) => (
-      <Heading size="4" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
+      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
         {children}
       </Heading>
     ),
     h4: ({ children }: { children?: React.ReactNode }) => (
-      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
+      <Text size="3" weight="bold" as="p" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
         {children}
-      </Heading>
+      </Text>
     ),
     p: ({ children }: { children?: React.ReactNode }) => (
       <Text size="2" as="p" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
@@ -228,7 +333,7 @@ export function AnswerContent({
       </ol>
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
-      <li style={{ marginBottom: 'var(--space-4)', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)', fontSize: '14px' }}>
+      <li style={{ marginBottom: '0', lineHeight: '20px', color: 'var(--gray-12)' }}>
         {processChildren(children, citationMaps, citationCallbacks)}
       </li>
     ),
@@ -243,12 +348,11 @@ export function AnswerContent({
     code: ({ children }: { children?: React.ReactNode }) => (
       <code
         style={{
-          backgroundColor: 'var(--slate-7)',
-          fontWeight: 400,
-          padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
+          backgroundColor: 'var(--slate-3)',
+          padding: '2px 6px',
           borderRadius: 'var(--radius-1)',
           fontFamily: 'monospace',
-          fontSize: 'var(--font-size-2)',
+          fontSize: '14px',
         }}
       >
         {children}
@@ -277,27 +381,54 @@ export function AnswerContent({
           marginTop: 'var(--space-1)',
           marginBottom: '0',
           color: 'var(--slate-11)',
-          fontSize: 'var(--font-size-2)',
+          fontSize: '14px',
           lineHeight: 1.6,
         }}
       >
         {children}
       </blockquote>
     ),
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: 'var(--accent-11)',
-          textDecoration: 'underline',
-          fontSize: 'var(--font-size-2)',
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      const matchedArtifact = href
+        ? inlineArtifacts.find((a) => a.url && href.includes(a.url))
+          ?? inlineArtifacts.find((a) => typeof children === 'string' && a.fileName === children)
+        : undefined;
+
+      if (matchedArtifact) {
+        return (
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              handleArtifactPreview(matchedArtifact);
+            }}
+            style={{
+              color: 'var(--accent-11)',
+              textDecoration: 'underline',
+              fontSize: '14px',
+              cursor: 'pointer',
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: 'var(--accent-11)',
+            textDecoration: 'underline',
+            fontSize: '14px',
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
     table: ({ children }: { children?: React.ReactNode }) => (
       <Box
         style={{
@@ -314,7 +445,7 @@ export function AnswerContent({
             minWidth: 'max-content',
             width: '100%',
             borderCollapse: 'collapse',
-            fontSize: 'var(--font-size-2)',
+            fontSize: '14px',
           }}
         >
           {children}
@@ -379,7 +510,67 @@ export function AnswerContent({
 
   return (
     <Box>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{cleanContent}</ReactMarkdown>
+      {inlineArtifacts.length > 0 && (
+        <Flex gap="2" wrap="wrap" style={{ marginTop: 'var(--space-2)' }}>
+          {inlineArtifacts.map((art, idx) => {
+            const isImage = art.mimeType.startsWith('image/') && !art.mimeType.includes('svg');
+            if (isImage) {
+              return (
+                <Box
+                  key={idx}
+                  onClick={() => handleArtifactPreview(art)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <Box
+                    style={{
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px solid var(--slate-6)',
+                      overflow: 'hidden',
+                      maxWidth: 320,
+                    }}
+                  >
+                    <ArtifactImage
+                      art={art}
+                      style={{ maxWidth: '100%', height: 'auto', display: 'block' }}
+                    />
+                    <Flex align="center" gap="1" style={{ padding: '4px 8px', backgroundColor: 'var(--slate-2)' }}>
+                      <span className="material-icons-outlined" style={{ fontSize: 14, color: 'var(--slate-9)' }}>image</span>
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>{art.fileName}</Text>
+                    </Flex>
+                  </Box>
+                </Box>
+              );
+            }
+            return (
+              <Box
+                key={idx}
+                onClick={() => handleArtifactDownload(art)}
+                style={{ textDecoration: 'none', cursor: 'pointer' }}
+              >
+                <Flex
+                  align="center"
+                  gap="2"
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px solid var(--slate-6)',
+                    backgroundColor: 'var(--slate-2)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span className="material-icons-outlined" style={{ fontSize: 16, color: 'var(--accent-11)' }}>
+                    download
+                  </span>
+                  <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                    {art.fileName}
+                  </Text>
+                </Flex>
+              </Box>
+            );
+          })}
+        </Flex>
+      )}
     </Box>
   );
 }

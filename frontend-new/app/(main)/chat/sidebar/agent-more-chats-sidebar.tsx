@@ -254,7 +254,7 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
               />
             ))
           ) : (
-            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
+            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searching ? t('message.noResults') : t('chat.noChatsYet')}
               </Text>
@@ -262,9 +262,9 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
           )}
 
           {showSentinel && (
-            <Box ref={sentinelRef} style={{ padding: 'var(--space-2) 0', textAlign: 'center' }}>
+            <Box ref={sentinelRef} style={{ padding: '8px 0', textAlign: 'center' }}>
               {isLoadingMore && (
-                <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-1) 0' }}>
+                <Flex align="center" justify="center" gap="2" style={{ padding: '4px 0' }}>
                   <LottieLoader variant="loader" size={20} showLabel />
                 </Flex>
               )}

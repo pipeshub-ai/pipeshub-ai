@@ -255,10 +255,10 @@ export function GroupDetailSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 'var(--space-4)',
+          padding: 16,
           display: 'flex',
           flexDirection: 'column',
-          gap: 'var(--space-4)',
+          gap: 16,
         }}
       >
         {/* Group Name */}
@@ -274,7 +274,7 @@ export function GroupDetailSidebar({
             readOnly={!isEditMode}
             style={{
               width: '100%',
-              height: 'var(--space-8)',
+              height: 32,
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -327,7 +327,7 @@ export function GroupDetailSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: 'var(--space-2)',
+              padding: '8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',
@@ -348,7 +348,7 @@ export function GroupDetailSidebar({
             }}
             onBlur={(e) => {
               e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = 'var(--space-2)';
+              e.currentTarget.style.padding = '8px';
             }}
           />
         </FormField>
@@ -359,10 +359,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-4)',
+            padding: 16,
             display: 'flex',
             flexDirection: 'column',
-            gap: 'var(--space-4)',
+            gap: 16,
           }}
         >
           <Text
@@ -383,10 +383,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-4)',
+            padding: 16,
             display: 'flex',
             flexDirection: 'column',
-            gap: 'var(--space-4)',
+            gap: 16,
           }}
         >
           <Text
@@ -453,10 +453,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-4)',
+            padding: 16,
             display: 'flex',
             flexDirection: 'column',
-            gap: 'var(--space-4)',
+            gap: 16,
           }}
         >
           <Text
@@ -481,10 +481,10 @@ export function GroupDetailSidebar({
               backgroundColor: 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
-              padding: 'var(--space-4)',
+              padding: 16,
               display: 'flex',
               flexDirection: 'column',
-              gap: 'var(--space-2)',
+              gap: 8,
             }}
           >
             <Flex align="center" justify="between">
@@ -522,8 +522,8 @@ export function GroupDetailSidebar({
       {isEditMode && (
         <Box
           style={{
-            marginTop: 'var(--space-4)',
-            padding: 'var(--space-4)',
+            marginTop: 16,
+            padding: 16,
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',

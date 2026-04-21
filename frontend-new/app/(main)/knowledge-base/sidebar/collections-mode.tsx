@@ -167,7 +167,7 @@ function CollectionTreeSection({
           style={{
             color: 'var(--slate-11)',
             display: 'block',
-            padding: '0 var(--space-2)',
+            padding: '0 8px',
             lineHeight: '16px',
           }}
         >

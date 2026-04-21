@@ -1,4 +1,5 @@
 import builtins
+import os
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, TypeVar
@@ -79,7 +80,11 @@ class RecordType(str, Enum):
     DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
+<<<<<<< coding_sandbox
+    ARTIFACT = "ARTIFACT"
+=======
     CODE_FILE = "CODE_FILE"
+>>>>>>> main
     OTHERS = "OTHERS"
 
 
@@ -160,6 +165,19 @@ class RelatedExternalRecord(BaseModel):
         description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"
     )
 
+class AuthorType(str, Enum):
+    USER = "USER"
+    SYSTEM = "SYSTEM"
+    AI = "AI"
+    UNKNOWN = "UNKNOWN"
+
+class Author(BaseModel):
+    author_type: AuthorType = Field(description="Type of the author")
+    author_name: str | None = Field(default=None, description="Name of the author")
+    author_email: str | None = Field(default=None, description="Email of the author")
+    author_source_id: str | None = Field(default=None, description="Source ID of the author")
+    author_source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the author creation in the source system")
+    author_source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the author update in the source system")
 
 class Record(BaseModel):
     # Core record properties
@@ -220,6 +238,10 @@ class Record(BaseModel):
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: str | None = Field(default=None, description="Internal record ID of the parent node")
+
+    # Author fields 
+    author: Author | None = Field(default=None, description="Author of the record")
+    expiration_date: int|None = Field(default=None, description="Epoch timestamp in milliseconds of the record expiration date")
 
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
@@ -1655,6 +1677,124 @@ class PullRequestRecord(Record):
             "lastCommitSha": self.last_commit_sha,
         }
 
+class LifecycleStatus(str, Enum):
+    """Lifecycle status of the artifact"""
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    ARCHIVED = "ARCHIVED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ArtifactType(str, Enum):
+    """Type of artifact produced by sandbox code execution."""
+    CODE_OUTPUT = "CODE_OUTPUT"
+    CHART = "CHART"
+    DOCUMENT = "DOCUMENT"
+    IMAGE = "IMAGE"
+    SPREADSHEET = "SPREADSHEET"
+    PRESENTATION = "PRESENTATION"
+    DATA_FILE = "DATA_FILE"
+    OTHER = "OTHER"
+
+
+class ConversationAuthorType(str, Enum):
+    """Type of the conversation"""
+    HUMAN = "HUMAN"
+    AI = "AI"
+    TOOL_CALL = "TOOL_CALL"
+    TOOL_CALL_RESPONSE = "TOOL_CALL_RESPONSE"
+
+class ConversationRecord(Record):
+    """Record class for Conversations"""
+    conversation_author_type: ConversationAuthorType = Field(description="Type of the conversation author")
+
+class ChangeLogRecord(Record):
+    """Record class for Change Logs"""
+
+class ArtifactRecord(Record):
+    """Record class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
+    lifecycle_status: LifecycleStatus = Field(description="Lifecycle status of the artifact", default=LifecycleStatus.PUBLISHED)
+    artifact_type: ArtifactType = Field(default=ArtifactType.OTHER, description="Type of artifact")
+    source_tool: str | None = Field(default=None, description="Tool that generated this artifact (e.g. coding_sandbox.execute_python)")
+    conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
+    is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
+    expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+
+    def to_arango_artifact_record(self) -> dict:
+        """Return artifact sub-record for the ``artifacts`` collection."""
+        _, ext = os.path.splitext(self.record_name) if self.record_name else ("", "")
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "extension": ext.lstrip(".") if ext else None,
+            "mimeType": self.mime_type,
+            "sizeInBytes": self.size_in_bytes,
+            "description": self.description,
+            "lifecycleStatus": self.lifecycle_status.value,
+            "artifactType": self.artifact_type.value,
+            "sourceTool": self.source_tool,
+            "conversationId": self.conversation_id,
+            "isTemporary": self.is_temporary,
+            "expiresAt": self.expires_at,
+        }
+
+    @staticmethod
+    def from_arango_record(artifact_doc: dict, record_doc: dict) -> "ArtifactRecord":
+        """Create ArtifactRecord from ArangoDB documents (records + artifacts collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.CODING_SANDBOX
+        except ValueError:
+            connector_name = Connectors.CODING_SANDBOX
+
+        lifecycle_raw = artifact_doc.get("lifecycleStatus")
+        try:
+            lifecycle = LifecycleStatus(lifecycle_raw) if lifecycle_raw else LifecycleStatus.PUBLISHED
+        except ValueError:
+            lifecycle = LifecycleStatus.PUBLISHED
+
+        artifact_type_raw = artifact_doc.get("artifactType")
+        try:
+            artifact_type = ArtifactType(artifact_type_raw) if artifact_type_raw else ArtifactType.OTHER
+        except ValueError:
+            artifact_type = ArtifactType.OTHER
+
+        return ArtifactRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType"),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            size_in_bytes=record_doc.get("sizeInBytes"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            hide_weburl=record_doc.get("hideWeburl", False),
+            description=artifact_doc.get("description", ""),
+            lifecycle_status=lifecycle,
+            artifact_type=artifact_type,
+            source_tool=artifact_doc.get("sourceTool"),
+            conversation_id=artifact_doc.get("conversationId"),
+            is_temporary=artifact_doc.get("isTemporary", False),
+            expires_at=artifact_doc.get("expiresAt"),
+        )
+
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
@@ -1716,6 +1856,15 @@ class RecordGroup(BaseModel):
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
         )
 
+<<<<<<< coding_sandbox
+class ArtifactsRecordGroup(RecordGroup):
+    """Record group class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
+
+class ConversationsRecordGroup(RecordGroup):
+    """Record group class for Conversations"""
+    description: str = Field(description="Description of the conversation", default="")
+=======
 class CodeFileRecord(Record):
     """Record class for Code Files"""
 
@@ -1774,6 +1923,7 @@ class CodeFileRecord(Record):
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl"),
         )
+>>>>>>> main
 
 
 class Anyone(BaseModel):

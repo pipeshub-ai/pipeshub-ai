@@ -43,7 +43,7 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
       padding: KBD_BADGE_PADDING,
       borderRadius: 'var(--radius-2)',
       fontSize: 12,
-      lineHeight: 'var(--line-height-1)',
+      lineHeight: '16px',
       letterSpacing: '0.04px',
       color: 'var(--slate-12)',
       fontWeight: 400,
@@ -80,12 +80,12 @@ export function StaticNavSection() {
         icon={
           <ChatStarIcon
             size={ICON_SIZE_DEFAULT}
-            color="var(--accent-a11)"
+            color="var(--accent-8)"
           />
         }
         label={t('chat.newChat')}
         onClick={handleNewChat}
-        textColor="var(--accent-a11)"
+        textColor="var(--accent-8)"
         fontWeight={500}
       />
       {/* Search Chats — opens command palette (⌘+K) */}

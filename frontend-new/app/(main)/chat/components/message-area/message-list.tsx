@@ -10,6 +10,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import type { ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions } from './response-tabs/citations';
@@ -19,6 +20,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
+const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
 const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
@@ -83,6 +85,9 @@ export function MessageList() {
   );
   const currentStatusMessage = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.currentStatusMessage ?? null : null
+  );
+  const streamingArtifacts = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
 
   // ── Render-reason tracking ──────────────────────────────────────
@@ -265,7 +270,7 @@ export function MessageList() {
   // in the DOM (never conditionally rendered) so the ref is stable.
   const recalcSpacerHeight = useCallback(() => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
       debugLog.spacer('no messages or no container → height=0');
       return;
     }
@@ -274,7 +279,7 @@ export function MessageList() {
     const container = scrollContainerRef.current;
 
     if (!element) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
       debugLog.spacer('no element for last message → height=0');
       return;
     }
@@ -438,11 +443,9 @@ export function MessageList() {
 
         // Only drive scroll during active streaming.
         if (!isStreamingRef.current) {
-          console.log('[debugging] [throttledResize] skip — not streaming');
           return;
         }
         if (isScrolledUpRef.current) {
-          console.log('[debugging] [throttledResize] skip — user scrolled up');
           return;
         }
 
@@ -453,14 +456,12 @@ export function MessageList() {
           ? messageRefs.current.get(lastMessageKeyRef.current)
           : null;
         if (!container || !lastEl) {
-          console.log('[debugging] [throttledResize] skip — no container or lastEl', { container: !!container, lastEl: !!lastEl, lastKey: lastMessageKeyRef.current });
           return;
         }
 
         const msgHeight = lastEl.getBoundingClientRect().height;
         const chatInputReserved = isMobileRef.current ? 120 : CHAT_INPUT_RESERVED;
         const visibleHeight = container.clientHeight - chatInputReserved;
-        console.log('[debugging] [throttledResize] scroll →', msgHeight <= visibleHeight ? 'top-of-last-message' : 'bottom-of-container', { msgHeight, visibleHeight });
         if (msgHeight <= visibleHeight) {
           // Short message: keep title pinned to the top of the viewport
           executeScroll({ target: 'top-of-last-message', behavior: 'auto' });
@@ -638,24 +639,18 @@ export function MessageList() {
     const lastPair = pairs[pairs.length - 1];
     lastMessageKeyRef.current = lastPair.key;
 
-    console.log('[debugging] [effect#2] setting up ResizeObserver for key', lastPair.key, 'pairCount', pairs.length);
-
     // Wait a frame for the element to be in the DOM
     const rafId = requestAnimationFrame(() => {
       const element = messageRefs.current.get(lastPair.key);
       if (!element) {
-        console.log('[debugging] [effect#2] rAF: element not found for key', lastPair.key);
         return;
       }
-
-      console.log('[debugging] [effect#2] rAF: observer connected for key', lastPair.key);
 
       // Initial calculation
       recalcSpacerHeight();
 
       // Observe size changes (streaming content growing) — throttled
       const observer = new ResizeObserver(() => {
-        console.log('[debugging] [ResizeObserver] fired for key', lastPair.key, 'isStreaming', isStreamingRef.current);
         throttledResize();
       });
       observer.observe(element);
@@ -845,8 +840,8 @@ export function MessageList() {
           maxWidth: '50rem',
           width: '100%',
           margin: '0 auto',
-          paddingTop: 'var(--space-4)',
-          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
+          paddingTop: '16px',
+          paddingBottom: isMobile ? '40px' : '100px',
           paddingLeft: isMobile ? 'var(--space-4)' : undefined,
           paddingRight: isMobile ? 'var(--space-4)' : undefined,
         }}
@@ -880,6 +875,7 @@ export function MessageList() {
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

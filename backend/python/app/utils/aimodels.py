@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -347,41 +346,6 @@ def _get_anthropic_max_tokens(model_name: str) -> int:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
 
-
-def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
-    """Whether the given Claude model accepts ``temperature``/``top_p``/``top_k``.
-
-    Anthropic removed sampling parameters starting with Claude Opus 4.7:
-    any non-default value returns a 400 "deprecated for this model" error.
-    The same direction is expected for future Claude families, so we also
-    disable sampling params for any Claude major version >= 5.
-
-    Matches model IDs like ``claude-opus-4-7``, ``claude-opus-4.7``, and
-    Bedrock/Vertex variants that embed the same version suffix.
-    """
-    if not model_name:
-        return True
-
-    lowered = model_name.lower()
-    if "claude" not in lowered:
-        return True
-
-    match = re.search(r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-_.](\d+)", lowered)
-    if not match:
-        return True
-
-    tier = match.group(1)
-    major = int(match.group(2))
-    minor = int(match.group(3))
-
-    if tier == "opus" and (major > 4 or (major == 4 and minor >= 7)):
-        return False
-
-    if major >= 5:
-        return False
-
-    return True
-
 def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -401,16 +365,14 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         from langchain_anthropic import ChatAnthropic
 
         max_tokens = _get_anthropic_max_tokens(model_name)
-        anthropic_kwargs: Dict[str, Any] = dict(
-            model=model_name,
-            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-            max_retries=2,
-            api_key=configuration["apiKey"],
-            max_tokens=max_tokens,
-        )
-        if _anthropic_supports_sampling_params(model_name):
-            anthropic_kwargs["temperature"] = 0.2
-        return ChatAnthropic(**anthropic_kwargs)
+        return ChatAnthropic(
+                model=model_name,
+                temperature=0.2,
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                max_retries=2,
+                api_key=configuration["apiKey"],
+                max_tokens=max_tokens,
+            )
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
@@ -463,20 +425,15 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
         bedrock_client = _create_bedrock_client(configuration)
 
-        bedrock_kwargs: Dict[str, Any] = dict(
+        return ChatBedrock(
             model_id=model_name,
             client=bedrock_client,
+            temperature=0.2,
             region_name=configuration.get("region"),
             provider=provider_in_bedrock,
             model_kwargs=model_kwargs,
             beta_use_converse_api=True,
         )
-        if (
-            provider_in_bedrock != LLMProvider.ANTHROPIC.value
-            or _anthropic_supports_sampling_params(model_name)
-        ):
-            bedrock_kwargs["temperature"] = 0.2
-        return ChatBedrock(**bedrock_kwargs)
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
@@ -487,16 +444,14 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         is_claude_model = "claude" in model_name
         if is_claude_model:
             max_tokens = _get_anthropic_max_tokens(model_name)
-            azure_claude_kwargs: Dict[str, Any] = dict(
+            return ChatAnthropic(
                 model=model_name,
                 base_url=configuration.get("endpoint"),
+                temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration.get("apiKey"),
                 max_tokens=configuration.get("maxTokens", max_tokens),
             )
-            if _anthropic_supports_sampling_params(model_name):
-                azure_claude_kwargs["temperature"] = temperature
-            return ChatAnthropic(**azure_claude_kwargs)
         else:
             return ChatOpenAI(
                     model=model_name,

@@ -1,90 +1,41 @@
+
 <!DOCTYPE html>
+
 <html>
   {{>head}}
-  <body>
-    <main>
-      <table {{{containerstyle}}}>
-        <tr>
+  <main>
+    <body>
+      <table
+ {{{containerstyle}}}
+    
+      >
+        <tr> 
           <td>{{> header}}</td>
         </tr>
         <tr>
-          <td>
-            <table class="mobile-width" {{{bodytablestyle}}}>
+          <td> 
+            <table
+              class="mobile-width"
+ {{{bodytablestyle}}}
+              
+            >
               <tr>
-                <td
-                  style="
-                    padding: 40px 30px;
-                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                  "
-                >
-                  <div
-                    style="
-                      font-size: 20px;
-                      font-weight: 700;
-                      color: #1d1c1d;
-                      letter-spacing: -0.25px;
-                      line-height: 28px;
-                      margin: 0 0 16px 0;
-                    "
-                  >
-                    Your PipesHub sign-in code
+                <td>
+                  <div {{{divstyle}}}>
+                      <p>Dear {{name}},<p>
+                       <p>Your OTP to login is {{otp}}</p>
                   </div>
-                  <div
-                    style="
-                      font-size: 15px;
-                      font-weight: 400;
-                      color: #434245;
-                      line-height: 22px;
-                      margin: 0 0 32px 0;
-                    "
-                  >
-                    <div>Hi {{name}},</div>
-                    <div>Use the one-time passcode below to finish signing in
-                      to your PipesHub account.</div>
-                  </div>
-                  <div
-                    style="
-                      display: inline-block;
-                      background-color: #f4f5f6;
-                      border: 1px solid #e8e8ec;
-                      border-radius: 6px;
-                      padding: 16px 24px;
-                      margin: 0 0 32px 0;
-                    "
-                  >
-                    <div
-                      style="
-                        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-                        font-size: 28px;
-                        font-weight: 700;
-                        color: #1d1c1d;
-                        letter-spacing: 6px;
-                        line-height: 32px;
-                      "
-                    >
-                      {{otp}}
-                    </div>
-                  </div>
-                  <div
-                    style="
-                      font-size: 15px;
-                      font-weight: 400;
-                      color: #434245;
-                      line-height: 22px;
-                    "
-                  >
-                    This code expires in 10 minutes. If you didn&rsquo;t try to
-                    sign in, you can safely ignore this email.
-                  </div>
+ 
                 </td>
               </tr>
             </table>
           </td>
         </tr>
+
         <tr>
           <td>{{> footer}}</td>
         </tr>
       </table>
-    </main>
-  </body>
+    </body>
+  </main>
 </html>

@@ -1,13 +1,4 @@
 {
-  "resetPassword": {
-    "failure": {
-      "missingTokenMessage": "Esta página solo es accesible desde un enlace de correo electrónico para restablecer la contraseña. Por favor, utilice la opción Olvidé mi contraseña en la página de inicio de sesión.",
-      "inviteExpiredMessage": "Este enlace de invitación ha caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación.",
-      "resetExpiredMessage": "Este enlace para restablecer la contraseña ha caducado. Por favor, solicite uno nuevo desde la opción Olvidé mi contraseña en la página de inicio de sesión.",
-      "backToSignIn": "Volver al inicio de sesión",
-      "genericLinkInvalidMessage": "Este enlace puede haber caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación."
-    }
-  },
   "agents": {
     "createPageTitle": "Crear agente",
     "createPageDescription": "Página dedicada para crear un agente. Conecte aquí su formulario o redirija a su constructor de agentes.",
@@ -19,26 +10,6 @@
   "chatStream": {
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…"
-  },
-  "uploadProgress": {
-    "uploadFailedDefault": "Error al subir",
-    "uploadIncomplete": "Subida incompleta",
-    "genericFailureHint": "Error al subir. Inténtelo de nuevo o use un tipo de archivo admitido.",
-    "ariaFailed": "{{name}}, error al subir",
-    "ariaFailedWithDetail": "{{name}}, error al subir. {{detail}}",
-    "ariaItemStatus": "{{name}}, {{status}}",
-    "sizeWithFailed": "{{size}} · error",
-    "headerCompletedAndFailed": "{{completed}} completados · {{failed}} con error",
-    "headerFailuresOnly": "{{count}} con error",
-    "headerAllComplete": "{{completed}}/{{total}} subidas completadas",
-    "sessionFilesAndSize": "{{count}} archivos · {{size}}",
-    "totalSizeLabel": "Total: {{size}}",
-    "status": {
-      "pending": "pendiente",
-      "uploading": "subiendo",
-      "completed": "completado",
-      "failed": "error"
-    }
   },
   "onboarding": {
     "skipEmbeddingDefault": "Omitir",
@@ -328,7 +299,7 @@
     "differentModesOfQuery": "Diferentes modos de consulta",
     "askMore": "Preguntar más",
     "failedToLoad": "Error al cargar",
-    "generatingTitle": "Generando chat…",
+    "generatingTitle": "Generando título…",
     "newChat": "Nuevo chat",
     "startChat": "Iniciar un chat",
     "searchAgents": "Buscar agentes…",
@@ -555,12 +526,6 @@
         "resendInvite": "Reenviar invitación",
         "editInvite": "Editar invitación",
         "cancelInvite": "Cancelar invitación",
-        "cancelInviteConfirmTitle": "¿Cancelar invitación?",
-        "cancelInviteConfirmMessage": "¿Está seguro de que desea cancelar la invitación para {{email}}?",
-        "cancelInviteSuccess": "Invitación cancelada",
-        "cancelInviteSuccessDescription": "La invitación a {{email}} ha sido cancelada",
-        "cancelInviteError": "Error al cancelar la invitación",
-        "keepInviteButton": "Mantener invitación",
         "comingSoonTitle": "No compatible",
         "comingSoonDescription": "Esta acción estará disponible pronto",
         "unblock": "Desbloquear",
@@ -571,8 +536,7 @@
         "unblockConfirmAction": "Desbloquear",
         "unblockSuccess": "Usuario desbloqueado correctamente",
         "unblockError": "No se pudo desbloquear al usuario",
-        "unblocking": "Desbloqueando…",
-        "edit": "Editar"
+        "unblocking": "Desbloqueando…"
       },
       "profile": {
         "title": "Perfil",
@@ -1273,7 +1237,6 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
-      "configure": "Configurar",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1302,8 +1265,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "saml": "Configure SAML SSO",
+        "oauth2": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1425,8 +1388,6 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
-        "recordsSelected": "Registros Seleccionados",
-        "syncStrategy": "Estrategia de Sincronización",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1470,10 +1431,7 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot",
-        "updateError": "Failed to update bot",
-        "createError": "Failed to create bot",
-        "credentialsError": "Please check your credentials and try again."
+        "deleteError": "Failed to delete bot"
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1486,32 +1444,6 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
-      },
-      "title": "Bots",
-      "noBots": "No Bots",
-      "setupFirstBot": "Setup your first Bot now",
-      "documentation": "Documentation",
-      "configPanelTitle": "Bot Configuration",
-      "selectBotSetup": "Select Bot Setup",
-      "comingSoon": "Coming soon",
-      "deleting": "Deleting...",
-      "saving": "Saving...",
-      "deleteConfirm": "Confirm Delete",
-      "typeLabels": {
-        "slack": "Slack Bot",
-        "discord": "Discord Bot",
-        "telegram": "Telegram Bot",
-        "github": "GitHub Bot"
-      },
-      "form": {
-        "editTitle": "Edit Slack Bot",
-        "newTitle": "New Slack Bot",
-        "namePlaceholder": "e.g. My Slack Bot",
-        "botToken": "Bot Token",
-        "signingSecret": "Signing Secret",
-        "signingSecretPlaceholder": "Enter signing secret",
-        "agent": "Agent",
-        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1527,8 +1459,7 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required",
-        "fromEmailInvalid": "Enter a valid email address"
+        "fromEmailRequired": "From email is required"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1547,31 +1478,6 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
-      },
-      "title": "Mail",
-      "serverConfig": "Server Configuration",
-      "serverConfigDescription": "Configure email and other server settings for authentication",
-      "smtp": "SMTP",
-      "notConfigured": "Not Configured",
-      "configured": "Configured",
-      "panelTitle": "Configure SMTP Settings",
-      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
-      "toasts": {
-        "saved": "Mail settings saved",
-        "savedDescription": "Your email server configuration has been updated."
-      },
-      "fields": {
-        "host": "SMTP Host *",
-        "hostHint": "The hostname of your SMTP server",
-        "port": "Port *",
-        "portHint": "Common ports: 25, 465, 587",
-        "fromEmail": "From Email Address *",
-        "fromEmailHint": "The email address that will appear as the sender",
-        "username": "Username (Optional)",
-        "usernameHint": "Username for SMTP authentication (if required)",
-        "usernamePlaceholder": "Enter SMTP username",
-        "password": "Password (Optional)",
-        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1590,18 +1496,8 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted",
-        "saved": "Prompt saved",
-        "savedDescription": "The system prompt has been updated",
-        "discarded": "Discarded changes",
-        "discardedDescription": "Your edits have been reverted",
-        "saveErrorDescription": "Failed to save prompt"
-      },
-      "heading": "Custom System Prompt",
-      "systemPrompt": "System Prompt",
-      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
-      "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+        "discardSuccessDescription": "Your edits have been reverted"
+      }
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1623,11 +1519,7 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting",
-        "saved": "Web search settings saved",
-        "savedDescription": "Your changes have been applied successfully.",
-        "oneProviderOnly": "Only one web search provider can be active at a time",
-        "settingError": "Failed to update setting"
+        "updateError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1636,17 +1528,8 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured",
-        "active": "Configured"
-      },
-      "heading": "Web Search Configuration",
-      "methodsSection": "Different Web Search Methods",
-      "methodsSectionDescription": "Select the method users will use for web search",
-      "policyTitle": "Web Search Provider Policy",
-      "verifying": "Verifying connection...",
-      "disabledReasonConfigure": "Configure this provider first before enabling it.",
-      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
-      "configureTip": "Configure"
+        "notConfigured": "Not Configured"
+      }
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1666,8 +1549,7 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company",
-        "title": "General"
+        "companyEmailDescription": "Primary work email from the company"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1677,8 +1559,6 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
-        "role": "Role",
-        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1735,12 +1615,7 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      },
-      "title": "Profile",
-      "discardTitle": "Discard changes?",
-      "discardMessage": "If you discard, your edits won't be saved",
-      "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      }
     }
   },
   "filePreview": {
@@ -2011,84 +1886,6 @@
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
     "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
-  },
-  "recordView": {
-    "sections": {
-      "documentSummary": "Resumen",
-      "documentFields": "Documento",
-      "recordMetadata": "Información del registro"
-    },
-    "metadata": {
-      "departments": "Departamentos",
-      "documentCategory": "Categoría del documento",
-      "subcategory1": "Subcategoría nivel 1",
-      "subcategory2": "Subcategoría nivel 2",
-      "subcategory3": "Subcategoría nivel 3",
-      "topics": "Temas",
-      "languages": "Idiomas"
-    },
-    "mail": {
-      "from": "De",
-      "to": "Para",
-      "cc": "Cc",
-      "labels": "Etiquetas",
-      "date": "Fecha"
-    },
-    "emptyState": {
-      "noRecordMetadata": "No hay metadatos adicionales para este elemento."
-    },
-    "indexingReasonAria": "Detalles del error de indexación",
-    "tabRecordInformation": "Información del registro",
-    "tabDocumentDetails": "Detalles del documento",
-    "chat": "Chat",
-    "download": "Descargar",
-    "openFullscreen": "Abrir a pantalla completa",
-    "exitFullscreen": "Salir de pantalla completa",
-    "close": "Cerrar",
-    "forceReindex": "Forzar reindexación",
-    "retryIndexing": "Reintentar indexación",
-    "startIndexing": "Iniciar indexación",
-    "resumeIndexing": "Reanudar indexación",
-    "reindexLoading": "Enviando solicitud de reindexación…",
-    "reindexSuccess": "Solicitud de reindexación enviada correctamente",
-    "reindexError": "Error al enviar la solicitud de reindexación",
-    "loading": "Cargando…",
-    "loadFailed": "No se pudo cargar este registro.",
-    "externalSource": "Origen externo",
-    "collectionUpload": "Colección",
-    "openExternal": "Abrir",
-    "previewUnavailable": "Vista previa no disponible para este tipo de registro.",
-    "permissionOwner": "Propietario",
-    "permissionReader": "Lector",
-    "permissionWriter": "Editor",
-    "labels": {
-      "name": "Nombre",
-      "fileName": "Nombre de archivo",
-      "fileSize": "Tamaño del archivo",
-      "recordId": "ID del registro",
-      "origin": "Origen",
-      "originConnector": "Conector",
-      "originUpload": "Carga en colección",
-      "recordType": "Tipo de registro",
-      "version": "Versión",
-      "createdAt": "Creado el",
-      "updatedAt": "Actualizado el",
-      "collection": "Colección",
-      "permissions": "Permisos",
-      "noPermissions": "Sin permisos asignados",
-      "indexingStatus": "Estado de indexación",
-      "connector": "Origen",
-      "folder": "Carpeta",
-      "connectorId": "ID del conector",
-      "notAvailable": "N/D",
-      "typeEmail": "Correo",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Página web",
-      "typeMessage": "Mensaje",
-      "mailSubject": "Asunto",
-      "ticketSummary": "Resumen",
-      "ticketDescription": "Descripción"
-    }
   },
   "oauthConsent": {
     "loading": "Cargando solicitud de autorización…",

@@ -40,7 +40,7 @@ export function ChatSidebarFooter() {
   const orgLogoUrl = org?.logoUrl ?? null;
 
   return (
-    <Box style={{ padding: 'var(--space-2)', position: 'relative' }}>
+    <Box style={{ padding: 8, position: 'relative' }}>
       <WorkspaceMenu
         isOpen={isMenuOpen}
         onClose={() => setIsMenuOpen(false)}

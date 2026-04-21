@@ -27,7 +27,7 @@ export function ReadonlyField({ field, value, warned }: ReadonlyFieldProps) {
         </Text>
       )}
       {warned && field.warningText && (
-        <Callout.Root color="amber" size="1" style={{ marginTop: 'var(--space-1)' }}>
+        <Callout.Root color="amber" size="1" style={{ marginTop: 4 }}>
           <Callout.Icon>
             <MaterialIcon name="warning" size={14} color="var(--amber-11)" />
           </Callout.Icon>

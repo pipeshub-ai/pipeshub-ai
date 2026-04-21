@@ -375,7 +375,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     # Check app name (retrieval is NOT always internal - depends on knowledge config)
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name in ['calculator', 'datetime', 'utility']:
+        if app_name in ['calculator', 'datetime', 'utility', 'coding_sandbox', 'database_sandbox']:
             return True
 
     # Fallback patterns (retrieval excluded - handled separately based on knowledge)
@@ -570,10 +570,18 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
 
         def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-            """Create an async wrapper function that calls tool_wrapper.arun()."""
-            async def _async_tool_func(**kwargs: object) -> tuple[bool, str] | str | dict[str, Any] | list[Any]:
-                # Call arun with kwargs as a dict (arun handles both formats)
-                return await wrapper.arun(kwargs)
+            """Create an async wrapper function that calls tool_wrapper.arun().
+
+            Unwraps ``(success, data)`` tuples so LangChain passes clean
+            content (not a stringified Python tuple) to the LLM via
+            ToolMessage.
+            """
+            async def _async_tool_func(**kwargs: object) -> str:
+                result = await wrapper.arun(kwargs)
+                if isinstance(result, (tuple, list)) and len(result) == 2:
+                    _success, data = result
+                    return str(data)
+                return str(result) if not isinstance(result, str) else result
             return _async_tool_func
 
         for tool_wrapper in registry_tools:

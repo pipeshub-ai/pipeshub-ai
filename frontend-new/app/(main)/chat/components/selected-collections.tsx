@@ -32,7 +32,7 @@ function CollectionCard({ item, removable = false, onRemove }: CollectionCardPro
         height: '84px',
         backgroundColor: 'var(--olive-a2)',
         border: '1px solid var(--slate-3)',
-        borderRadius: 'var(--radius-1)',
+        borderRadius: '3px',
         padding: 'var(--space-2)',
         overflow: 'hidden',
       }}
@@ -46,8 +46,8 @@ function CollectionCard({ item, removable = false, onRemove }: CollectionCardPro
             size="1"
             onClick={() => onRemove(item.id)}
             style={{
-              width: 'var(--space-4)',
-              height: 'var(--space-4)',
+              width: '16px',
+              height: '16px',
               padding: 0,
               cursor: 'pointer',
             }}
@@ -66,7 +66,7 @@ function CollectionCard({ item, removable = false, onRemove }: CollectionCardPro
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
-          lineHeight: 'var(--line-height-1)',
+          lineHeight: '16px',
         }}
       >
         {item.name}

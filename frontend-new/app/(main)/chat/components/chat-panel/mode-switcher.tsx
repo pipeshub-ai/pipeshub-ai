@@ -70,8 +70,8 @@ export function ModeSwitcher({
             justify="center"
             onClick={onLeftClick}
             style={{
-              width: 'var(--space-6)',
-              height: 'var(--space-6)',
+              width: '32px',
+              height: '32px',
               borderRadius: 'var(--radius-1)',
               cursor: 'pointer',
               flexShrink: 0,
@@ -90,7 +90,7 @@ export function ModeSwitcher({
             gap="2"
             onClick={onRightClick}
             style={{
-              height: 'var(--space-6)',
+              height: '32px',
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--mode-search-bg)',
               cursor: 'pointer',
@@ -124,7 +124,7 @@ export function ModeSwitcher({
             onClick={onLeftClick}
             style={{
               flex: 1,
-              height: 'var(--space-6)',
+              height: '32px',
               borderRadius: 'var(--radius-2)',
               background: modeColors.bg,
               cursor: 'pointer',
@@ -181,8 +181,8 @@ export function ModeSwitcher({
             justify="center"
             onClick={onRightClick}
             style={{
-              width: 'var(--space-6)',
-              height: 'var(--space-6)',
+              width: '32px',
+              height: '32px',
               borderRadius: 'var(--radius-1)',
               cursor: 'pointer',
               flexShrink: 0,

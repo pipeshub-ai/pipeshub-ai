@@ -44,7 +44,6 @@ class TestAIModelField:
         assert f.is_secret is False
         assert f.options == []
         assert f.validation == {}
-        assert f.examples == []
 
     def test_all_fields_constructor(self):
         f = AIModelField(
@@ -100,21 +99,6 @@ class TestAIModelField:
         assert "options" not in d
         assert "validation" not in d
         assert "isSecret" not in d
-        assert "examples" not in d
-
-    def test_to_dict_emits_examples_when_set(self):
-        examples = [
-            {"label": "Claude", "value": "https://host/anthropic"},
-            {"label": "OpenAI", "value": "https://host/openai/v1/"},
-        ]
-        f = AIModelField(
-            name="endpoint",
-            display_name="Endpoint",
-            field_type="URL",
-            examples=examples,
-        )
-        d = f.to_dict()
-        assert d["examples"] == examples
 
 
 class TestCapabilityMappings:

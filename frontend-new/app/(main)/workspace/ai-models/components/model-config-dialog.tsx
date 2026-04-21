@@ -78,15 +78,6 @@ interface ModelConfigDialogProps {
   provider: AIModelProvider | null;
   capability: string | null;
   editModel: ConfiguredModel | null;
-  /**
-   * Number of models already configured for the target model type. Used in
-   * `add` mode to decide whether the newly-added model should be auto-promoted
-   * to default. Only the very first model of a type is auto-defaulted; for
-   * every subsequent add the user must explicitly click "Set as default".
-   * Defaults to `0` so callers that omit it (e.g. onboarding flows, which are
-   * always first-time setup) preserve the first-model-auto-defaults behavior.
-   */
-  existingModelsCount?: number;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -97,7 +88,6 @@ export function ModelConfigDialog({
   provider,
   capability,
   editModel,
-  existingModelsCount = 0,
   onClose,
   onSaved,
 }: ModelConfigDialogProps) {
@@ -180,34 +170,20 @@ export function ModelConfigDialog({
       }
 
       if (mode === 'add') {
-        // Auto-default only the very first model of a given type. For every
-        // subsequent add, leave `isDefault: false` so the user's current
-        // default stays in place until they explicitly click "Set as default".
-        // This is especially important for embeddings: silently changing the
-        // default to a model with a different dimension / identity would
-        // corrupt the existing vector collection. The backend's
-        // set-default endpoint runs a health check to prevent that, so the
-        // only way to actually switch the default is via the explicit button.
-        const shouldAutoDefault = existingModelsCount === 0;
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
           isReasoning: (topLevel.isReasoning as boolean) ?? false,
-          isDefault: shouldAutoDefault,
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
       } else if (editModel) {
-        // Preserve the existing default flag on edit so that tweaking
-        // dimensions / api key / etc. does not silently remove the model
-        // from being the default.
         await AIModelsApi.updateProvider(modelType, editModel.modelKey, {
           provider: provider.providerId,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
           isReasoning: (topLevel.isReasoning as boolean) ?? false,
-          isDefault: editModel.isDefault ?? false,
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
       }
@@ -528,6 +504,5 @@ function toSchemaField(field: AIModelProviderField): SchemaField {
     isSecret: field.isSecret,
     options: field.options?.map((o) => ({ id: o.value, label: o.label })),
     validation: field.validation,
-    examples: field.examples,
   } as unknown as SchemaField;
 }

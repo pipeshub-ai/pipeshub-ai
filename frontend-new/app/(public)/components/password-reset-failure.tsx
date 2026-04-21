@@ -2,25 +2,15 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { useTranslation } from 'react-i18next';
 import Image from 'next/image';
 import { Box, Flex, Text, Button } from '@radix-ui/themes';
-import {
-  PASSWORD_RESET_FAILURE_VARIANT,
-  PASSWORD_RESET_FAILURE_MESSAGE_KEYS,
-} from '../reset-password/constants';
-import type { PasswordResetFailureProps } from '../reset-password/types';
 
 /**
- * PasswordResetFailure — shown when the reset-password page cannot proceed:
- * no token in the URL, or the token has already expired (invite or reset).
+ * PasswordResetFailure — shown when the reset-password page is opened without
+ * a valid token (e.g. navigated to directly, or link has expired).
  */
-export default function PasswordResetFailure({
-  variant = PASSWORD_RESET_FAILURE_VARIANT.MISSING_TOKEN,
-}: PasswordResetFailureProps) {
+export default function PasswordResetFailure() {
   const router = useRouter();
-  const { t } = useTranslation();
-  const message = t(PASSWORD_RESET_FAILURE_MESSAGE_KEYS[variant]);
 
   return (
     <Box style={{ width: '100%', maxWidth: '440px' }}>
@@ -51,7 +41,8 @@ export default function PasswordResetFailure({
           error_outline
         </span>
         <Text size="2" style={{ color: 'var(--red-11)' }}>
-          {message}
+          This page is only accessible from a password-reset email link. Please use the Forgot
+          Password option on the sign-in page.
         </Text>
       </Flex>
 
@@ -61,7 +52,7 @@ export default function PasswordResetFailure({
         style={{ width: '100%', cursor: 'pointer' }}
         onClick={() => router.push('/login')}
       >
-        {t('resetPassword.failure.backToSignIn')}
+        Back to Sign In
       </Button>
     </Box>
   );

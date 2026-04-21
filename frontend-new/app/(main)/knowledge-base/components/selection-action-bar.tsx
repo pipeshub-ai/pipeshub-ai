@@ -37,7 +37,7 @@ export function SelectionActionBar({
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         boxShadow: '0 20px 28px 0 rgba(0, 0, 0, 0.15)',
-        padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+        padding: '8px 8px 8px 12px',
         zIndex: 20,
         height: '42px',
       }}

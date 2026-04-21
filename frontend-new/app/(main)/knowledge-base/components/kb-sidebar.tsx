@@ -51,7 +51,7 @@ function FolderTreeItem({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            marginRight: 'var(--space-1)',
+            marginRight: '4px',
           }}
           onClick={(e) => {
             e.stopPropagation();
@@ -72,7 +72,7 @@ function FolderTreeItem({
           name="folder"
           size={16}
           color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
-          style={{ marginRight: 'var(--space-1)' }}
+          style={{ marginRight: '4px' }}
         />
 
         {/* Folder name */}
@@ -159,7 +159,7 @@ export function KbSidebar({
       <Flex
         align="center"
         style={{
-          padding: 'var(--space-2)',
+          padding: '8px',
           height: '56px',
         }}
       >
@@ -167,7 +167,7 @@ export function KbSidebar({
           align="center"
           gap="2"
           style={{
-            padding: 'var(--space-2)',
+            padding: '8px',
             cursor: 'pointer',
             borderRadius: 'var(--radius-2)',
           }}
@@ -188,7 +188,7 @@ export function KbSidebar({
       </Flex>
 
       {/* All button */}
-      <Box style={{ padding: '0 var(--space-2)' }}>
+      <Box style={{ padding: '0 8px' }}>
         <Button
           variant={!selectedKbId ? 'soft' : 'ghost'}
           size="2"
@@ -219,18 +219,18 @@ export function KbSidebar({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: 'var(--space-4) var(--space-2)',
+          padding: '16px 8px',
         }}
       >
         {/* Created By You section */}
-        <Box style={{ marginBottom: 'var(--space-6)' }}>
+        <Box style={{ marginBottom: '24px' }}>
           <Text
             size="1"
             weight="medium"
             style={{
               color: 'var(--slate-9)',
               display: 'block',
-              padding: 'var(--space-2) var(--space-3)',
+              padding: '8px 12px',
               letterSpacing: '0.5px',
             }}
           >

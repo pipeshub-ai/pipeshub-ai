@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
+import { Flex, Box, Text, Badge } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { getConnectorConfig, formatSyncLabel } from './utils';
@@ -88,7 +88,7 @@ export function ReferenceCard({
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
-        gap: 'var(--space-6)',
+        gap: '32px',
       }}
     >
       {/* ── HEADER + BODY ───────────────────────────────────────────── */}
@@ -114,9 +114,10 @@ export function ReferenceCard({
             {/* Sync badge — sources tab only */}
             {syncLabel && (
               <Badge
-                size="2"
+                size="1"
                 variant="soft"
-                style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
+                color="gray"
+                style={{ fontWeight: 500 }}
               >
                 {syncLabel}
               </Badge>
@@ -126,25 +127,76 @@ export function ReferenceCard({
             {!isMobile && (
               <>
                 {/* "Open in {Source}" outline button */}
-                <Button
-                  size="1"
-                  variant="outline"
-                  color="gray"
+                <Box
+                  asChild
                   onClick={handleOpenInSource}
-                  style={{ cursor: 'pointer', whiteSpace: 'nowrap', border :`0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
+                  style={{
+                    height: '24px',
+                    padding: '0 var(--space-2)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    border: '1px solid var(--slate-a7)',
+                    borderRadius: 'var(--radius-1)',
+                    cursor: 'pointer',
+                    backgroundColor: 'transparent',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                  onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'var(--slate-a3)';
+                  }}
+                  onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'transparent';
+                  }}
                 >
-                  {openInLabel}
-                </Button>
+                  <button>
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}
+                    >
+                      {openInLabel}
+                    </Text>
+                  </button>
+                </Box>
 
                 {/* "Preview" solid accent button */}
-                <Button
-                  size="1"
-                  variant="solid"
+                <Box
+                  asChild
                   onClick={handlePreview}
-                  style={{ cursor: 'pointer' }}
+                  style={{
+                    height: '24px',
+                    padding: '0 var(--space-2)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'var(--accent-9)',
+                    borderRadius: 'var(--radius-1)',
+                    cursor: 'pointer',
+                    border: 'none',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                  onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'var(--accent-10)';
+                  }}
+                  onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'var(--accent-9)';
+                  }}
                 >
-                  Preview
-                </Button>
+                  <button>
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{ color: 'var(--accent-contrast)', whiteSpace: 'nowrap' }}
+                    >
+                      Preview
+                    </Text>
+                  </button>
+                </Box>
               </>
             )}
           </Flex>
@@ -245,10 +297,10 @@ export function ReferenceCard({
                 {citation.pageNum?.map((p) => (
                   <Badge
                     key={`page-${p}`}
-                    size="2"
+                    size="1"
                     variant="soft"
                     color="gray"
-                    style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
+                    style={{ fontWeight: 500 }}
                   >
                     Page {p}
                   </Badge>
@@ -256,10 +308,10 @@ export function ReferenceCard({
                 {citation.blockNum?.map((b) => (
                   <Badge
                     key={`block-${b}`}
-                    size="2"
+                    size="1"
                     variant="soft"
                     color="gray"
-                    style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
+                    style={{ fontWeight: 500 }}
                   >
                     Paragraph {b}
                   </Badge>
@@ -272,26 +324,59 @@ export function ReferenceCard({
           {isMobile && (
             <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
               {/* "Open in {Source}" outline button */}
-              <Button
-                size="1"
-                variant="outline"
-                color="gray"
+              <Box
+                asChild
                 onClick={handleOpenInSource}
-                style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                style={{
+                  height: '28px',
+                  padding: '0 var(--space-2)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '1px solid var(--slate-a7)',
+                  borderRadius: 'var(--radius-1)',
+                  cursor: 'pointer',
+                  backgroundColor: 'transparent',
+                }}
               >
-                {openInLabel}
-              </Button>
+                <button>
+                  <Text
+                    size="1"
+                    weight="medium"
+                    style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}
+                  >
+                    {openInLabel}
+                  </Text>
+                </button>
+              </Box>
 
               {/* "Preview" button — only for previewable files */}
               {citation.previewRenderable && (
-                <Button
-                  size="1"
-                  variant="solid"
+                <Box
+                  asChild
                   onClick={handlePreview}
-                  style={{ cursor: 'pointer' }}
+                  style={{
+                    height: '28px',
+                    padding: '0 var(--space-2)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'var(--accent-9)',
+                    borderRadius: 'var(--radius-1)',
+                    cursor: 'pointer',
+                    border: 'none',
+                  }}
                 >
-                  Preview
-                </Button>
+                  <button>
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{ color: 'var(--accent-contrast)', whiteSpace: 'nowrap' }}
+                    >
+                      Preview
+                    </Text>
+                  </button>
+                </Box>
               )}
             </Flex>
           )}

@@ -68,7 +68,7 @@ export function CreateFolderDialog({
         style={{
           maxWidth: '432px',
           width: '100%',
-          padding: 'var(--space-6)',
+          padding: '24px',
           zIndex: 1000,
         }}
       >

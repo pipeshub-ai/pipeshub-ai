@@ -82,14 +82,14 @@ export function TimeGroup({
         align="center"
         style={{
           height: ELEMENT_HEIGHT,
-          padding: '0 var(--space-3)',
+          padding: '0 12px',
         }}
       >
         <span
           style={{
             fontSize: 12,
             fontWeight: 400,
-            lineHeight: 'var(--line-height-1)',
+            lineHeight: '16px',
             letterSpacing: '0.04px',
             color: 'var(--slate-10)',
           }}

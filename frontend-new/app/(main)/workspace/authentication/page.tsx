@@ -9,7 +9,6 @@ import {
   Text,
   Heading,
   Button,
-  IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -241,12 +240,12 @@ export default function AuthenticationPage() {
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
-            <Heading size="5" style={{ color: 'var(--slate-12)' }}>
+            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.authentication.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
               {t('workspace.authentication.subtitle')}
             </Text>
           </Box>
@@ -274,19 +273,17 @@ export default function AuthenticationPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--olive-3)',
-            borderRadius: 'var(--radius-1)',
-            backgroundColor: 'var(--olive-2)',
-            backdropFilter: 'blur(6px)',
-            marginBottom: 'var(--space-5)',
-            gap: 'var(--space-4)',
+            border: '1px solid var(--slate-5)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--slate-2)',
+            marginBottom: 20,
           }}
         >
           {/* Section header */}
           <Flex
             align="center"
             justify="between"
-            style={{ padding: '14px 16px'}}
+            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
@@ -317,10 +314,6 @@ export default function AuthenticationPage() {
             )}
           </Flex>
 
-          <Box px="4">
-            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
-          </Box>
-
           {/* Method rows */}
           <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
               {AUTH_METHOD_META.map((meta) => {
@@ -350,17 +343,18 @@ export default function AuthenticationPage() {
 
         {/* ── Authentication Method Policy info box ── */}
         <Flex
-          align="center"
+          align="start"
           gap="3"
-          py="3"
-          px="4"
           style={{
-            background: 'var(--accent-a2)',
+            backgroundColor: 'var(--accent-2)',
+            border: '1px solid var(--accent-6)',
+            borderRadius: 'var(--radius-1)',
+            padding: '12px 16px',
           }}
         >
-          <IconButton variant="soft" size="2" style={{ background: 'var(--slate-a2)', borderRadius: 'var(--radius-1)', padding: 'var(--space-2)' }}>
-            <MaterialIcon name="info" size={16} />
-          </IconButton>
+          <Box style={{ flexShrink: 0, marginTop: 2 }}>
+            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+          </Box>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.authentication.policyHeading')}
@@ -371,7 +365,7 @@ export default function AuthenticationPage() {
             {!smtpConfigured && (
               <Text
                 size="1"
-                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 'var(--space-1)' }}
+                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 4 }}
               >
                 {t('workspace.authentication.smtpWarning')}
               </Text>

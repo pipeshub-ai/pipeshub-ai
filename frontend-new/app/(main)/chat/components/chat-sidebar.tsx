@@ -15,7 +15,7 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
     style={{
       backgroundColor: '#ffffff',
       border: '1px solid var(--slate-3)',
-      padding: '2px var(--space-1)', /* was: 2px 4px, delta: 0px side */
+      padding: '2px 4px',
       borderRadius: 'var(--radius-1)',
       fontSize: 'var(--font-size-1)',
       color: 'var(--slate-12)',
@@ -127,7 +127,7 @@ const ChatItemSkeleton = () => (
   >
     <Box
       style={{
-        height: 'var(--space-4)',
+        height: '16px',
         backgroundColor: 'var(--slate-4)',
         borderRadius: 'var(--radius-1)',
         width: '75%',
@@ -189,12 +189,12 @@ export function ChatSidebar() {
       }}
     >
       {/* Header */}
-      <Flex align="center" justify="between" style={{ padding: '0 var(--space-3)', height: 'var(--space-7)' }}>
+      <Flex align="center" justify="between" style={{ padding: '0 var(--space-3)', height: '40px' }}>
         <PipesHubIcon size={24} color="var(--accent-8)" />
         <Box
           style={{
-            width: 'var(--space-5)',
-            height: 'var(--space-5)',
+            width: '24px',
+            height: '24px',
             borderRadius: 'var(--radius-2)',
             backgroundColor: 'var(--slate-4)',
             overflow: 'hidden',
@@ -313,8 +313,8 @@ export function ChatSidebar() {
           align="center"
           justify="center"
           style={{
-            width: 'var(--space-5)',
-            height: 'var(--space-5)',
+            width: '24px',
+            height: '24px',
             borderRadius: 'var(--radius-2)',
             backgroundColor: 'var(--accent-a3)',
           }}

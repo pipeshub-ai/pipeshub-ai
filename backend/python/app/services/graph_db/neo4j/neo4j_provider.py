@@ -44,6 +44,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    ArtifactRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -2083,6 +2084,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return ProductRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -5506,6 +5509,7 @@ class Neo4jProvider(IGraphDBProvider):
                 Neo4jLabel.WEBPAGES.value,
                 Neo4jLabel.COMMENTS.value,
                 Neo4jLabel.TICKETS.value,
+                Neo4jLabel.ARTIFACTS.value,
             ]
 
             for label in type_labels:

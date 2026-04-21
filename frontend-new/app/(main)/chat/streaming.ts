@@ -18,6 +18,7 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages } from './runtime';
+
 import { i18n } from '@/lib/i18n';
 import {
   buildStreamRequestModeFields,
@@ -26,7 +27,10 @@ import {
   type StatusMessage,
   type ModelOverride,
   type SSEConnectedEvent,
+  type ChatArtifact, 
+  type SSEArtifactEvent
 } from './types';
+
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
@@ -224,6 +228,24 @@ export async function streamMessageForSlot(
         scheduleFlush();
       },
 
+      onArtifact: (data: SSEArtifactEvent) => {
+        const artifact: ChatArtifact = {
+          id: data.artifactId || `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          fileName: data.fileName,
+          mimeType: data.mimeType,
+          sizeBytes: data.sizeBytes ?? 0,
+          downloadUrl: data.downloadUrl,
+          artifactType: data.artifactType ?? 'OTHER',
+          recordId: data.recordId,
+        };
+        const currentSlot = useChatStore.getState().slots[slotId];
+        if (currentSlot) {
+          useChatStore.getState().updateSlot(slotId, {
+            artifacts: [...currentSlot.artifacts, artifact],
+          });
+        }
+      },
+
       onComplete: (data) => {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         const conv = data.conversation as { _id?: string; id?: string };
@@ -239,6 +261,7 @@ export async function streamMessageForSlot(
           currentStatusMessage: null,
           streamingCitationMaps: null,
           pendingCollections: [],
+          artifacts: [],
           messages: finalMessages,
           hasLoaded: true,
           abortController: null,

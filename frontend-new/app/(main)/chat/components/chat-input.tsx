@@ -100,7 +100,6 @@ export function ChatInput({
   const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
-  const [isInputFocused, setIsInputFocused] = useState(false);
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
   const [activeMessageAction, setActiveMessageAction] = useState<ActiveMessageAction>(null);
@@ -611,7 +610,7 @@ export function ChatInput({
                   padding: 'var(--space-2)',
                   backgroundColor: 'var(--olive-a2)',
                   border: '1px solid var(--olive-3)',
-                  borderRadius: 'var(--radius-1)',
+                  borderRadius: '3px',
                 }}
               >
                 <Flex direction="column" gap="2">
@@ -662,7 +661,7 @@ export function ChatInput({
                 flexShrink: 0,
                 width: '76px',
                 border: '1px dashed var(--accent-9)',
-                borderRadius: 'var(--radius-1)',
+                borderRadius: '3px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -706,9 +705,10 @@ export function ChatInput({
       gap="2"
       style={{
         backdropFilter: 'blur(25px)',
-        background: (isInputFocused || message.trim() || isListening) ? 'var(--olive-2)' : 'var(--effects-translucent)',
-        transition: 'background 0.15s ease',
-        border: (!isStreaming && (isInputFocused || message.trim() || isEditMode || isListening)) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
+        background: 'var(--effects-translucent)',
+        // Accent border when the user has typed something OR is in edit mode (per Figma spec).
+        // In regenerate mode the border stays slate since the textarea is disabled.
+        border: (message.trim() || isEditMode || isListening) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
         // Flatten top corners whenever there is an element directly above (collections bar,
         // uploaded files preview, or the action pill bar) to avoid a double-radius gap.
         borderRadius: (selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen) || uploadedFiles.length > 0 || isActionMode
@@ -782,7 +782,7 @@ export function ChatInput({
         <ChatInputExpansionPanel
           open={isModePanelOpen}
           onClose={() => setIsModePanelOpen(false)}
-          minHeight='0'
+          minHeight='0px'
           height='fit-content'
         >
           <QueryModePanel
@@ -833,8 +833,6 @@ export function ChatInput({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => setIsInputFocused(true)}
-          onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
           rows={1}
           style={{
@@ -849,7 +847,7 @@ export function ChatInput({
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
-            overflow: 'auto',
+            overflow: message.split('\n').length > 5 ? 'auto' : 'hidden',
           }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;
@@ -867,8 +865,6 @@ export function ChatInput({
           value={displayValue}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => setIsInputFocused(true)}
-          onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
           disabled={isRegenerateMode}
           rows={1}
@@ -884,7 +880,7 @@ export function ChatInput({
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
-            overflow: 'auto',
+            overflow: message.split('\n').length > 5 ? 'auto' : 'hidden',
           }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;
@@ -1084,7 +1080,7 @@ export function ChatInput({
                     size="2"
                     disabled={isRegenerateMode}
                     onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
+                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
                   >
                     <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                   </IconButton>
@@ -1110,8 +1106,7 @@ export function ChatInput({
                       margin: 0,
                       cursor: isRegenerateMode || !isSpeechSupported ? 'default' : 'pointer',
                       ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
-                      '--accent-a3': modeColors.bg,
-                    } as React.CSSProperties}
+                    }}
                   >
                     <MaterialIcon
                       name={isListening ? 'mic' : 'mic_none'}

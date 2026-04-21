@@ -39,7 +39,6 @@ import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { ConfigService } from '../services/updateConfig.service';
 import {
   ConnectorPublicUrlChangedEvent,
-  EmbeddingModelConfiguredEvent,
   EntitiesEventProducer,
   Event,
   EventType,
@@ -2450,31 +2449,16 @@ export const createAIModelsConfig =
         encryptedAIConfig,
       );
 
-      // Notify other services about the new AI config. The initial config
-      // may include LLM and/or embedding models; fire a separate event per
-      // model type so downstream caches (e.g. the Python retrieval service's
-      // embedding instance) get invalidated appropriately.
-      if (aiConfig.llm.length > 0) {
-        const llmEvent: Event = {
-          eventType: EventType.LLMConfiguredEvent,
-          timestamp: Date.now(),
-          payload: {
-            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-          } as LLMConfiguredEvent,
-        };
-        await sendEvent(eventService, llmEvent);
-      }
+      // Send event to notify other services about the new AI config
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
 
-      if (aiConfig.embedding.length > 0) {
-        const embeddingEvent: Event = {
-          eventType: EventType.EmbeddingModelConfiguredEvent,
-          timestamp: Date.now(),
-          payload: {
-            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-          } as EmbeddingModelConfiguredEvent,
-        };
-        await sendEvent(eventService, embeddingEvent);
-      }
+      await sendEvent(eventService, event);
 
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
@@ -2909,26 +2893,13 @@ export const addAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      // Emit an event specific to the model type so downstream services
-      // refresh the right cache. Embedding changes MUST NOT use the LLM
-      // event because the Python retrieval service only invalidates its
-      // embedding instance on `embeddingModelConfigured`.
-      const event: Event =
-        modelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3112,22 +3083,13 @@ export const updateAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
       await sendEvent(eventService, event);
       res.status(200).json({
         status: 'success',
@@ -3241,22 +3203,13 @@ export const deleteAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3339,84 +3292,6 @@ export const updateDefaultAIModel =
         return;
       }
 
-      // If the model is already the default, no-op: nothing to check or update.
-      if (targetModel.isDefault) {
-        res.status(200).json({
-          status: 'success',
-          message: `Default ${targetModelType} model unchanged`,
-          details: {
-            modelKey,
-            modelType: targetModelType,
-            provider: targetModel.provider,
-            model: targetModel.configuration?.model,
-            contextLength: targetModel.contextLength,
-          },
-        });
-        return;
-      }
-
-      // Run a health check on the target model BEFORE promoting it to default.
-      // This is critical for `embedding`: switching the default to a model with a
-      // different vector dimension or model identity while the collection already
-      // contains points would corrupt retrieval. The Python
-      // `/api/v1/health-check/embedding` endpoint enforces that policy.
-      // For other model types (llm, ocr, slm, reasoning, multiModal) we also
-      // verify the model is reachable/credentials work before flipping the flag.
-      const healthCheckSupportedTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-      ];
-      if (healthCheckSupportedTypes.includes(targetModelType)) {
-        const healthCheckPayload = {
-          provider: targetModel.provider,
-          configuration: targetModel.configuration,
-          modelType: targetModelType,
-          isMultimodal: targetModel.isMultimodal ?? false,
-          isReasoning: targetModel.isReasoning ?? false,
-          isDefault: true,
-          contextLength: targetModel.contextLength ?? null,
-          ...(targetModel.modelFriendlyName && {
-            modelFriendlyName: targetModel.modelFriendlyName,
-          }),
-        };
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: healthCheckPayload,
-        };
-
-        logger.debug(
-          `Health Check for AI ${targetModelType} default-update API calling`,
-        );
-
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
-
-        if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
-          const errData: any = aiResponseData?.data ?? {};
-          const reasonMessage =
-            (errData && (errData.message ?? errData.error?.message)) ??
-            `Failed health check while setting default ${targetModelType} model. ` +
-              `Refusing to change default to prevent breaking the system.`;
-
-          res.status(aiResponseData?.statusCode ?? 500).json({
-            error: {
-              status: 'error',
-              message: reasonMessage,
-              details: errData,
-            },
-          });
-          return;
-        }
-      }
-
       // Remove default flag from all models in this type
       for (const config of aiModels[targetModelType]) {
         config.isDefault = false;
@@ -3436,22 +3311,13 @@ export const updateDefaultAIModel =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
       await sendEvent(eventService, event);
 
       res.status(200).json({

@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,9 +10,9 @@ import {
   GeneralSection,
   RolesPermissionsSection,
   PasswordSecuritySection,
-} from "./components";
-import { LottieLoader } from "@/app/components/ui/lottie-loader";
-import { useProfilePage } from "./hooks/use-profile-page";
+} from './components';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { useProfilePage } from './hooks/use-profile-page';
 
 // ========================================
 // Main Page
@@ -53,41 +53,38 @@ export default function ProfilePage() {
 
   if (isLoading) {
     return (
-      <Flex
-        align="center"
-        justify="center"
-        style={{ height: "100%", width: "100%" }}
-      >
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
         <LottieLoader variant="loader" size={48} showLabel />
       </Flex>
     );
   }
 
   return (
-    <Box style={{ height: "100%", overflowY: "auto", position: "relative" }}>
+    <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       {/* Hidden avatar file input */}
       <input
         ref={avatarInputRef}
         type="file"
         accept="image/*"
-        style={{ display: "none" }}
+        style={{ display: 'none' }}
         onChange={handleAvatarChange}
       />
 
       {/* Page content */}
-      <Box style={{ padding: "64px 100px" }}>
+      <Box style={{ padding: '64px 100px' }}>
+
         {/* ── Page header ── */}
-        <Box style={{ marginBottom: 'var(--space-6)' }}>
+        <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.profile.title')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
             {t('workspace.profile.subtitle')}
           </Text>
         </Box>
 
         {/* ── General section ── */}
-        <Box style={{ marginBottom: 'var(--space-5)' }}>
+        <Box style={{ marginBottom: 20 }}>
           <GeneralSection
             avatarUrl={avatarUrl}
             avatarInitial={avatarInitial}
@@ -97,11 +94,11 @@ export default function ProfilePage() {
             fullName={form.fullName}
             fullNameError={errors.fullName}
             onFullNameChange={(value) => {
-              setField("fullName", value);
+              setField('fullName', value);
               if (errors.fullName) setErrors({});
             }}
             designation={form.designation}
-            onDesignationChange={(value) => setField("designation", value)}
+            onDesignationChange={(value) => setField('designation', value)}
             email={email}
             emailLoading={emailLoading}
             onEditEmailClick={() => setChangeEmailOpen(true)}
@@ -109,17 +106,16 @@ export default function ProfilePage() {
         </Box>
 
         {/* ── Roles & Permissions section ── */}
-        <Box style={{ marginBottom: 'var(--space-5)' }}>
+        <Box style={{ marginBottom: 20 }}>
           <RolesPermissionsSection role={role} groups={groups} />
         </Box>
 
         {/* ── Password & Security section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}
         <Box style={{ marginBottom: 80 }}>
-          <PasswordSecuritySection
-            onChangePasswordClick={() => setChangePasswordOpen(true)}
-          />
+          <PasswordSecuritySection onChangePasswordClick={() => setChangePasswordOpen(true)} />
         </Box>
+
       </Box>
 
       {/* ── Change Password Dialog ── */}

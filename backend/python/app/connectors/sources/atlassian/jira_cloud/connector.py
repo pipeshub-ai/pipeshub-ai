@@ -889,17 +889,8 @@ class JiraConnector(BaseConnector):
                         if shared:
                             site_url = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
                 if not site_url:
-                    if not resources:
-                        raise ValueError(
-                            "Atlassian site URL (baseUrl) missing and OAuth token has no accessible Jira sites"
-                        )
-                    self.logger.warning(
-                        "Jira connector %s: baseUrl missing; using accessible-resources[0] (%s)",
-                        self.connector_id, resources[0].url,
-                    )
-                    picked = resources[0]
-                else:
-                    picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
+                    raise ValueError("Atlassian site URL (baseUrl) is required for OAuth")
+                picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
                 self.cloud_id = picked.id
                 self.site_url = picked.url
                 self.logger.info("✅ Jira client initialized with OAuth authentication")
@@ -2494,8 +2485,7 @@ class JiraConnector(BaseConnector):
             project_id,
             jira_users,
             project_last_sync_time,
-            resume_from_timestamp,
-            is_new_project=is_new_project,
+            resume_from_timestamp
         ):
             batch_number += 1
             batch_size = len(issues_batch)
@@ -2558,8 +2548,7 @@ class JiraConnector(BaseConnector):
         project_id: str,
         users: list[AppUser],
         last_sync_time: Optional[int] = None,
-        resume_from_timestamp: Optional[int] = None,
-        is_new_project: bool = False,
+        resume_from_timestamp: Optional[int] = None
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission]]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -2674,10 +2663,7 @@ class JiraConnector(BaseConnector):
 
             # Build records for this batch
             async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(
-                    batch_issues, project_id, users, tx_store,
-                    is_new_project=is_new_project,
-                )
+                records_batch = await self._build_issue_records(batch_issues, project_id, users, tx_store)
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -2926,16 +2912,10 @@ class JiraConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store,
-        is_new_project: bool = False,
+        tx_store
     ) -> list[tuple[Record, list[Permission]]]:
         """
-        Build issue records with permissions from raw issue data, respecting Jira hierarchy.
-
-        When is_new_project is True (full sync wiped sync points), the "skip unchanged
-        issues" short-circuit is bypassed so every issue flows through _process_record
-        and its BELONGS_TO / RECORD_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
-        recreated after full-sync edge deletion.
+        Build issue records with permissions from raw issue data, respecting Jira hierarchy
         """
         all_records: list[tuple[Record, list[Permission]]] = []
         skipped_unchanged_count = 0
@@ -3000,10 +2980,8 @@ class JiraConnector(BaseConnector):
                 version = existing_record.version if existing_record else 0
                 # Skip unchanged issues silently - no need to log every unchanged issue
 
-            # Skip processing if issue is unchanged, unless this is a full sync
-            # (is_new_project=True means sync points were wiped, so edges need to be
-            # recreated even for unchanged issues; _process_record is idempotent).
-            if not is_issue_changed and not is_new_project:
+            # Skip processing if issue is unchanged
+            if not is_issue_changed:
                 skipped_unchanged_count += 1
                 continue
 

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Box, Text, Button } from '@radix-ui/themes';
+import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSection } from './settings-section';
 
@@ -23,7 +23,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
   const [btnHovered, setBtnHovered] = useState(false);
 
   return (
-    <SettingsSection title={t('workspace.profile.passwordSecurity.title')}>
+    <SettingsSection title={t('workspace.profile.passwordSecurity')}>
       <Flex align="center" justify="between" style={{ width: '100%' }}>
 
         {/* Left: icon + label + description */}
@@ -47,7 +47,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
               weight="medium"
               style={{ color: 'var(--gray-12)', display: 'block' }}
             >
-              {t('workspace.profile.passwordSecurity.accountPassword')}
+              Account Password
             </Text>
             <Text
               size="1"
@@ -59,24 +59,33 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
                 fontWeight: 300,
               }}
             >
-              {t('workspace.profile.passwordSecurity.followEmailDescription')}
+              Please follow the instructions in the email to finish setting your password
             </Text>
           </Box>
         </Flex>
 
-        <Button
+        <button
           type="button"
           onClick={onChangePasswordClick}
           onMouseEnter={() => setBtnHovered(true)}
           onMouseLeave={() => setBtnHovered(false)}
-          variant='solid'
-          size='2'
           style={{
-            backgroundColor: btnHovered ? 'var(--slate-a4)' : 'var(--slate-a3)',
+            cursor: 'pointer',
+            padding: '6px 14px',
+            height: 32,
+            borderRadius: 'var(--radius-2)',
+            fontSize: 13,
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+            backgroundColor: btnHovered ? 'var(--gray-a3)' : 'transparent',
+            border: '1px solid var(--gray-7)',
+            color: 'var(--gray-12)',
+            flexShrink: 0,
+            transition: 'background-color 120ms ease',
           }}
         >
-          {t('workspace.profile.passwordSecurity.changePassword')}
-        </Button>
+          Change Password
+        </button>
 
       </Flex>
     </SettingsSection>

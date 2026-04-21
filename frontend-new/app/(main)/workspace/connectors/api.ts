@@ -9,57 +9,8 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
 } from './types';
-import { CONNECTOR_INSTANCE_STATUS } from './constants';
 
 const BASE_URL = '/api/v1/connectors';
-
-/** Normalized DELETE /connectors/:id body for optimistic UI merge. */
-export type DeleteConnectorInstanceMerge = {
-  _key: string;
-  type: string;
-  status: string | null;
-};
-
-/** Fields read from DELETE /connectors/:id JSON (may be partial or empty). */
-interface DeleteConnectorInstanceResponseBody {
-  _key?: string;
-  type?: string;
-  status?: string | null;
-}
-
-function resolveDeleteInstanceResponseStatus(
-  body: DeleteConnectorInstanceResponseBody
-): string | null {
-  if (!('status' in body)) {
-    return CONNECTOR_INSTANCE_STATUS.DELETING;
-  }
-  const s = body.status;
-  if (typeof s === 'string' && s.length > 0) {
-    return s;
-  }
-  if (s === null) {
-    return CONNECTOR_INSTANCE_STATUS.DELETING;
-  }
-  return CONNECTOR_INSTANCE_STATUS.DELETING;
-}
-
-function parseDeleteConnectorInstanceBody(
-  data: DeleteConnectorInstanceResponseBody | null | undefined,
-  fallbackConnectorId: string
-): DeleteConnectorInstanceMerge {
-  if (data && typeof data === 'object' && typeof data._key === 'string') {
-    return {
-      _key: data._key,
-      type: typeof data.type === 'string' ? data.type : '',
-      status: resolveDeleteInstanceResponseStatus(data),
-    };
-  }
-  return {
-    _key: fallbackConnectorId,
-    type: '',
-    status: CONNECTOR_INSTANCE_STATUS.DELETING,
-  };
-}
 
 export const ConnectorsApi = {
   // ── List & Registry ──
@@ -120,12 +71,10 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Delete a connector instance; response is normalized for optimistic store merge. */
-  async deleteConnectorInstance(connectorId: string): Promise<DeleteConnectorInstanceMerge> {
-    const { data } = await apiClient.delete<DeleteConnectorInstanceResponseBody | null>(
-      `${BASE_URL}/${connectorId}`
-    );
-    return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
+  /** Delete a connector instance */
+  async deleteConnectorInstance(connectorId: string) {
+    const { data } = await apiClient.delete(`${BASE_URL}/${connectorId}`);
+    return data;
   },
 
   /** Update connector instance name */
@@ -261,15 +210,21 @@ export const ConnectorsApi = {
 
   // ── Instance Details ──
 
-  /** Fetch a specific connector instance. Backend returns `{ success, connector }`. */
+  /** Fetch a specific connector instance */
   async getConnectorInstance(connectorId: string): Promise<Connector> {
-    const { data } = await apiClient.get<{ success: boolean; connector: Connector }>(
+    const { data } = await apiClient.get<Connector>(
       `${BASE_URL}/${connectorId}`
     );
-    if (!data?.connector) {
-      throw new Error(`getConnectorInstance: empty response for ${connectorId}`);
-    }
-    return data.connector;
+    return data;
+  },
+
+  /** Start sync for a connector instance */
+  async startSync(connectorId: string) {
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${connectorId}/toggle`,
+      { type: 'sync' }
+    );
+    return data;
   },
 
   // ── Reindex Failed ──
@@ -279,9 +234,6 @@ export const ConnectorsApi = {
    * `connectorType` must be the connector **type** (e.g. "Google Drive"), matching the legacy UI.
    */
   async resyncConnector(connectorId: string, connectorType: string, fullSync?: boolean) {
-    if (!connectorType) {
-      throw new Error('resyncConnector: connectorType is required');
-    }
     const { data } = await apiClient.post(
       '/api/v1/knowledgeBase/resync/connector',
       {

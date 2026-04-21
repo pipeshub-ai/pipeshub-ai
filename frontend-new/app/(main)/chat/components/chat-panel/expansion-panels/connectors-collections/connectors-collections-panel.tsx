@@ -44,7 +44,7 @@ export function ConnectorsCollectionsPanel({
     <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Header: title + expand/collapse toggle */}
       <Flex align="center" justify="between" style={{ width: '100%' }}>
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
           {t('nav.collections')}
         </Text>
         <IconButton

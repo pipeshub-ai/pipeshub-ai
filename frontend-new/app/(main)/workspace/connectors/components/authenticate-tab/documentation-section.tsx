@@ -37,7 +37,7 @@ export function DocumentationSection({
           <DocumentationLinkRow
             key={idx}
             link={link}
-            connectorIconSrc={iconSrc}
+            iconSrc={iconSrc}
           />
         ))}
       </Flex>
@@ -49,19 +49,15 @@ export function DocumentationSection({
 // DocumentationLinkRow
 // ========================================
 
-const PIPESHUB_ICON_PATH = '/logo/pipes-hub.svg';
-
 function DocumentationLinkRow({
   link,
-  connectorIconSrc,
+  iconSrc,
 }: {
   link: DocumentationLink;
-  connectorIconSrc: string;
+  iconSrc: string;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [iconError, setIconError] = useState(false);
-
-  const iconSrc = link.type?.toLowerCase() === 'pipeshub' ? PIPESHUB_ICON_PATH : connectorIconSrc;
 
   const handleClick = useCallback(() => {
     window.open(link.url, '_blank', 'noopener,noreferrer');
@@ -78,7 +74,7 @@ function DocumentationLinkRow({
         backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+        padding: '8px 8px 8px 12px',
         cursor: 'pointer',
         transition: 'background-color 150ms ease',
       }}

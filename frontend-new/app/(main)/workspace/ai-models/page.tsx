@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
@@ -8,7 +8,6 @@ import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useAIModelsStore } from './store';
 import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
-import { CAPABILITY_TO_MODEL_TYPE } from './types';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { ProviderGrid, ModelConfigDialog } from './components';
 
@@ -94,18 +93,6 @@ export default function AIModelsPage() {
   const isLoading = store.isLoadingProviders || store.isLoadingModels;
   const deleteKeyword = store.deleteTarget?.modelName ?? '';
 
-  // For the Add dialog, compute how many models of the target model type are
-  // already configured. The dialog uses this to decide whether to auto-default
-  // the new model — only the very first model of a type is auto-defaulted.
-  const dialogExistingModelsCount = useMemo(() => {
-    if (store.dialogMode !== 'add') return 0;
-    const capability = store.dialogCapability;
-    if (!capability) return 0;
-    const targetModelType = CAPABILITY_TO_MODEL_TYPE[capability];
-    if (!targetModelType) return 0;
-    return store.configuredModels[targetModelType]?.length ?? 0;
-  }, [store.dialogMode, store.dialogCapability, store.configuredModels]);
-
   return (
     <ServiceGate services={['query']}>
       <ProviderGrid
@@ -131,7 +118,6 @@ export default function AIModelsPage() {
         provider={store.dialogProvider}
         capability={store.dialogCapability}
         editModel={store.dialogEditModel}
-        existingModelsCount={dialogExistingModelsCount}
         onClose={store.closeDialog}
         onSaved={loadModels}
       />
