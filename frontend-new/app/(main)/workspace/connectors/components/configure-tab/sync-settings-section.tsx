@@ -1,9 +1,13 @@
 'use client';
 
-import React from 'react';
+import React, { useContext } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Select } from '@radix-ui/themes';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
+import {
+  WorkspaceRightPanelBodyPortalContext,
+  WORKSPACE_DRAWER_POPPER_Z_INDEX,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
 import { STRATEGY_LABELS, INTERVAL_OPTIONS } from '../../constants';
 import type { SyncStrategy } from '../../types';
 
@@ -26,6 +30,8 @@ export function SyncSettingsSection({
   onStrategyChange: (strategy: SyncStrategy) => void;
   onIntervalChange: (minutes: number) => void;
 }) {
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+
   const { t } = useTranslation();
   return (
     <Flex
@@ -57,7 +63,11 @@ export function SyncSettingsSection({
             style={{ width: '100%', height: 32 }}
             placeholder={t('workspace.connectors.configTab.syncStrategyPlaceholder')}
           />
-          <Select.Content>
+          <Select.Content
+            position="popper"
+            container={panelBodyPortal ?? undefined}
+            style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+          >
             {supportedStrategies.map((strategy) => (
               <Select.Item key={strategy} value={strategy}>
                 {STRATEGY_LABELS[strategy] ?? strategy}
@@ -81,7 +91,11 @@ export function SyncSettingsSection({
               style={{ width: '100%', height: 32 }}
               placeholder={t('workspace.connectors.configTab.syncIntervalPlaceholder')}
             />
-            <Select.Content>
+            <Select.Content
+              position="popper"
+              container={panelBodyPortal ?? undefined}
+              style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+            >
               {INTERVAL_OPTIONS.map((opt) => (
                 <Select.Item key={opt.value} value={String(opt.value)}>
                   {opt.label}

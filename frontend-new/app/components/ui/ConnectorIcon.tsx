@@ -23,6 +23,7 @@ export type ConnectorType =
   // Communication & Collaboration
   | 'slack'
   | 'teams'
+  | 'zoom'
   | 'gmail'
   | 'outlook'
   | 'google-meet'
@@ -33,8 +34,10 @@ export type ConnectorType =
   | 'dropbox'
   | 'box'
   | 'amazon-s3'
+  | 'gcs'
   | 'minio'
   | 'azure-storage'
+  | 'azure-files'
   | 'azure-fileshares'
   | 'nextcloud'
   // Document & Knowledge
@@ -48,7 +51,9 @@ export type ConnectorType =
   | 'ms-onenote'
   // Project & Issue Tracking
   | 'jira'
+  | 'linear'
   | 'gitlab'
+  | 'github'
   | 'servicenow'
   | 'zendesk'
   | 'zammad'
@@ -57,6 +62,7 @@ export type ConnectorType =
   | 'sharepointonline'
   | 'google-admin'
   | 'google-cloud'
+  | 'salesforce'
   // Databases
   | 'postgresql'
   | 'mariadb'
@@ -92,6 +98,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   // Communication & Collaboration
   'slack':            { svg: '/icons/connectors/slack.svg',            fallback: 'tag' },
   'teams':            { svg: '/icons/connectors/teams.svg',            fallback: 'groups' },
+  'zoom':             { svg: '/icons/connectors/zoom.svg',             fallback: 'videocam' },
   'gmail':            { svg: '/icons/connectors/gmail.svg',            fallback: 'mail' },
   'outlook':          { svg: '/icons/connectors/outlook.svg',          fallback: 'mail' },
   'google-meet':      { svg: '/icons/connectors/Google-Meet.svg',      fallback: 'videocam' },
@@ -102,9 +109,11 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'dropbox':          { svg: '/icons/connectors/dropbox.svg',          fallback: 'cloud_upload' },
   'box':              { svg: '/icons/connectors/Box-Inc.svg',          fallback: 'inventory_2' },
   'amazon-s3':        { svg: '/icons/connectors/Amazon-S3-Logo.svg',   fallback: 'cloud' },
+  'gcs':              { svg: '/icons/connectors/Google-Cloud.svg',   fallback: 'cloud' },
   'minio':            { svg: '/icons/connectors/Minio.svg',            fallback: 'cloud' },
   'azure-storage':    { svg: '/icons/connectors/azure-storage.svg',    fallback: 'cloud' },
-  'azure-fileshares': { svg: '/icons/connectors/azure-fileshares.svg', fallback: 'folder_shared' },
+  'azure-files':      { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
+  'azure-fileshares': { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
   'nextcloud':        { svg: '/icons/connectors/Nextcloud.svg',        fallback: 'cloud' },
   // Document & Knowledge
   'notion':           { svg: '/icons/connectors/notion.svg',           fallback: 'description' },
@@ -115,17 +124,20 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides':    { svg: '/icons/connectors/Google-Slides.svg',    fallback: 'slideshow' },
   'google-forms':     { svg: '/icons/connectors/Google-Forms.svg',     fallback: 'quiz' },
   'ms-onenote':       { svg: '/icons/connectors/MS-Note.svg',          fallback: 'note' },
-  // Project & Issue Tracking
-  'jira':             { svg: '/icons/connectors/jira.svg',             fallback: 'bug_report' },
+  // Project & Issue Tracking (keys sorted A–Z)
+  'github':           { svg: '/icons/connectors/github.svg',           fallback: 'code' },
   'gitlab':           { svg: '/icons/connectors/gitlab.svg',           fallback: 'code' },
+  'jira':             { svg: '/icons/connectors/jira.svg',             fallback: 'bug_report' },
+  'linear':           { svg: '/icons/connectors/linear.svg',           fallback: 'view_kanban' },
   'servicenow':       { svg: '/icons/connectors/service-now.svg',      fallback: 'build' },
   'zendesk':          { svg: '/icons/connectors/Zendesk.svg',          fallback: 'support' },
   'zammad':           { svg: '/icons/connectors/Zammad.svg',           fallback: 'support_agent' },
   // Enterprise & Admin
-  'sharepoint':       { svg: '/icons/connectors/Sharepoint.svg',       fallback: 'share' },
-  'sharepointonline': { svg: '/icons/connectors/Sharepoint.svg',       fallback: 'share' },
+  'sharepoint':       { svg: '/icons/connectors/sharepoint.svg',       fallback: 'share' },
+  'sharepointonline': { svg: '/icons/connectors/sharepoint.svg',       fallback: 'share' },
   'google-admin':     { svg: '/icons/connectors/Google-Admin.svg',     fallback: 'admin_panel_settings' },
   'google-cloud':     { svg: '/icons/connectors/Google-Cloud.svg',     fallback: 'cloud' },
+  'salesforce':       { svg: '/icons/connectors/salesforce.svg',       fallback: 'cloud' },
   // Databases
   'postgresql':       { svg: '/icons/connectors/Postgresql.svg',       fallback: 'storage' },
   'mariadb':          { svg: '/icons/connectors/MariaDB.svg',          fallback: 'storage' },
@@ -148,7 +160,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * Patterns are matched via .includes() against normalized input.
  */
 const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
-  // Google suite — specific first
+  // Google suite — specific first (google-cloud-storage before google-cloud)
+  ['google-cloud-storage', 'gcs'],
   ['google-drive', 'google-drive'], ['gdrive', 'google-drive'],
   ['google-docs', 'google-docs'], ['google-forms', 'google-forms'],
   ['google-meet', 'google-meet'], ['google-sheets', 'google-sheets'],
@@ -161,12 +174,16 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['onedrive', 'onedrive'], ['outlook', 'outlook'],
   ['onenote', 'ms-onenote'], ['ms-note', 'ms-onenote'],
   ['teams', 'teams'],
+  ['zoom', 'zoom'],
   // Cloud storage
+  ['azure-files', 'azure-files'],
   ['amazon-s3', 'amazon-s3'], ['aws-s3', 'amazon-s3'], ['s3', 'amazon-s3'],
   ['azure-fileshare', 'azure-fileshares'], ['azure-storage', 'azure-storage'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking
+  ['github', 'github'],
+  ['linear', 'linear'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],
   ['servicenow', 'servicenow'], ['service-now', 'servicenow'],

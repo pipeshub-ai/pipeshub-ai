@@ -1,3 +1,4 @@
+import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
 import type { BuilderSidebarToolset, RegistryToolsetRow } from '@/app/(main)/toolsets/api';
 
 /** One card in the Actions catalog (registry + optional user/org state). */
@@ -20,6 +21,8 @@ export interface ActionCatalogItem {
   primaryInstance?: BuilderSidebarToolset;
   /** Registry / synthetic row auth options for `ActionSetupPanel`. */
   supportedAuthTypes?: string[];
+  /** Toolset-type documentation (registry / merged list). */
+  documentationLinks?: DocumentationLink[];
   rowKind: ActionCatalogRowKind;
 }
 
@@ -73,6 +76,11 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
       primary.supportedAuthTypes?.length ?
         primary.supportedAuthTypes
       : instances.find((i) => i.supportedAuthTypes?.length)?.supportedAuthTypes;
+    const documentationLinks =
+      primary.documentationLinks?.length ?
+        primary.documentationLinks
+      : instances.find((i) => i.documentationLinks && i.documentationLinks.length > 0)
+          ?.documentationLinks;
     out.push({
       key: canonical,
       toolsetType: canonical,
@@ -86,6 +94,7 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
       instances: sorted,
       primaryInstance: primary,
       supportedAuthTypes: supported,
+      ...(documentationLinks?.length ? { documentationLinks } : {}),
       rowKind: 'byToolsetType',
     });
   }
@@ -106,6 +115,7 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
       instances: [],
       primaryInstance: undefined,
       supportedAuthTypes: syn.supportedAuthTypes,
+      ...(syn.documentationLinks?.length ? { documentationLinks: syn.documentationLinks } : {}),
       rowKind: 'byToolsetType',
     });
   }
@@ -126,6 +136,14 @@ export function actionCatalogItemToRegistryRow(item: ActionCatalogItem): Registr
       mergedTypes.map((a) => String(a).toUpperCase())
     : authRaw && authRaw !== 'NONE' ? [authRaw]
     : ['NONE'];
+  const documentationLinks =
+    item.documentationLinks?.length ?
+      item.documentationLinks
+    : item.primaryInstance?.documentationLinks?.length ?
+      item.primaryInstance.documentationLinks
+    : item.instances.find((i) => i.documentationLinks && i.documentationLinks.length > 0)
+        ?.documentationLinks;
+
   return {
     name: item.toolsetType,
     displayName: item.title,
@@ -135,6 +153,7 @@ export function actionCatalogItemToRegistryRow(item: ActionCatalogItem): Registr
     iconPath: item.iconPath || '',
     supportedAuthTypes,
     toolCount: item.toolCount,
+    ...(documentationLinks?.length ? { documentationLinks } : {}),
   };
 }
 
@@ -172,6 +191,7 @@ export function mergeRegistryWithMyToolsets(
       instances,
       primaryInstance,
       supportedAuthTypes: r.supportedAuthTypes,
+      ...(r.documentationLinks?.length ? { documentationLinks: r.documentationLinks } : {}),
       rowKind: 'byToolsetType',
     };
   });
@@ -204,6 +224,10 @@ export function myToolsetsGroupedToCatalogItems(rows: BuilderSidebarToolset[]): 
     const primary = sorted[0] ?? instances[0];
     const isUserAuthenticated = instances.some((i) => i.isAuthenticated);
     const toolCount = instances.reduce((m, i) => Math.max(m, i.toolCount || 0), 0);
+    const documentationLinks =
+      primary.documentationLinks?.length ?
+        primary.documentationLinks
+      : sorted.find((i) => i.documentationLinks && i.documentationLinks.length > 0)?.documentationLinks;
     out.push({
       key: canonical,
       toolsetType: canonical,
@@ -217,6 +241,7 @@ export function myToolsetsGroupedToCatalogItems(rows: BuilderSidebarToolset[]): 
       instances: sorted,
       primaryInstance: primary,
       supportedAuthTypes: primary.supportedAuthTypes,
+      ...(documentationLinks?.length ? { documentationLinks } : {}),
       rowKind: 'byToolsetType',
     });
   }
