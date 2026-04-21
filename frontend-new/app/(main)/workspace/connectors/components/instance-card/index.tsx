@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
@@ -17,7 +18,7 @@ import {
   ManualIndexButton,
 } from './primitives';
 import {
-  deriveSyncStatus,
+  deriveSyncStatusState,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
   getRecordsSelectedInfo,
@@ -26,6 +27,7 @@ import {
   getFailedRecords,
   getUnsupportedRecords,
 } from './utils';
+import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -66,6 +68,9 @@ export function InstanceCard({
   onToggleSyncActive,
   onChevronClick,
 }: InstanceCardProps) {
+  const { t } = useTranslation();
+  // ── Org/User identity state ──
+  const [identityName, setIdentityName] = useState<string>(instance.name);
   // ── Personal header: optional creator avatar (title always uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
@@ -118,7 +123,8 @@ export function InstanceCard({
   }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
-  const effectiveStatus = deriveSyncStatus(instance, stats);
+  const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
+    deriveSyncStatusState(instance, stats, config);
   const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
@@ -131,16 +137,16 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.supportsSync &&
     instance.isConfigured &&
-    instance.isAuthenticated &&
-    instance.status !== 'DELETING';
+    !oauthAuthIncomplete &&
+    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
   const syncToggleHelp: string | null =
-    instance.status === 'DELETING'
+    instance.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is being removed.'
       : !instance.isConfigured
         ? 'Finish configuration before you can enable sync.'
-        : !instance.isAuthenticated
+        : oauthAuthIncomplete
           ? 'Authenticate this connector before you can enable sync.'
           : null;
 
@@ -151,7 +157,8 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.isActive &&
     instance.isConfigured &&
-    instance.isAuthenticated;
+    !oauthAuthIncomplete &&
+    instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const syncSwitchControl = (
     <Switch
@@ -248,7 +255,7 @@ export function InstanceCard({
 
         {/* ── Records Selected ── */}
         <InfoRow
-          label={recordsSelected?.label ?? 'RECORDS SELECTED'}
+          label={recordsSelected?.label ?? t('workspace.connectors.instanceCard.recordsSelected')}
           value={recordsSelected ? String(recordsSelected.count) : '-'}
         />
 
@@ -260,7 +267,7 @@ export function InstanceCard({
               weight="medium"
               style={{ color: 'var(--gray-10)', width: 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
-              SYNC STRATEGY
+              {t('workspace.connectors.instanceCard.syncStrategy')}
             </Text>
             <Flex align="center" gap="3">
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
@@ -277,7 +284,7 @@ export function InstanceCard({
             </Flex>
           </Flex>
         ) : (
-          <InfoRow label="SYNC STRATEGY" value="-" />
+          <InfoRow label={t('workspace.connectors.instanceCard.syncStrategy')} value="-" />
         )}
 
         {/* ── Enabled By ── */}
@@ -288,7 +295,7 @@ export function InstanceCard({
               weight="medium"
               style={{ color: 'var(--gray-10)', width: 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
-              ENABLED BY
+              {t('workspace.connectors.settingsTab.enabledBy')}
             </Text>
             <Flex align="center" gap="3">
               <Flex align="center" gap="2">
@@ -314,7 +321,7 @@ export function InstanceCard({
             </Flex>
           </Flex>
         ) : (
-          <InfoRow label="ENABLED BY" value="-" />
+          <InfoRow label={t('workspace.connectors.settingsTab.enabledBy')} value="-" />
         )}
 
         {/* ── Last Synced ── */}
@@ -356,7 +363,7 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. */}
+        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatusState → sync_disabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"
@@ -393,10 +400,10 @@ export function InstanceCard({
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Authenticate Personal Account
+              {t('workspace.connectors.instanceCard.authBannerTitle')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              Connect your account to enable access and workspace configuration
+              {t('workspace.connectors.instanceCard.authBannerDescription')}
             </Text>
           </Flex>
           <ConnectButton onClick={() => onManage?.(instance)} />

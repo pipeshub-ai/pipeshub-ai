@@ -45,7 +45,7 @@ type ServicesHealthStore = ServicesHealthState & ServicesHealthActions;
 // Constants
 // ========================================
 
-const POLL_INTERVAL = 5000;
+const POLL_INTERVAL = 10 * 60 * 1000;
 const CACHE_KEY = 'healthCheck';
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;

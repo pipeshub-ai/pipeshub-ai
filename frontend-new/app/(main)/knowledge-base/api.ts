@@ -463,6 +463,8 @@ export const KnowledgeBaseApi = {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        // Placeholder creation + storage can exceed the default API client timeout after bytes are sent
+        timeout: 0,
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total && onProgress) {
             const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
@@ -511,6 +513,7 @@ export const KnowledgeBaseApi = {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 0,
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total && onProgress) {
             const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);

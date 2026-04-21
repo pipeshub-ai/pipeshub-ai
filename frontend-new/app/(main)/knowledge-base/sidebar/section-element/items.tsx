@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Box, Text, Button, IconButton } from '@radix-ui/themes';
+import { Box, Text, Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
@@ -199,14 +199,13 @@ export function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemPr
       >
         {connector.name}
       </Text>
-      <IconButton
-        variant="soft"
-        size="1"
-        tabIndex={-1}
-        style={{ cursor: 'pointer', padding: '0px', pointerEvents: 'none' }}
+      <Flex
+        align="center"
+        justify="center"
+        style={{ width: '24px', height: '24px', pointerEvents: 'none', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
       >
         <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-      </IconButton>
+      </Flex>
     </Button>
   );
 }

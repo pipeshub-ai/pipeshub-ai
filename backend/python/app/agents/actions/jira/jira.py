@@ -20,7 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -351,7 +351,17 @@ class GetCommentsInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg")
+        .add_documentation_link(DocumentationLink(
+            "Jira Cloud API Setup",
+            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/jira/jira",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""

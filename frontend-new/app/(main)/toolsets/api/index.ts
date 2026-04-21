@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 
 const PAGE_SIZE = 20;
 
@@ -39,6 +41,8 @@ export interface BuilderSidebarToolset {
   oauthConfigId?: string;
   /** Present on registry-backed / synthetic rows from my-toolsets when `includeRegistry` is true. */
   supportedAuthTypes?: string[];
+  /** From merged list / registry metadata (toolset type docs). */
+  documentationLinks?: DocumentationLink[];
 }
 
 /** Mirrors Python list responses `pagination` object. */
@@ -75,6 +79,8 @@ export interface RegistryToolsetRow {
   iconPath: string;
   supportedAuthTypes: string[];
   toolCount: number;
+  /** From GET /api/v1/toolsets/registry — same shape as connector schema links. */
+  documentationLinks?: DocumentationLink[];
 }
 
 /** Normalized org OAuth app row from GET /api/v1/toolsets/oauth-configs/:toolsetType (admin). */
@@ -201,10 +207,20 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
       (inst.supportedAuthTypes as string[] | undefined) ??
       (inst.supported_auth_types as string[] | undefined)
     )?.filter(Boolean),
+    ...(() => {
+      const raw = inst.documentationLinks ?? inst.documentation_links;
+      const documentationLinks = normalizeDocumentationLinks(raw);
+      if (documentationLinks.length === 0) return {};
+      return { documentationLinks };
+    })(),
   };
 }
 
 function mapRegistryRow(row: Record<string, unknown>): RegistryToolsetRow {
+  const rawLinks = row.documentationLinks ?? row.documentation_links;
+  const documentationLinks = normalizeDocumentationLinks(rawLinks);
+  const documentationLinksOut =
+    documentationLinks.length > 0 ? documentationLinks : undefined;
   return {
     name: (row.name as string) || '',
     displayName: (row.displayName as string) || (row.name as string) || '',
@@ -217,6 +233,7 @@ function mapRegistryRow(row: Record<string, unknown>): RegistryToolsetRow {
       (row.supported_auth_types as string[] | undefined) ??
       [],
     toolCount: (row.toolCount as number) ?? 0,
+    ...(documentationLinksOut ? { documentationLinks: documentationLinksOut } : {}),
   };
 }
 

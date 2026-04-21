@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 
 // ========================================
@@ -8,6 +9,7 @@ import { Flex, Text } from '@radix-ui/themes';
 // ========================================
 
 export function InstanceHeader({ connectorName }: { connectorName: string }) {
+  const { t } = useTranslation();
   return (
     <Flex
       align="center"
@@ -20,7 +22,7 @@ export function InstanceHeader({ connectorName }: { connectorName: string }) {
       }}
     >
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-        Instance
+        {t('workspace.connectors.instance')}
       </Text>
       <Flex align="center" gap="2">
         <Text size="2" style={{ color: 'var(--gray-12)' }}>

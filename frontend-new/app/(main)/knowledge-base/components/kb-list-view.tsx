@@ -19,6 +19,7 @@ import type {
 import { FolderIcon } from '@/app/components/ui';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
+import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -555,7 +556,7 @@ export function KbListView({
   onSort,
   onPageChange,
   onLimitChange,
-  onPreview: _onPreview,
+  onPreview,
   onRename,
   onReindex,
   onReplace,
@@ -630,7 +631,7 @@ export function KbListView({
             showSourceColumn={showSourceColumn}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
-            onOpen={() => onItemClick(item)}
+            onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
             onRename={onRename}
             onReindex={onReindex}
             onReplace={onReplace}

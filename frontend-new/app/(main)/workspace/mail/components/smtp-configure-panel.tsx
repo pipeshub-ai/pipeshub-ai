@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Flex, Box, Text, TextField, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
@@ -25,19 +27,19 @@ interface SmtpConfigurePanelProps {
 // Helpers
 // ============================================================
 
-function validate(form: SmtpFormData): SmtpFormErrors {
+function validate(form: SmtpFormData, t: TFunction): SmtpFormErrors {
   const errors: SmtpFormErrors = {};
-  if (!form.host.trim()) errors.host = 'SMTP host is required';
+  if (!form.host.trim()) errors.host = t('workspace.mail.errors.hostRequired');
   if (form.port === '' || form.port === undefined) {
-    errors.port = 'Port is required';
+    errors.port = t('workspace.mail.errors.portRequired');
   } else {
     const p = Number(form.port);
-    if (!Number.isInteger(p) || p < 1 || p > 65535) errors.port = 'Enter a valid port (1–65535)';
+    if (!Number.isInteger(p) || p < 1 || p > 65535) errors.port = t('workspace.mail.errors.portInvalid');
   }
   if (!form.fromEmail.trim()) {
-    errors.fromEmail = 'From email is required';
+    errors.fromEmail = t('workspace.mail.errors.fromEmailRequired');
   } else if (!isValidEmail(form.fromEmail.trim())) {
-    errors.fromEmail = 'Enter a valid email address';
+    errors.fromEmail = t('workspace.mail.errors.fromEmailInvalid');
   }
   return errors;
 }
@@ -77,6 +79,7 @@ export function SmtpConfigurePanel({
   initialConfig,
   onSave,
 }: SmtpConfigurePanelProps) {
+  const { t } = useTranslation();
   const [form, setForm] = useState<SmtpFormData>({
     host: '',
     port: 587,
@@ -121,7 +124,7 @@ export function SmtpConfigurePanel({
 
   // ── Save ────────────────────────────────────────────────
   const handleSave = async () => {
-    const errs = validate(form);
+    const errs = validate(form, t);
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
       return;
@@ -154,7 +157,7 @@ export function SmtpConfigurePanel({
       style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
-      <Text size="1">Documentation</Text>
+      <Text size="1">{t('workspace.bots.documentation')}</Text>
     </Button>
   );
 
@@ -162,11 +165,11 @@ export function SmtpConfigurePanel({
     <WorkspaceRightPanel
       open={open}
       onOpenChange={(o) => { if (!o) onClose(); }}
-      title="Configure SMTP Settings"
+      title={t('workspace.mail.panelTitle')}
       icon="mail"
       headerActions={docButton}
-      primaryLabel="Save"
-      secondaryLabel="Cancel"
+      primaryLabel={t('action.save')}
+      secondaryLabel={t('action.cancel')}
       primaryDisabled={false}
       primaryLoading={isSaving}
       onPrimaryClick={handleSave}
@@ -205,8 +208,7 @@ export function SmtpConfigurePanel({
               <MaterialIcon name="info" size={16} color="var(--accent-9)" />
             </Box>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '18px' }}>
-              SMTP configuration is required for email-based features like OTP authentication and
-              password reset. Please enter the details of your email server below.
+              {t('workspace.mail.infoBanner')}
             </Text>
           </Flex>
         </Box>
@@ -224,11 +226,11 @@ export function SmtpConfigurePanel({
             {/* ── SMTP Host ── */}
             <Box>
               <FieldLabel
-                label="SMTP Host *"
-                hint="The hostname of your SMTP server"
+                label={t('workspace.mail.fields.host')}
+                hint={t('workspace.mail.fields.hostHint')}
               />
               <TextField.Root
-                placeholder="email-smtp.ap-south-1.amazonaws.com"
+                placeholder={t('workspace.mail.configPanel.hostPlaceholder')}
                 value={form.host}
                 onChange={handleChange('host')}
                 color={errors.host ? 'red' : undefined}
@@ -247,8 +249,8 @@ export function SmtpConfigurePanel({
             {/* ── Port ── */}
             <Box>
               <FieldLabel
-                label="Port *"
-                hint="Common ports: 25, 465, 587"
+                label={t('workspace.mail.fields.port')}
+                hint={t('workspace.mail.fields.portHint')}
               />
               <TextField.Root
                 type="number"
@@ -271,12 +273,12 @@ export function SmtpConfigurePanel({
             {/* ── From Email Address ── */}
             <Box>
               <FieldLabel
-                label="From Email Address *"
-                hint="The email address that will appear as the sender"
+                label={t('workspace.mail.fields.fromEmail')}
+                hint={t('workspace.mail.fields.fromEmailHint')}
               />
               <TextField.Root
                 type="email"
-                placeholder="noreply@yourcompany.com"
+                placeholder={t('workspace.mail.configPanel.fromEmailPlaceholder')}
                 value={form.fromEmail}
                 onChange={handleChange('fromEmail')}
                 color={errors.fromEmail ? 'red' : undefined}
@@ -295,11 +297,11 @@ export function SmtpConfigurePanel({
             {/* ── Username (Optional) ── */}
             <Box>
               <FieldLabel
-                label="Username (Optional)"
-                hint="Username for SMTP authentication (if required)"
+                label={t('workspace.mail.fields.username')}
+                hint={t('workspace.mail.fields.usernameHint')}
               />
               <TextField.Root
-                placeholder="Enter SMTP username"
+                placeholder={t('workspace.mail.fields.usernamePlaceholder')}
                 value={form.username}
                 onChange={handleChange('username')}
               >
@@ -312,8 +314,8 @@ export function SmtpConfigurePanel({
             {/* ── Password (Optional) ── */}
             <Box>
               <FieldLabel
-                label="Password (Optional)"
-                hint="Password for SMTP authentication (if required)"
+                label={t('workspace.mail.fields.password')}
+                hint={t('workspace.mail.fields.passwordHint')}
               />
               <TextField.Root
                 type={showPassword ? 'text' : 'password'}

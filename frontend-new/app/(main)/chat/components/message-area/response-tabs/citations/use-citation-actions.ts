@@ -59,8 +59,9 @@ export function useCitationActions(): CitationCallbacks {
 
         const kb = recordDetails.knowledgeBase;
         if (kb) {
-          // Navigate to all-records drilled into this KB
-          router.push(`/knowledge-base?view=all-records&nodeType=kb&nodeId=${kb.id}`);
+          // In all-records mode, collection roots are addressed as recordGroup nodes.
+          // Using "kb" causes backend validation to fail with Invalid parent_type.
+          router.push(`/knowledge-base?view=all-records&nodeType=recordGroup&nodeId=${encodeURIComponent(kb.id)}`);
         } else {
           // No KB context — show root-level all-records
           router.push('/knowledge-base?view=all-records');

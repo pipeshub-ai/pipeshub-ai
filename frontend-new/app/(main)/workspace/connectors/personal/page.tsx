@@ -2,11 +2,12 @@
 
 import { useEffect, useLayoutEffect, useCallback, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { ensureConnectorSyncActiveThenResync } from '../utils/connector-sync-actions';
+import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -16,17 +17,8 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import type { Connector, ConnectorInstance, PersonalFilterTab } from '../types';
-
-// ========================================
-// Constants
-// ========================================
-
-const PERSONAL_TABS = [
-  { value: 'all', label: 'All' },
-  { value: 'active', label: 'Active' },
-  { value: 'inactive', label: 'Inactive' },
-];
 
 // ========================================
 // Page
@@ -36,6 +28,13 @@ function PersonalConnectorsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
+  const { t } = useTranslation();
+
+  const personalTabs = [
+    { value: 'all', label: t('workspace.actions.tabs.all') },
+    { value: 'active', label: t('status.active') },
+    { value: 'inactive', label: t('status.inactive') },
+  ];
 
   // The connectorType query param determines whether we show the instance page
   const connectorType = searchParams.get('connectorType');
@@ -111,10 +110,10 @@ function PersonalConnectorsPageContent() {
       }
 
       if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
-        setError('Failed to load connectors');
+        setError(t('workspace.connectors.toasts.loadError'));
         addToast({
           variant: 'error',
-          title: 'Failed to load connectors',
+          title: t('workspace.connectors.toasts.loadError'),
         });
       }
     } catch {
@@ -314,23 +313,23 @@ function PersonalConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key) return;
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        await ensureConnectorSyncActiveThenResync({
+        await startConnectorSync({
           _key: instance._key,
           type: instance.type,
         });
         addToast({
           variant: 'success',
-          title: `${connectorTypeInfo?.name ?? 'Connector'} is now syncing`,
-          description: 'Your records will be available shortly.',
+          title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'Connector' }),
+          description: t('workspace.connectors.toasts.syncStartedDescription'),
           duration: 3000,
         });
         await refreshConnectorRowQuiet(instance._key);
       } catch {
         addToast({
           variant: 'error',
-          title: 'Failed to start sync',
+          title: t('workspace.connectors.toasts.syncError'),
         });
       }
     },
@@ -339,7 +338,7 @@ function PersonalConnectorsPageContent() {
 
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key) return;
+      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
         addToast({
@@ -374,19 +373,18 @@ function PersonalConnectorsPageContent() {
     if (!instanceId) return;
 
     try {
-      await ensureConnectorSyncActiveThenResync({ _key: instanceId });
+      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
       addToast({
         variant: 'success',
-        title: `Your ${connectorTypeInfo?.name ?? 'connector'} instance is now syncing`,
-        description:
-          'This may take a few minutes. You\'ll be notified when it\'s done.',
+        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
+        description: t('workspace.connectors.toasts.syncStartedLongDescription'),
         duration: 3000,
       });
       await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to start sync',
+        title: t('workspace.connectors.toasts.syncError'),
       });
     }
   }, [
@@ -410,7 +408,7 @@ function PersonalConnectorsPageContent() {
         <ConnectorDetailsLayout
           connector={connectorTypeInfo}
           scope="personal"
-          scopeLabel="Connectors"
+          scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
           instanceStats={instanceStats}
@@ -438,11 +436,11 @@ function PersonalConnectorsPageContent() {
   return (
     <>
       <ConnectorCatalogLayout
-        title="Your Connectors"
-        subtitle="Connect and manage integrations with external services"
+        title={t('workspace.sidebar.nav.yourConnectors')}
+        subtitle={t('workspace.connectors.subtitle')}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        tabs={PERSONAL_TABS}
+        tabs={personalTabs}
         activeTab={personalFilterTab}
         onTabChange={handleTabChange}
         registryConnectors={registryConnectors}

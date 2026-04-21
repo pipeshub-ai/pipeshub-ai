@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { BotType } from '../types';
@@ -14,13 +15,6 @@ const BOT_ICON_MAP: Record<BotType, string> = {
   discord: '/icons/connectors/discord.svg',
   telegram: '/icons/connectors/telegram.svg',
   github: '/icons/connectors/github.svg',
-};
-
-const BOT_TYPE_LABEL: Record<BotType, string> = {
-  slack: 'Slack Bot',
-  discord: 'Discord Bot',
-  telegram: 'Telegram Bot',
-  github: 'GitHub Bot',
 };
 
 // ========================================
@@ -39,10 +33,18 @@ interface BotCardProps {
 // ========================================
 
 export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [iconError, setIconError] = useState(false);
 
   const iconSrc = BOT_ICON_MAP[botType];
+
+  const BOT_TYPE_LABEL: Record<BotType, string> = {
+    slack: t('workspace.bots.types.slack'),
+    discord: t('workspace.bots.types.discord'),
+    telegram: t('workspace.bots.types.telegram'),
+    github: t('workspace.bots.types.github'),
+  };
 
   return (
     <Flex
@@ -106,7 +108,7 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
               whiteSpace: 'nowrap',
             }}
           >
-            {agentName || 'Default Assistant'}
+            {agentName || t('workspace.bots.defaultAssistant')}
           </Text>
         </Flex>
       </Flex>
@@ -122,6 +124,7 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
 // ========================================
 
 function ManageButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -160,7 +163,7 @@ function ManageButton({ onClick }: { onClick: () => void }) {
           color: 'var(--accent-11)',
         }}
       >
-        Manage
+        {t('workspace.actions.cta.manage')}
       </span>
     </button>
   );
