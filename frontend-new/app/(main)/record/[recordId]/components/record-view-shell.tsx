@@ -236,7 +236,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    if (created) URL.revokeObjectURL(url);
+    if (created) setTimeout(() => URL.revokeObjectURL(url), 100);
   }, [fileUrl, fileBlob, fileName]);
 
   const handleReindexClick = () => {
