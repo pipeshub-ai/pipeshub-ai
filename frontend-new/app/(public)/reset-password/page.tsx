@@ -29,6 +29,10 @@ function ResetPasswordContent() {
   const [user, setUser] = useState<JwtUser>({});
   const [ready, setReady] = useState(false);
   const [success, setSuccess] = useState(false);
+  // Checked once when the token is decoded on mount; avoids calling Date.now()
+  // during render. A token that expires after mount is still caught on submit
+  // via onInvalidToken → tokenInvalidated.
+  const [tokenExpiredOnMount, setTokenExpiredOnMount] = useState(false);
   // Set when the backend rejects the token because the user no longer exists
   // (cancelled invite or deleted account). JWTs are stateless, so expiry alone
   // can't tell us this — we learn about it on submit and lift it up here.
@@ -49,7 +53,11 @@ function ResetPasswordContent() {
     const t = hashMatch ? decodeURIComponent(hashMatch[1]) : null;
     if (t) {
       setToken(t);
-      setUser(decodeJwtUser(t));
+      const decoded = decodeJwtUser(t);
+      setUser(decoded);
+      if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+        setTokenExpiredOnMount(true);
+      }
     }
     setReady(true);
   // window.location.hash is stable on mount; no reactive deps needed.
@@ -71,7 +79,7 @@ function ResetPasswordContent() {
   let failureVariant: PasswordResetFailureVariant | null = null;
   if (!token) {
     failureVariant = PASSWORD_RESET_FAILURE_VARIANT.MISSING_TOKEN;
-  } else if (user.exp && user.exp * 1000 < Date.now()) {
+  } else if (tokenExpiredOnMount) {
     failureVariant = isInviteToken
       ? PASSWORD_RESET_FAILURE_VARIANT.INVITE_EXPIRED
       : PASSWORD_RESET_FAILURE_VARIANT.RESET_EXPIRED;
