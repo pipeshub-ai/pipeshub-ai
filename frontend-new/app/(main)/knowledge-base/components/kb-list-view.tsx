@@ -19,6 +19,7 @@ import type {
 import { FolderIcon } from '@/app/components/ui';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
+import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -630,14 +631,7 @@ export function KbListView({
             showSourceColumn={showSourceColumn}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
-            onOpen={() => {
-              // Menu "Open": preview for records/files when handler exists; else navigate
-              const openDetails =
-                (isKnowledgeHubNode(item) && item.nodeType === 'record') ||
-                (!isKnowledgeHubNode(item) && item.type === 'file');
-              if (openDetails && onPreview) onPreview(item);
-              else onItemClick(item);
-            }}
+            onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
             onRename={onRename}
             onReindex={onReindex}
             onReplace={onReplace}
