@@ -71,7 +71,7 @@ export default function RootLayout({
       <head>
         <ThemeScript />
         <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
+          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
           rel="stylesheet"
         />
       </head>

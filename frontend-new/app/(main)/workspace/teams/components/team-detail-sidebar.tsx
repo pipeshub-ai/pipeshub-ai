@@ -269,10 +269,10 @@ export function TeamDetailSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 16,
+          padding: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 'var(--space-4)',
         }}
       >
         {/* Team Name */}
@@ -288,7 +288,7 @@ export function TeamDetailSidebar({
             readOnly={!isEditMode}
             style={{
               width: '100%',
-              height: 32,
+              height: 'var(--space-8)',
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -343,7 +343,7 @@ export function TeamDetailSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: '8px',
+              padding: 'var(--space-2)',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',
@@ -375,10 +375,10 @@ export function TeamDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -409,10 +409,10 @@ export function TeamDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -486,10 +486,10 @@ export function TeamDetailSidebar({
               backgroundColor: 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
-              padding: 16,
+              padding: 'var(--space-4)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 'var(--space-2)',
             }}
           >
             <FormField label={t('workspace.teams.detail.roleLabel', 'Role')}>
@@ -509,10 +509,10 @@ export function TeamDetailSidebar({
               backgroundColor: 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
-              padding: 16,
+              padding: 'var(--space-4)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 'var(--space-2)',
             }}
           >
             <Flex align="center" justify="between">
@@ -551,8 +551,8 @@ export function TeamDetailSidebar({
       {isEditMode && detailTeam?.canDelete && (
         <Box
           style={{
-            marginTop: 16,
-            padding: 16,
+            marginTop: 'var(--space-4)',
+            padding: 'var(--space-4)',
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',

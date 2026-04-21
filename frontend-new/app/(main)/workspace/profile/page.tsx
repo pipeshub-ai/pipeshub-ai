@@ -74,17 +74,17 @@ export default function ProfilePage() {
       <Box style={{ padding: '64px 100px' }}>
 
         {/* ── Page header ── */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.profile.title')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.profile.subtitle')}
           </Text>
         </Box>
 
         {/* ── General section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <GeneralSection
             avatarUrl={avatarUrl}
             avatarInitial={avatarInitial}
@@ -106,7 +106,7 @@ export default function ProfilePage() {
         </Box>
 
         {/* ── Roles & Permissions section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <RolesPermissionsSection role={role} groups={groups} />
         </Box>
 

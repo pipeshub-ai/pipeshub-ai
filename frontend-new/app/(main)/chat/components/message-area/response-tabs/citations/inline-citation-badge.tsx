@@ -32,6 +32,11 @@ export function InlineCitationBadge({
     ? citation.recordName.replace(/\.[^/.]+$/, '')
     : '';
 
+  const truncatedName =
+    fileNameWithoutExt.length > 24
+      ? fileNameWithoutExt.slice(0, 24) + '…'
+      : fileNameWithoutExt;
+
   // ── No citation data yet (early streaming) → simple numbered badge ──
   if (!citation) {
     return (
@@ -43,19 +48,19 @@ export function InlineCitationBadge({
           display: 'inline-flex',
           backgroundColor: 'var(--slate-a3)',
           border: '1px solid var(--slate-a5)',
-          padding: '2px 6px',
+          padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
           borderRadius: 'var(--radius-1)',
           verticalAlign: 'middle',
-          marginLeft: '4px',
+          marginLeft: 'var(--space-1)',
           marginRight: '2px',
           minWidth: '18px',
-          height: '20px',
+          height: 'var(--space-5)', /* was: 20px, delta: +4px */
         }}
       >
         <Text
           size="1"
           weight="medium"
-          style={{ color: 'var(--accent-11)', lineHeight: 1, fontSize: '11px' }}
+          style={{ color: 'var(--accent-11)', lineHeight: 1, fontSize: 'var(--font-size-1)' /* was: 11px, delta: +1px */ }}
         >
           {chunkIndex}
         </Text>
@@ -75,39 +80,57 @@ export function InlineCitationBadge({
         display: 'inline-flex',
         background: isHovered ? 'var(--accent-3)' : 'var(--olive-2)',
         border: `0.667px solid ${isHovered ? 'var(--accent-8)' : 'var(--olive-3)'}`,
-        padding: '2px 6px',
+        padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
         borderRadius: 'var(--radius-1)',
         verticalAlign: 'middle',
-        marginLeft: '4px',
+        marginLeft: 'var(--space-1)',
         marginRight: '2px',
         transition: 'all 0.15s ease',
-        height: '20px',
-        gap: '4px',
+        height: 'var(--space-5)', /* was: 20px, delta: +4px */
       }}
     >
       <ConnectorIcon type={connector} size={14} />
 
+      {/* Source label — file name without extension, truncated to 24 chars */}
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--accent-11)',
-          lineHeight: 2,
-          fontSize: '11px',
+          lineHeight: 1,
+          fontSize: 'var(--font-size-1)', /* was: 11px, delta: +1px */
           whiteSpace: 'nowrap',
-          maxWidth: '300px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
         }}
       >
-        {fileNameWithoutExt}
+        {truncatedName}
       </Text>
 
-      <CitationNumberCircle
-        chunkIndex={chunkIndex}
-        citation={citation}
-        callbacks={callbacks}
-      />
+      {/* Citation number in a nested mini-badge */}
+      <Flex
+        as="span"
+        align="center"
+        justify="center"
+        style={{
+          backgroundColor: 'transparent',
+          borderRadius: 'var(--radius-1)', /* was: 2px, delta: +1px */
+          padding: '0 var(--space-1)', /* was: 0 3px, delta: +1px side */
+          minWidth: '14px',
+          height: '14px',
+        }}
+      >
+        <Text
+          size="1"
+          weight="medium"
+          style={{
+            color: 'var(--slate-10)',
+            backgroundColor: 'transparent',
+            lineHeight: 1,
+            fontSize: 'var(--font-size-1)', /* was: 10px, delta: +2px */
+          }}
+        >
+          +{chunkIndex}
+        </Text>
+      </Flex>
     </Flex>
   );
 }

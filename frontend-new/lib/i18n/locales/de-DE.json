@@ -319,7 +319,7 @@
     "differentModesOfQuery": "Verschiedene Abfragemodi",
     "askMore": "Mehr fragen",
     "failedToLoad": "Laden fehlgeschlagen",
-    "generatingTitle": "Titel wird generiert…",
+    "generatingTitle": "Chat wird generiert…",
     "newChat": "Neuer Chat",
     "startChat": "Chat starten",
     "searchAgents": "Agenten suchen…",
@@ -1513,7 +1513,8 @@
         "hostRequired": "SMTP-Host ist erforderlich",
         "portRequired": "Port ist erforderlich",
         "portInvalid": "Geben Sie einen gültigen Port ein (1–65535)",
-        "fromEmailRequired": "Absender-E-Mail ist erforderlich"
+        "fromEmailRequired": "Absender-E-Mail ist erforderlich",
+        "fromEmailInvalid": "Geben Sie eine gültige E-Mail-Adresse ein"
       },
       "configPanel": {
         "title": "SMTP-Einstellungen konfigurieren",

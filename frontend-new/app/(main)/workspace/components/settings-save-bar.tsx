@@ -67,7 +67,7 @@ export function SettingsSaveBar({
       gap="2"
       style={{
         position: 'fixed',
-        bottom: '16px',
+        bottom: 'var(--space-4)',
         left: '50%',
         transform: visible ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(100%)',
         opacity: visible ? 1 : 0,

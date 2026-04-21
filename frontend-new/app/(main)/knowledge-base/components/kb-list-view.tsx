@@ -69,7 +69,7 @@ function TableHeaderCell({
           width,
           flex,
           justifyContent: 'flex-start',
-          padding: '0 8px',
+          padding: '0 var(--space-2)',
           cursor: 'pointer',
           backgroundColor: 'transparent'
         }}
@@ -99,7 +99,7 @@ function TableHeaderCell({
       style={{
         width,
         flex,
-        padding: '0 8px',
+        padding: '0 var(--space-2)',
       }}
     >
       <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
@@ -336,7 +336,7 @@ function TableRow({
       <Flex
         align="center"
         gap="2"
-        style={{ flex: 1, padding: '0 8px', minWidth: 0 }}
+        style={{ flex: 1, padding: '0 var(--space-2)', minWidth: 0 }}
       >
         {isFolder && item.nodeType === 'app' ? (
           <ConnectorIcon type={item.connector?.toLowerCase().replace(/[^a-z0-9-]/g, '')} size={20} />
@@ -364,7 +364,7 @@ function TableRow({
                 whiteSpace: 'pre',
                 font: 'inherit',
                 fontSize: '14px',
-                padding: '2px 6px',
+                padding: 'var(--space-1) var(--space-2)',
               }}
             />
             <input
@@ -388,7 +388,7 @@ function TableRow({
                 backgroundColor: 'var(--slate-1)',
                 border: '1px solid var(--accent-8)',
                 borderRadius: 'var(--radius-1)',
-                padding: '2px 6px',
+                padding: 'var(--space-1) var(--space-2)',
                 outline: 'none',
                 width: inputWidth ? `${inputWidth}px` : 'auto',
                 minWidth: '60px',
@@ -422,7 +422,7 @@ function TableRow({
               background: 'var(--surface-1)',
               border: '1px solid var(--slate-a7)',
               borderRadius: 'var(--radius-2)',
-              padding: '4px 8px',
+              padding: 'var(--space-1) var(--space-2)',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
@@ -433,7 +433,7 @@ function TableRow({
       </Flex>
 
       {/* Status */}
-      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 8px' }}>
+      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
         <Tooltip content={getStatusLabel()} side="top" delayDuration={200}>
           <Box style={{ display: 'inline-flex' }}>
             {getStatusIcon()}
@@ -443,7 +443,7 @@ function TableRow({
 
       {/* Source - Only shown in All Records mode */}
       {showSourceColumn && (
-        <Flex align="center" justify="center" gap="2" style={{ width: '70px', padding: '0 8px' }}>
+        <Flex align="center" justify="center" gap="2" style={{ width: '70px', padding: '0 var(--space-2)' }}>
           {item.nodeType === 'app' ? (
             <ConnectorIcon
               type={item.sourceType}
@@ -461,7 +461,7 @@ function TableRow({
       )}
 
       {/* Size */}
-      <Flex align="center" style={{ width: '89px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatSize(item.sizeInBytes ?? undefined)
@@ -471,7 +471,7 @@ function TableRow({
       </Flex>
 
       {/* Created */}
-      <Flex align="center" style={{ width: '147px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatDate(new Date(item.createdAt).toISOString())
@@ -481,7 +481,7 @@ function TableRow({
       </Flex>
 
       {/* Updated */}
-      <Flex align="center" style={{ width: '146px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatDate(new Date(item.updatedAt).toISOString())
@@ -491,7 +491,7 @@ function TableRow({
       </Flex>
 
       {/* Actions */}
-      <Flex align="center" gap="1" style={{ width: '80px', padding: '0 8px' }}>
+      <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
         <ItemActionMenu
           open={isMenuOpen}
           onOpenChange={setIsMenuOpen}
@@ -572,7 +572,7 @@ export function KbListView({
       <Flex
         align="center"
         style={{
-          height: '36px',
+          height: 'var(--space-9)',
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           backdropFilter: 'blur(8px)',
@@ -583,7 +583,7 @@ export function KbListView({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', padding: '0 8px', cursor: 'pointer' }}
+          style={{ width: '38px', padding: '0 var(--space-2)', cursor: 'pointer' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
@@ -648,7 +648,7 @@ export function KbListView({
           justify="between"
           align="center"
           style={{
-            padding: '8px 16px',
+            padding: 'var(--space-2) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--olive-2)',
@@ -678,7 +678,7 @@ export function KbListView({
             {/* Page Number Box */}
             <Box
               style={{
-                padding: '4px 12px',
+                padding: 'var(--space-1) var(--space-3)',
                 backgroundColor: 'var(--slate-3)',
                 borderRadius: 'var(--radius-2)',
                 minWidth: '32px',
@@ -716,7 +716,7 @@ export function KbListView({
                   gap="1"
                   style={{
                     cursor: 'pointer',
-                    padding: '4px 8px',
+                    padding: 'var(--space-1) var(--space-2)',
                     backgroundColor: 'var(--slate-3)',
                     borderRadius: 'var(--radius-2)',
                   }}

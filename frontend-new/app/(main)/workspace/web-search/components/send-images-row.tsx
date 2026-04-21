@@ -26,9 +26,9 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
       gap="3"
       style={{
         padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        background: 'var(--olive-2)',
       }}
     >
       {/* Icon */}
@@ -36,8 +36,8 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
+          width: 'var(--space-9)',
+          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--slate-3)',
           flexShrink: 0,

@@ -128,6 +128,8 @@ interface ChatState {
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
   pendingConversations: Record<string, PendingConversation>;
+  /** IDs of conversations that just resolved from pending — triggers typing animation */
+  newlyResolvedIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
   moreChatsSectionType: 'shared' | 'your' | null;
   /** Agents browser panel (same shell as More Chats) */
@@ -227,6 +229,7 @@ interface ChatState {
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   addPendingConversation: (slotId: string) => void;
+  clearNewlyResolvedId: (conversationId: string) => void;
   resolvePendingConversation: (
     slotId: string,
     conversation: Conversation,
@@ -278,6 +281,7 @@ const initialState = {
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
+  newlyResolvedIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
   moreChatsSectionType: null as 'shared' | 'your' | null,
   isAgentsSidebarOpen: false,
@@ -649,11 +653,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextAgent = isAgentStream
         ? [conversation, ...state.agentConversations.filter((c) => c.id !== conversation.id)]
         : state.agentConversations;
+      const nextNewlyResolved = new Set(state.newlyResolvedIds);
+      nextNewlyResolved.add(conversation.id);
       return {
         pendingConversations: remaining,
         conversations: nextMain,
         agentConversations: nextAgent,
+        newlyResolvedIds: nextNewlyResolved,
       };
+    }),
+
+  clearNewlyResolvedId: (conversationId) =>
+    set((state) => {
+      if (!state.newlyResolvedIds.has(conversationId)) return state;
+      const next = new Set(state.newlyResolvedIds);
+      next.delete(conversationId);
+      return { newlyResolvedIds: next };
     }),
 
   clearPendingConversation: (slotId) =>

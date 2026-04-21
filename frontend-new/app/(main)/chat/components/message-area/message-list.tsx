@@ -265,7 +265,7 @@ export function MessageList() {
   // in the DOM (never conditionally rendered) so the ref is stable.
   const recalcSpacerHeight = useCallback(() => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no messages or no container → height=0');
       return;
     }
@@ -274,7 +274,7 @@ export function MessageList() {
     const container = scrollContainerRef.current;
 
     if (!element) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no element for last message → height=0');
       return;
     }
@@ -845,8 +845,8 @@ export function MessageList() {
           maxWidth: '50rem',
           width: '100%',
           margin: '0 auto',
-          paddingTop: '16px',
-          paddingBottom: isMobile ? '40px' : '100px',
+          paddingTop: 'var(--space-4)',
+          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
           paddingLeft: isMobile ? 'var(--space-4)' : undefined,
           paddingRight: isMobile ? 'var(--space-4)' : undefined,
         }}

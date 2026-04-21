@@ -153,7 +153,7 @@ export function SelectDropdown({
                     'transparent';
                 }}
                 style={{
-                  padding: '8px 16px',
+                  padding: 'var(--space-2) var(--space-4)',
                   paddingTop: isFirst ? 12 : 8,
                   paddingBottom: isLast ? 12 : 8,
                   cursor: 'pointer',

@@ -191,14 +191,14 @@ export function AnswerContent({
       </Heading>
     ),
     h3: ({ children }: { children?: React.ReactNode }) => (
-      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
+      <Heading size="4" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
         {children}
       </Heading>
     ),
     h4: ({ children }: { children?: React.ReactNode }) => (
-      <Text size="3" weight="bold" as="p" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
+      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
         {children}
-      </Text>
+      </Heading>
     ),
     p: ({ children }: { children?: React.ReactNode }) => (
       <Text size="2" as="p" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
@@ -228,7 +228,7 @@ export function AnswerContent({
       </ol>
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
-      <li style={{ marginBottom: '0', lineHeight: '20px', color: 'var(--gray-12)' }}>
+      <li style={{ marginBottom: 'var(--space-4)', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)', fontSize: '14px' }}>
         {processChildren(children, citationMaps, citationCallbacks)}
       </li>
     ),
@@ -243,11 +243,12 @@ export function AnswerContent({
     code: ({ children }: { children?: React.ReactNode }) => (
       <code
         style={{
-          backgroundColor: 'var(--slate-3)',
-          padding: '2px 6px',
+          backgroundColor: 'var(--slate-7)',
+          fontWeight: 400,
+          padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
           borderRadius: 'var(--radius-1)',
           fontFamily: 'monospace',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
         }}
       >
         {children}
@@ -276,7 +277,7 @@ export function AnswerContent({
           marginTop: 'var(--space-1)',
           marginBottom: '0',
           color: 'var(--slate-11)',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
           lineHeight: 1.6,
         }}
       >
@@ -291,7 +292,7 @@ export function AnswerContent({
         style={{
           color: 'var(--accent-11)',
           textDecoration: 'underline',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
         }}
       >
         {children}
@@ -313,7 +314,7 @@ export function AnswerContent({
             minWidth: 'max-content',
             width: '100%',
             borderCollapse: 'collapse',
-            fontSize: '14px',
+            fontSize: 'var(--font-size-2)',
           }}
         >
           {children}

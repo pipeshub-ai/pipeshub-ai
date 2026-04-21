@@ -130,7 +130,7 @@ export function AuthCard({
             backgroundColor: 'var(--green-a3)',
             color: 'var(--green-a11)',
             width: 'fit-content',
-            padding: '4px 8px',
+            padding: 'var(--space-1) var(--space-2)',
           }}
         >
           {t('workspace.connectors.authCard.successBadge', { name: connectorName })}
@@ -144,7 +144,7 @@ export function AuthCard({
             style={{
               backgroundColor: 'var(--red-a3)',
               color: 'var(--red-a11)',
-              padding: '4px 8px',
+              padding: 'var(--space-1) var(--space-2)',
             }}
           >
             {t('workspace.connectors.authCard.failureBadge', { name: connectorName })}

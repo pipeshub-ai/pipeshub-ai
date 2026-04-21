@@ -33,7 +33,7 @@ export function ConfigureTab() {
   const selectedStrategy = formData.sync.selectedStrategy;
 
   return (
-    <Flex direction="column" gap="6" style={{ padding: '4px 0' }}>
+    <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
       {/* ── A. Instance Header ── */}
       <InstanceHeader connectorName={panelConnector.name} />
 

@@ -47,11 +47,11 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px' }}>
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.general.subtitle')}
           </Text>
         </Box>
@@ -365,17 +365,17 @@ export default function GeneralPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px' }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-            {t('workspace.general.manageSubtitle')}
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+           {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── Company Profile Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title={t('workspace.general.companyProfile')}>
             {/* Logo */}
             <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
@@ -452,7 +452,7 @@ export default function GeneralPage() {
         </Box>
 
         {/* ── Company Address Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title={t('workspace.general.companyAddress')}>
             {/* Street Address */}
             <SettingsRow label={t('workspace.general.streetAddress')} description={t('workspace.general.streetAddressDescription')}>
@@ -530,14 +530,14 @@ export default function GeneralPage() {
               </Flex>
             }
           >
-            <Box style={{ padding: '16px 20px' }}>
+            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
               <Text
                 size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 12 }}
+                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
               >
                 {t('workspace.general.dataCollectionDescription')}
               </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 4 }}>
+              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
                 {[
                   t('workspace.general.dataCollectionReason1'),
                   t('workspace.general.dataCollectionReason2'),
@@ -549,11 +549,11 @@ export default function GeneralPage() {
                   <Flex key={item} align="start" gap="2">
                     <Box
                       style={{
-                        width: 4,
-                        height: 4,
+                        width: 'var(--space-1)',
+                        height: 'var(--space-1)',
                         borderRadius: '50%',
                         backgroundColor: 'var(--slate-9)',
-                        marginTop: 8,
+                        marginTop: 'var(--space-2)',
                         flexShrink: 0,
                       }}
                     />

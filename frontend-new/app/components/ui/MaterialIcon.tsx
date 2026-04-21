@@ -7,16 +7,18 @@ interface MaterialIconProps {
   size?: number;
   color?: string;
   style?: React.CSSProperties;
+  variant?: 'outlined' | 'filled';
 }
 
 export const MaterialIcon = ({
   name,
   size = 20,
   color,
-  style
+  style,
+  variant = 'outlined',
 }: MaterialIconProps) => (
   <span
-    className="material-icons-outlined"
+    className={variant === 'filled' ? 'material-icons' : 'material-icons-outlined'}
     style={{
       fontSize: size,
       color: color || 'inherit',

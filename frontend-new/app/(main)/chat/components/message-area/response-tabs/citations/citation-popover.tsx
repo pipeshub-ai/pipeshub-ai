@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Badge } from '@radix-ui/themes';
+import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { getConnectorConfig } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -63,71 +63,26 @@ export function CitationPopoverContent({
         </Flex>
 
         <Flex align="center" gap="2">
-          <Box
-            asChild
+          <Button
+            size="1"
+            variant="outline"
+            color="gray"
+            tabIndex={-1}
             onClick={handleOpenInSource}
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: '1px solid var(--slate-a7)',
-              borderRadius: 'var(--radius-1)',
-              cursor: 'pointer',
-              backgroundColor: 'transparent',
-              transition: 'background-color 0.15s ease',
-            }}
-            onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--slate-a3)';
-            }}
-            onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-            }}
+            style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
-            <button tabIndex={-1}>
-              <Text
-                size="1"
-                weight="medium"
-                style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}
-              >
-                {openInLabel}
-              </Text>
-            </button>
-          </Box>
+            {openInLabel}
+          </Button>
 
-          <Box
-            asChild
+          <Button
+            size="1"
+            variant="solid"
+            tabIndex={-1}
             onClick={handlePreview}
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: 'var(--emerald-9)',
-              borderRadius: 'var(--radius-1)',
-              cursor: 'pointer',
-              border: 'none',
-              transition: 'background-color 0.15s ease',
-            }}
-            onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--accent-10)';
-            }}
-            onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--accent-9)';
-            }}
+            style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
           >
-            <button tabIndex={-1}>
-              <Text
-                size="1"
-                weight="medium"
-                style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap' }}
-              >
-                Preview
-              </Text>
-            </button>
-          </Box>
+            Preview
+          </Button>
         </Flex>
       </Flex>
 

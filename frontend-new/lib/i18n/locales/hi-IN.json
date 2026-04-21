@@ -319,7 +319,7 @@
     "differentModesOfQuery": "प्रश्न के विभिन्न तरीके",
     "askMore": "और पूछें",
     "failedToLoad": "लोड करने में विफल",
-    "generatingTitle": "शीर्षक उत्पन्न किया जा रहा है…",
+    "generatingTitle": "चैट उत्पन्न किया जा रहा है…",
     "newChat": "नया चैट",
     "startChat": "चैट शुरू करें",
     "searchAgents": "एजेंट खोजें…",
@@ -1511,7 +1511,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
