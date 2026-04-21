@@ -103,7 +103,7 @@ export interface UploadFilePayload {
 // ============================================================================
 
 export type NodeType = 'kb' | 'app' | 'recordGroup' | 'folder' | 'record';
-export type NodeOrigin = 'KB' | 'CONNECTOR';
+export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
 export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
 export type IndexingStatus = 'COMPLETED' | 'IN_PROGRESS' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'NOT_STARTED' | 'AUTO_INDEX_OFF' | 'QUEUED';
@@ -151,7 +151,7 @@ export interface KnowledgeHubQueryParams {
   // Node filters (comma-separated)
   nodeTypes?: string;         // Filter by node types (max 100 items)
   recordTypes?: string;       // 'FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET' (max 100)
-  origins?: string;           // 'KB', 'CONNECTOR' (max 100)
+  origins?: string;           // 'COLLECTION', 'CONNECTOR' (max 100)
   connectorIds?: string;      // Connector UUIDs (max 100)
   kbIds?: string;             // KB UUIDs (max 100) - used for sidebar expansion
   indexingStatus?: string;    // 'COMPLETED', 'IN_PROGRESS', 'FAILED' (max 100)

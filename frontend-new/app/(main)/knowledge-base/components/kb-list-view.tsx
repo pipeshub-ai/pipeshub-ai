@@ -29,6 +29,11 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
 }
 
+/** All Records rows extended with sourceName/sourceType from getSourceDisplay */
+function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
+  return 'sourceName' in item && 'sourceType' in item;
+}
+
 interface TableHeaderCellProps {
   label: string;
   field?: SortField;

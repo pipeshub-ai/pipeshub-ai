@@ -107,7 +107,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       label: opt.label,
       icon: getIconForRecordType(opt.id),
     }));
-  }, [availableFilters?.recordTypes]);
+  }, [availableFilters]);
 
   // Dynamic status options from API
   const statusOptions = useMemo(() => {
@@ -121,17 +121,17 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         customIcon: <LapTimerIcon size={20} color={getColorForStatus(opt.id)}/>,
       }),
     }));
-  }, [availableFilters?.indexingStatus]);
+  }, [availableFilters]);
 
   // Dynamic source options from API (All Records only - origins only)
   const sourceOptions = useMemo(() => {
     if (!availableFilters?.origins) return [];
     return availableFilters.origins.map((opt) => ({
       value: opt.id,
-      label: opt.id === 'KB' ? 'Collections' : opt.label,
-      icon: opt.id === 'KB' ? 'folder' : 'cloud',
+      label: opt.id === 'COLLECTION' ? 'Collections' : opt.label,
+      icon: opt.id === 'COLLECTION' ? 'folder' : 'cloud',
     }));
-  }, [availableFilters?.origins]);
+  }, [availableFilters]);
 
   // Common size options (hardcoded - not from API)
   const SIZE_OPTIONS = [
