@@ -430,6 +430,7 @@ export interface RecordsStatus {
   notStarted: number;
   autoIndexOff: number;
   queued: number;
+  empty: number;
 }
 
 /** Indexed record item */

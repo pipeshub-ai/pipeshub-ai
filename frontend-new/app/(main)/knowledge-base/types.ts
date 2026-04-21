@@ -106,7 +106,15 @@ export type NodeType = 'kb' | 'app' | 'recordGroup' | 'folder' | 'record';
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
 export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
-export type IndexingStatus = 'COMPLETED' | 'IN_PROGRESS' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'NOT_STARTED' | 'AUTO_INDEX_OFF' | 'QUEUED';
+export type IndexingStatus =
+  | 'COMPLETED'
+  | 'IN_PROGRESS'
+  | 'FAILED'
+  | 'FILE_TYPE_NOT_SUPPORTED'
+  | 'NOT_STARTED'
+  | 'AUTO_INDEX_OFF'
+  | 'QUEUED'
+  | 'EMPTY';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
