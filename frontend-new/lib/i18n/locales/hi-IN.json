@@ -1389,6 +1389,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "चयनित रिकॉर्ड",
+        "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },

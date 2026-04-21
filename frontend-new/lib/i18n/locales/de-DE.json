@@ -1391,6 +1391,8 @@
         "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
       },
       "instanceCard": {
+        "recordsSelected": "Ausgewählte Datensätze",
+        "syncStrategy": "Synchronisierungsstrategie",
         "authBannerTitle": "Persönliches Konto authentifizieren",
         "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
       },
