@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+
 /**
  * Maps KB multipart upload HTTP responses to per-file outcomes.
  *
@@ -22,7 +24,8 @@ function asRecord(obj: unknown): Record<string, unknown> | null {
   return obj && typeof obj === 'object' && !Array.isArray(obj) ? (obj as Record<string, unknown>) : null;
 }
 
-function norm(s: string): string {
+/** Lowercase, trim, and slash-normalize for path/name comparisons. */
+function normalizePath(s: string): string {
   return s.trim().toLowerCase().replace(/\\/g, '/');
 }
 
@@ -33,8 +36,8 @@ function basename(path: string): string {
 
 /** Client `file_path` vs server `failedFilesDetails.filePath` (prefix / segment tail). */
 function uploadPathsReferToSameFile(clientPath: string, serverPath: string): boolean {
-  const c = norm(clientPath);
-  const s = norm(serverPath);
+  const c = normalizePath(clientPath);
+  const s = normalizePath(serverPath);
   if (!c || !s) return false;
   if (c === s) return true;
   if (c.endsWith('/' + s) || s.endsWith('/' + c)) return true;
@@ -58,6 +61,7 @@ function normalizeKnowledgeBaseUploadBody(body: unknown): {
   failedCount?: number;
 } {
   const root = asRecord(body) ?? {};
+  // Single unwrap of `body.data` only — not `data.data` (backend does not double-wrap today).
   const nested = asRecord(root.data);
 
   let recordsRaw: unknown = root.records ?? nested?.records;
@@ -122,22 +126,25 @@ function matchFailedDetailsToStoreIds(batch: UploadBatchEntry[], failedDetails: 
     let entry: UploadBatchEntry | undefined;
 
     if (ff.filePath != null && ff.filePath !== '') {
-      entry = batch.find(
+      const pathMatches = batch.filter(
         (e) => !used.has(e.storeId) && uploadPathsReferToSameFile(e.filePath, ff.filePath!)
       );
+      if (pathMatches.length === 1) entry = pathMatches[0];
     }
 
     if (!entry && ff.fileName) {
-      const nn = norm(ff.fileName);
+      const nn = normalizePath(ff.fileName);
       const byName = batch.filter(
-        (e) => !used.has(e.storeId) && (norm(e.file.name) === nn || norm(basename(e.filePath)) === nn)
+        (e) =>
+          !used.has(e.storeId) &&
+          (normalizePath(e.file.name) === nn || normalizePath(basename(e.filePath)) === nn)
       );
       if (byName.length === 1) entry = byName[0];
     }
 
     if (entry) {
       used.add(entry.storeId);
-      storeIdToMessage.set(entry.storeId, ff.error || 'Upload failed');
+      storeIdToMessage.set(entry.storeId, ff.error || i18n.t('uploadProgress.uploadFailedDefault'));
     }
   }
 
@@ -153,21 +160,23 @@ function greedyMatchRecordsToEntries(
   const findEntryForRecord = (rec: Record<string, unknown>): UploadBatchEntry | undefined => {
     const pathHint = recordPathHint(rec);
     if (pathHint) {
-      const hit = candidates.find(
+      const hits = candidates.filter(
         (e) => !consumed.has(e.storeId) && uploadPathsReferToSameFile(e.filePath, pathHint)
       );
-      if (hit) return hit;
+      if (hits.length === 1) return hits[0];
     }
 
     const name = recordDisplayName(rec);
     if (name) {
-      const nn = norm(name);
-      const byFileName = candidates.filter((e) => !consumed.has(e.storeId) && norm(e.file.name) === nn);
+      const nn = normalizePath(name);
+      const byFileName = candidates.filter(
+        (e) => !consumed.has(e.storeId) && normalizePath(e.file.name) === nn
+      );
       if (byFileName.length === 1) return byFileName[0];
 
       const byPathTail = candidates.filter((e) => {
         if (consumed.has(e.storeId)) return false;
-        return norm(basename(e.filePath)) === nn;
+        return normalizePath(basename(e.filePath)) === nn;
       });
       if (byPathTail.length === 1) return byPathTail[0];
     }
@@ -230,7 +239,7 @@ export function applyKnowledgeBaseUploadBatchResult(
 
     const legacyFullSuccessNoCounts =
       typeof successfulFiles !== 'number' &&
-      failedCount === undefined &&
+      failedCountSafe === 0 &&
       failedDetails.length === 0 &&
       records.length === batch.length;
 
@@ -260,6 +269,6 @@ export function applyKnowledgeBaseUploadBatchResult(
   batch.forEach((e) => {
     if (completed.has(e.storeId)) return;
     if (pendingFail.has(e.storeId)) return;
-    fail(e.storeId, 'Upload incomplete');
+    fail(e.storeId, i18n.t('uploadProgress.uploadIncomplete'));
   });
 }

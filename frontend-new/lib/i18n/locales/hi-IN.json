@@ -11,6 +11,26 @@
     "thinkingFallback": "सोच रहा है…",
     "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
   },
+  "uploadProgress": {
+    "uploadFailedDefault": "अपलोड असफल",
+    "uploadIncomplete": "अपलोड अधूरा",
+    "genericFailureHint": "अपलोड असफल। फिर से कोशिश करें या समर्थित फ़ाइल प्रकार उपयोग करें।",
+    "ariaFailed": "{{name}}, अपलोड असफल",
+    "ariaFailedWithDetail": "{{name}}, अपलोड असफल। {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} · असफल",
+    "headerCompletedAndFailed": "{{completed}} पूर्ण · {{failed}} असफल",
+    "headerFailuresOnly": "{{count}} असफल",
+    "headerAllComplete": "{{completed}}/{{total}} अपलोड पूर्ण",
+    "sessionFilesAndSize": "{{count}} फ़ाइलें · {{size}}",
+    "totalSizeLabel": "कुल: {{size}}",
+    "status": {
+      "pending": "लंबित",
+      "uploading": "अपलोड हो रहा है",
+      "completed": "पूर्ण",
+      "failed": "असफल"
+    }
+  },
   "onboarding": {
     "skipEmbeddingDefault": "स्किप",
     "skipEmbeddingTitle": "«डिफ़ॉल्ट (सिस्टम द्वारा)» सेटअप खोलें, फिर मॉडल जोड़ें दबाएँ",

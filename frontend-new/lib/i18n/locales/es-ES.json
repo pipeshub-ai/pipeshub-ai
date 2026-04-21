@@ -11,6 +11,26 @@
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…"
   },
+  "uploadProgress": {
+    "uploadFailedDefault": "Error al subir",
+    "uploadIncomplete": "Subida incompleta",
+    "genericFailureHint": "Error al subir. Inténtelo de nuevo o use un tipo de archivo admitido.",
+    "ariaFailed": "{{name}}, error al subir",
+    "ariaFailedWithDetail": "{{name}}, error al subir. {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} · error",
+    "headerCompletedAndFailed": "{{completed}} completados · {{failed}} con error",
+    "headerFailuresOnly": "{{count}} con error",
+    "headerAllComplete": "{{completed}}/{{total}} subidas completadas",
+    "sessionFilesAndSize": "{{count}} archivos · {{size}}",
+    "totalSizeLabel": "Total: {{size}}",
+    "status": {
+      "pending": "pendiente",
+      "uploading": "subiendo",
+      "completed": "completado",
+      "failed": "error"
+    }
+  },
   "onboarding": {
     "skipEmbeddingDefault": "Omitir",
     "skipEmbeddingTitle": "Abrir la configuración de «Predeterminado (proporcionado por el sistema)» y pulse Añadir modelo",
