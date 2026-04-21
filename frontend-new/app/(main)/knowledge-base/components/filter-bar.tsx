@@ -107,6 +107,8 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       label: opt.label,
       icon: getIconForRecordType(opt.id),
     }));
+  // Dep: whole `availableFilters` — React Compiler (react-hooks/preserve-manual-memoization)
+  // disagrees with optional-chained field deps like [availableFilters?.recordTypes].
   }, [availableFilters]);
 
   // Dynamic status options from API

@@ -49,7 +49,17 @@ const DEFAULTS = {
 
 // Valid enum values for parsing
 const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET']);
-const VALID_INDEXING_STATUS = new Set<string>(['COMPLETED', 'IN_PROGRESS', 'FAILED', 'FILE_TYPE_NOT_SUPPORTED']);
+/** Must match `IndexingStatus` in ./types — used so URL round-trip keeps filter state */
+const VALID_INDEXING_STATUS = new Set<string>([
+  'COMPLETED',
+  'IN_PROGRESS',
+  'FAILED',
+  'FILE_TYPE_NOT_SUPPORTED',
+  'NOT_STARTED',
+  'AUTO_INDEX_OFF',
+  'QUEUED',
+  'EMPTY',
+]);
 const VALID_SIZE_RANGES = new Set<string>(['lt1mb', '1to10mb', '10to100mb']);
 const VALID_ORIGINS = new Set<string>(['COLLECTION', 'CONNECTOR']);
 const VALID_DATE_TYPES = new Set<string>(['on', 'between', 'before', 'after']);
