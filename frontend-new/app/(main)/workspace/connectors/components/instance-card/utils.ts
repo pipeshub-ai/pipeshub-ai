@@ -1,4 +1,5 @@
 import { STRATEGY_LABELS, INTERVAL_LABELS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import { isConnectorInstanceOAuthAuthIncompleteForSyncUi } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -89,12 +90,13 @@ export function getUnsupportedRecords(
  *
  * Priority order:
  * 1. Hard backend status field (DELETING, SYNCING) always wins.
- * 2. Instance-level boolean state (isActive, isAuthenticated).
+ * 2. Instance-level boolean state (isActive; OAuth-only auth completion vs isConfigured).
  * 3. Stats-derived state (in-progress, completed, failed counts).
  */
 export function deriveSyncStatus(
   instance: ConnectorInstance,
   stats?: ConnectorStatsResponse['data'],
+  connectorConfig?: ConnectorConfig,
 ): InstanceSyncStatus {
   // 1. Backend-set hard states
   if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return 'sync_disabled';
@@ -103,7 +105,9 @@ export function deriveSyncStatus(
   // 2. Instance-level boolean state
   if (!instance.isActive) return 'sync_disabled';
 
-  if (!instance.isAuthenticated && instance.isConfigured) return 'auth_incomplete';
+  if (isConnectorInstanceOAuthAuthIncompleteForSyncUi(connectorConfig, instance)) {
+    return 'auth_incomplete';
+  }
 
   // 3. Derive from stats
   if (!stats?.stats?.indexingStatus) return 'ready_to_sync';

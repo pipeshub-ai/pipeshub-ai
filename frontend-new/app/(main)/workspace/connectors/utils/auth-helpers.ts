@@ -17,6 +17,20 @@ export function isOAuthType(authType: string): boolean {
   return ['OAUTH', 'OAUTH_ADMIN_CONSENT', 'OAUTH_CERTIFICATE'].includes(normalizeAuthTypeKey(authType));
 }
 
+/**
+ * Resolves `authType` for instance UI: prefer GET `/config` (authoritative after save) over catalog/list row.
+ */
+export function resolveConnectorInstanceAuthType(
+  connectorConfig: { authType?: string } | undefined,
+  instance: { authType?: string } | undefined,
+): string {
+  const fromConfig =
+    typeof connectorConfig?.authType === 'string' ? connectorConfig.authType.trim() : '';
+  if (fromConfig) return fromConfig;
+  const fromInstance = typeof instance?.authType === 'string' ? instance.authType.trim() : '';
+  return fromInstance;
+}
+
 /** Check if auth type uses credential fields (show form fields) */
 export function isCredentialAuthType(authType: string): boolean {
   const upper = normalizeAuthTypeKey(authType);
@@ -38,6 +52,34 @@ export function isCredentialAuthType(authType: string): boolean {
  */
 export function isConnectorAuthenticatedFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+/**
+ * True when the instance is fully configured but still needs OAuth consent (`isAuthenticated`).
+ * Credential / no-auth connectors never return true here; they are "live" once `isConfigured`.
+ */
+export function isOAuthAuthIncompleteForSyncUi(
+  authType: string,
+  isAuthenticated: unknown,
+  isConfigured: boolean,
+): boolean {
+  return (
+    isOAuthType(authType) &&
+    isConfigured &&
+    !isConnectorAuthenticatedFlag(isAuthenticated)
+  );
+}
+
+/** Same as {@link isOAuthAuthIncompleteForSyncUi} with {@link resolveConnectorInstanceAuthType} applied. */
+export function isConnectorInstanceOAuthAuthIncompleteForSyncUi(
+  connectorConfig: { authType?: string } | undefined,
+  instance: { authType?: string; isAuthenticated: unknown; isConfigured: boolean },
+): boolean {
+  return isOAuthAuthIncompleteForSyncUi(
+    resolveConnectorInstanceAuthType(connectorConfig, instance),
+    instance.isAuthenticated,
+    instance.isConfigured,
+  );
 }
 
 /**

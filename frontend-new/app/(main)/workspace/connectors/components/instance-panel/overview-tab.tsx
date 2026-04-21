@@ -14,6 +14,7 @@ import { startConnectorSync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
+  ConnectorConfig,
   ConnectorStatsResponse,
   RecordsStatus,
 } from '../../types';
@@ -26,6 +27,8 @@ interface OverviewTabProps {
   instance: ConnectorInstance;
   /** Stats data from GET /knowledgeBase/stats/{connectorId} */
   stats?: ConnectorStatsResponse['data'] | null;
+  /** GET …/config — used to resolve auth type for OAuth-only UI rules */
+  connectorConfig?: ConnectorConfig;
 }
 
 // ========================================
@@ -65,7 +68,7 @@ function deriveRecordsStatus(
 // OverviewTab
 // ========================================
 
-export function OverviewTab({ instance, stats }: OverviewTabProps) {
+export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
@@ -80,7 +83,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
   // Derive indexed records from byRecordType data
   const byRecordType = stats?.byRecordType ?? [];
 
-  const syncStatus = deriveSyncStatus(instance, stats ?? undefined);
+  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, connectorConfig);
   const isReadyToSync  = syncStatus === 'ready_to_sync';
   const isSyncing      = syncStatus === 'syncing';
   const isSyncFailed   = syncStatus === 'sync_failed';
