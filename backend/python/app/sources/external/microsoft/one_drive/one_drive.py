@@ -6,6 +6,8 @@ import urllib.parse
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
+from kiota_abstractions.request_information import RequestInformation  # type: ignore
+from kiota_abstractions.method import Method  # type: ignore
 
 # Import MS Graph specific query parameter classes
 from msgraph.generated.drives.drives_request_builder import (  # type: ignore
@@ -1333,7 +1335,7 @@ class OneDriveDataSource:
                 return OneDriveResponse(success=True, message="Item copied successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error("OneDrive API call failed: %s", e)
             return OneDriveResponse(success=False, error=f"OneDrive API call failed: {str(e)}")
 
     async def drives_drive_items_drive_item_extract_sensitivity_labels(
@@ -18768,7 +18770,6 @@ class OneDriveDataSource:
         """
         try:
             from msgraph.generated.users.item.insights.shared.shared_request_builder import SharedRequestBuilder
-            from kiota_abstractions.base_request_configuration import RequestConfiguration
 
             query_params = SharedRequestBuilder.SharedRequestBuilderGetQueryParameters()
 
@@ -18786,7 +18787,8 @@ class OneDriveDataSource:
             config = RequestConfiguration(query_parameters=query_params)
 
             if headers:
-                config.headers = headers
+                for k, v in headers.items():
+                    config.headers.add(k, v)
 
             response = await self.client.me.insights.shared.get(request_configuration=config)
             return self._handle_onedrive_response(response)
@@ -26205,8 +26207,6 @@ class OneDriveDataSource:
         We use the request adapter's send_async with a native RequestInformation.
         """
         try:
-            from kiota_abstractions.request_information import RequestInformation
-            from kiota_abstractions.method import Method
             from msgraph.generated.models.onenote_page import OnenotePage
 
             html = (
@@ -26221,7 +26221,7 @@ class OneDriveDataSource:
             request_info.http_method = Method.POST
             request_info.url = (
                 f"https://graph.microsoft.com/v1.0"
-                f"/me/onenote/sections/{section_id}/pages"
+                f"/me/onenote/sections/{urllib.parse.quote(section_id, safe='')}/pages"
             )
             request_info.headers.try_add("Content-Type", "text/html")
             request_info.set_stream_content(html.encode("utf-8"))
@@ -26316,14 +26316,11 @@ class OneDriveDataSource:
         so we use the request adapter directly.
         """
         try:
-            from kiota_abstractions.request_information import RequestInformation
-            from kiota_abstractions.method import Method
-
             request_info = RequestInformation()
             request_info.http_method = Method.GET
             request_info.url = (
                 f"https://graph.microsoft.com/v1.0"
-                f"/me/onenote/pages/{page_id}/content"
+                f"/me/onenote/pages/{urllib.parse.quote(page_id, safe='')}/content"
             )
 
             response = await self.client.request_adapter.send_primitive_async(

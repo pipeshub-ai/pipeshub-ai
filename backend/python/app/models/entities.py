@@ -525,7 +525,7 @@ class FileRecord(Record):
 
             return content
         except Exception as e:
-            raise Exception(f"Error in record_to_message_content: {e}") from e
+            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {

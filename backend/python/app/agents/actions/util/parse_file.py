@@ -327,8 +327,12 @@ class FileContentParser:
                 break
             except UnicodeDecodeError:
                 continue
-            except Exception:
-                continue
+            except Exception as exc:
+                self._logger.warning(
+                    "Unexpected error parsing %s with encoding %s: %s",
+                    file_name, encoding, exc,
+                )
+                raise
 
         if not all_rows:
             self._logger.info(

@@ -325,7 +325,7 @@ class GetSharedWithMeInput(BaseModel):
     """Schema for getting files shared with the current user"""
     model_config = ConfigDict(extra="ignore")
 
-    top: Optional[int] = Field(default=None, description="Maximum number of items to return")
+    top: Optional[int] = Field(default=10, description="Maximum number of items to return (default 10)")
 
 
 class SearchSharedWithMeInput(BaseModel):
@@ -424,10 +424,6 @@ class CreateWordFileInput(BaseModel):
     file_name: str = Field(description="Name of the new file, including extension (.docx)")
     file_type: str = Field(description="Word file type: 'word' (.docx)")
     content: Optional[str] = Field(default=None, description="Content of the file")
-
-
-class CreateOfficeFileInput(CreateWordFileInput):
-    """Backward-compatible alias retained for existing imports/tests."""
 
 
 class CreateOneNoteNotebookInput(BaseModel):
@@ -818,6 +814,7 @@ class OneDrive:
 
             current_user_email = await self._get_current_user_email()
 
+            top = top or 10
             items = (response.data.value or [])[: min(top, 50)]
             spo_items = [item for item in items if (item.id or "").startswith("SPO@")]
 
@@ -1234,10 +1231,7 @@ class OneDrive:
     ) -> tuple[bool, str]:
         try:
             success, data, drives = await self.shared_with_data(top)
-            if success:
-                return True, json.dumps({"value": data}, default=str)
-            else:
-                return False, json.dumps({"error": data})
+            return success, data
 
         except Exception as e:
             logger.error("Failed to get shared-with-me items: %s", e)
@@ -1284,7 +1278,7 @@ class OneDrive:
             tuple[bool, str]: Success flag and JSON payload with per-drive results.
         """
         try:
-            success, shared_with_data, drives = await self.shared_with_data(top)
+            success, shared_json, drives = await self.shared_with_data(top)
             if not drives:
                 return True, json.dumps({"query": query, "drives": [], "value": []})
             semaphore = asyncio.Semaphore(_SEARCH_SHARED_CONCURRENCY)
@@ -1434,9 +1428,14 @@ class OneDrive:
                 # Extract extension from current name
                 current_ext = current_name.rsplit(".", 1)[-1] if "." in current_name else ""
 
-                # Append extension only if new_name doesn't already have one
+                # Append extension only if new_name doesn't already carry the current one.
+                # Use a strict definition of "has an extension": the suffix after the last
+                # dot must match the current extension exactly (case-insensitive). This
+                # prevents names like "Q1.2024 Report" from being treated as having an
+                # extension ".2024 Report" and silently dropping the real extension.
                 new_ext = new_name.rsplit(".", 1)[-1] if "." in new_name else ""
-                if current_ext and not new_ext:
+                already_has_ext = new_ext.lower() == current_ext.lower()
+                if current_ext and not already_has_ext:
                     new_name = f"{new_name}.{current_ext}"
 
             body = DriveItem()
@@ -1703,6 +1702,12 @@ class OneDrive:
             if not emails:
                 return False, json.dumps({"error": "At least one email address is required"})
 
+            invalid = [e for e in emails if "@" not in e.strip()]
+            if invalid:
+                return False, json.dumps({
+                    "error": f"Invalid email address(es): {', '.join(invalid)}"
+                })
+
             request_body = InvitePostRequestBody()
             request_body.recipients = [
                 DriveRecipient(additional_data={"email": email.strip()})
@@ -1834,9 +1839,9 @@ class OneDrive:
             if not file_info.success:
                 return False, _response_json(file_info)
 
-            model_name = self.state.get("model_name")
-            model_key = self.state.get("model_key")
-            configuration_service = self.state.get("config_service")
+            model_name = (self.state or {}).get("model_name")
+            model_key = (self.state or {}).get("model_key")
+            configuration_service = (self.state or {}).get("config_service")
 
             # response.data is a typed DriveItem object, not a dict
             data_dict = json.loads(_response_json(file_info))
@@ -1862,7 +1867,7 @@ class OneDrive:
 
                 record_name = data_dict.get("data", {}).get("name", f"document.{ext}")
                 file_record = FileRecord(
-                    org_id="",
+                    org_id="",  # not used for tenancy gating in the parser; "" is the Record sentinel
                     record_name=record_name,
                     record_type=RecordType.FILE,
                     external_record_id=item_id,
@@ -1942,18 +1947,16 @@ class OneDrive:
         # These are the smallest valid empty containers recognized by OneDrive/Office
         _OFFICE_MIME = {
             "word": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "onenote": None,  # Uses Graph API, not file upload
         }
         _OFFICE_EXT = {
             "word": ".docx",
-            "onenote": "",  # No extension — OneNote notebooks are containers, not files
         }
 
         try:
             ft = file_type.lower().strip()
             if ft not in _OFFICE_MIME:
                 return False, json.dumps({
-                    "error": f"Unsupported file_type '{file_type}'. Must be 'word' or 'onenote'."
+                    "error": f"Unsupported file_type '{file_type}'. Must be 'word'."
                 })
 
             # Ensure the file name has the correct extension
