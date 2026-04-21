@@ -19,6 +19,9 @@ export function isOAuthType(authType: string): boolean {
 
 /**
  * Resolves `authType` for instance UI: prefer GET `/config` (authoritative after save) over catalog/list row.
+ *
+ * Non-string shapes (numbers, null, objects) yield `''`, which makes {@link isOAuthType} false — so OAuth-only
+ * UI gates treat the instance as non-OAuth until a string `authType` is present (typically after `/config` loads).
  */
 export function resolveConnectorInstanceAuthType(
   connectorConfig: { authType?: string } | undefined,
@@ -58,7 +61,7 @@ export function isConnectorAuthenticatedFlag(value: unknown): boolean {
  * True when the instance is fully configured but still needs OAuth consent (`isAuthenticated`).
  * Credential / no-auth connectors never return true here; they are "live" once `isConfigured`.
  */
-export function isOAuthAuthIncompleteForSyncUi(
+function oauthAuthIncompleteForSyncUi(
   authType: string,
   isAuthenticated: unknown,
   isConfigured: boolean,
@@ -70,12 +73,12 @@ export function isOAuthAuthIncompleteForSyncUi(
   );
 }
 
-/** Same as {@link isOAuthAuthIncompleteForSyncUi} with {@link resolveConnectorInstanceAuthType} applied. */
+/** Uses {@link resolveConnectorInstanceAuthType} so GET `/config` wins over list-row `authType`. */
 export function isConnectorInstanceOAuthAuthIncompleteForSyncUi(
   connectorConfig: { authType?: string } | undefined,
   instance: { authType?: string; isAuthenticated: unknown; isConfigured: boolean },
 ): boolean {
-  return isOAuthAuthIncompleteForSyncUi(
+  return oauthAuthIncompleteForSyncUi(
     resolveConnectorInstanceAuthType(connectorConfig, instance),
     instance.isAuthenticated,
     instance.isConfigured,

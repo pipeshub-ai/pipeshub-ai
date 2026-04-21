@@ -18,7 +18,7 @@ import {
   ManualIndexButton,
 } from './primitives';
 import {
-  deriveSyncStatus,
+  deriveSyncStatusState,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
   getRecordsSelectedInfo,
@@ -28,7 +28,6 @@ import {
   getUnsupportedRecords,
 } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
-import { isConnectorInstanceOAuthAuthIncompleteForSyncUi } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -124,8 +123,8 @@ export function InstanceCard({
   }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
-  const oauthAuthIncomplete = isConnectorInstanceOAuthAuthIncompleteForSyncUi(config, instance);
-  const effectiveStatus = deriveSyncStatus(instance, stats, config);
+  const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
+    deriveSyncStatusState(instance, stats, config);
   const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
@@ -364,7 +363,7 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatus → sync_disabled. */}
+        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatusState → sync_disabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"

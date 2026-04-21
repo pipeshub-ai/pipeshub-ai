@@ -86,44 +86,73 @@ export function getUnsupportedRecords(
 // ========================================
 
 /**
- * Derive the effective sync status from instance + stats.
+ * Derive sync pill status plus the OAuth-only "authenticate first" flag (single evaluation for card UI).
  *
- * Priority order:
+ * Priority order for `status`:
  * 1. Hard backend status field (DELETING, SYNCING) always wins.
- * 2. Instance-level boolean state (isActive; OAuth-only auth completion vs isConfigured).
+ * 2. Instance-level state: `isActive`, plus OAuth-only auth completion
+ *    (via {@link isConnectorInstanceOAuthAuthIncompleteForSyncUi}).
  * 3. Stats-derived state (in-progress, completed, failed counts).
  */
-export function deriveSyncStatus(
+export function deriveSyncStatusState(
   instance: ConnectorInstance,
   stats?: ConnectorStatsResponse['data'],
   connectorConfig?: ConnectorConfig,
-): InstanceSyncStatus {
+): { status: InstanceSyncStatus; oauthAuthIncompleteForSync: boolean } {
+  const oauthAuthIncompleteForSync = isConnectorInstanceOAuthAuthIncompleteForSyncUi(
+    connectorConfig,
+    instance,
+  );
+
   // 1. Backend-set hard states
-  if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return 'sync_disabled';
-  if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) return 'syncing';
+  if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
+    return { status: 'sync_disabled', oauthAuthIncompleteForSync };
+  }
+  if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) {
+    return { status: 'syncing', oauthAuthIncompleteForSync };
+  }
 
   // 2. Instance-level boolean state
-  if (!instance.isActive) return 'sync_disabled';
+  if (!instance.isActive) {
+    return { status: 'sync_disabled', oauthAuthIncompleteForSync };
+  }
 
-  if (isConnectorInstanceOAuthAuthIncompleteForSyncUi(connectorConfig, instance)) {
-    return 'auth_incomplete';
+  if (oauthAuthIncompleteForSync) {
+    return { status: 'auth_incomplete', oauthAuthIncompleteForSync };
   }
 
   // 3. Derive from stats
-  if (!stats?.stats?.indexingStatus) return 'ready_to_sync';
+  if (!stats?.stats?.indexingStatus) {
+    return { status: 'ready_to_sync', oauthAuthIncompleteForSync };
+  }
 
   const idx = stats.stats.indexingStatus;
   const inProgress = (idx.IN_PROGRESS ?? 0) + (idx.QUEUED ?? 0);
   const completed  = idx.COMPLETED ?? 0;
   const failed     = idx.FAILED ?? 0;
 
-  if (inProgress > 0) return 'syncing';
+  if (inProgress > 0) {
+    return { status: 'syncing', oauthAuthIncompleteForSync };
+  }
 
   // sync_failed: nothing completed yet, only failures
-  if (failed > 0 && completed === 0) return 'sync_failed';
+  if (failed > 0 && completed === 0) {
+    return { status: 'sync_failed', oauthAuthIncompleteForSync };
+  }
 
   // sync_complete: at least some records completed (error count shown separately in pill)
-  if (completed > 0 || failed > 0) return 'sync_complete';
+  if (completed > 0 || failed > 0) {
+    return { status: 'sync_complete', oauthAuthIncompleteForSync };
+  }
 
-  return 'ready_to_sync';
+  return { status: 'ready_to_sync', oauthAuthIncompleteForSync };
+}
+
+/** @see deriveSyncStatusState */
+export function deriveSyncStatus(
+  instance: ConnectorInstance,
+  stats?: ConnectorStatsResponse['data'],
+  connectorConfig?: ConnectorConfig,
+): InstanceSyncStatus {
+  return deriveSyncStatusState(instance, stats, connectorConfig).status;
 }
