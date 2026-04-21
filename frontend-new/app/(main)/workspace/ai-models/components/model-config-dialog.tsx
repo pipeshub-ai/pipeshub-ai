@@ -528,5 +528,6 @@ function toSchemaField(field: AIModelProviderField): SchemaField {
     isSecret: field.isSecret,
     options: field.options?.map((o) => ({ id: o.value, label: o.label })),
     validation: field.validation,
+    examples: field.examples,
   } as unknown as SchemaField;
 }

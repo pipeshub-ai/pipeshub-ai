@@ -105,6 +105,12 @@ export interface AuthSchemaField {
   options?: string[];
   validation?: FieldValidation;
   isSecret?: boolean;
+  /**
+   * Optional labeled example values rendered below the input as a compact
+   * copyable note. Intended for fields where a single placeholder can't
+   * carry all the variants a user may need (e.g. Azure AI endpoints).
+   */
+  examples?: { label: string; value: string }[];
 }
 
 export interface SyncCustomField {
