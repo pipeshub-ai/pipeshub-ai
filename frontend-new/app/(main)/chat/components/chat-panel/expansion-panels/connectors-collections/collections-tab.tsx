@@ -106,7 +106,7 @@ export function CollectionsTab({
           gap="2"
           style={{
             flex: 1,
-            height: 'var(--space-6)', /* was: 36px, delta: +4px */
+            height: 'var(--space-6)',
             border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
             borderRadius: 'var(--radius-2)',
             paddingLeft: 'var(--space-2)',
