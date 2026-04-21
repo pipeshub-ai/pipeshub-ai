@@ -18,7 +18,7 @@ import {
   ManualIndexButton,
 } from './primitives';
 import {
-  deriveSyncStatus,
+  deriveSyncStatusState,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
   getRecordsSelectedInfo,
@@ -123,7 +123,8 @@ export function InstanceCard({
   }, [scope, instance.createdBy, instance._key]);
 
   // ── Derived data ──
-  const effectiveStatus = deriveSyncStatus(instance, stats);
+  const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
+    deriveSyncStatusState(instance, stats, config);
   const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
@@ -136,7 +137,7 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.supportsSync &&
     instance.isConfigured &&
-    instance.isAuthenticated &&
+    !oauthAuthIncomplete &&
     instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
@@ -145,7 +146,7 @@ export function InstanceCard({
       ? 'This connector is being removed.'
       : !instance.isConfigured
         ? 'Finish configuration before you can enable sync.'
-        : !instance.isAuthenticated
+        : oauthAuthIncomplete
           ? 'Authenticate this connector before you can enable sync.'
           : null;
 
@@ -156,7 +157,7 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.isActive &&
     instance.isConfigured &&
-    instance.isAuthenticated &&
+    !oauthAuthIncomplete &&
     instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const syncSwitchControl = (
@@ -362,7 +363,7 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatus → sync_disabled. */}
+        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatusState → sync_disabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"

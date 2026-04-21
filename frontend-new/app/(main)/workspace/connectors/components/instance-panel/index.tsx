@@ -264,7 +264,11 @@ export function InstanceManagementPanel() {
           </Tabs.List>
 
             <Tabs.Content value="overview">
-              <OverviewTab instance={selectedInstance} stats={instanceStat} />
+              <OverviewTab
+                instance={selectedInstance}
+                stats={instanceStat}
+                connectorConfig={instanceConfig}
+              />
             </Tabs.Content>
             <Tabs.Content value="settings">
               <SettingsTab
