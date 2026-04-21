@@ -734,7 +734,7 @@ class RetrievalService:
             )
             for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)
         ]
-        search_results = self.vector_db_service.query_nearest_points(
+        search_results = await self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
             requests=query_requests,
         )
