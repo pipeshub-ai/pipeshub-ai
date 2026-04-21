@@ -467,8 +467,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Ensuring ArangoDB schema (collections, graph, departments)...")
 
-            # 1. Create all collections (node + edge)
+            # 1. Create all collections (node + edge) and enforce schema for existing/new collections
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
+            collection_schemas = {name: schema for name, schema in (NODE_COLLECTIONS + EDGE_COLLECTIONS)}
+
             for col in CollectionNames:
                 name = col.value
                 is_edge = name in edge_collection_names
@@ -477,6 +479,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
+
+                schema = collection_schemas.get(name)
+                if schema and not await self.http_client.update_collection_schema(name, schema):
+                    self.logger.warning(f"Failed to ensure schema for collection '{name}', continuing")
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -18740,7 +18746,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount"]
+            allowed_fields = [
+                "name",
+                "description",
+                "startMessage",
+                "systemPrompt",
+                "instructions",
+                "tags",
+                "isActive",
+                "isServiceAccount",
+                "flow",
+                "flowSchemaVersion",
+                "orchestrationMode",
+            ]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

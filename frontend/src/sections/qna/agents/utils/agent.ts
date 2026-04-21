@@ -479,6 +479,24 @@ interface KnowledgeDataInternal {
   category: 'knowledge' | 'action';
 }
 
+const pickRootAgentNode = (nodes: any[], edges: any[]) => {
+  const agentNodes = nodes.filter((node) => node?.data?.type === 'agent-core');
+  if (agentNodes.length <= 1) {
+    return agentNodes[0];
+  }
+
+  const incomingAgentTargets = new Set<string>();
+  edges.forEach((edge) => {
+    const source = nodes.find((node) => node.id === edge.source);
+    const target = nodes.find((node) => node.id === edge.target);
+    if (source?.data?.type === 'agent-core' && target?.data?.type === 'agent-core') {
+      incomingAgentTargets.add(target.id);
+    }
+  });
+
+  return agentNodes.find((node) => !incomingAgentTargets.has(node.id)) || agentNodes[0];
+};
+
 // Extract agent configuration from flow nodes and edges
 export const extractAgentConfigFromFlow = (
   agentName: string,
@@ -841,7 +859,7 @@ export const extractAgentConfigFromFlow = (
     }
   }
 
-  const agentCoreNode = nodes.find((node) => node.data.type === 'agent-core');
+  const agentCoreNode = pickRootAgentNode(nodes, edges);
   
   // Convert internal toolset data to ToolsetReference format (with id)
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({

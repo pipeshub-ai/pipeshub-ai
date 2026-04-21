@@ -5,6 +5,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 
 import json
 import os
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from logging import Logger
@@ -52,6 +53,10 @@ if _opik_api_key and _opik_workspace:
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
 NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
+ORCHESTRATION_MODE_LINEAR = "linear"
+ORCHESTRATION_MODE_CONDITIONAL = "conditional"
+CONDITION_NODE_TYPE = "conditional-check"
+CHAT_RESPONSE_NODE_TYPE = "chat-response"
 
 # ============================================================================
 # Request Models
@@ -721,6 +726,1241 @@ def _filter_knowledge_by_enabled_sources(
                 filtered.append(k)
 
     return filtered
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _get_flow_nodes_and_edges(agent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    flow = agent.get("flow")
+    if not isinstance(flow, dict):
+        return [], []
+
+    nodes = flow.get("nodes")
+    edges = flow.get("edges")
+    return (
+        nodes if isinstance(nodes, list) else [],
+        edges if isinstance(edges, list) else [],
+    )
+
+
+def _node_data(node: dict[str, Any]) -> dict[str, Any]:
+    data = node.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _node_type(node: dict[str, Any]) -> str:
+    return str(_node_data(node).get("type") or "")
+
+
+def _node_label(node: dict[str, Any]) -> str:
+    return str(_node_data(node).get("label") or node.get("id") or "")
+
+
+def _node_config(node: dict[str, Any]) -> dict[str, Any]:
+    config = _node_data(node).get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def _normalize_toolset_name(toolset_name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", toolset_name.lower())
+
+
+def _merge_knowledge_reference(
+    knowledge_map: dict[str, dict[str, Any]],
+    connector_id: str,
+    filters: dict[str, Any] | None,
+) -> None:
+    if not connector_id:
+        return
+
+    normalized_filters = {
+        **(filters or {}),
+        "recordGroups": list(dict.fromkeys((filters or {}).get("recordGroups", []) or [])),
+        "records": list(dict.fromkeys((filters or {}).get("records", []) or [])),
+    }
+
+    existing = knowledge_map.get(connector_id)
+    if not existing:
+        knowledge_map[connector_id] = {
+            "connectorId": connector_id,
+            "filters": normalized_filters,
+        }
+        return
+
+    existing_filters = existing.get("filters", {})
+    knowledge_map[connector_id] = {
+        "connectorId": connector_id,
+        "filters": {
+            **existing_filters,
+            **normalized_filters,
+            "recordGroups": list(dict.fromkeys([
+                *(existing_filters.get("recordGroups", []) or []),
+                *(normalized_filters.get("recordGroups", []) or []),
+            ])),
+            "records": list(dict.fromkeys([
+                *(existing_filters.get("records", []) or []),
+                *(normalized_filters.get("records", []) or []),
+            ])),
+        },
+    }
+
+
+def _extract_toolset_reference(node: dict[str, Any]) -> dict[str, Any] | None:
+    config = _node_config(node)
+    toolset_name = str(config.get("toolsetName") or config.get("name") or _node_label(node) or "").strip()
+    if not toolset_name:
+        return None
+
+    display_name = str(config.get("displayName") or _node_label(node) or toolset_name)
+    toolset_type = str(config.get("type") or config.get("category") or "app")
+    instance_id = config.get("instanceId")
+    instance_name = config.get("instanceName")
+    normalized_name = _normalize_toolset_name(toolset_name)
+    selected_tools = set(config.get("selectedTools") or [])
+    tools: list[dict[str, Any]] = []
+
+    for tool in config.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        tool_name = tool.get("name") or tool.get("toolName")
+        if not tool_name:
+            continue
+        full_name = tool.get("fullName") or f"{normalized_name}.{tool_name}"
+        if selected_tools and tool_name not in selected_tools and full_name not in selected_tools:
+            continue
+        tools.append({
+            "name": tool_name,
+            "fullName": full_name,
+            "description": tool.get("description", ""),
+        })
+
+    if not tools and selected_tools:
+        for selected_tool_name in selected_tools:
+            tools.append({
+                "name": selected_tool_name,
+                "fullName": f"{normalized_name}.{selected_tool_name}",
+                "description": "",
+            })
+
+    if not tools:
+        return None
+
+    return {
+        "id": instance_id or normalized_name,
+        "instanceId": instance_id,
+        "instanceName": instance_name,
+        "name": normalized_name,
+        "displayName": display_name,
+        "type": toolset_type,
+        "tools": tools,
+    }
+
+
+def _extract_llm_reference(node: dict[str, Any]) -> dict[str, Any] | None:
+    config = _node_config(node)
+    model_key = config.get("modelKey")
+    model_name = config.get("modelName") or config.get("model")
+    if not model_key and not model_name:
+        return None
+    return {
+        "provider": config.get("provider") or "azureOpenAI",
+        "modelKey": model_key,
+        "modelName": model_name,
+        "isReasoning": bool(config.get("isReasoning")),
+    }
+
+
+def _extract_agent_step_from_flow(
+    agent_node: dict[str, Any],
+    nodes_by_id: dict[str, dict[str, Any]],
+    incoming_edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    config = _node_config(agent_node)
+    knowledge_map: dict[str, dict[str, Any]] = {}
+    toolsets: list[dict[str, Any]] = []
+    model: dict[str, Any] | None = None
+
+    for edge in incoming_edges:
+        source_node = nodes_by_id.get(str(edge.get("source") or ""))
+        if not source_node:
+            continue
+
+        source_type = _node_type(source_node)
+        target_handle = edge.get("targetHandle")
+
+        if target_handle == "toolsets" and source_type.startswith("toolset-"):
+            toolset = _extract_toolset_reference(source_node)
+            if toolset:
+                toolsets.append(toolset)
+            continue
+
+        if target_handle == "llms" and source_type.startswith("llm-") and model is None:
+            model = _extract_llm_reference(source_node)
+            continue
+
+        if target_handle != "knowledge":
+            continue
+
+        source_config = _node_config(source_node)
+
+        if source_type == "app-group":
+            for connector_instance_id in source_config.get("selectedApps") or []:
+                connector_filters = _parse_json_dict(
+                    (_parse_json_dict(source_config.get("appFilters"))).get(connector_instance_id, {})
+                )
+                _merge_knowledge_reference(knowledge_map, connector_instance_id, connector_filters)
+            continue
+
+        if source_type == "kb-group":
+            kb_connector_ids = _parse_json_dict(source_config.get("kbConnectorIds"))
+            kb_filters_map = _parse_json_dict(source_config.get("kbFilters"))
+            shared_connector_id = source_config.get("connectorInstanceId") or source_config.get("kbConnectorId")
+            for kb_id in source_config.get("selectedKBs") or []:
+                connector_id = kb_connector_ids.get(kb_id) or shared_connector_id or kb_id
+                kb_specific_filters = _parse_json_dict(kb_filters_map.get(kb_id, {}))
+                _merge_knowledge_reference(knowledge_map, connector_id, {
+                    **kb_specific_filters,
+                    "recordGroups": [kb_id, *(kb_specific_filters.get("recordGroups", []) or [])],
+                    "records": kb_specific_filters.get("records", []) or [],
+                })
+            continue
+
+        if source_type.startswith("kb-") and source_type != "kb-group":
+            kb_id = source_config.get("kbId")
+            if kb_id:
+                base_filters = _parse_json_dict(source_config.get("filters"))
+                _merge_knowledge_reference(
+                    knowledge_map,
+                    str(source_config.get("connectorInstanceId") or source_config.get("kbConnectorId") or kb_id),
+                    {
+                        **base_filters,
+                        "recordGroups": [kb_id, *(base_filters.get("recordGroups", []) or [])],
+                        "records": source_config.get("selectedRecords") or base_filters.get("records", []) or [],
+                    },
+                )
+            continue
+
+        if source_type.startswith("app-") and source_type != "app-group":
+            connector_instance_id = source_config.get("connectorInstanceId") or source_config.get("id")
+            if connector_instance_id:
+                base_filters = _parse_json_dict(source_config.get("filters"))
+                _merge_knowledge_reference(
+                    knowledge_map,
+                    str(connector_instance_id),
+                    {
+                        **base_filters,
+                        "recordGroups": source_config.get("selectedRecordGroups") or base_filters.get("recordGroups", []) or [],
+                        "records": source_config.get("selectedRecords") or base_filters.get("records", []) or [],
+                    },
+                )
+
+    return {
+        "id": agent_node.get("id"),
+        "name": str(config.get("name") or _node_label(agent_node) or agent_node.get("id") or "Agent"),
+        "systemPrompt": config.get("systemPrompt"),
+        "instructions": config.get("instructions"),
+        "toolsets": toolsets,
+        "knowledge": list(knowledge_map.values()),
+        "model": model,
+    }
+
+
+def _build_linear_agent_steps(agent: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes, edges = _get_flow_nodes_and_edges(agent)
+    if not nodes:
+        return []
+
+    nodes_by_id = {str(node.get("id")): node for node in nodes if isinstance(node, dict) and node.get("id")}
+    agent_nodes = {
+        node_id: node
+        for node_id, node in nodes_by_id.items()
+        if _node_type(node) == "agent-core"
+    }
+    if not agent_nodes:
+        return []
+
+    incoming_agent_edges = {node_id: 0 for node_id in agent_nodes}
+    outgoing_agent_edges = {node_id: 0 for node_id in agent_nodes}
+    next_agent: dict[str, str] = {}
+    step_inputs: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in agent_nodes}
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("source") or "")
+        target_id = str(edge.get("target") or "")
+        if target_id in step_inputs:
+            step_inputs[target_id].append(edge)
+
+        if source_id not in agent_nodes or target_id not in agent_nodes:
+            continue
+
+        incoming_agent_edges[target_id] += 1
+        outgoing_agent_edges[source_id] += 1
+        next_agent[source_id] = target_id
+
+    if any(count > 1 for count in incoming_agent_edges.values()) or any(count > 1 for count in outgoing_agent_edges.values()):
+        raise InvalidRequestError("Linear orchestration only supports one incoming and one outgoing agent connection per agent block")
+
+    roots = [node_id for node_id, count in incoming_agent_edges.items() if count == 0]
+    if len(agent_nodes) > 1 and len(roots) != 1:
+        raise InvalidRequestError("Linear orchestration requires exactly one root agent block")
+
+    current_id = roots[0] if roots else next(iter(agent_nodes.keys()))
+    ordered_steps: list[dict[str, Any]] = []
+    visited: set[str] = set()
+
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        ordered_steps.append(
+            _extract_agent_step_from_flow(agent_nodes[current_id], nodes_by_id, step_inputs[current_id])
+        )
+        current_id = next_agent.get(current_id)
+
+    if len(visited) != len(agent_nodes):
+        raise InvalidRequestError("Linear orchestration flow contains a cycle or disconnected agent block")
+
+    return ordered_steps
+
+
+def _should_use_linear_orchestration(agent: dict[str, Any]) -> bool:
+    nodes, _ = _get_flow_nodes_and_edges(agent)
+    agent_node_count = sum(1 for node in nodes if isinstance(node, dict) and _node_type(node) == "agent-core")
+    return bool(agent.get("orchestrationMode") == ORCHESTRATION_MODE_LINEAR and agent_node_count >= 1)
+
+
+def _should_use_conditional_orchestration(agent: dict[str, Any]) -> bool:
+    nodes, _ = _get_flow_nodes_and_edges(agent)
+    agent_node_count = sum(1 for node in nodes if isinstance(node, dict) and _node_type(node) == "agent-core")
+    condition_node_count = sum(1 for node in nodes if isinstance(node, dict) and _node_type(node) == CONDITION_NODE_TYPE)
+    return bool(
+        agent.get("orchestrationMode") == ORCHESTRATION_MODE_CONDITIONAL
+        and agent_node_count >= 1
+        and condition_node_count >= 1
+    )
+
+
+def _evaluate_single_condition_rule(rule: dict[str, Any], result_text: str, response_data: Any) -> bool:
+    mode = str(rule.get("mode") or "contains").strip().lower()
+    expected = rule.get("expectedValue", "")
+    case_sensitive = bool(rule.get("caseSensitive", False))
+    text = result_text if isinstance(result_text, str) else str(result_text or "")
+    normalized_text = text if case_sensitive else text.lower()
+    normalized_expected = str(expected) if case_sensitive else str(expected).lower()
+
+    if mode == "contains":
+        return normalized_expected in normalized_text
+    if mode == "not_contains":
+        return normalized_expected not in normalized_text
+    if mode == "equals":
+        return normalized_text == normalized_expected
+    if mode == "not_equals":
+        return normalized_text != normalized_expected
+    if mode == "starts_with":
+        return normalized_text.startswith(normalized_expected)
+    if mode == "ends_with":
+        return normalized_text.endswith(normalized_expected)
+    if mode == "regex":
+        pattern = str(rule.get("regexPattern") or expected or "")
+        if not pattern:
+            return False
+        flags = 0 if case_sensitive else re.IGNORECASE
+        return re.search(pattern, text, flags=flags) is not None
+    if mode == "min_length":
+        return len(text.strip()) >= int(rule.get("minLength") or 0)
+    if mode == "max_length":
+        max_length = rule.get("maxLength")
+        if max_length is None:
+            return True
+        return len(text.strip()) <= int(max_length)
+    if mode == "is_empty":
+        return len(text.strip()) == 0
+    if mode == "not_empty":
+        return len(text.strip()) > 0
+    if mode == "json_path_equals":
+        if not isinstance(response_data, dict):
+            return False
+        path = str(rule.get("jsonPath") or "").strip()
+        if not path:
+            return False
+        current: Any = response_data
+        for key in [segment for segment in path.split(".") if segment]:
+            if not isinstance(current, dict) or key not in current:
+                return False
+            current = current[key]
+        return str(current) == str(expected)
+
+    raise InvalidRequestError(
+        f"Unsupported condition mode '{mode}'. Supported modes: "
+        "contains, not_contains, equals, not_equals, starts_with, ends_with, regex, "
+        "min_length, max_length, is_empty, not_empty, json_path_equals"
+    )
+
+
+def _evaluate_condition_node(config: dict[str, Any], result_text: str, response_data: Any) -> bool:
+    rules = config.get("rules")
+    if isinstance(rules, list) and rules:
+        valid_rules = [rule for rule in rules if isinstance(rule, dict)]
+        if not valid_rules:
+            return bool(config.get("passOnEmpty", False))
+
+        evaluations = [
+            _evaluate_single_condition_rule(rule, result_text, response_data)
+            for rule in valid_rules
+        ]
+        operator = str(config.get("ruleOperator") or "all").strip().lower()
+        if operator == "any":
+            return any(evaluations)
+        return all(evaluations)
+
+    if not config:
+        return False
+    return _evaluate_single_condition_rule(config, result_text, response_data)
+
+
+def _build_conditional_orchestration_graph(agent: dict[str, Any]) -> dict[str, Any]:
+    nodes, edges = _get_flow_nodes_and_edges(agent)
+    if not nodes:
+        return {}
+
+    nodes_by_id = {str(node.get("id")): node for node in nodes if isinstance(node, dict) and node.get("id")}
+    agent_nodes = {
+        node_id: node
+        for node_id, node in nodes_by_id.items()
+        if _node_type(node) == "agent-core"
+    }
+    condition_nodes = {
+        node_id: node
+        for node_id, node in nodes_by_id.items()
+        if _node_type(node) == CONDITION_NODE_TYPE
+    }
+
+    if not agent_nodes:
+        return {}
+    if not condition_nodes:
+        raise InvalidRequestError("Conditional orchestration requires at least one condition block")
+
+    orchestration_incoming_agent = {node_id: 0 for node_id in agent_nodes}
+    condition_incoming = {node_id: 0 for node_id in condition_nodes}
+    agent_next: dict[str, dict[str, str]] = {}
+    condition_routes: dict[str, dict[str, dict[str, str]]] = {
+        node_id: {} for node_id in condition_nodes
+    }
+    step_inputs: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in agent_nodes}
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+
+        source_id = str(edge.get("source") or "")
+        target_id = str(edge.get("target") or "")
+        source_node = nodes_by_id.get(source_id)
+        target_node = nodes_by_id.get(target_id)
+        source_type = _node_type(source_node) if source_node else ""
+        target_type = _node_type(target_node) if target_node else ""
+
+        if target_id in step_inputs:
+            step_inputs[target_id].append(edge)
+
+        if source_id in agent_nodes and target_id in agent_nodes:
+            if edge.get("sourceHandle") != "response" or edge.get("targetHandle") != "input":
+                raise InvalidRequestError("Agent-to-agent connections must use response → input")
+            orchestration_incoming_agent[target_id] += 1
+            if source_id in agent_next:
+                raise InvalidRequestError("Each agent can have only one orchestration output")
+            agent_next[source_id] = {"kind": "agent", "targetId": target_id}
+            continue
+
+        if source_id in agent_nodes and target_id in condition_nodes:
+            if edge.get("sourceHandle") != "response" or edge.get("targetHandle") != "input":
+                raise InvalidRequestError("Agent-to-condition connections must use response → input")
+            condition_incoming[target_id] += 1
+            if source_id in agent_next:
+                raise InvalidRequestError("Each agent can have only one orchestration output")
+            agent_next[source_id] = {"kind": "condition", "targetId": target_id}
+            continue
+
+        if source_id in condition_nodes:
+            source_handle = str(edge.get("sourceHandle") or "")
+            if source_handle not in {"pass", "fail"}:
+                raise InvalidRequestError("Condition blocks must connect from pass/fail outputs")
+
+            if target_id in agent_nodes:
+                if edge.get("targetHandle") not in {None, "", "input"}:
+                    raise InvalidRequestError("Condition output to an agent must connect to input")
+                orchestration_incoming_agent[target_id] += 1
+                condition_routes[source_id][source_handle] = {"kind": "agent", "targetId": target_id}
+                continue
+
+            if target_type == CHAT_RESPONSE_NODE_TYPE:
+                if edge.get("targetHandle") not in {None, "", "response"}:
+                    raise InvalidRequestError("Condition output to chat response must connect to response")
+                condition_routes[source_id][source_handle] = {"kind": "output", "targetId": target_id}
+                continue
+
+            raise InvalidRequestError("Condition blocks can only connect to agents or chat response nodes")
+
+    if any(count > 1 for count in orchestration_incoming_agent.values()):
+        raise InvalidRequestError("Each agent can have only one upstream orchestration connection")
+
+    roots = [node_id for node_id, count in orchestration_incoming_agent.items() if count == 0]
+    if len(roots) != 1:
+        raise InvalidRequestError("Conditional orchestration requires exactly one root agent block")
+
+    for condition_id, incoming_count in condition_incoming.items():
+        if incoming_count != 1:
+            raise InvalidRequestError("Each condition block must have exactly one upstream agent")
+        routes = condition_routes.get(condition_id, {})
+        if "pass" not in routes or "fail" not in routes:
+            raise InvalidRequestError("Each condition block must have both pass and fail outputs connected")
+
+    steps_by_agent_id = {
+        agent_id: _extract_agent_step_from_flow(agent_node, nodes_by_id, step_inputs[agent_id])
+        for agent_id, agent_node in agent_nodes.items()
+    }
+
+    return {
+        "rootAgentId": roots[0],
+        "stepsByAgentId": steps_by_agent_id,
+        "nextByAgentId": agent_next,
+        "conditionsById": {
+            condition_id: {
+                "id": condition_id,
+                "config": _node_config(condition_node),
+                "routes": condition_routes.get(condition_id, {}),
+            }
+            for condition_id, condition_node in condition_nodes.items()
+        },
+    }
+
+
+def _extract_text_from_response_data(response_data: Any) -> str:
+    if isinstance(response_data, JSONResponse):
+        try:
+            payload = json.loads(response_data.body.decode()) if hasattr(response_data, "body") else {}
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            return str(payload.get("answer") or payload.get("response") or payload.get("message") or "")
+        return ""
+
+    if isinstance(response_data, dict):
+        return str(response_data.get("answer") or response_data.get("response") or response_data.get("message") or "")
+
+    return str(response_data or "")
+
+
+def _parse_model_selection(model_value: Any) -> tuple[str | None, str | None]:
+    if isinstance(model_value, dict):
+        return model_value.get("modelKey"), model_value.get("modelName")
+    if isinstance(model_value, str):
+        if "_" in model_value:
+            parts = model_value.split("_", 1)
+            return parts[0], parts[1] if len(parts) > 1 else None
+        return model_value, None
+    return None, None
+
+
+def _filter_toolsets_by_enabled_tools(
+    toolsets: list[dict[str, Any]],
+    enabled_tools: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not enabled_tools:
+        return toolsets
+
+    enabled_tools_set = set(enabled_tools)
+    filtered_toolsets: list[dict[str, Any]] = []
+    for toolset in toolsets:
+        toolset_copy = dict(toolset)
+        filtered_tools = [
+            tool for tool in toolset.get("tools", [])
+            if isinstance(tool, dict) and tool.get("fullName") in enabled_tools_set
+        ]
+        if filtered_tools:
+            toolset_copy["tools"] = filtered_tools
+            filtered_toolsets.append(toolset_copy)
+    return filtered_toolsets
+
+
+async def _load_authenticated_toolsets(
+    toolsets: list[dict[str, Any]],
+    *,
+    agent_id: str,
+    user_context: dict[str, Any],
+    agent: dict[str, Any],
+    config_service: ConfigurationService,
+    logger: Logger,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+    from app.agents.constants.toolset_constants import get_toolset_config_path
+    import asyncio as _asyncio
+
+    is_service_account = bool(agent.get("isServiceAccount", False))
+    executing_user_id = user_context["userId"]
+    credential_lookup_id = agent_id if is_service_account else executing_user_id
+    named_toolsets = [t for t in toolsets if t.get("instanceId") or t.get("name")]
+    toolset_configs: dict[str, Any] = {}
+
+    if not named_toolsets:
+        return toolsets, toolset_configs, None
+
+    async def _fetch_toolset_config(toolset: dict[str, Any]) -> tuple[dict[str, Any], Any, str]:
+        instance_id = toolset.get("instanceId")
+        toolset_name = toolset.get("name", "")
+        lookup_key = instance_id or toolset_name
+        try:
+            etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
+            config = await config_service.get_config(etcd_path)
+            return toolset, config, lookup_key
+        except Exception as exc:
+            logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
+            return toolset, None, lookup_key
+
+    fetch_results = await _asyncio.gather(*[_fetch_toolset_config(toolset) for toolset in named_toolsets])
+
+    configured_toolsets: list[dict[str, Any]] = []
+    missing_toolset_display_names: list[str] = []
+    unauthenticated_toolset_display_names: list[str] = []
+
+    for toolset, config, lookup_key in fetch_results:
+        toolset_name = toolset.get("name", "")
+        instance_id = toolset.get("instanceId")
+        display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
+
+        if config and config.get("isAuthenticated", False):
+            toolset_configs[lookup_key] = config
+            configured_toolsets.append(toolset)
+        elif config:
+            unauthenticated_toolset_display_names.append(display_name)
+            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            logger.warning(
+                f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not authenticated for {cred_owner}."
+            )
+        else:
+            missing_toolset_display_names.append(display_name)
+            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            logger.warning(
+                f"Toolset config not found for {cred_owner} / toolset '{toolset_name}' (instance='{instance_id}')."
+            )
+
+    if missing_toolset_display_names or unauthenticated_toolset_display_names:
+        problem_parts = []
+        if missing_toolset_display_names:
+            problem_parts.append(f"not configured: {', '.join(repr(name) for name in missing_toolset_display_names)}")
+        if unauthenticated_toolset_display_names:
+            problem_parts.append(f"not authenticated: {', '.join(repr(name) for name in unauthenticated_toolset_display_names)}")
+
+        if is_service_account:
+            error_message = (
+                f"This service account agent requires the following toolset(s) to be configured — {'; '.join(problem_parts)}. "
+                "Please configure the agent's toolset credentials in the Agent Builder -> Manage Credentials."
+            )
+        else:
+            error_message = (
+                f"This agent requires the following toolset(s) to be set up — {'; '.join(problem_parts)}. "
+                "Please connect your account(s) in Settings -> Toolsets before using this agent."
+            )
+        return configured_toolsets, toolset_configs, error_message
+
+    return configured_toolsets, toolset_configs, None
+
+
+def _derive_filters_from_knowledge(
+    knowledge_sources: list[dict[str, Any]],
+    requested_filters: dict[str, Any] | None,
+    agent_id: str,
+) -> dict[str, Any]:
+    filters = requested_filters.copy() if requested_filters else {}
+
+    if not requested_filters:
+        knowledge_connector_ids = []
+        kb_record_groups = []
+        for knowledge_source in knowledge_sources:
+            if not isinstance(knowledge_source, dict):
+                continue
+            connector_id = knowledge_source.get("connectorId")
+            if connector_id and not str(connector_id).startswith("knowledgeBase_"):
+                knowledge_connector_ids.append(connector_id)
+
+            filters_data = _parse_json_dict(knowledge_source.get("filters") or knowledge_source.get("filtersParsed"))
+            kb_record_groups.extend(filters_data.get("recordGroups", []) or [])
+
+        filters = {
+            "apps": knowledge_connector_ids,
+            "kb": kb_record_groups,
+        }
+    else:
+        if "apps" not in requested_filters or requested_filters.get("apps") is None:
+            filters["apps"] = [
+                source.get("connectorId")
+                for source in knowledge_sources
+                if isinstance(source, dict)
+                and source.get("connectorId")
+                and not str(source.get("connectorId")).startswith("knowledgeBase_")
+            ]
+
+        if "kb" not in requested_filters or requested_filters.get("kb") is None:
+            kb_record_groups = []
+            for knowledge_source in knowledge_sources:
+                if not isinstance(knowledge_source, dict):
+                    continue
+                filters_data = _parse_json_dict(knowledge_source.get("filters") or knowledge_source.get("filtersParsed"))
+                kb_record_groups.extend(filters_data.get("recordGroups", []) or [])
+            filters["kb"] = kb_record_groups
+
+    if not filters.get("kb") and agent_id != "agentIdPlaceholder":
+        filters["kb"] = [NO_KB_SELECTED_FILTER]
+
+    return filters
+
+
+async def _resolve_llm_for_step(
+    step: dict[str, Any],
+    chat_query: ChatQuery,
+    agent: dict[str, Any],
+    config_service: ConfigurationService,
+    fallback_llm: BaseChatModel,
+    require_reasoning: bool,
+) -> BaseChatModel:
+    model_key = chat_query.modelKey
+    model_name = chat_query.modelName
+
+    step_model = step.get("model") or {}
+    if step_model.get("modelKey") or step_model.get("modelName"):
+        model_key = step_model.get("modelKey")
+        model_name = step_model.get("modelName")
+
+    if not model_key and not model_name:
+        agent_models = agent.get("models", [])
+        if agent_models:
+            model_key, model_name = _parse_model_selection(agent_models[0])
+
+    if not model_key and not model_name:
+        if not require_reasoning:
+            return fallback_llm
+
+        llm_result = await get_llm_for_chat(config_service, model_key, model_name, chat_query.chatMode)
+        if not llm_result:
+            raise LLMInitializationError()
+
+        llm = llm_result[0]
+        llm_config = llm_result[1]
+        if not llm_config.get("isReasoning", False):
+            raise ReasoningModelRequiredError()
+        return llm
+
+    llm_result = await get_llm_for_chat(config_service, model_key, model_name, chat_query.chatMode)
+    if not llm_result:
+        raise LLMInitializationError()
+
+    llm = llm_result[0]
+    llm_config = llm_result[1]
+    if require_reasoning and not llm_config.get("isReasoning", False):
+        raise ReasoningModelRequiredError()
+
+    return llm
+
+
+async def _build_step_execution_context(
+    *,
+    step: dict[str, Any],
+    chat_query: ChatQuery,
+    current_query: str,
+    agent: dict[str, Any],
+    agent_id: str,
+    user_context: dict[str, Any],
+    config_service: ConfigurationService,
+    logger: Logger,
+    fallback_llm: BaseChatModel,
+    include_previous_conversations: bool,
+    require_reasoning: bool,
+) -> tuple[dict[str, Any], BaseChatModel, str | None]:
+    step_toolsets = _filter_toolsets_by_enabled_tools(step.get("toolsets", []), chat_query.tools)
+    step_toolsets, toolset_configs, toolset_error = await _load_authenticated_toolsets(
+        step_toolsets,
+        agent_id=agent_id,
+        user_context=user_context,
+        agent=agent,
+        config_service=config_service,
+        logger=logger,
+    )
+    if toolset_error:
+        return {}, fallback_llm, toolset_error
+
+    knowledge_sources = step.get("knowledge", [])
+    filters = _derive_filters_from_knowledge(knowledge_sources, chat_query.filters, agent_id)
+    filtered_knowledge = _filter_knowledge_by_enabled_sources(knowledge_sources, filters)
+
+    connector_ids = [
+        source["connectorId"]
+        for source in filtered_knowledge
+        if isinstance(source, dict)
+        and source.get("connectorId")
+        and not str(source["connectorId"]).startswith("knowledgeBase_")
+    ]
+    connector_configs = await fetch_connector_configs(config_service, connector_ids)
+
+    llm = await _resolve_llm_for_step(
+        step,
+        chat_query,
+        agent,
+        config_service,
+        fallback_llm,
+        require_reasoning=require_reasoning,
+    )
+
+    query_info = {
+        "query": current_query,
+        "limit": chat_query.limit,
+        "messages": [],
+        "previous_conversations": chat_query.previousConversations if include_previous_conversations else [],
+        "quickMode": chat_query.quickMode,
+        "chatMode": chat_query.chatMode,
+        "retrievalMode": chat_query.retrievalMode,
+        "filters": filters,
+        "systemPrompt": step.get("systemPrompt") or agent.get("systemPrompt"),
+        "instructions": step.get("instructions") or agent.get("instructions"),
+        "timezone": chat_query.timezone,
+        "currentTime": chat_query.currentTime,
+        "toolsets": step_toolsets,
+        "knowledge": filtered_knowledge,
+        "connector_configs": connector_configs,
+        "toolsetConfigs": toolset_configs,
+        "conversationId": chat_query.conversationId,
+        "is_service_account": bool(agent.get("isServiceAccount", False)),
+    }
+
+    return query_info, llm, None
+
+
+async def _invoke_agent_query(
+    query_info: dict[str, Any],
+    *,
+    user_info: dict[str, Any],
+    llm: BaseChatModel,
+    logger: Logger,
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
+    reranker_service: RerankerService,
+    config_service: ConfigurationService,
+    org_info: dict[str, Any] | None,
+) -> Any:
+    selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
+
+    if selected_graph == deep_agent_graph:
+        initial_state = build_deep_agent_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+        )
+    else:
+        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+        initial_state = build_initial_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+            graph_type,
+        )
+
+    final_state = await selected_graph.ainvoke(initial_state, config={"recursion_limit": 50})
+
+    if final_state.get("error"):
+        error = final_state["error"]
+        return JSONResponse(
+            status_code=error.get("status_code", 500),
+            content={
+                "status": error.get("status", "error"),
+                "message": error.get("message", "An error occurred"),
+                "searchResults": [],
+                "records": [],
+            },
+        )
+
+    return final_state.get("completion_data", final_state.get("response"))
+
+
+def _parse_sse_event_chunk(chunk: str) -> tuple[str | None, Any]:
+    event_type = None
+    data_lines: list[str] = []
+    for line in chunk.strip().splitlines():
+        if line.startswith("event:"):
+            event_type = line.replace("event:", "", 1).strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.replace("data:", "", 1).strip())
+
+    data: Any = None
+    if data_lines:
+        raw_data = "\n".join(data_lines)
+        try:
+            data = json.loads(raw_data)
+        except json.JSONDecodeError:
+            data = raw_data
+    return event_type, data
+
+
+async def _run_linear_agent_chain(
+    *,
+    agent: dict[str, Any],
+    agent_id: str,
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    enriched_user_info: dict[str, Any],
+    services: dict[str, Any],
+    org_info: dict[str, Any] | None,
+) -> Any:
+    steps = _build_linear_agent_steps(agent)
+    if not steps:
+        raise InvalidRequestError("Linear orchestration requires at least one agent block in the saved flow")
+
+    current_query = chat_query.query
+    final_result: Any = None
+
+    for index, step in enumerate(steps):
+        query_info, llm, toolset_error = await _build_step_execution_context(
+            step=step,
+            chat_query=chat_query,
+            current_query=current_query,
+            agent=agent,
+            agent_id=agent_id,
+            user_context=user_context,
+            config_service=services["config_service"],
+            logger=services["logger"],
+            fallback_llm=services["llm"],
+            include_previous_conversations=index == 0,
+            require_reasoning=False,
+        )
+        if toolset_error:
+            raise InvalidRequestError(toolset_error)
+
+        final_result = await _invoke_agent_query(
+            query_info,
+            user_info=enriched_user_info,
+            llm=llm,
+            logger=services["logger"],
+            retrieval_service=services["retrieval_service"],
+            graph_provider=services["graph_provider"],
+            reranker_service=services["reranker_service"],
+            config_service=services["config_service"],
+            org_info=org_info,
+        )
+        current_query = _extract_text_from_response_data(final_result)
+
+    return final_result
+
+
+async def _run_conditional_agent_chain(
+    *,
+    agent: dict[str, Any],
+    agent_id: str,
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    enriched_user_info: dict[str, Any],
+    services: dict[str, Any],
+    org_info: dict[str, Any] | None,
+) -> Any:
+    graph = _build_conditional_orchestration_graph(agent)
+    if not graph:
+        raise InvalidRequestError("Conditional orchestration requires at least one agent block in the saved flow")
+
+    current_query = chat_query.query
+    final_result: Any = None
+    current_agent_id = graph["rootAgentId"]
+    hop_count = 0
+    max_hops = len(graph["stepsByAgentId"]) + len(graph["conditionsById"]) + 5
+
+    while current_agent_id:
+        hop_count += 1
+        if hop_count > max_hops:
+            raise InvalidRequestError("Conditional orchestration flow contains a cycle")
+
+        step = graph["stepsByAgentId"].get(current_agent_id)
+        if not step:
+            raise InvalidRequestError("Conditional orchestration references an unknown agent block")
+
+        query_info, llm, toolset_error = await _build_step_execution_context(
+            step=step,
+            chat_query=chat_query,
+            current_query=current_query,
+            agent=agent,
+            agent_id=agent_id,
+            user_context=user_context,
+            config_service=services["config_service"],
+            logger=services["logger"],
+            fallback_llm=services["llm"],
+            include_previous_conversations=hop_count == 1,
+            require_reasoning=False,
+        )
+        if toolset_error:
+            raise InvalidRequestError(toolset_error)
+
+        final_result = await _invoke_agent_query(
+            query_info,
+            user_info=enriched_user_info,
+            llm=llm,
+            logger=services["logger"],
+            retrieval_service=services["retrieval_service"],
+            graph_provider=services["graph_provider"],
+            reranker_service=services["reranker_service"],
+            config_service=services["config_service"],
+            org_info=org_info,
+        )
+        current_query = _extract_text_from_response_data(final_result)
+
+        next_ref = graph["nextByAgentId"].get(current_agent_id)
+        if not next_ref:
+            return final_result
+
+        if next_ref["kind"] == "agent":
+            current_agent_id = next_ref["targetId"]
+            continue
+
+        if next_ref["kind"] != "condition":
+            raise InvalidRequestError("Unsupported orchestration edge type")
+
+        condition_info = graph["conditionsById"].get(next_ref["targetId"])
+        if not condition_info:
+            raise InvalidRequestError("Conditional orchestration references an unknown condition block")
+
+        condition_result = _evaluate_condition_node(
+            condition_info.get("config", {}),
+            current_query,
+            final_result,
+        )
+        selected_route = condition_info.get("routes", {}).get("pass" if condition_result else "fail")
+
+        if not selected_route or selected_route.get("kind") == "output":
+            return final_result
+
+        if selected_route.get("kind") != "agent":
+            raise InvalidRequestError("Condition route must target an agent or output")
+
+        current_agent_id = selected_route.get("targetId")
+
+    return final_result
+
+
+async def _stream_linear_agent_chain(
+    *,
+    agent: dict[str, Any],
+    agent_id: str,
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    enriched_user_info: dict[str, Any],
+    services: dict[str, Any],
+    org_info: dict[str, Any] | None,
+) -> AsyncGenerator[str, None]:
+    steps = _build_linear_agent_steps(agent)
+    if not steps:
+        yield f"event: error\ndata: {json.dumps({'message': 'Linear orchestration requires at least one agent block in the saved flow', 'type': 'invalid_orchestration'})}\n\n"
+        return
+
+    current_query = chat_query.query
+    last_index = len(steps) - 1
+
+    for index, step in enumerate(steps):
+        yield f"event: orchestration_step_started\ndata: {json.dumps({'stepIndex': index + 1, 'stepCount': len(steps), 'agentNodeId': step.get('id'), 'agentName': step.get('name')})}\n\n"
+
+        query_info, llm, toolset_error = await _build_step_execution_context(
+            step=step,
+            chat_query=chat_query,
+            current_query=current_query,
+            agent=agent,
+            agent_id=agent_id,
+            user_context=user_context,
+            config_service=services["config_service"],
+            logger=services["logger"],
+            fallback_llm=services["llm"],
+            include_previous_conversations=index == 0,
+            require_reasoning=True,
+        )
+
+        if toolset_error:
+            yield f"event: error\ndata: {json.dumps({'message': toolset_error, 'type': 'toolset_config_missing'})}\n\n"
+            return
+
+        completion_payload = None
+        async for chunk in stream_response(
+            query_info,
+            enriched_user_info,
+            llm,
+            services["logger"],
+            services["retrieval_service"],
+            services["graph_provider"],
+            services["reranker_service"],
+            services["config_service"],
+            org_info,
+        ):
+            event_type, event_data = _parse_sse_event_chunk(chunk)
+
+            if event_type == "error":
+                yield chunk
+                return
+
+            if event_type == "complete":
+                completion_payload = event_data
+                current_query = _extract_text_from_response_data(event_data)
+                yield f"event: orchestration_step_completed\ndata: {json.dumps({'stepIndex': index + 1, 'stepCount': len(steps), 'agentNodeId': step.get('id'), 'agentName': step.get('name')})}\n\n"
+                if index == last_index:
+                    yield chunk
+                break
+
+            if index == last_index:
+                yield chunk
+
+        if completion_payload is None:
+            yield f"event: error\ndata: {json.dumps({'message': f'No complete response received from orchestration step {index + 1}', 'type': 'incomplete_response'})}\n\n"
+            return
+
+
+async def _stream_conditional_agent_chain(
+    *,
+    agent: dict[str, Any],
+    agent_id: str,
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    enriched_user_info: dict[str, Any],
+    services: dict[str, Any],
+    org_info: dict[str, Any] | None,
+) -> AsyncGenerator[str, None]:
+    graph = _build_conditional_orchestration_graph(agent)
+    if not graph:
+        yield f"event: error\ndata: {json.dumps({'message': 'Conditional orchestration requires at least one agent block in the saved flow', 'type': 'invalid_orchestration'})}\n\n"
+        return
+
+    current_query = chat_query.query
+    current_agent_id = graph["rootAgentId"]
+    hop_count = 0
+    max_hops = len(graph["stepsByAgentId"]) + len(graph["conditionsById"]) + 5
+
+    while current_agent_id:
+        hop_count += 1
+        if hop_count > max_hops:
+            yield f"event: error\ndata: {json.dumps({'message': 'Conditional orchestration flow contains a cycle', 'type': 'invalid_orchestration'})}\n\n"
+            return
+
+        step = graph["stepsByAgentId"].get(current_agent_id)
+        if not step:
+            yield f"event: error\ndata: {json.dumps({'message': 'Conditional orchestration references an unknown agent block', 'type': 'invalid_orchestration'})}\n\n"
+            return
+
+        yield f"event: orchestration_step_started\ndata: {json.dumps({'stepIndex': hop_count, 'agentNodeId': step.get('id'), 'agentName': step.get('name')})}\n\n"
+
+        query_info, llm, toolset_error = await _build_step_execution_context(
+            step=step,
+            chat_query=chat_query,
+            current_query=current_query,
+            agent=agent,
+            agent_id=agent_id,
+            user_context=user_context,
+            config_service=services["config_service"],
+            logger=services["logger"],
+            fallback_llm=services["llm"],
+            include_previous_conversations=hop_count == 1,
+            require_reasoning=True,
+        )
+
+        if toolset_error:
+            yield f"event: error\ndata: {json.dumps({'message': toolset_error, 'type': 'toolset_config_missing'})}\n\n"
+            return
+
+        completion_payload = None
+        complete_chunk = None
+        buffered_chunks: list[str] = []
+
+        async for chunk in stream_response(
+            query_info,
+            enriched_user_info,
+            llm,
+            services["logger"],
+            services["retrieval_service"],
+            services["graph_provider"],
+            services["reranker_service"],
+            services["config_service"],
+            org_info,
+        ):
+            event_type, event_data = _parse_sse_event_chunk(chunk)
+
+            if event_type == "error":
+                yield chunk
+                return
+
+            if event_type == "complete":
+                completion_payload = event_data
+                complete_chunk = chunk
+                current_query = _extract_text_from_response_data(event_data)
+                break
+
+            buffered_chunks.append(chunk)
+
+        if completion_payload is None:
+            yield f"event: error\ndata: {json.dumps({'message': f'No complete response received from orchestration step {hop_count}', 'type': 'incomplete_response'})}\n\n"
+            return
+
+        yield f"event: orchestration_step_completed\ndata: {json.dumps({'stepIndex': hop_count, 'agentNodeId': step.get('id'), 'agentName': step.get('name')})}\n\n"
+
+        next_ref = graph["nextByAgentId"].get(current_agent_id)
+        if not next_ref:
+            for buffered_chunk in buffered_chunks:
+                yield buffered_chunk
+            if complete_chunk:
+                yield complete_chunk
+            return
+
+        if next_ref["kind"] == "agent":
+            current_agent_id = next_ref["targetId"]
+            continue
+
+        if next_ref["kind"] != "condition":
+            yield f"event: error\ndata: {json.dumps({'message': 'Unsupported orchestration edge type', 'type': 'invalid_orchestration'})}\n\n"
+            return
+
+        condition_info = graph["conditionsById"].get(next_ref["targetId"])
+        if not condition_info:
+            yield f"event: error\ndata: {json.dumps({'message': 'Conditional orchestration references an unknown condition block', 'type': 'invalid_orchestration'})}\n\n"
+            return
+
+        condition_result = _evaluate_condition_node(
+            condition_info.get("config", {}),
+            current_query,
+            completion_payload,
+        )
+        route_key = "pass" if condition_result else "fail"
+        yield f"event: orchestration_condition_evaluated\ndata: {json.dumps({'conditionNodeId': condition_info.get('id'), 'route': route_key, 'passed': condition_result})}\n\n"
+
+        selected_route = condition_info.get("routes", {}).get(route_key)
+        if not selected_route or selected_route.get("kind") == "output":
+            for buffered_chunk in buffered_chunks:
+                yield buffered_chunk
+            if complete_chunk:
+                yield complete_chunk
+            return
+
+        if selected_route.get("kind") != "agent":
+            yield f"event: error\ndata: {json.dumps({'message': 'Condition route must target an agent or output', 'type': 'invalid_orchestration'})}\n\n"
+            return
+
+        current_agent_id = selected_route.get("targetId")
 
 
 async def _create_toolset_edges(
@@ -1544,6 +2784,9 @@ async def create_agent(request: Request) -> JSONResponse:
             "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
+            "flow": body.get("flow") if isinstance(body.get("flow"), dict) else None,
+            "flowSchemaVersion": body.get("flowSchemaVersion") if isinstance(body.get("flowSchemaVersion"), int) else 1,
+            "orchestrationMode": body.get("orchestrationMode") if isinstance(body.get("orchestrationMode"), str) else "single",
             "isActive": True,
             "isServiceAccount": is_service_account,
             "createdBy": user_key,
@@ -2683,6 +3926,28 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
         agent.update(perm)
 
+        if _should_use_conditional_orchestration(agent):
+            return await _run_conditional_agent_chain(
+                agent=agent,
+                agent_id=agent_id,
+                chat_query=chat_query,
+                user_context=user_context,
+                enriched_user_info=enriched_user_info,
+                services=services,
+                org_info=org_info,
+            )
+
+        if _should_use_linear_orchestration(agent):
+            return await _run_linear_agent_chain(
+                agent=agent,
+                agent_id=agent_id,
+                chat_query=chat_query,
+                user_context=user_context,
+                enriched_user_info=enriched_user_info,
+                services=services,
+                org_info=org_info,
+            )
+
         agent_knowledge = agent.get("knowledge", [])
 
         # Build filters from knowledge array (new format)
@@ -2867,6 +4132,44 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
+
+        if _should_use_conditional_orchestration(agent):
+            return StreamingResponse(
+                _stream_conditional_agent_chain(
+                    agent=agent,
+                    agent_id=agent_id,
+                    chat_query=chat_query,
+                    user_context=user_context,
+                    enriched_user_info=enriched_user_info,
+                    services=services,
+                    org_info=org_info,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        if _should_use_linear_orchestration(agent):
+            return StreamingResponse(
+                _stream_linear_agent_chain(
+                    agent=agent,
+                    agent_id=agent_id,
+                    chat_query=chat_query,
+                    user_context=user_context,
+                    enriched_user_info=enriched_user_info,
+                    services=services,
+                    org_info=org_info,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
         # Determine model key/name: prefer explicit query params, then agent's first model
         model_key = chat_query.modelKey

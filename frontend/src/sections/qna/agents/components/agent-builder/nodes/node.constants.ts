@@ -114,16 +114,20 @@ export const getNodeColors = (isDark: boolean) => ({
   },
 });
 
+
 /**
  * Agent core handle types and their labels
+ * These define all input and output connections for agent nodes
  */
 export const AGENT_CORE_HANDLES = {
+  // Inputs (targets)
   INPUT: 'input',
   ACTIONS: 'actions',
   KNOWLEDGE: 'knowledge',
   LLMS: 'llms',
+  // Outputs (sources)
+  RESPONSE: 'response',
 } as const;
-
 /**
  * Node category labels for UI display
  */

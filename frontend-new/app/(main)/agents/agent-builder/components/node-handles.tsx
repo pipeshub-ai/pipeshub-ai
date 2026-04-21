@@ -8,19 +8,28 @@ import { calculateHandlePosition, shouldShowInputHandles, shouldShowOutputHandle
 
 const handleRing = FLOW_NODE_PANEL_BG;
 
+// Map output handle IDs to label + color for conditional-check nodes
+const CONDITIONAL_HANDLE_META: Record<string, { label: string; color: string; hoverColor: string }> = {
+  pass: { label: 'Pass', color: '#58b78a', hoverColor: '#469f77' },
+  fail: { label: 'Fail', color: '#d98989', hoverColor: '#c87777' },
+};
+
 function ConnectedHandle({
   type,
   position,
   id,
   style,
+  isConditional,
 }: {
   type: 'source' | 'target';
   position: Position;
   id: string;
   style: React.CSSProperties;
+  isConditional?: boolean;
 }) {
   const connections = useNodeConnections({ handleType: type, handleId: id });
   const isConnected = connections.length > 0;
+  const meta = isConditional ? CONDITIONAL_HANDLE_META[id] : undefined;
 
   return (
     <Handle
@@ -29,7 +38,11 @@ function ConnectedHandle({
       id={id}
       className="agent-builder-node-handle"
       data-connected={isConnected ? 'true' : 'false'}
-      style={style}
+      style={{
+        ...style,
+        backgroundColor: meta ? meta.color : style.background,
+        borderColor: meta ? `rgba(${parseInt(meta.color.slice(1, 3), 16)}, ${parseInt(meta.color.slice(3, 5), 16)}, ${parseInt(meta.color.slice(5, 7), 16)}, 0.35)` : '1.5px solid var(--gray-7)',
+      }}
     />
   );
 }
@@ -38,6 +51,7 @@ export function NodeHandles({ data }: { data: FlowNodeData }) {
   const nodeType = data.type;
   const showIn = shouldShowInputHandles(nodeType) && data.inputs?.length;
   const showOut = shouldShowOutputHandles(nodeType) && data.outputs?.length;
+  const isConditional = nodeType === 'conditional-check';
 
   return (
     <>
@@ -49,6 +63,7 @@ export function NodeHandles({ data }: { data: FlowNodeData }) {
               type="target"
               position={Position.Left}
               id={input}
+              isConditional={false}
               style={{
                 top: calculateHandlePosition(
                   index,
@@ -77,6 +92,7 @@ export function NodeHandles({ data }: { data: FlowNodeData }) {
               type="source"
               position={Position.Right}
               id={output}
+              isConditional={isConditional}
               style={{
                 top: calculateHandlePosition(
                   index,

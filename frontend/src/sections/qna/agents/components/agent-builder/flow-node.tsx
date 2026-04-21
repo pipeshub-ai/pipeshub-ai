@@ -2123,7 +2123,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
         const now = Date.now();
         if (now - lastClickTime < 300) return;
         setLastClickTime(now);
-        e.stopPropagation();
       }}
     >
       {/* Minimal Header */}
@@ -2650,6 +2649,56 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 </Typography>
               )}
             </Box>
+          </Box>
+        )}
+
+        {/* Condition Check routing summary */}
+        {data.type === 'conditional-check' && (
+          <Box sx={{ mb: 2 }}>
+            {/* Active check mode pill */}
+            <Box
+              sx={{
+                mb: 1.5,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0.75,
+                backgroundColor: alpha(colors.primary, 0.1),
+                border: `1px solid ${alpha(colors.primary, 0.25)}`,
+                borderRadius: '6px',
+                px: 1,
+                py: 0.5,
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: '0.65rem',
+                  fontWeight: 700,
+                  color: colors.primary,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  lineHeight: 1,
+                }}
+              >
+                {(() => {
+                  const modeLabels: Record<string, string> = {
+                    contains: 'Contains',
+                    not_contains: 'Not Contains',
+                    equals: 'Equals',
+                    not_equals: 'Not Equals',
+                    starts_with: 'Starts With',
+                    ends_with: 'Ends With',
+                    regex: 'Regex',
+                    min_length: 'Min Length',
+                    max_length: 'Max Length',
+                    is_empty: 'Is Empty',
+                    not_empty: 'Not Empty',
+                    json_path_equals: 'JSON Path',
+                  };
+                  return modeLabels[data.config?.mode as string] ?? (data.config?.mode as string) ?? 'Contains';
+                })()}
+              </Typography>
+            </Box>
+
           </Box>
         )}
 

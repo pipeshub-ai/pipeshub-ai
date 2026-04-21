@@ -318,6 +318,37 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         setBanner(t(msgKey));
         return;
       }
+
+      const sourceType = sourceNode?.data?.type;
+      const targetType = targetNode?.data?.type;
+
+      // Linear chain guardrails: each agent has max one response successor.
+      if (sourceType === 'agent-core' && connection.sourceHandle === 'response') {
+        const existingOutgoing = edges.some(
+          (e) =>
+            e.source === connection.source &&
+            e.sourceHandle === 'response' &&
+            !(e.target === connection.target && e.targetHandle === connection.targetHandle)
+        );
+        if (existingOutgoing) {
+          setBanner(t('agentBuilder.connectionInvalid'));
+          return;
+        }
+      }
+
+      // Linear chain guardrails: each downstream agent input accepts only one predecessor agent.
+      if (targetType === 'agent-core' && connection.targetHandle === 'input') {
+        const existingIncomingFromAgent = edges.some((e) => {
+          if (e.target !== connection.target || e.targetHandle !== 'input') return false;
+          const existingSourceType = nodes.find((n) => n.id === e.source)?.data?.type;
+          return existingSourceType === 'agent-core';
+        });
+        if (existingIncomingFromAgent && sourceType === 'agent-core') {
+          setBanner(t('agentBuilder.connectionInvalid'));
+          return;
+        }
+      }
+
       setEdges((eds) =>
         addEdge(
           {
@@ -330,7 +361,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         )
       );
     },
-    [isReadOnly, nodes, setEdges, t]
+    [edges, isReadOnly, nodes, setEdges, t]
   );
 
   const onEdgeClick = useCallback(
@@ -403,6 +434,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         ),
         // Persist the visual layout so positions survive subsequent edits.
         flow: { nodes, edges },
+        flowSchemaVersion: 2,
+        orchestrationMode: nodes.some((node) => node.data?.type === 'conditional-check')
+          ? 'conditional'
+          : 'linear',
       };
 
       if (loadedAgent) {
@@ -455,6 +490,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           true
         ),
         flow: { nodes, edges },
+        flowSchemaVersion: 2,
+        orchestrationMode: nodes.some((node) => node.data?.type === 'conditional-check')
+          ? 'conditional'
+          : 'linear',
       };
 
       if (currentAgent) {

@@ -100,6 +100,38 @@ export const FlowNode = React.memo(function FlowNode({
     return <AgentCoreNode id={id} data={data} selected={selected} readOnly={readOnly} />;
   }
 
+  if (data.type === 'conditional-check') {
+    return (
+      <NodeCardShell
+        id={id}
+        data={data}
+        chrome={chrome}
+        selected={selected}
+        readOnly={readOnly}
+        onDelete={onDelete}
+        headerLabel="Condition Check"
+        subtitle={`Mode: ${(() => {
+          const modeLabels: Record<string, string> = {
+            contains: 'Contains',
+            not_contains: 'Not Contains',
+            equals: 'Equals',
+            not_equals: 'Not Equals',
+            starts_with: 'Starts With',
+            ends_with: 'Ends With',
+            regex: 'Regex',
+            min_length: 'Min Length',
+            max_length: 'Max Length',
+            is_empty: 'Is Empty',
+            not_empty: 'Not Empty',
+            json_path_equals: 'JSON Path',
+          };
+          return modeLabels[(data.config?.mode as string) ?? 'contains'] ?? (data.config?.mode as string) ?? 'Contains';
+        })()}`}
+        icon="source_branch"
+      />
+    );
+  }
+
   if (data.type.startsWith('toolset-')) {
     return (
       <ToolsetFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />

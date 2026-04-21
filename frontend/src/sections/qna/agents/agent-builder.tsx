@@ -607,6 +607,105 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         const sourceType = sourceNode.data.type;
         const targetType = targetNode.data.type;
 
+        // Linear chaining guardrails for agent->agent connections.
+        if (sourceType === 'agent-core' && targetType === 'agent-core') {
+          if (connection.sourceHandle !== 'response' || connection.targetHandle !== 'input') {
+            setError('Agent-to-agent connections must use response → input');
+            return;
+          }
+
+          const hasOutgoingAgentConnection = edges.some(
+            (edge) =>
+              edge.source === connection.source &&
+              edge.sourceHandle === 'response' &&
+              nodes.find((n) => n.id === edge.target)?.data.type === 'agent-core'
+          );
+          if (hasOutgoingAgentConnection) {
+            setError('Each agent can connect to only one downstream agent');
+            return;
+          }
+
+          const hasIncomingAgentConnection = edges.some(
+            (edge) =>
+              edge.target === connection.target &&
+              edge.targetHandle === 'input' &&
+              nodes.find((n) => n.id === edge.source)?.data.type === 'agent-core'
+          );
+          if (hasIncomingAgentConnection) {
+            setError('Each agent can have only one upstream agent');
+            return;
+          }
+        }
+
+        if (sourceType === 'agent-core' && targetType === 'conditional-check') {
+          if (connection.sourceHandle !== 'response' || connection.targetHandle !== 'input') {
+            setError('Agent-to-condition connections must use response → input');
+            return;
+          }
+
+          const hasOutgoingConditionConnection = edges.some(
+            (edge) =>
+              edge.source === connection.source &&
+              edge.sourceHandle === 'response' &&
+              nodes.find((n) => n.id === edge.target)?.data.type === 'conditional-check'
+          );
+          if (hasOutgoingConditionConnection) {
+            setError('Each agent can connect to only one downstream condition block');
+            return;
+          }
+        }
+
+        if (targetType === 'conditional-check') {
+          if (sourceType !== 'agent-core') {
+            setError('Condition blocks can only receive input from an agent');
+            return;
+          }
+          if (connection.targetHandle !== 'input' || connection.sourceHandle !== 'response') {
+            setError('Condition blocks must be connected via response → input');
+            return;
+          }
+
+          const hasIncomingConditionConnection = edges.some(
+            (edge) => edge.target === connection.target && edge.targetHandle === 'input'
+          );
+          if (hasIncomingConditionConnection) {
+            setError('Each condition block can have only one upstream agent');
+            return;
+          }
+        }
+
+        if (sourceType === 'conditional-check') {
+          if (connection.sourceHandle !== 'pass' && connection.sourceHandle !== 'fail') {
+            setError('Condition blocks must connect from pass or fail outputs');
+            return;
+          }
+
+          if (targetType !== 'agent-core' && targetType !== 'chat-response') {
+            setError('Condition blocks can only connect to an agent or chat response');
+            return;
+          }
+
+          if (targetType === 'agent-core' && connection.targetHandle !== 'input') {
+            setError('Condition output to an agent must connect to the input handle');
+            return;
+          }
+
+          if (targetType === 'chat-response' && connection.targetHandle !== 'response') {
+            setError('Condition output to chat response must connect to response handle');
+            return;
+          }
+
+          const hasExistingBranchConnection = edges.some(
+            (edge) =>
+              edge.source === connection.source &&
+              edge.sourceHandle === connection.sourceHandle
+          );
+          if (hasExistingBranchConnection) {
+            setError(`Condition output "${connection.sourceHandle}" can only be connected once`);
+            return;
+          }
+        }
+
         // ============================================
         // VALIDATION: Only allow connections to/from agent-core
         // ============================================
@@ -680,18 +779,30 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
 
         // Agent can only connect to output nodes
         if (sourceType === 'agent-core') {
-          if (targetType !== 'chat-response') {
-            setError('Agent can only connect to output nodes');
-            return;
-          }
           if (connection.sourceHandle !== 'response') {
             setError('Agent must connect from its response handle');
+            return;
+          }
+
+          if (targetType === 'chat-response') {
+            if (connection.targetHandle !== 'response') {
+              setError('Agent output must connect to chat output response handle');
+              return;
+            }
+          } else if (targetType !== 'agent-core' && targetType !== 'conditional-check') {
+            setError('Agent can only connect to another agent, a condition block, or output node');
             return;
           }
         }
 
         // Prevent invalid connections between non-agent nodes
-        if (sourceType !== 'agent-core' && targetType !== 'agent-core' && targetType !== 'chat-response') {
+        if (
+          sourceType !== 'agent-core' &&
+          sourceType !== 'conditional-check' &&
+          targetType !== 'agent-core' &&
+          targetType !== 'chat-response' &&
+          targetType !== 'conditional-check'
+        ) {
           setError('Nodes can only connect to the agent or output nodes');
           return;
         }
@@ -705,6 +816,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         // Individual tools should only connect to agent
         if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType !== 'agent-core') {
           setError('Tools must be connected to the agent');
+          return;
+        }
+
+        if (sourceType === 'conditional-check' && targetType === 'conditional-check') {
+          setError('Condition blocks cannot connect to other condition blocks directly');
           return;
         }
       }
@@ -721,7 +837,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       };
       setEdges((eds) => addEdge(newEdge as any, eds));
     },
-    [setEdges, theme, nodes, setError, isReadOnly]
+    [setEdges, theme, nodes, edges, setError, isReadOnly]
   );
 
   // Handle edge selection and deletion (one-click delete)
@@ -912,9 +1028,18 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         isServiceAccount
       );
 
+      const payload: AgentFormData = {
+        ...agentConfig,
+        flow: { nodes, edges },
+        flowSchemaVersion: 2,
+        orchestrationMode: nodes.some((node) => node.data?.type === 'conditional-check')
+          ? 'conditional'
+          : 'linear',
+      };
+
       const agent = currentAgent
-        ? await AgentApiService.updateAgent(currentAgent._key, agentConfig)
-        : await AgentApiService.createAgent(agentConfig);
+        ? await AgentApiService.updateAgent(currentAgent._key, payload)
+        : await AgentApiService.createAgent(payload);
 
       setSuccess(currentAgent ? 'Agent updated successfully!' : 'Agent created successfully!');
       setTimeout(() => {

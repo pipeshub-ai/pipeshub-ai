@@ -4,6 +4,7 @@
 import React from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { alpha, useTheme } from '@mui/material/styles';
+import { Box, Typography } from '@mui/material';
 import { NodeData } from '../../../types/agent';
 import {
   shouldShowInputHandles,
@@ -79,13 +80,21 @@ export const NodeInputHandles: React.FC<NodeHandlesProps> = ({ data }) => {
   );
 };
 
+// Map output handle IDs to label + color for conditional-check nodes
+const CONDITIONAL_HANDLE_META: Record<string, { label: string; color: string; hoverColor: string }> = {
+  pass: { label: 'Pass', color: '#58b78a', hoverColor: '#469f77' },
+  fail: { label: 'Fail', color: '#d98989', hoverColor: '#c87777' },
+};
+
 /**
  * Output Handles Component
- * Renders all output handles for a node based on its configuration
+ * Renders all output handles for a node based on its configuration.
+ * For conditional-check nodes, pass/fail handles get distinct colors and labels.
  */
 export const NodeOutputHandles: React.FC<NodeHandlesProps> = ({ data }) => {
   const theme = useTheme();
   const nodeType = data.type;
+  const isConditional = nodeType === 'conditional-check';
 
   // Check if this node type should display output handles
   if (!shouldShowOutputHandles(nodeType)) {
@@ -109,33 +118,76 @@ export const NodeOutputHandles: React.FC<NodeHandlesProps> = ({ data }) => {
           HANDLE_CONFIG.OUTPUT.POSITION_INCREMENT
         );
 
+        const meta = isConditional ? CONDITIONAL_HANDLE_META[output] : undefined;
+        const baseColor = meta ? meta.color : theme.palette.text.secondary;
+        const hoverColor = meta ? meta.hoverColor : theme.palette.text.primary;
+
         return (
-          <Handle
-            key={`output-${output}-${index}`}
-            type="source"
-            position={Position.Right}
-            id={output}
-            style={{
-              top: topPosition,
-              right: HANDLE_CONFIG.OUTPUT.OFFSET_RIGHT,
-              width: HANDLE_CONFIG.OUTPUT.SIZE,
-              height: HANDLE_CONFIG.OUTPUT.SIZE,
-              backgroundColor: theme.palette.text.secondary,
-              border: `1px solid ${theme.palette.background.paper}`,
-              borderRadius: '50%',
-              cursor: 'crosshair',
-              zIndex: HANDLE_CONFIG.OUTPUT.Z_INDEX,
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
-              e.currentTarget.style.backgroundColor = theme.palette.text.primary;
-              e.currentTarget.style.transform = 'scale(1.2)';
-            }}
-            onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
-              e.currentTarget.style.backgroundColor = theme.palette.text.secondary;
-              e.currentTarget.style.transform = 'scale(1)';
-            }}
-          />
+          <React.Fragment key={`output-frag-${output}-${index}`}>
+            {/* Inline label badge for conditional pass/fail handles */}
+            {meta && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: topPosition,
+                  right: -52,
+                  transform: 'translateY(-50%)',
+                  zIndex: (HANDLE_CONFIG.OUTPUT.Z_INDEX ?? 10) + 1,
+                  pointerEvents: 'none',
+                  userSelect: 'none',
+                }}
+              >
+                <Typography
+                  component="span"
+                  sx={{
+                    display: 'inline-block',
+                    fontSize: '0.58rem',
+                    fontWeight: 700,
+                    color: meta.color,
+                    backgroundColor: alpha(meta.color, 0.12),
+                    border: `1px solid ${alpha(meta.color, 0.35)}`,
+                    borderRadius: '4px',
+                    px: 0.6,
+                    py: 0.1,
+                    letterSpacing: '0.04em',
+                    textTransform: 'uppercase',
+                    lineHeight: 1.6,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {meta.label}
+                </Typography>
+              </Box>
+            )}
+
+            <Handle
+              type="source"
+              position={Position.Right}
+              id={output}
+              style={{
+                top: topPosition,
+                right: HANDLE_CONFIG.OUTPUT.OFFSET_RIGHT,
+                width: HANDLE_CONFIG.OUTPUT.SIZE,
+                height: HANDLE_CONFIG.OUTPUT.SIZE,
+                backgroundColor: baseColor,
+                border: meta
+                  ? `2px solid ${alpha(baseColor, 0.45)}`
+                  : `1px solid ${theme.palette.background.paper}`,
+                borderRadius: '50%',
+                cursor: 'crosshair',
+                zIndex: HANDLE_CONFIG.OUTPUT.Z_INDEX,
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
+                e.currentTarget.style.backgroundColor = hoverColor;
+                e.currentTarget.style.transform = 'scale(1.3)';
+              }}
+              onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
+                e.currentTarget.style.backgroundColor = baseColor;
+                e.currentTarget.style.transform = 'scale(1)';
+              }}
+            />
+          </React.Fragment>
         );
       })}
     </>

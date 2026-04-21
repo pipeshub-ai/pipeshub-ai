@@ -78,6 +78,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
+    Agents: true,
     'Input / Output': true,
     'LLM Models': false,
     Knowledge: false,
@@ -212,6 +213,11 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
 
   // Category configuration
   const categoryConfig = [
+    {
+      name: 'Agents',
+      icon: CATEGORY_ICONS.processing,
+      categories: ['agent'],
+    },
     {
       name: 'Input / Output',
       icon: CATEGORY_ICONS.inputOutput,

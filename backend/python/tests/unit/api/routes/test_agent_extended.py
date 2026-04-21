@@ -918,4 +918,87 @@ class TestChatQueryExtended:
         assert q.timezone is None
         assert q.currentTime is None
         assert q.conversationId is None
+
+
+# ============================================================================
+# Conditional orchestration helpers
+# ============================================================================
+
+
+class TestConditionalOrchestrationHelpers:
+    def test_evaluate_condition_contains_case_insensitive(self):
+        from app.api.routes.agent import _evaluate_condition_node
+
+        config = {
+            "mode": "contains",
+            "expectedValue": "done",
+            "caseSensitive": False,
+        }
+        assert _evaluate_condition_node(config, "Task is DONE successfully", {}) is True
+
+    def test_evaluate_condition_regex(self):
+        from app.api.routes.agent import _evaluate_condition_node
+
+        config = {
+            "mode": "regex",
+            "regexPattern": r"score:\\s*(9|10)",
+        }
+        assert _evaluate_condition_node(config, "Quality score: 9", {}) is True
+
+    def test_evaluate_condition_rules_any(self):
+        from app.api.routes.agent import _evaluate_condition_node
+
+        config = {
+            "ruleOperator": "any",
+            "rules": [
+                {"mode": "contains", "expectedValue": "ok"},
+                {"mode": "min_length", "minLength": 20},
+            ],
+        }
+        assert _evaluate_condition_node(config, "This response is definitely long enough", {}) is True
+
+    def test_build_conditional_orchestration_graph_happy_path(self):
+        from app.api.routes.agent import _build_conditional_orchestration_graph
+
+        agent = {
+            "flow": {
+                "nodes": [
+                    {"id": "a1", "data": {"type": "agent-core", "label": "Agent 1", "config": {}}},
+                    {"id": "cond1", "data": {"type": "conditional-check", "label": "Check", "config": {"mode": "contains", "expectedValue": "ok"}}},
+                    {"id": "a2", "data": {"type": "agent-core", "label": "Agent 2", "config": {}}},
+                    {"id": "out1", "data": {"type": "chat-response", "label": "Output", "config": {}}},
+                ],
+                "edges": [
+                    {"source": "a1", "sourceHandle": "response", "target": "cond1", "targetHandle": "input"},
+                    {"source": "cond1", "sourceHandle": "pass", "target": "out1", "targetHandle": "response"},
+                    {"source": "cond1", "sourceHandle": "fail", "target": "a2", "targetHandle": "input"},
+                ],
+            }
+        }
+
+        graph = _build_conditional_orchestration_graph(agent)
+        assert graph["rootAgentId"] == "a1"
+        assert graph["nextByAgentId"]["a1"]["kind"] == "condition"
+        assert graph["conditionsById"]["cond1"]["routes"]["pass"]["kind"] == "output"
+        assert graph["conditionsById"]["cond1"]["routes"]["fail"]["targetId"] == "a2"
+
+    def test_build_conditional_orchestration_graph_requires_both_outputs(self):
+        from app.api.routes.agent import _build_conditional_orchestration_graph, InvalidRequestError
+
+        agent = {
+            "flow": {
+                "nodes": [
+                    {"id": "a1", "data": {"type": "agent-core", "label": "Agent 1", "config": {}}},
+                    {"id": "cond1", "data": {"type": "conditional-check", "label": "Check", "config": {}}},
+                    {"id": "out1", "data": {"type": "chat-response", "label": "Output", "config": {}}},
+                ],
+                "edges": [
+                    {"source": "a1", "sourceHandle": "response", "target": "cond1", "targetHandle": "input"},
+                    {"source": "cond1", "sourceHandle": "pass", "target": "out1", "targetHandle": "response"},
+                ],
+            }
+        }
+
+        with pytest.raises(InvalidRequestError):
+            _build_conditional_orchestration_graph(agent)
         assert q.retrievalMode == "HYBRID"

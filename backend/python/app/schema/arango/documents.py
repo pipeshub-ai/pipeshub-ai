@@ -695,6 +695,12 @@ agent_schema = {
                 "items": {"type": "string"},
                 "default": [],
             },
+            "flow": {"type": ["object", "null"]},
+            "flowSchemaVersion": {"type": "integer", "minimum": 1},
+            "orchestrationMode": {
+                "type": "string",
+                "enum": ["single", "linear", "conditional"],
+            },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},

@@ -63,6 +63,8 @@ export interface AgentFormPayload {
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
   flow?: { nodes: FlowNode[]; edges: Edge[] };
+  flowSchemaVersion?: number;
+  orchestrationMode?: 'single' | 'linear' | 'conditional';
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */
