@@ -1,21 +1,48 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Box, Text } from '@radix-ui/themes';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { RecordViewShell } from './components/record-view-shell';
 
 /**
- * View a record by id. Uses a query param because `output: 'export'` disallows
- * dynamic `[recordId]` segments without a fixed `generateStaticParams` list.
+ * View a record by id.
  *
- * URL: `/record?recordId=<id>`
+ * URL: `/record/<recordId>` (canonical).
+ *
+ * With `output: 'export'` we can't ship a dynamic `[recordId]` segment
+ * (`generateStaticParams()` would have to enumerate every id), so the
+ * Next.js build emits a single `/record/index.html` shell. The Node.js
+ * backend serves that shell for any `/record/:id` URL, and this component
+ * recovers the id from `window.location.pathname` on the client. A
+ * `?recordId=<id>` query fallback is honored for `next dev` and any
+ * legacy callers that still use the query form.
  */
+function extractRecordIdFromPath(pathname: string | null): string {
+  if (!pathname) return '';
+  const match = pathname.match(/^\/record\/([^/?#]+)\/?$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : '';
+}
+
 function RecordPageContent() {
   const { t } = useTranslation();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const recordId = searchParams.get('recordId')?.trim() || '';
+
+  // Prefer the path segment; fall back to a query param for dev-mode rewrites
+  // and any legacy callers. Resolved once per pathname/search change.
+  const [recordId, setRecordId] = useState<string>(() => {
+    const fromPath = extractRecordIdFromPath(pathname);
+    if (fromPath) return fromPath;
+    return searchParams.get('recordId')?.trim() || '';
+  });
+
+  useEffect(() => {
+    const fromPath = extractRecordIdFromPath(pathname);
+    const fromQuery = searchParams.get('recordId')?.trim() || '';
+    setRecordId(fromPath || fromQuery);
+  }, [pathname, searchParams]);
 
   if (!recordId) {
     return (

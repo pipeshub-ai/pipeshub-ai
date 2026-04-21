@@ -14,12 +14,13 @@ const nextConfig = {
             { source: '/toolsets/oauth/callback/:slug/', destination: '/toolsets/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug', destination: '/connectors/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug/', destination: '/connectors/oauth/callback/' },
-            // Legacy `/record/<recordId>` URLs (from shared links, emails, backend citations)
-            // map to the query-param route since `output: 'export'` can't ship a dynamic
-            // `[recordId]` segment. Production static hosts get the same behavior from the
-            // Node.js backend SPA fallback.
-            { source: '/record/:recordId', destination: '/record/?recordId=:recordId' },
-            { source: '/record/:recordId/', destination: '/record/?recordId=:recordId' },
+            // `/record/<recordId>` URLs can't ship a dynamic `[recordId]` segment
+            // under `output: 'export'`, so the build emits a single `/record/` shell.
+            // Rewrite every `/record/:id` to that shell for `next dev`; the page reads
+            // the id from `window.location.pathname`. Production static hosts get the
+            // same behavior from the Node.js backend SPA fallback.
+            { source: '/record/:recordId', destination: '/record/' },
+            { source: '/record/:recordId/', destination: '/record/' },
         ];
     },
     webpack: (config) => {

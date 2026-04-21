@@ -279,15 +279,16 @@ export class Application {
           return;
         }
 
-        // Legacy `/record/<recordId>` URLs (from shared links, emails, backend
-        // citations) are preserved by redirecting to the query-param route that
-        // the static-export build ships. The dynamic `[recordId]` segment was
-        // removed because `output: 'export'` requires `generateStaticParams()`
-        // and record IDs are unbounded runtime values.
-        const recordMatch = _req.path.match(/^\/record\/([^/]+)\/?$/);
-        if (recordMatch && recordMatch[1]) {
-          const recordId = encodeURIComponent(recordMatch[1]);
-          res.redirect(302, `/record/?recordId=${recordId}`);
+        // `/record/<recordId>` URLs (shared links, backend citation links,
+        // etc.) can't be pre-rendered per id under `output: 'export'` since
+        // `generateStaticParams()` would have to enumerate every record id.
+        // Serve the single `/record/` HTML shell directly — the client reads
+        // the id from `window.location.pathname` — so the URL stays intact
+        // (no redirect, no visible `?recordId=` query param) and matches the
+        // pattern used above for OAuth callback slugs.
+        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        if (recordMatch) {
+          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
           return;
         }
 
