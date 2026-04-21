@@ -1000,19 +1000,38 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, setAllRecordsSearchQuery, setSearchQuery]
   );
 
+  // Refetch main table for current route context (shared by handleRefresh and refreshData)
+  const refetchMainTableForCurrentRoute = useCallback(async () => {
+    if (isAllRecordsMode) {
+      // Preserve drill-down context: pass current nodeType/nodeId from URL
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchAllRecordsTableData(nodeType, nodeId);
+      } else {
+        await fetchAllRecordsTableData();
+      }
+    } else if (selectedNode) {
+      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
+    } else {
+      // Fallback: if selectedNode not set (e.g. after failed load), use URL params
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchTableData(nodeType, nodeId);
+      }
+    }
+  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+
   // Handle refresh
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      if (isAllRecordsMode) {
-        await fetchAllRecordsTableData();
-      } else if (selectedNode) {
-        await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-      }
+      await refetchMainTableForCurrentRoute();
     } finally {
       setIsRefreshing(false);
     }
-  }, [isAllRecordsMode, selectedNode, fetchTableData, fetchAllRecordsTableData, setIsRefreshing]);
+  }, [refetchMainTableForCurrentRoute, setIsRefreshing]);
 
   // Refresh orchestrator: Syncs sidebar and content area after mutations (delete, create, etc.)
   const refreshData = useCallback(async () => {
@@ -1031,22 +1050,10 @@ function KnowledgeBasePageContent() {
     await refreshKbTree();
 
     // 3. Refetch current content area data (which also re-expands the breadcrumb path)
-    if (isAllRecordsMode) {
-      // Preserve drill-down context: pass current nodeType/nodeId from URL so
-      // the refresh stays on the current collection/folder instead of resetting to root
-      const nodeType = searchParams.get('nodeType');
-      const nodeId = searchParams.get('nodeId');
-      if (nodeType && nodeId) {
-        await fetchAllRecordsTableData(nodeType, nodeId);
-      } else {
-        await fetchAllRecordsTableData();
-      }
-    } else if (selectedNode) {
-      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
+    await refetchMainTableForCurrentRoute();
 
     console.log('✅ Data refresh complete');
-  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+  }, [refetchMainTableForCurrentRoute]);
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
@@ -2001,14 +2008,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
-          onRefresh={() => {
-            if (isAllRecordsMode) {
-              // Trigger re-fetch by clearing data
-              setAllRecordsTableData(null);
-            } else if (selectedNode) {
-              fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-            }
-          }}
+          onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {
             if (isAllRecordsMode) {
               useKnowledgeBaseStore.getState().setAllRecordsPage(page);
