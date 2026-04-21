@@ -92,8 +92,11 @@ class _InMemoryGraphStore:
         key = doc.get("_key") or doc.get("id") or str(uuid.uuid4())
         doc["_key"] = key
         doc["id"] = key
-        self.collections[collection][key] = doc
-        return doc
+        # Merge with existing document instead of replacing to preserve fields during partial updates
+        existing = self.collections[collection].get(key, {})
+        existing.update(doc)
+        self.collections[collection][key] = existing
+        return existing
 
     def get_node(self, collection: str, key: str) -> Optional[Dict[str, Any]]:
         return self.collections.get(collection, {}).get(key)

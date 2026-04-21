@@ -2511,11 +2511,7 @@ class BaseArangoService:
             # Determine if we should use batch reindex (depth > 0)
             use_batch_reindex = depth != 0
 
-            # Reset indexing status to QUEUED before reindexing
-            # This ensures the record will be properly queued and re-indexed
-            await self._reset_indexing_status_to_queued(record_id)
-
-            # Create and publish reindex event
+            # Create and publish reindex event; only set indexing status to QUEUED after successful publish
             try:
                 if use_batch_reindex:
                     # Publish connector reindex event for batch processing
@@ -2537,6 +2533,7 @@ class BaseArangoService:
                     await self._publish_record_event("newRecord", payload)
                     self.logger.info(f"✅ Published reindex event for record {record_id}")
 
+                await self._reset_indexing_status_to_queued(record_id)
                 return {
                     "success": True,
                     "recordId": record_id,
