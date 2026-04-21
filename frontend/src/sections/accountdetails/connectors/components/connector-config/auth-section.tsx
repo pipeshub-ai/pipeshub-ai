@@ -702,17 +702,31 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                         justifyContent: 'center',
                       }}
                     >
-                      <Iconify
-                        icon={
-                          link.type === 'setup'
-                            ? settingsIcon
-                            : link.type === 'api'
-                              ? codeIcon
-                              : descriptionIcon
-                        }
-                        width={14}
-                        color={theme.palette.info.main}
-                      />
+                      {connector.iconPath ? (
+                        <img
+                          src={connector.iconPath}
+                          alt=""
+                          width={14}
+                          height={14}
+                          style={{ objectFit: 'contain', display: 'block' }}
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <Iconify
+                          icon={
+                            link.type === 'setup'
+                              ? settingsIcon
+                              : link.type === 'api'
+                                ? codeIcon
+                                : descriptionIcon
+                          }
+                          width={14}
+                          color={theme.palette.info.main}
+                        />
+                      )}
                     </Box>
                     <Typography
                       variant="body2"

@@ -895,7 +895,21 @@ const OAuthAppDialog: React.FC<OAuthAppDialogProps> = ({
                               justifyContent: 'center',
                             }}
                           >
-                            <Iconify icon={openInNewIcon} width={14} color={theme.palette.info.main} />
+                            {selectedConnector?.iconPath ? (
+                              <img
+                                src={selectedConnector.iconPath}
+                                alt=""
+                                width={14}
+                                height={14}
+                                style={{ objectFit: 'contain', display: 'block' }}
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  target.style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <Iconify icon={openInNewIcon} width={14} color={theme.palette.info.main} />
+                            )}
                           </Box>
                           <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500, color: theme.palette.text.primary, flex: 1 }}>
                             {link.title}
