@@ -889,8 +889,17 @@ class JiraConnector(BaseConnector):
                         if shared:
                             site_url = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
                 if not site_url:
-                    raise ValueError("Atlassian site URL (baseUrl) is required for OAuth")
-                picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
+                    if not resources:
+                        raise ValueError(
+                            "Atlassian site URL (baseUrl) missing and OAuth token has no accessible Jira sites"
+                        )
+                    self.logger.warning(
+                        "Jira connector %s: baseUrl missing; using accessible-resources[0] (%s)",
+                        self.connector_id, resources[0].url,
+                    )
+                    picked = resources[0]
+                else:
+                    picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
                 self.cloud_id = picked.id
                 self.site_url = picked.url
                 self.logger.info("✅ Jira client initialized with OAuth authentication")
