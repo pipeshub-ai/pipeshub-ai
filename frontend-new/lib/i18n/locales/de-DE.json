@@ -11,6 +11,26 @@
     "thinkingFallback": "Denken…",
     "refiningResponse": "Antwort wird verfeinert…"
   },
+  "uploadProgress": {
+    "uploadFailedDefault": "Upload fehlgeschlagen",
+    "uploadIncomplete": "Upload unvollständig",
+    "genericFailureHint": "Upload fehlgeschlagen. Versuchen Sie es erneut oder verwenden Sie einen unterstützten Dateityp.",
+    "ariaFailed": "{{name}}, Upload fehlgeschlagen",
+    "ariaFailedWithDetail": "{{name}}, Upload fehlgeschlagen. {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} · fehlgeschlagen",
+    "headerCompletedAndFailed": "{{completed}} abgeschlossen · {{failed}} fehlgeschlagen",
+    "headerFailuresOnly": "{{count}} fehlgeschlagen",
+    "headerAllComplete": "{{completed}}/{{total}} Uploads abgeschlossen",
+    "sessionFilesAndSize": "{{count}} Dateien · {{size}}",
+    "totalSizeLabel": "Gesamt: {{size}}",
+    "status": {
+      "pending": "ausstehend",
+      "uploading": "wird hochgeladen",
+      "completed": "abgeschlossen",
+      "failed": "fehlgeschlagen"
+    }
+  },
   "onboarding": {
     "skipEmbeddingDefault": "Überspringen",
     "skipEmbeddingTitle": "Einrichtung für „Standard (System)“ öffnen, dann „Modell hinzufügen“ wählen",

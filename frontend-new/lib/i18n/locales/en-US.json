@@ -11,6 +11,26 @@
     "thinkingFallback": "Thinking\u2026",
     "refiningResponse": "Refining response\u2026"
   },
+  "uploadProgress": {
+    "uploadFailedDefault": "Upload failed",
+    "uploadIncomplete": "Upload incomplete",
+    "genericFailureHint": "Upload failed. Try again or use a supported file type.",
+    "ariaFailed": "{{name}}, upload failed",
+    "ariaFailedWithDetail": "{{name}}, upload failed. {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} \u00b7 failed",
+    "headerCompletedAndFailed": "{{completed}} completed \u00b7 {{failed}} failed",
+    "headerFailuresOnly": "{{count}} failed",
+    "headerAllComplete": "{{completed}}/{{total}} uploads complete",
+    "sessionFilesAndSize": "{{count}} files \u00b7 {{size}}",
+    "totalSizeLabel": "Total: {{size}}",
+    "status": {
+      "pending": "pending",
+      "uploading": "uploading",
+      "completed": "completed",
+      "failed": "failed"
+    }
+  },
   "onboarding": {
     "skipEmbeddingDefault": "Skip",
     "skipEmbeddingTitle": "Open setup for Default (System Provided), then press Add Model to save",
