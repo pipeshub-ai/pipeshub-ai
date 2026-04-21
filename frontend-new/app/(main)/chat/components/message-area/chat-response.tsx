@@ -167,8 +167,10 @@ export const ChatResponse = React.memo(function ChatResponse({
   );
   // Extract download-task markers so the markdown pipeline doesn't try to
   // render them. Parsed AFTER citation stripping, matching the old frontend.
-  const { text: displayContent, tasks: downloadTasks } =
-    parseDownloadMarkers(processedContent);
+  const { text: displayContent, tasks: downloadTasks } = useMemo(
+    () => parseDownloadMarkers(processedContent),
+    [processedContent],
+  );
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
     currentStatusMessage ??

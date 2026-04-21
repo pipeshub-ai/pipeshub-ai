@@ -29,3 +29,27 @@ export function isSignedUrl(url: string): boolean {
     (url.includes('se=') && url.includes('sig='))
   );
 }
+
+/**
+ * Marker URLs come from the assistant stream, which is a prompt-injection
+ * surface in a RAG app. Only URLs pointing at OUR configured backend may be
+ * fetched through the authenticated apiClient — anything else must go through
+ * a direct anchor click so the user's bearer token is never attached to a
+ * foreign host.
+ *
+ * Trusted origin = `NEXT_PUBLIC_API_BASE_URL` when set (split deployment /
+ * dev where the Next.js server and backend live on different ports), else
+ * `window.location.origin` (single-origin production build).
+ */
+export function isTrustedApiUrl(url: string): boolean {
+  try {
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+    const trustedOrigin = apiBase
+      ? new URL(apiBase, window.location.origin).origin
+      : window.location.origin;
+    const resolved = new URL(url, trustedOrigin);
+    return resolved.origin === trustedOrigin;
+  } catch {
+    return false;
+  }
+}
