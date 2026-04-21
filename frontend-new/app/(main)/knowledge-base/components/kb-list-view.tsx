@@ -224,11 +224,18 @@ function TableRow({
   // Status label for tooltip
   const getStatusLabel = (): string => {
     if (isKnowledgeHubNode(item)) {
+      // No status from API — do not imply "Queued"
+      if (item.indexingStatus == null) {
+        return '';
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED': return 'Completed';
         case 'IN_PROGRESS': return 'In Progress';
         case 'FAILED': return 'Failed';
         case 'FILE_TYPE_NOT_SUPPORTED': return 'File Type Not Supported';
+        case 'NOT_STARTED': return 'Not Started';
+        case 'QUEUED': return 'Queued';
+        case 'AUTO_INDEX_OFF': return 'Manual Indexing';
         default: return 'Queued';
       }
     }
@@ -247,6 +254,10 @@ function TableRow({
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
+      // Missing status — no icon (avoid looking like "queued" via default branch)
+      if (item.indexingStatus == null) {
+        return null;
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
@@ -255,7 +266,19 @@ function TableRow({
         case 'FAILED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
         case 'FILE_TYPE_NOT_SUPPORTED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;  
+          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        case 'NOT_STARTED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
+          );
+        case 'QUEUED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          );
+        case 'AUTO_INDEX_OFF':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={16} color="var(--olive-11)" />
+          );
         default:
           return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
       }
