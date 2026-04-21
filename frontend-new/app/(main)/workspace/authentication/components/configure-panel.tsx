@@ -73,7 +73,7 @@ export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: Configu
       variant="outline"
       color="gray"
       size="1"
-      onClick={() => window.open(meta.docUrl, '_blank')}
+      onClick={() => window.open(METHOD_DOC_URLS[method], '_blank')}
       style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
