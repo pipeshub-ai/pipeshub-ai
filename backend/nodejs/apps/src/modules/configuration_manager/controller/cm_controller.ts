@@ -3399,7 +3399,7 @@ export const updateDefaultAIModel =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+        if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
           const errData: any = aiResponseData?.data ?? {};
           const reasonMessage =
             (errData && (errData.message ?? errData.error?.message)) ??
