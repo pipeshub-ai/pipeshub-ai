@@ -424,7 +424,12 @@ function FileInput({
   const inputRef = useRef<HTMLInputElement>(null);
   const [pickedFileName, setPickedFileName] = useState<string | null>(null);
 
-  const raw = typeof value === 'string' ? value : value != null ? String(value) : '';
+  const raw =
+    typeof value === 'string'
+      ? value
+      : value != null
+        ? JSON.stringify(value, null, 2)
+        : '';
   const hasValue = raw.trim().length > 0;
   const isSecret = 'isSecret' in field && field.isSecret;
 
@@ -445,11 +450,14 @@ function FileInput({
     e.target.value = '';
     if (!file) return;
 
-    setPickedFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === 'string' ? reader.result : '';
+      setPickedFileName(file.name);
       onChange(field.name, text);
+    };
+    reader.onerror = () => {
+      setPickedFileName(null);
     };
     reader.readAsText(file);
   };
