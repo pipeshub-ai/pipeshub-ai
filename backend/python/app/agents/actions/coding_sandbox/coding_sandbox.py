@@ -118,7 +118,7 @@ class CodingSandbox:
                     config_service=self.chat_state.get("config_service"),
                     graph_provider=graph_provider,
                 )
-            except Exception as e:
+            except (ImportError, OSError, RuntimeError, ValueError) as e:
                 logger.warning("Could not init BlobStorage for artifact upload: %s", e)
                 return []
 
@@ -169,13 +169,13 @@ class CodingSandbox:
                             source_tool=source_tool,
                         )
                         result_entry["recordId"] = record_id
-                    except Exception:
+                    except (OSError, ConnectionError, RuntimeError, ValueError):
                         logger.exception(
                             "Failed to create ArtifactRecord for %s", artifact.file_name,
                         )
 
                 uploaded.append(result_entry)
-            except Exception:
+            except (OSError, ConnectionError, RuntimeError, ValueError):
                 logger.exception("Failed to upload artifact %s", artifact.file_name)
 
         return uploaded
@@ -193,7 +193,7 @@ class CodingSandbox:
                 results = await self._upload_artifacts(exec_result, source_tool=source_tool)
                 if results:
                     return {"type": "artifacts", "artifacts": results}
-            except Exception:
+            except (OSError, ConnectionError, RuntimeError, ValueError):
                 logger.exception("Background artifact upload failed")
             return None
 

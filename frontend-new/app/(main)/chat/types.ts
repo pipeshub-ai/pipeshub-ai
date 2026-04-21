@@ -223,10 +223,8 @@ export type SSEEventType =
   | 'complete'
   | 'tool_call'
   | 'tool_success'
-<<<<<<< coding_sandbox
   | 'metadata'
   | 'artifact'
-=======
   | 'tool_error'
   /** Internal tool round-trip — UI ignores (same as legacy chat) */
   | 'tool_calls'
@@ -234,7 +232,6 @@ export type SSEEventType =
   | 'tool_result'
   | 'metadata'
   | 'restreaming'
->>>>>>> main
   | 'error';
 
 /** Artifact produced by a sandbox tool (coding/database). */

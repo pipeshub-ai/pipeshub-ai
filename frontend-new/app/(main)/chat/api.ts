@@ -27,12 +27,9 @@ export interface StreamMessageCallbacks {
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
   onComplete?: (data: SSECompleteEvent) => void;
-<<<<<<< coding_sandbox
   onArtifact?: (data: SSEArtifactEvent) => void;
-=======
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
->>>>>>> main
   onError?: (error: Error) => void;
   signal?: AbortSignal;
 }

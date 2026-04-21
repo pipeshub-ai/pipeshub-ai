@@ -139,7 +139,7 @@ class DatabaseSandbox:
                             source_tool=f"database_sandbox.{label.split('_')[0]}",
                         )
                         result_entry["recordId"] = record_id
-                    except Exception:
+                    except (OSError, ConnectionError, RuntimeError, ValueError):
                         logger.exception(
                             "Failed to create ArtifactRecord for CSV export %s", file_name,
                         )
@@ -148,7 +148,7 @@ class DatabaseSandbox:
                     "type": "artifacts",
                     "artifacts": [result_entry],
                 }
-            except Exception:
+            except (OSError, ConnectionError, RuntimeError, ValueError):
                 logger.exception("Background CSV export failed for %s", label)
                 return None
 
@@ -318,7 +318,7 @@ def _parse_csv_output(stdout: str) -> list[dict[str, Any]]:
     try:
         reader = csv.DictReader(io.StringIO(stdout))
         return list(reader)
-    except Exception:
+    except (csv.Error, ValueError):
         logger.debug(
             "Failed to parse CSV output (%d chars): %s",
             len(stdout), stdout[:200],
