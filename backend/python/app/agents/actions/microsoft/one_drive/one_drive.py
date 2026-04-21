@@ -3,7 +3,6 @@ import asyncio
 import logging
 from io import BytesIO
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from docx import Document  # type: ignore
 
@@ -15,10 +14,11 @@ from msgraph.generated.models.drive_item import DriveItem  # type: ignore
 from msgraph.generated.models.drive_recipient import DriveRecipient  # type: ignore
 from msgraph.generated.models.folder import Folder  # type: ignore
 from msgraph.generated.models.item_reference import ItemReference  # type: ignore
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from msgraph.generated.drives.item.items.item.invite.invite_post_request_body import InvitePostRequestBody  # type: ignore
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import FileRecord, RecordType
 
 from app.agents.tools.config import ToolCategory
@@ -564,7 +564,27 @@ class _SharedItemFetchResult(BaseModel):
             app_description="OneDrive OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/onedrive.svg"))\
+        .configure(lambda builder: builder.with_icon("/assets/icons/connectors/onedrive.svg")
+        .add_documentation_link(DocumentationLink(
+            title="Create an Azure App Registration",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Microsoft Graph Files & Sites permissions",
+            url="https://learn.microsoft.com/en-us/graph/permissions-reference#files-permissions",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Configure OAuth 2.0 redirect URIs",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/microsoft-365/onedrive",
+            doc_type="pipeshub",
+        )))\
     .build_decorator()
 class OneDrive:
     """OneDrive tool exposed to the agents using OneDriveDataSource"""
