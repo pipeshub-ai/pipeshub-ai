@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
-import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
+import type { CitationMaps, CitationCallbacks, CitationData } from './response-tabs/citations';
 import { useChatStore } from '../../store';
 
 interface ParsedArtifactMarker {
