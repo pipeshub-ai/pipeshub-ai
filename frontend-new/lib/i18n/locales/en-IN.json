@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "This page is only accessible from a password-reset email link. Please use the Forgot Password option on the sign-in page.",
+      "inviteExpiredMessage": "This invite link has expired. Please ask your organization admin to send you a new invite.",
+      "resetExpiredMessage": "This password reset link has expired. Please request a new one from the Forgot Password option on the sign-in page.",
+      "backToSignIn": "Back to Sign In",
+      "genericLinkInvalidMessage": "This link may have expired. Please ask your organization admin to send you a new invite."
+    }
+  },
   "agents": {
     "createPageTitle": "Create agent",
     "createPageDescription": "This is the dedicated create-agent page. Connect your form or redirect to your agent builder here.",
@@ -546,6 +555,12 @@
         "resendInvite": "Resend Invite",
         "editInvite": "Edit Invite",
         "cancelInvite": "Cancel Invite",
+        "cancelInviteConfirmTitle": "Cancel invite?",
+        "cancelInviteConfirmMessage": "Are you sure you want to cancel the invite for {{email}}?",
+        "cancelInviteSuccess": "Invite cancelled",
+        "cancelInviteSuccessDescription": "The invitation to {{email}} has been cancelled",
+        "cancelInviteError": "Failed to cancel invite",
+        "keepInviteButton": "Keep Invite",
         "comingSoonTitle": "Not supported",
         "comingSoonDescription": "This Action is coming Soon",
         "unblock": "Unblock",
@@ -556,7 +571,8 @@
         "unblockConfirmAction": "Unblock",
         "unblockSuccess": "User unblocked successfully",
         "unblockError": "Failed to unblock user",
-        "unblocking": "Unblocking…"
+        "unblocking": "Unblocking…",
+        "edit": "Edit"
       },
       "profile": {
         "title": "Profile",
