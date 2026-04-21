@@ -160,6 +160,8 @@ function normalizedRecordGroupIds(filters: Record<string, unknown>): string[] {
 export interface AgentChatToolGroupRow {
   label: string;
   toolsetSlug: string;
+  /** Stable id for UI keys — same toolset type may appear multiple times as instances. */
+  instanceId?: string;
   iconPath?: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
@@ -184,9 +186,11 @@ export function buildAgentChatToolGroups(agent: AgentDetail | null | undefined):
 
     const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
     const productLabel = (ts.displayName || ts.name || 'Tools').trim();
+    const instanceId = typeof ts.instanceId === 'string' ? ts.instanceId.trim() : '';
     groups.push({
       label: instanceLabel || productLabel,
       toolsetSlug: (typeof ts.name === 'string' ? ts.name : '').trim(),
+      ...(instanceId ? { instanceId } : {}),
       iconPath:
         typeof ts.iconPath === 'string' && ts.iconPath.trim() ? ts.iconPath.trim() : undefined,
       fullNames,

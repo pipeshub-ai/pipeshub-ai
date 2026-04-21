@@ -165,6 +165,7 @@ interface ChatState {
     /** Maps tool `fullName` → API description (for search / optional UI). */
     toolDescriptions?: Record<string, string>;
     toolsetSlug: string;
+    instanceId?: string;
     iconPath?: string;
   }>;
   /** Default knowledge scope derived from the agent graph (used to reset UI). */
@@ -260,6 +261,7 @@ interface ChatState {
       fullNames: string[];
       toolDescriptions?: Record<string, string>;
       toolsetSlug: string;
+      instanceId?: string;
       iconPath?: string;
     }>;
     connectors: Array<{ id: string; label: string; connectorKind: string }>;
@@ -346,6 +348,7 @@ const initialState = {
     fullNames: string[];
     toolDescriptions?: Record<string, string>;
     toolsetSlug: string;
+    instanceId?: string;
     iconPath?: string;
   }>,
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },

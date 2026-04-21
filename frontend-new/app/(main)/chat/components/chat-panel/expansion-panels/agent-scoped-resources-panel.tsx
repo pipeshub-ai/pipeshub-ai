@@ -158,13 +158,11 @@ interface AgentScopedResourcesPanelProps {
 }
 
 function setsEqualAsSets(a: string[], b: string[]): boolean {
+  if (a === b) return true;
   const sa = new Set(a);
   const sb = new Set(b);
   if (sa.size !== sb.size) return false;
-  for (const x of Array.from(sa)) {
-    if (!sb.has(x)) return false;
-  }
-  return true;
+  return Array.from(sa).every((x) => sb.has(x));
 }
 
 function effectiveKnowledge(
@@ -549,8 +547,10 @@ export function AgentScopedResourcesPanel({
               </Text>
             ) : (
               <>
-                {filteredToolGroups.map((group, idx) => {
-                  const groupKey = `${group.toolsetSlug || 'toolset'}-${idx}-${group.label}`;
+                {filteredToolGroups.map((group) => {
+                  const groupKey = group.instanceId
+                    ? `toolset:${group.instanceId}`
+                    : `${group.toolsetSlug || 'toolset'}:${group.label}:${group.fullNames[0] ?? ''}`;
                   const subtitle = toolsetSubtitle(group);
                   const expanded = Boolean(expandedGroups[groupKey]);
                   const checkState = groupCheckState(group.fullNames);
