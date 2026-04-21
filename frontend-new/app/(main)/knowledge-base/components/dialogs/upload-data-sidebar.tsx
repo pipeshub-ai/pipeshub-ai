@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -306,6 +306,130 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
   );
 }
 
+// Scrollable list that surfaces clear affordances (visible scrollbar, edge
+// shadows, and a "more below" chip) so users can tell when there is content
+// above/below the visible area. File/folder items share the same background
+// as the container, so a plain fade-to-bg gradient is invisible - we use a
+// dark inset shadow plus an explicit chip instead.
+interface ScrollableListProps {
+  children: React.ReactNode;
+}
+
+function ScrollableList({ children }: ScrollableListProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [showTopFade, setShowTopFade] = useState(false);
+  const [showBottomFade, setShowBottomFade] = useState(false);
+
+  const updateFades = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    const overflows = scrollHeight - clientHeight > 1;
+    setShowTopFade(overflows && scrollTop > 1);
+    setShowBottomFade(overflows && scrollTop + clientHeight < scrollHeight - 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    updateFades();
+  });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => updateFades();
+    el.addEventListener('scroll', handleScroll, { passive: true });
+
+    const ro = new ResizeObserver(() => updateFades());
+    ro.observe(el);
+    Array.from(el.children).forEach((child) => ro.observe(child));
+
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      ro.disconnect();
+    };
+  }, [updateFades]);
+
+  return (
+    <Box style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+      <Box
+        ref={scrollRef}
+        className="upload-scroll-area"
+        style={{
+          height: '100%',
+          // `scroll` (not `auto`) keeps the scrollbar track reserved so the
+          // styled scrollbar is always visible on browsers/OSes (e.g. macOS)
+          // that otherwise hide overlay scrollbars when idle.
+          overflowY: 'scroll',
+          paddingRight: '4px',
+        }}
+      >
+        {children}
+      </Box>
+      {/* Top shadow - hints at content above when scrolled */}
+      <Box
+        aria-hidden
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '12px',
+          pointerEvents: 'none',
+          boxShadow: 'inset 0 8px 8px -8px rgba(0, 0, 0, 0.35)',
+          opacity: showTopFade ? 1 : 0,
+          transition: 'opacity 0.15s ease',
+        }}
+      />
+      {/* Bottom shadow - hints at more content below */}
+      <Box
+        aria-hidden
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: '14px',
+          pointerEvents: 'none',
+          boxShadow: 'inset 0 -10px 10px -8px rgba(0, 0, 0, 0.35)',
+          opacity: showBottomFade ? 1 : 0,
+          transition: 'opacity 0.15s ease',
+        }}
+      />
+      {/* Floating chip - the most obvious "more below" cue */}
+      <Flex
+        align="center"
+        justify="center"
+        gap="1"
+        onClick={() => {
+          const el = scrollRef.current;
+          if (!el) return;
+          el.scrollBy({ top: el.clientHeight * 0.8, behavior: 'smooth' });
+        }}
+        style={{
+          position: 'absolute',
+          bottom: 6,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          padding: '2px 8px',
+          borderRadius: '999px',
+          backgroundColor: 'var(--slate-12)',
+          color: 'var(--slate-1)',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+          cursor: 'pointer',
+          opacity: showBottomFade ? 0.95 : 0,
+          pointerEvents: showBottomFade ? 'auto' : 'none',
+          transition: 'opacity 0.15s ease',
+        }}
+      >
+        <MaterialIcon name="keyboard_arrow_down" size={14} color="var(--slate-1)" />
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-1)' }}>
+          More
+        </Text>
+      </Flex>
+    </Box>
+  );
+}
+
 interface UploadedItemProps {
   item: UploadFileItem;
   onRemove: (id: string) => void;
@@ -534,36 +658,46 @@ export function UploadDataSidebar({
             }}
           >
             {/* Header */}
-            <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Upload Files
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload files up to the limit of {maxFileSizeMB} MB
-              </Text>
+            <Flex align="start" justify="between" gap="2">
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  Upload Files
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  You can upload files up to the limit of {maxFileSizeMB} MB
+                </Text>
+              </Flex>
+              {fileItems.length > 0 && (
+                <Text
+                  size="1"
+                  weight="medium"
+                  style={{
+                    color: 'var(--slate-12)',
+                    backgroundColor: 'var(--olive-4)',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {fileItems.length} {fileItems.length === 1 ? 'file' : 'files'}
+                </Text>
+              )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* File list - scrollable */}
+            {/* File list - scrollable with overflow affordances */}
             {fileItems.length > 0 && (
-              <Box
-                className="no-scrollbar"
-                style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  minHeight: 0,
-                }}
-              >
-                <Flex direction="column" gap="2">
+              <ScrollableList>
+                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
                   {fileItems.map((item) => (
                     <UploadedItem key={item.id} item={item} onRemove={handleRemoveFile} />
                   ))}
                 </Flex>
-              </Box>
+              </ScrollableList>
             )}
 
-            {/* File drop zone - expands when empty, fixed when has items */}
-            <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '120px' } : {}) }}>
+            {/* File drop zone - expands when empty, compact when has items */}
+            <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '88px' } : {}) }}>
               <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
@@ -591,36 +725,46 @@ export function UploadDataSidebar({
             }}
           >
             {/* Header */}
-            <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Upload Folders
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload folders up to the limit of {maxFileSizeMB} MB
-              </Text>
+            <Flex align="start" justify="between" gap="2">
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  Upload Folders
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  You can upload folders up to the limit of {maxFileSizeMB} MB
+                </Text>
+              </Flex>
+              {folderItems.length > 0 && (
+                <Text
+                  size="1"
+                  weight="medium"
+                  style={{
+                    color: 'var(--slate-12)',
+                    backgroundColor: 'var(--olive-4)',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {folderItems.length} {folderItems.length === 1 ? 'folder' : 'folders'}
+                </Text>
+              )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* Folder list - scrollable */}
+            {/* Folder list - scrollable with overflow affordances */}
             {folderItems.length > 0 && (
-              <Box
-                className="no-scrollbar"
-                style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  minHeight: 0,
-                }}
-              >
-                <Flex direction="column" gap="2">
+              <ScrollableList>
+                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
                   {folderItems.map((item) => (
                     <UploadedItem key={item.id} item={item} onRemove={handleRemoveFolder} />
                   ))}
                 </Flex>
-              </Box>
+              </ScrollableList>
             )}
 
-            {/* Folder drop zone - expands when empty, fixed when has items */}
-            <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '120px' } : {}) }}>
+            {/* Folder drop zone - expands when empty, compact when has items */}
+            <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '88px' } : {}) }}>
               <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
