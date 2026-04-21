@@ -152,12 +152,22 @@ services:
       - pipeshub_root_local:/root/.local
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Probe the aggregated /api/v1/health/services endpoint served by the
+    # nodejs API. If curl succeeds, the nodejs service itself is up; the JSON
+    # body must additionally report every Python application service
+    # (query, connector, indexing, docling) as "healthy" before the container
+    # is considered ready. This makes `docker compose up --wait` block until
+    # all 5 pipeshub services inside the container have finished starting.
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health/services || exit 1"]
-      interval: 30s
+      test:
+        - CMD-SHELL
+        - >
+          curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 300s
 
   mongodb:
     image: mongo:8.0.17
