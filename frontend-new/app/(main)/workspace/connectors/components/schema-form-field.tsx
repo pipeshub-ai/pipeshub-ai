@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useContext } from 'react';
-import { Flex, Text, Box, Checkbox, Switch, Select, IconButton } from '@radix-ui/themes';
+import React, { useState, useContext, useRef } from 'react';
+import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -137,6 +137,8 @@ export function SchemaFormField({
               return (
                 <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} startAdornment={startAdornment} />
               );
+            case 'FILE':
+              return <FileInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             default:
               // TEXT, EMAIL, URL, and fallback
               return (
@@ -401,6 +403,112 @@ function JsonInput({
       />
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+          {field.description}
+        </Text>
+      )}
+    </>
+  );
+}
+
+function FileInput({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: SchemaField;
+  value: unknown;
+  onChange: (name: string, value: unknown) => void;
+  disabled: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [pickedFileName, setPickedFileName] = useState<string | null>(null);
+
+  const raw = typeof value === 'string' ? value : value != null ? String(value) : '';
+  const hasValue = raw.trim().length > 0;
+  const isSecret = 'isSecret' in field && field.isSecret;
+
+  const statusLabel = (() => {
+    if (!hasValue) return null;
+    if (pickedFileName) return `Uploaded: ${pickedFileName}`;
+    if (isSecret) return 'Credentials loaded';
+    return `${raw.length} characters from file`;
+  })();
+
+  const pickPlaceholder =
+    'placeholder' in field && field.placeholder?.trim()
+      ? field.placeholder
+      : 'Choose JSON file…';
+
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setPickedFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result : '';
+      onChange(field.name, text);
+    };
+    reader.readAsText(file);
+  };
+
+  const clear = () => {
+    setPickedFileName(null);
+    onChange(field.name, '');
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".json,application/json"
+        disabled={disabled}
+        onChange={onPickFiles}
+        style={{ display: 'none' }}
+        aria-hidden
+      />
+      <Flex align="center" gap="2" wrap="wrap">
+        <Button
+          type="button"
+          variant="soft"
+          size="2"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+        >
+          <Flex align="center" gap="2">
+            <MaterialIcon name="file_upload" size={18} color="var(--gray-11)" />
+            <Text size="2">Upload JSON</Text>
+          </Flex>
+        </Button>
+        {hasValue ? (
+          <IconButton
+            type="button"
+            variant="ghost"
+            color="gray"
+            size="2"
+            disabled={disabled}
+            onClick={clear}
+            aria-label="Remove file"
+          >
+            <MaterialIcon name="close" size={18} color="var(--gray-11)" />
+          </IconButton>
+        ) : null}
+      </Flex>
+      {statusLabel ? (
+        <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 6 }}>
+          {statusLabel}
+        </Text>
+      ) : (
+        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 4 }}>
+          {pickPlaceholder}
+        </Text>
+      )}
+      {field.description && (
+        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 6 }}>
           {field.description}
         </Text>
       )}
