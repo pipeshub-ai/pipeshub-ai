@@ -741,7 +741,10 @@ function executeValidationRules(
           try {
             parsedJson = JSON.parse(content) as Record<string, unknown>;
           } catch {
-            return { valid: false, error: 'File must be valid JSON.' };
+            return {
+              valid: false,
+              error: rule.errorMessage ?? 'File must be valid JSON.',
+            };
           }
         }
         const missing = (rule.fields ?? []).filter((f) => !(f in parsedJson!));
@@ -759,7 +762,10 @@ function executeValidationRules(
           try {
             parsedJson = JSON.parse(content) as Record<string, unknown>;
           } catch {
-            return { valid: false, error: 'File must be valid JSON.' };
+            return {
+              valid: false,
+              error: rule.errorMessage ?? 'File must be valid JSON.',
+            };
           }
         }
         if (rule.field !== undefined && parsedJson[rule.field] !== rule.value) {
@@ -798,6 +804,9 @@ function executeValidationRules(
 // FileInput sub-component
 // ========================================
 
+/** Max bytes for connector auth/config file uploads (JSON keys, PEM, etc.) — read before file.text(). */
+const MAX_CONNECTOR_FILE_BYTES = 256 * 1024;
+
 function FileInput({
   field,
   value,
@@ -835,6 +844,14 @@ function FileInput({
   const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (file.size > MAX_CONNECTOR_FILE_BYTES) {
+      setLocalError(
+        `File is too large (${Math.ceil(file.size / 1024)} KB). Maximum size is ${MAX_CONNECTOR_FILE_BYTES / 1024} KB for key, certificate, or JSON uploads.`
+      );
+      e.target.value = '';
+      return;
+    }
 
     try {
       const content = await file.text();
@@ -951,6 +968,9 @@ function FileInput({
               {acceptedTypes.join(', ')}
             </Text>
           )}
+          <Text size="1" style={{ color: 'var(--gray-9)' }}>
+            Max {MAX_CONNECTOR_FILE_BYTES / 1024} KB
+          </Text>
         </Flex>
       )}
 

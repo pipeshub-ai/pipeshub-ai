@@ -34,7 +34,6 @@ import type {
   ConnectorStatsResponse,
   ConnectorScope,
 } from '../../types';
-import { isOAuthType } from '../../utils/auth-helpers';
 
 // ========================================
 // Props

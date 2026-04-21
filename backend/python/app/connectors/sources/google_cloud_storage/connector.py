@@ -51,7 +51,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.registry.types import ValidationRuleType
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -260,9 +260,24 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
                 field_type="FILE",
                 accepted_file_types=[".json"],
                 validation_rules=[
-                    {"type": ValidationRuleType.JSON_VALID,        "errorMessage": "File must be valid JSON."},
-                    {"type": ValidationRuleType.JSON_HAS_FIELDS,   "fields": ["type", "client_id", "project_id"], "errorMessage": "Missing required fields: {missing}"},
-                    {"type": ValidationRuleType.JSON_FIELD_EQUALS, "field": "type", "value": "service_account",   "errorMessage": "This is not a Google Cloud Service Account JSON file. The 'type' field must be 'service_account'."},
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_VALID,
+                        error_message="File must be valid JSON.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_HAS_FIELDS,
+                        fields=["type", "client_id", "project_id"],
+                        error_message="Missing required fields: {missing}",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_FIELD_EQUALS,
+                        field="type",
+                        value="service_account",
+                        error_message=(
+                            "This is not a Google Cloud Service Account JSON file. "
+                            "The 'type' field must be 'service_account'."
+                        ),
+                    ),
                 ],
                 is_secret=True
             ),

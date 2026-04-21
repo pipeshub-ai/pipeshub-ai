@@ -57,7 +57,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.registry.types import ValidationRuleType
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -303,12 +303,20 @@ class CountryToRegionMapper:
                 placeholder="Click to upload certificate file (.crt, .cer, or .pem)",
                 description="Upload the client certificate for certificate-based authentication. Required together with Private Key.",
                 field_type="FILE",
-                required=False,
+                required=True,
                 min_length=0,
                 accepted_file_types=[".crt", ".cer", ".pem"],
                 validation_rules=[
-                    {"type": ValidationRuleType.TEXT_CONTAINS, "pattern": "-----BEGIN CERTIFICATE-----", "errorMessage": "Invalid certificate format. Must contain BEGIN CERTIFICATE marker."},
-                    {"type": ValidationRuleType.TEXT_CONTAINS, "pattern": "-----END CERTIFICATE-----",   "errorMessage": "Invalid certificate format. Must contain END CERTIFICATE marker."},
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain BEGIN CERTIFICATE marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain END CERTIFICATE marker.",
+                    ),
                 ],
                 is_secret=True,
             ),
@@ -318,14 +326,36 @@ class CountryToRegionMapper:
                 placeholder="Click to upload private key file (.key or .pem)",
                 description="Upload the private key in PKCS#8 format. Required together with Client Certificate.",
                 field_type="FILE",
-                required=False,
+                required=True,
                 min_length=0,
                 accepted_file_types=[".key", ".pem"],
                 validation_rules=[
-                    {"type": ValidationRuleType.TEXT_NOT_CONTAINS, "pattern": "-----BEGIN RSA PRIVATE KEY-----", "errorMessage": "Private key must be in PKCS#8 format, not RSA. Convert with: openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key -out privatekey.key -nocrypt"},
-                    {"type": ValidationRuleType.TEXT_CONTAINS,     "pattern": "-----BEGIN PRIVATE KEY-----",     "errorMessage": "Invalid private key format. Must contain BEGIN PRIVATE KEY marker."},
-                    {"type": ValidationRuleType.TEXT_CONTAINS,     "pattern": "-----END PRIVATE KEY-----",       "errorMessage": "Invalid private key format. Must contain END PRIVATE KEY marker."},
-                    {"type": ValidationRuleType.TEXT_NOT_CONTAINS, "pattern": "ENCRYPTED",                       "errorMessage": "Private key must not be encrypted. Use the -nocrypt flag during conversion."},
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN RSA PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must be in PKCS#8 format, not RSA. Convert with: "
+                            "openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key "
+                            "-out privatekey.key -nocrypt"
+                        ),
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain BEGIN PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain END PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN ENCRYPTED PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must not be encrypted. Use the -nocrypt flag during conversion."
+                        ),
+                    ),
                 ],
                 is_secret=True,
             ),

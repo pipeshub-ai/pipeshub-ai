@@ -215,8 +215,10 @@ class GoogleClient(IClient):
                         "Admin email not found in credentials",
                         details={"service_name": service_name},
                     )
+            except AdminAuthError:
+                raise
             except Exception as e:
-                raise AdminAuthError("Failed to get enterprise token: " + str(e))
+                raise AdminAuthError("Failed to get enterprise token: " + str(e)) from e
 
             try:
                 # Get optimized scopes for the service
@@ -338,7 +340,9 @@ class GoogleClient(IClient):
 
         Supports two storage formats:
         - New (schema-driven): auth.serviceAccountJson is a JSON string; auth.adminEmail is separate.
-        - Legacy (old frontend): service account fields are spread directly into auth alongside adminEmail.
+          If serviceAccountJson is set it must parse as a JSON object; invalid JSON fails immediately.
+        - Legacy (old frontend): omit serviceAccountJson; service account fields are spread in auth
+          alongside adminEmail.
         """
         config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
         auth = config.get("auth", {})
@@ -350,10 +354,17 @@ class GoogleClient(IClient):
                 admin_email = auth.get("adminEmail", "")
                 return {**service_account_data, "adminEmail": admin_email}
             except (json.JSONDecodeError, TypeError, ValueError) as e:
-                logger.warning(
-                    f"Failed to parse serviceAccountJson for connector {connector_instance_id}: {e}. "
-                    "Falling back to legacy auth format."
+                logger.error(
+                    f"Invalid serviceAccountJson for connector {connector_instance_id}: {e}"
                 )
+                raise AdminAuthError(
+                    "Invalid service account JSON",
+                    details={
+                        "service_name": service_name,
+                        "connector_instance_id": connector_instance_id,
+                        "error": str(e),
+                    },
+                ) from e
 
         return auth
 

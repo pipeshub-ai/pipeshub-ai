@@ -31,7 +31,10 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
             "minLength": min_length,
             "maxLength": field.max_length,
             "acceptedFileTypes": field.accepted_file_types,
-            "validationRules": field.validation_rules,
+            "validationRules": [
+                r.model_dump(mode="json", by_alias=True, exclude_none=True)
+                for r in field.validation_rules
+            ],
         },
         "isSecret": field.is_secret
     }

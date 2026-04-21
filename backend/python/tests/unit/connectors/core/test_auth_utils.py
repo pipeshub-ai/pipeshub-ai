@@ -4,7 +4,7 @@ import pytest
 
 from app.connectors.core.registry.auth_builder import OAuthConfig, OAuthScopeConfig
 from app.connectors.core.registry.auth_utils import auth_field_to_dict, auto_add_oauth_fields
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, FileContentValidationRule, ValidationRuleType
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +67,26 @@ class TestAuthFieldToDict:
         )
         result = auth_field_to_dict(field)
         assert result["validation"]["minLength"] == 5
+
+    def test_validation_rules_serialized_sparse(self):
+        rules = [
+            FileContentValidationRule(
+                type=ValidationRuleType.JSON_HAS_FIELDS,
+                fields=["a"],
+                error_message="err",
+            ),
+        ]
+        field = AuthField(
+            name="key",
+            display_name="Key",
+            field_type="FILE",
+            min_length=0,
+            validation_rules=rules,
+        )
+        result = auth_field_to_dict(field)
+        vr = result["validation"]["validationRules"]
+        assert len(vr) == 1
+        assert vr[0] == {"type": "json_has_fields", "fields": ["a"], "errorMessage": "err"}
 
     def test_default_values(self):
         field = AuthField(name="f", display_name="F")
