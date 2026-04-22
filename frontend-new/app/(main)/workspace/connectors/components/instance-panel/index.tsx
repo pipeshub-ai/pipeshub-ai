@@ -60,7 +60,14 @@ export function InstanceManagementPanel() {
 
   const openRemoveDialog = useCallback(() => {
     if (!selectedInstance?._key) return;
-    if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
+    if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
+      addToast({
+        variant: 'info',
+        title: 'Already being removed',
+        description: 'This connector is already being removed.',
+      });
+      return;
+    }
     if (selectedInstance.isActive) {
       addToast({
         variant: 'warning',
@@ -74,15 +81,12 @@ export function InstanceManagementPanel() {
   }, [selectedInstance, addToast]);
 
   const removeConnectorDisabled =
-    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING ||
-    Boolean(selectedInstance?.isActive);
+    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
   const removeConnectorDisabledTooltip =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is already being removed.'
-      : selectedInstance?.isActive
-        ? 'Turn off sync before removing this connector.'
-        : undefined;
+      : undefined;
 
   const confirmRemoveConnector = useCallback(async () => {
     const id = pendingDeleteId;
@@ -125,14 +129,6 @@ export function InstanceManagementPanel() {
   ]);
 
   if (!selectedInstance) return null;
-
-  const removeConnectorDisabled =
-    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
-
-  const removeConnectorDisabledTooltip =
-    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING
-      ? 'This connector is already being removed.'
-      : undefined;
 
   const instanceId = selectedInstance._key;
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
