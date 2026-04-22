@@ -7,9 +7,11 @@ Each invocation gets its own temp directory for source files and artifacts.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 from uuid import uuid4
@@ -21,10 +23,50 @@ from app.sandbox.models import (
     SandboxLanguage,
     validate_packages,
 )
+from app.sandbox.package_policy import canonicalize
 
 logger = logging.getLogger(__name__)
 
 _SANDBOX_ROOT = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+
+# Substrings that indicate ``pip install`` failed because the host can't reach
+# PyPI (DNS / proxy / firewall issues). Matched against pip's stderr so we can
+# surface an actionable error to the agent instead of ~5 lines of urllib3
+# retry noise.
+_PIP_OFFLINE_SIGNALS: tuple[str, ...] = (
+    "getaddrinfo failed",
+    "Failed to establish a new connection",
+    "Temporary failure in name resolution",
+    "Could not find a version that satisfies",
+    "No matching distribution found",
+    "ProxyError",
+    "SSLError",
+)
+
+
+def _split_host_installed_python(packages: list[str]) -> tuple[list[str], list[str]]:
+    """Split *packages* into ``(already_installed, needs_install)`` buckets.
+
+    Uses :mod:`importlib.metadata` against the host interpreter's site-packages
+    so we can skip ``pip install`` entirely when the requested distribution is
+    already present (e.g. ``pandas``, ``numpy``, ``Pillow`` ship with pipeshub).
+    This makes the sandbox usable on air-gapped hosts for the common case.
+    """
+    already: list[str] = []
+    missing: list[str] = []
+    for pkg in packages:
+        name = canonicalize(pkg, SandboxLanguage.PYTHON)
+        try:
+            importlib.metadata.distribution(name)
+            already.append(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(pkg)
+    return already, missing
+
+
+def _looks_offline(stderr: str) -> bool:
+    """Return True if *stderr* from pip suggests the host can't reach PyPI."""
+    return any(signal in stderr for signal in _PIP_OFFLINE_SIGNALS)
 
 
 class LocalExecutor(BaseExecutor):
@@ -113,34 +155,70 @@ class LocalExecutor(BaseExecutor):
         run_env: dict[str, str] = {**(env or {}), "OUTPUT_DIR": output_dir}
 
         if safe_packages:
-            # Install into a per-execution directory with ``--target`` so that
-            # the host's global site-packages is never mutated.
-            os.makedirs(deps_dir, exist_ok=True)
-            pip_result = await self._subprocess(
-                [
-                    "pip", "install", "--quiet", "--no-cache-dir",
-                    "--target", deps_dir,
-                    *safe_packages,
-                ],
-                work_dir,
-                timeout,
-                env,
-            )
-            if pip_result.exit_code != 0:
-                pip_result.execution_time_ms = _now_ms() - start_ms
-                pip_result.error = f"pip install failed: {pip_result.stderr}"
-                return pip_result
-            existing = run_env.get("PYTHONPATH", "")
-            run_env["PYTHONPATH"] = (
-                f"{deps_dir}{os.pathsep}{existing}" if existing else deps_dir
-            )
+            # Skip pip entirely for packages already present in the host
+            # interpreter. pipeshub ships many of the allowlisted deps
+            # (pandas, numpy, Pillow, openpyxl, ...) so this avoids a
+            # guaranteed-to-fail network round trip on air-gapped hosts and
+            # a pointless one on online hosts.
+            host_satisfied, needs_install = _split_host_installed_python(safe_packages)
+            if host_satisfied:
+                logger.info(
+                    "[LocalExecutor] skipping pip for host-installed packages: %s",
+                    host_satisfied,
+                )
 
+            if needs_install:
+                # Install into a per-execution directory with ``--target`` so
+                # the host's global site-packages is never mutated. Invoke pip
+                # via ``python -m pip`` to avoid requiring a ``pip`` shim on
+                # PATH (notably absent for some Windows service accounts).
+                os.makedirs(deps_dir, exist_ok=True)
+                pip_result = await self._subprocess(
+                    [
+                        sys.executable, "-m", "pip", "install",
+                        "--quiet", "--no-cache-dir",
+                        "--disable-pip-version-check",
+                        "--retries", "1", "--timeout", "10",
+                        "--target", deps_dir,
+                        *needs_install,
+                    ],
+                    work_dir,
+                    timeout,
+                    env,
+                )
+                if pip_result.exit_code != 0:
+                    pip_result.execution_time_ms = _now_ms() - start_ms
+                    if _looks_offline(pip_result.stderr):
+                        pip_result.error = (
+                            "Sandbox host cannot reach PyPI and the following "
+                            f"packages are not pre-installed: {needs_install}. "
+                            "Retry with a pre-installed alternative (pandas, "
+                            "numpy, Pillow, openpyxl, python-docx, pdf2image, "
+                            "matplotlib, beautifulsoup4, Jinja2) or ask the "
+                            "operator to pre-install them on the sandbox host."
+                        )
+                    else:
+                        pip_result.error = f"pip install failed: {pip_result.stderr}"
+                    return pip_result
+                existing = run_env.get("PYTHONPATH", "")
+                run_env["PYTHONPATH"] = (
+                    f"{deps_dir}{os.pathsep}{existing}" if existing else deps_dir
+                )
+
+        # Always write the script as UTF-8 -- Python 3 parses source as UTF-8
+        # by default, but on Windows ``open(..., "w")`` uses the locale codec
+        # (typically cp1252), which turns smart quotes / em dashes into raw
+        # bytes that blow up the parser (PEP-263 "Non-UTF-8 code" errors).
         script_path = os.path.join(work_dir, "main.py")
-        with open(script_path, "w") as f:
+        with open(script_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(code)
 
+        # Use ``sys.executable`` rather than the literal ``python3`` so the
+        # sandbox runs under the same interpreter as the host service (and
+        # works on Windows where ``python3`` is often absent or aliased to
+        # the Store stub).
         result = await self._subprocess(
-            ["python3", script_path],
+            [sys.executable, script_path],
             work_dir,
             timeout,
             run_env,
@@ -186,7 +264,7 @@ class LocalExecutor(BaseExecutor):
             )
 
         script_path = os.path.join(work_dir, "main.ts")
-        with open(script_path, "w") as f:
+        with open(script_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(code)
 
         result = await self._subprocess(
@@ -211,7 +289,7 @@ class LocalExecutor(BaseExecutor):
         db_path = os.path.join(work_dir, "sandbox.db")
 
         script_path = os.path.join(work_dir, "query.sql")
-        with open(script_path, "w") as f:
+        with open(script_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(sql)
 
         run_env = {**(env or {}), "OUTPUT_DIR": output_dir}
