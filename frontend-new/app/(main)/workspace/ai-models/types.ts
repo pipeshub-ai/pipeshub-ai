@@ -13,6 +13,12 @@ export interface AIModelProviderField {
   isSecret?: boolean;
   options?: { value: string; label: string }[];
   validation?: { minLength?: number; maxLength?: number; pattern?: string };
+  /**
+   * Labeled example values shown below the input as a compact, copyable note.
+   * Useful when a single placeholder can't convey all the variants a user
+   * might need (e.g. Azure AI endpoints differ per model family).
+   */
+  examples?: { label: string; value: string }[];
 }
 
 export interface AIModelProvider {
@@ -113,7 +119,7 @@ export type CapabilitySection = 'text_generation' | 'embedding' | 'image_generat
 export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'text_generation',
   'embedding',
-  // 'image_generation',
+  'image_generation',
 ];
 
 /** Model API buckets shown under the "For LLMs" tab. */

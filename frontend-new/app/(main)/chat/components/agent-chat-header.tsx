@@ -79,7 +79,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
               gap: 2,
               maxWidth: '100%',
               margin: 0,
-              padding: '6px 10px',
+              padding: 'var(--space-1) var(--space-2)',
               background: 'transparent',
               border: 'none',
               borderRadius: 'var(--radius-2)',
@@ -92,7 +92,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
               style={{
                 fontSize: 15,
                 fontWeight: 500,
-                lineHeight: '22px',
+                lineHeight: 'var(--line-height-3)',
                 color: 'var(--slate-12)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',

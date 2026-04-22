@@ -10,6 +10,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import type { ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions } from './response-tabs/citations';
@@ -19,6 +20,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
+const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
 const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
@@ -83,6 +85,9 @@ export function MessageList() {
   );
   const currentStatusMessage = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.currentStatusMessage ?? null : null
+  );
+  const streamingArtifacts = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
 
   // ── Render-reason tracking ──────────────────────────────────────
@@ -265,7 +270,7 @@ export function MessageList() {
   // in the DOM (never conditionally rendered) so the ref is stable.
   const recalcSpacerHeight = useCallback(() => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no messages or no container → height=0');
       return;
     }
@@ -274,7 +279,7 @@ export function MessageList() {
     const container = scrollContainerRef.current;
 
     if (!element) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no element for last message → height=0');
       return;
     }
@@ -845,8 +850,8 @@ export function MessageList() {
           maxWidth: '50rem',
           width: '100%',
           margin: '0 auto',
-          paddingTop: '16px',
-          paddingBottom: isMobile ? '40px' : '100px',
+          paddingTop: 'var(--space-4)',
+          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
           paddingLeft: isMobile ? 'var(--space-4)' : undefined,
           paddingRight: isMobile ? 'var(--space-4)' : undefined,
         }}
@@ -880,6 +885,7 @@ export function MessageList() {
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

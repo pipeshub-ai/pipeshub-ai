@@ -24,21 +24,11 @@ export function StatusMessageComponent({ status }: StatusMessageProps) {
     >
       <LottieLoader variant="thinking" size={20} />
 
-      {/* Gradient status text with shimmer sweep */}
-      <Text
-        size="2"
-        style={{
-          background:
-            'linear-gradient(90deg, var(--accent-9) 0%, var(--accent-11) 40%, var(--accent-9) 60%, var(--accent-9) 100%)',
-          backgroundSize: '200% 100%',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          backgroundClip: 'text',
-          animation: 'shimmer-sweep 2s ease-in-out infinite',
-        }}
-      >
-        {statusText}
-      </Text>
+      {/* Shimmer status text: base layer always legible, overlay sweeps a bright band */}
+      <span className="generating-shimmer" style={{ fontSize: 'var(--font-size-2)' }}>
+        <span className="generating-shimmer-base">{statusText}</span>
+        <span className="generating-shimmer-overlay" aria-hidden="true">{statusText}</span>
+      </span>
     </Flex>
   );
 }

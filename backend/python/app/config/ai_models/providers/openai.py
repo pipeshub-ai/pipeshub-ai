@@ -6,14 +6,19 @@ from app.config.ai_models.types import ModelCapability
 from .common_fields import (
     API_KEY,
     EMBEDDING_COMMON_TAIL,
+    FRIENDLY_NAME,
     LLM_COMMON_TAIL,
     model_field,
 )
 
 
 @AIModelProviderBuilder("OpenAI", "openAI") \
-    .with_description("GPT models for text generation and embeddings") \
-    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
+    .with_description("GPT models for text generation, embeddings, and image generation") \
+    .with_capabilities([
+        ModelCapability.TEXT_GENERATION,
+        ModelCapability.EMBEDDING,
+        ModelCapability.IMAGE_GENERATION,
+    ]) \
     .with_icon("/assets/icons/ai-models/openai.svg") \
     .with_color("#10A37F") \
     .popular() \
@@ -28,6 +33,9 @@ from .common_fields import (
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(API_KEY, ModelCapability.IMAGE_GENERATION) \
+    .add_field(model_field("e.g., gpt-image-1, dall-e-3"), ModelCapability.IMAGE_GENERATION) \
+    .add_field(FRIENDLY_NAME, ModelCapability.IMAGE_GENERATION) \
     .build_decorator()
 class OpenAIProvider:
     pass

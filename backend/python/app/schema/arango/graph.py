@@ -61,6 +61,7 @@ EDGE_DEFINITIONS = [
             CollectionNames.COMMENTS.value,
             CollectionNames.TICKETS.value,
             CollectionNames.MEETINGS.value,
+            CollectionNames.ARTIFACTS.value,
         ],
     },
     {

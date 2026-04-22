@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Badge, Tooltip } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -16,6 +16,7 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
@@ -229,6 +230,22 @@ export function GroupDetailSidebar({
   }, [isEditMode, exitEditMode, closeDetailPanel]);
 
   const panelTitle = detailGroup?.name || 'Group';
+  const systemGroup = detailGroup ? isSystemGroup(detailGroup) : false;
+
+  const deleteButton = (
+    <LoadingButton
+      variant="outline"
+      color="red"
+      size="1"
+      onClick={handleDeleteGroup}
+      loading={isDeleting}
+      disabled={systemGroup}
+      loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
+      style={{ flexShrink: 0 }}
+    >
+      {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+    </LoadingButton>
+  );
 
   return (
     <WorkspaceRightPanel
@@ -255,10 +272,10 @@ export function GroupDetailSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 16,
+          padding: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 'var(--space-4)',
         }}
       >
         {/* Group Name */}
@@ -274,7 +291,7 @@ export function GroupDetailSidebar({
             readOnly={!isEditMode}
             style={{
               width: '100%',
-              height: 32,
+              height: 'var(--space-8)',
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -327,7 +344,7 @@ export function GroupDetailSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: '8px',
+              padding: 'var(--space-2)',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',
@@ -348,7 +365,7 @@ export function GroupDetailSidebar({
             }}
             onBlur={(e) => {
               e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '8px';
+              e.currentTarget.style.padding = 'var(--space-2)';
             }}
           />
         </FormField>
@@ -359,10 +376,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -383,10 +400,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -453,10 +470,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -481,10 +498,10 @@ export function GroupDetailSidebar({
               backgroundColor: 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
-              padding: 16,
+              padding: 'var(--space-4)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 'var(--space-2)',
             }}
           >
             <Flex align="center" justify="between">
@@ -522,8 +539,8 @@ export function GroupDetailSidebar({
       {isEditMode && (
         <Box
           style={{
-            marginTop: 16,
-            padding: 16,
+            marginTop: 'var(--space-4)',
+            padding: 'var(--space-4)',
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
@@ -544,17 +561,13 @@ export function GroupDetailSidebar({
                 )}
               </Text>
             </Flex>
-            <LoadingButton
-              variant="outline"
-              color="red"
-              size="1"
-              onClick={handleDeleteGroup}
-              loading={isDeleting}
-              loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
-              style={{ flexShrink: 0 }}
-            >
-              {t('workspace.groups.edit.deleteButton', 'Delete Group')}
-            </LoadingButton>
+            {systemGroup ? (
+              <Tooltip content={t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')}>
+                <span style={{ display: 'inline-flex' }}>{deleteButton}</span>
+              </Tooltip>
+            ) : (
+              deleteButton
+            )}
           </Flex>
         </Box>
       )}

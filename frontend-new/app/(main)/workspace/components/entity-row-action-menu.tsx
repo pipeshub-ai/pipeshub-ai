@@ -1,18 +1,15 @@
 'use client';
 
 import React, { useState } from 'react';
-import { IconButton, Flex, Text, Box, Popover } from '@radix-ui/themes';
+import { IconButton, Flex, Text, Box, Popover, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 
 // ── Sub-menu radio option ──
 
 export interface SubMenuRadioOption {
-  /** Option value */
   value: string;
-  /** Display label */
   label: string;
-  /** Optional description shown below the label */
   description?: string;
 }
 
@@ -20,18 +17,13 @@ export interface SubMenuRadioOption {
 
 export interface SubMenuConfig {
   type: 'radio';
-  /** Currently-selected value (controls which radio is checked) */
   value: string;
-  /** Called when the user picks a new value */
   onValueChange: (value: string) => void;
-  /** Radio options */
   options: SubMenuRadioOption[];
 }
 
 export interface RowAction {
-  /** Material icon name */
   icon: string;
-  /** Action label */
   label: string;
   /**
    * Callback when the action is clicked (omit when using `subMenu`).
@@ -43,7 +35,6 @@ export interface RowAction {
   onClick?: () => void | Promise<void>;
   /** Visual variant (danger renders in red) */
   variant?: 'default' | 'danger';
-  /** Render a separator line before this item */
   separatorBefore?: boolean;
   /**
    * External loading flag. When true, the row displays a spinner and the
@@ -57,13 +48,17 @@ export interface RowAction {
    * which replaces the action card — the action card is hidden while the sub-menu is open.
    */
   subMenu?: SubMenuConfig;
+  /** When true the item is greyed out and not clickable. */
+  disabled?: boolean;
+  /** Tooltip shown on hover (useful when disabled to explain why). */
+  tooltip?: string;
 }
 
 export interface EntityRowActionMenuProps {
-  /** Array of actions — falsy entries are filtered out */
   actions: (RowAction | false | null | undefined)[];
 }
 
+type View = 'actions' | 'rolePicker';
 // ────────────────────────────────────────────────────────────────
 // RolePickerCard
 //
@@ -301,7 +296,7 @@ function ActionCard({
 
 export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
   const [open, setOpen] = useState(false);
-  const [showRolePicker, setShowRolePicker] = useState(false);
+  const [view, setView] = useState<View>('actions');
 
   const visibleActions = actions.filter(Boolean) as RowAction[];
   if (visibleActions.length === 0) return null;
@@ -310,7 +305,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
   const handleOpenChange = (isOpen: boolean) => {
     setOpen(isOpen);
-    if (!isOpen) setShowRolePicker(false);
+    if (!isOpen) setView('actions');
   };
 
   return (
@@ -333,31 +328,191 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
         sideOffset={4}
         onClick={(e) => e.stopPropagation()}
         style={{
-          // Transparent shell — each inner card has its own styling
           padding: 0,
           backgroundColor: 'transparent',
           border: 'none',
           boxShadow: 'none',
         }}
       >
-        <Flex direction="column" gap="1">
-          {/* ── Card 1: Action items (hidden when role picker is open) ── */}
-          {!showRolePicker && (
-            <ActionCard
-              actions={visibleActions}
-              onActionClick={() => setShowRolePicker((v) => !v)}
-              onClose={() => handleOpenChange(false)}
-            />
-          )}
+        {view === 'actions' ? (
+          /* ── Action list ── */
+          <Box
+            style={{
+              minWidth: 178,
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-1)',
+              padding: 4,
+              backdropFilter: 'blur(25px)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            {visibleActions.map((action, i) => {
+              const isDanger = action.variant === 'danger';
+              const isDisabled = action.disabled === true;
 
-          {/* ── Card 2: Role picker (visible when "Change Role" is clicked) ── */}
-          {showRolePicker && subMenuAction?.subMenu && (
-            <RolePickerCard
-              subMenu={subMenuAction.subMenu}
-              onClose={() => handleOpenChange(false)}
-            />
-          )}
-        </Flex>
+              const row = (
+                <Flex
+                  role="menuitem"
+                  aria-disabled={isDisabled || undefined}
+                  tabIndex={isDisabled ? -1 : 0}
+                  align="center"
+                  gap="1"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isDisabled) return;
+                    if (action.subMenu) {
+                      setView('rolePicker');
+                    } else {
+                      action.onClick?.();
+                      handleOpenChange(false);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (isDisabled) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (action.subMenu) {
+                        setView('rolePicker');
+                      } else {
+                        action.onClick?.();
+                        handleOpenChange(false);
+                      }
+                    }
+                  }}
+                  onMouseEnter={({ currentTarget }) => {
+                    if (isDisabled) return;
+                    (currentTarget as HTMLElement).style.backgroundColor =
+                      isDanger ? 'var(--red-a3)' : 'var(--slate-a3)';
+                  }}
+                  onMouseLeave={({ currentTarget }) => {
+                    (currentTarget as HTMLElement).style.backgroundColor =
+                      'transparent';
+                  }}
+                  style={{
+                    height: 24,
+                    padding: '0 8px',
+                    borderRadius: 'var(--radius-1)',
+                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                    opacity: isDisabled ? 0.45 : 1,
+                  }}
+                >
+                  <MaterialIcon
+                    name={action.icon}
+                    size={16}
+                    color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
+                  />
+                  <Text
+                    size="1"
+                    style={{
+                      color: isDanger ? 'var(--red-10)' : 'var(--slate-11)',
+                    }}
+                  >
+                    {action.label}
+                  </Text>
+                </Flex>
+              );
+
+              return action.tooltip ? (
+                <Tooltip key={i} content={action.tooltip} side="left">
+                  {row}
+                </Tooltip>
+              ) : (
+                <React.Fragment key={i}>{row}</React.Fragment>
+              );
+            })}
+          </Box>
+        ) : (
+          /* ── Role picker ── */
+          subMenuAction?.subMenu && (
+            <Box
+              style={{
+                minWidth: 178,
+                backgroundColor: 'var(--olive-2)',
+                border: '1px solid var(--olive-3)',
+                borderRadius: 'var(--radius-2)',
+                boxShadow:
+                  '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
+                overflow: 'hidden',
+              }}
+            >
+
+              {/* Radio options */}
+              {subMenuAction.subMenu.options.map((option, index) => {
+                const isSelected = option.value === subMenuAction.subMenu!.value;
+                const isLast =
+                  index === subMenuAction.subMenu!.options.length - 1;
+
+                return (
+                  <Flex
+                    key={option.value}
+                    align="center"
+                    justify="between"
+                    onClick={() => {
+                      subMenuAction.subMenu!.onValueChange(option.value);
+                      handleOpenChange(false);
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.backgroundColor =
+                        'var(--slate-a3)';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.backgroundColor =
+                        'transparent';
+                    }}
+                    style={{
+                      padding: 'var(--space-2) var(--space-4)',
+                      paddingBottom: isLast ? 12 : 8,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Flex direction="column" gap="1">
+                      <Text
+                        size="2"
+                        weight={isSelected ? 'medium' : 'regular'}
+                        style={{ color: 'var(--slate-12)' }}
+                      >
+                        {option.label}
+                      </Text>
+                      {option.description && (
+                        <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                          {option.description}
+                        </Text>
+                      )}
+                    </Flex>
+
+                    <Box
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: '50%',
+                        border: `2px solid ${isSelected ? 'var(--accent-9)' : 'var(--slate-a7)'}`,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {isSelected && (
+                        <Box
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            backgroundColor: 'var(--accent-9)',
+                          }}
+                        />
+                      )}
+                    </Box>
+                  </Flex>
+                );
+              })}
+            </Box>
+          )
+        )}
       </Popover.Content>
     </Popover.Root>
   );

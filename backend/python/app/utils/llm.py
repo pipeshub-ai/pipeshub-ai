@@ -43,3 +43,19 @@ async def get_embedding_model_config(config_service: ConfigurationService) -> di
         except Exception as e:
             raise e
 
+
+async def get_image_generation_config(config_service: ConfigurationService) -> dict | None:
+    """Return the active image-generation model config, or ``None`` if unset.
+
+    Prefers the config marked ``isDefault``; falls back to the first entry.
+    Mirrors the shape returned for other model types under the ``aiModels``
+    namespace.
+    """
+    ai_models = await config_service.get_config(
+        config_node_constants.AI_MODELS.value, use_cache=False,
+    )
+    configs = ai_models.get("imageGeneration") or []
+    if not configs:
+        return None
+    return next((c for c in configs if c.get("isDefault")), configs[0])
+

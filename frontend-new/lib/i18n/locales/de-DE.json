@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "Diese Seite ist nur über einen E-Mail-Link zum Zurücksetzen des Passworts zugänglich. Bitte verwenden Sie die Option „Passwort vergessen“ auf der Anmeldeseite.",
+      "inviteExpiredMessage": "Dieser Einladungslink ist abgelaufen. Bitte bitten Sie Ihren Organisationsadministrator um eine neue Einladung.",
+      "resetExpiredMessage": "Dieser Link zum Zurücksetzen des Passworts ist abgelaufen. Bitte fordern Sie einen neuen über die Option „Passwort vergessen“ auf der Anmeldeseite an.",
+      "backToSignIn": "Zurück zur Anmeldung",
+      "genericLinkInvalidMessage": "Dieser Link ist möglicherweise abgelaufen. Bitte bitten Sie Ihren Organisationsadministrator um eine neue Einladung."
+    }
+  },
   "agents": {
     "createPageTitle": "Agent erstellen",
     "createPageDescription": "Dies ist die Seite zum Erstellen eines Agents. Binden Sie hier Ihr Formular ein oder leiten Sie zu Ihrem Agent-Builder weiter.",
@@ -319,7 +328,7 @@
     "differentModesOfQuery": "Verschiedene Abfragemodi",
     "askMore": "Mehr fragen",
     "failedToLoad": "Laden fehlgeschlagen",
-    "generatingTitle": "Titel wird generiert…",
+    "generatingTitle": "Chat wird generiert…",
     "newChat": "Neuer Chat",
     "startChat": "Chat starten",
     "searchAgents": "Agenten suchen…",
@@ -543,6 +552,12 @@
         "resendInvite": "Einladung erneut senden",
         "editInvite": "Einladung bearbeiten",
         "cancelInvite": "Einladung abbrechen",
+        "cancelInviteConfirmTitle": "Einladung abbrechen?",
+        "cancelInviteConfirmMessage": "Möchten Sie die Einladung für {{email}} wirklich abbrechen?",
+        "cancelInviteSuccess": "Einladung abgebrochen",
+        "cancelInviteSuccessDescription": "Die Einladung an {{email}} wurde abgebrochen",
+        "cancelInviteError": "Einladung konnte nicht abgebrochen werden",
+        "keepInviteButton": "Einladung behalten",
         "comingSoonTitle": "Nicht unterstützt",
         "comingSoonDescription": "Diese Aktion ist in Kürze verfügbar",
         "unblock": "Entsperren",
@@ -553,7 +568,8 @@
         "unblockConfirmAction": "Entsperren",
         "unblockSuccess": "Benutzer erfolgreich entsperrt",
         "unblockError": "Benutzer konnte nicht entsperrt werden",
-        "unblocking": "Wird entsperrt…"
+        "unblocking": "Wird entsperrt…",
+        "edit": "Bearbeiten"
       },
       "profile": {
         "title": "Profil",
@@ -1513,7 +1529,8 @@
         "hostRequired": "SMTP-Host ist erforderlich",
         "portRequired": "Port ist erforderlich",
         "portInvalid": "Geben Sie einen gültigen Port ein (1–65535)",
-        "fromEmailRequired": "Absender-E-Mail ist erforderlich"
+        "fromEmailRequired": "Absender-E-Mail ist erforderlich",
+        "fromEmailInvalid": "Geben Sie eine gültige E-Mail-Adresse ein"
       },
       "configPanel": {
         "title": "SMTP-Einstellungen konfigurieren",
@@ -1997,6 +2014,84 @@
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
     "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer"
+  },
+  "recordView": {
+    "sections": {
+      "documentSummary": "Überblick",
+      "documentFields": "Dokument",
+      "recordMetadata": "Datensatzinformationen"
+    },
+    "metadata": {
+      "departments": "Abteilungen",
+      "documentCategory": "Dokumentkategorie",
+      "subcategory1": "Unterkategorie Ebene 1",
+      "subcategory2": "Unterkategorie Ebene 2",
+      "subcategory3": "Unterkategorie Ebene 3",
+      "topics": "Themen",
+      "languages": "Sprachen"
+    },
+    "mail": {
+      "from": "Von",
+      "to": "An",
+      "cc": "Cc",
+      "labels": "Labels",
+      "date": "Datum"
+    },
+    "emptyState": {
+      "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
+    },
+    "indexingReasonAria": "Details zur Indexierung",
+    "tabRecordInformation": "Datensatzinformationen",
+    "tabDocumentDetails": "Dokumentdetails",
+    "chat": "Chat",
+    "download": "Herunterladen",
+    "openFullscreen": "Vollbild öffnen",
+    "exitFullscreen": "Vollbild beenden",
+    "close": "Schließen",
+    "forceReindex": "Neu indizieren",
+    "retryIndexing": "Indizierung wiederholen",
+    "startIndexing": "Indizierung starten",
+    "resumeIndexing": "Indizierung fortsetzen",
+    "reindexLoading": "Neu-Indizierungsanfrage wird übermittelt…",
+    "reindexSuccess": "Neu-Indizierungsanfrage erfolgreich übermittelt",
+    "reindexError": "Neu-Indizierungsanfrage konnte nicht übermittelt werden",
+    "loading": "Wird geladen…",
+    "loadFailed": "Dieser Datensatz konnte nicht geladen werden.",
+    "externalSource": "Externe Quelle",
+    "collectionUpload": "Sammlung",
+    "openExternal": "Öffnen",
+    "previewUnavailable": "Vorschau für diesen Datensatztyp nicht verfügbar.",
+    "permissionOwner": "Inhaber",
+    "permissionReader": "Leser",
+    "permissionWriter": "Bearbeiter",
+    "labels": {
+      "name": "Name",
+      "fileName": "Dateiname",
+      "fileSize": "Dateigröße",
+      "recordId": "Datensatz-ID",
+      "origin": "Herkunft",
+      "originConnector": "Konnektor",
+      "originUpload": "Sammlungs-Upload",
+      "recordType": "Datensatztyp",
+      "version": "Version",
+      "createdAt": "Erstellt am",
+      "updatedAt": "Aktualisiert am",
+      "collection": "Sammlung",
+      "permissions": "Berechtigungen",
+      "noPermissions": "Keine Berechtigungen zugewiesen",
+      "indexingStatus": "Indexierungsstatus",
+      "connector": "Herkunft",
+      "folder": "Ordner",
+      "connectorId": "Konnektor-ID",
+      "notAvailable": "k. A.",
+      "typeEmail": "E-Mail",
+      "typeTicket": "Ticket",
+      "typeWebpage": "Webseite",
+      "typeMessage": "Nachricht",
+      "mailSubject": "Betreff",
+      "ticketSummary": "Zusammenfassung",
+      "ticketDescription": "Beschreibung"
+    }
   },
   "oauthConsent": {
     "loading": "Autorisierungsanfrage wird geladen…",

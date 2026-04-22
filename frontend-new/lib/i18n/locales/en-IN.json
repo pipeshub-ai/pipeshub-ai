@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "This page is only accessible from a password-reset email link. Please use the Forgot Password option on the sign-in page.",
+      "inviteExpiredMessage": "This invite link has expired. Please ask your organization admin to send you a new invite.",
+      "resetExpiredMessage": "This password reset link has expired. Please request a new one from the Forgot Password option on the sign-in page.",
+      "backToSignIn": "Back to Sign In",
+      "genericLinkInvalidMessage": "This link may have expired. Please ask your organization admin to send you a new invite."
+    }
+  },
   "agents": {
     "createPageTitle": "Create agent",
     "createPageDescription": "This is the dedicated create-agent page. Connect your form or redirect to your agent builder here.",
@@ -319,7 +328,7 @@
     "differentModesOfQuery": "Different Modes of Query",
     "askMore": "Ask More",
     "failedToLoad": "Failed to load",
-    "generatingTitle": "Generating Title…",
+    "generatingTitle": "Generating Chat…",
     "newChat": "New Chat",
     "startChat": "Start a chat",
     "searchAgents": "Search agents…",
@@ -546,6 +555,12 @@
         "resendInvite": "Resend Invite",
         "editInvite": "Edit Invite",
         "cancelInvite": "Cancel Invite",
+        "cancelInviteConfirmTitle": "Cancel invite?",
+        "cancelInviteConfirmMessage": "Are you sure you want to cancel the invite for {{email}}?",
+        "cancelInviteSuccess": "Invite cancelled",
+        "cancelInviteSuccessDescription": "The invitation to {{email}} has been cancelled",
+        "cancelInviteError": "Failed to cancel invite",
+        "keepInviteButton": "Keep Invite",
         "comingSoonTitle": "Not supported",
         "comingSoonDescription": "This Action is coming Soon",
         "unblock": "Unblock",
@@ -556,7 +571,8 @@
         "unblockConfirmAction": "Unblock",
         "unblockSuccess": "User unblocked successfully",
         "unblockError": "Failed to unblock user",
-        "unblocking": "Unblocking…"
+        "unblocking": "Unblocking…",
+        "edit": "Edit"
       },
       "profile": {
         "title": "Profile",
@@ -1512,7 +1528,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1995,6 +2012,84 @@
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+  },
+  "recordView": {
+    "sections": {
+      "documentSummary": "Summary",
+      "documentFields": "Document",
+      "recordMetadata": "Record information"
+    },
+    "metadata": {
+      "departments": "Departments",
+      "documentCategory": "Document category",
+      "subcategory1": "Sub-category level 1",
+      "subcategory2": "Sub-category level 2",
+      "subcategory3": "Sub-category level 3",
+      "topics": "Topics",
+      "languages": "Languages"
+    },
+    "mail": {
+      "from": "From",
+      "to": "To",
+      "cc": "Cc",
+      "labels": "Labels",
+      "date": "Date"
+    },
+    "emptyState": {
+      "noRecordMetadata": "No additional record metadata for this item."
+    },
+    "indexingReasonAria": "Indexing failure details",
+    "tabRecordInformation": "Record Information",
+    "tabDocumentDetails": "Document details",
+    "chat": "Chat",
+    "download": "Download",
+    "openFullscreen": "Open in Full Screen",
+    "exitFullscreen": "Exit full screen",
+    "close": "Close",
+    "forceReindex": "Force reindex",
+    "retryIndexing": "Retry indexing",
+    "startIndexing": "Start indexing",
+    "resumeIndexing": "Resume indexing",
+    "reindexLoading": "Submitting reindex request…",
+    "reindexSuccess": "Reindex request submitted successfully",
+    "reindexError": "Failed to submit reindex request",
+    "loading": "Loading…",
+    "loadFailed": "Could not load this record.",
+    "externalSource": "External source",
+    "collectionUpload": "Collection",
+    "openExternal": "Open",
+    "previewUnavailable": "Preview not available for this record type.",
+    "permissionOwner": "Owner",
+    "permissionReader": "Reader",
+    "permissionWriter": "Writer",
+    "labels": {
+      "name": "Name",
+      "fileName": "File name",
+      "fileSize": "File size",
+      "recordId": "Record ID",
+      "origin": "Origin",
+      "originConnector": "Connector",
+      "originUpload": "Collection upload",
+      "recordType": "Record type",
+      "version": "Version",
+      "createdAt": "Created at",
+      "updatedAt": "Updated at",
+      "collection": "Collection",
+      "permissions": "Permissions",
+      "noPermissions": "No permissions assigned",
+      "indexingStatus": "Indexing status",
+      "connector": "Origin",
+      "folder": "Folder",
+      "connectorId": "Connector ID",
+      "notAvailable": "N/A",
+      "typeEmail": "Email",
+      "typeTicket": "Ticket",
+      "typeWebpage": "Web page",
+      "typeMessage": "Message",
+      "mailSubject": "Subject",
+      "ticketSummary": "Summary",
+      "ticketDescription": "Description"
+    }
   },
   "oauthConsent": {
     "loading": "Loading authorization request…",

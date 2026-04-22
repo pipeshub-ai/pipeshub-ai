@@ -9,11 +9,15 @@ import {
   Text,
   Heading,
   TextField,
+  IconButton,
+  Switch,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   ConfirmationDialog,
   SettingsSaveBar,
+  SettingsSection,
+  SettingsRow,
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useLabsStore } from './store';
@@ -22,90 +26,25 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
-// Local Sub-components (mirror general/page.tsx patterns)
+// Local Sub-components
 // ========================================
 
-interface SettingsSectionProps {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsSection({ title, description, children }: SettingsSectionProps) {
-  return (
-    <Flex
-      direction="column"
-      gap="4"
-      style={{
-        border: '1px solid var(--slate-5)',
-        borderRadius: 'var(--radius-1)',
-        padding: 16,
-        backdropFilter: 'blur(25px)',
-        backgroundColor: 'var(--slate-2)',
-      }}
-    >
-      {/* Section header */}
-      <Flex direction="column" gap="1">
-        <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          {title}
-        </Text>
-        {description && (
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            {description}
-          </Text>
-        )}
-      </Flex>
-      {/* Divider */}
-      <Box style={{ height: 1, backgroundColor: 'var(--slate-5)', width: '100%' }} />
-      {/* Content */}
-      <Flex direction="column" gap="5">
-        {children}
-      </Flex>
-    </Flex>
-  );
-}
-
-interface SettingsRowProps {
-  label: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsRow({ label, description, children }: SettingsRowProps) {
-  return (
-    <Flex align="center" justify="between" style={{ width: '100%' }}>
-      <Box style={{ flex: 1 }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-          {label}
-        </Text>
-        {description && (
-          <Text
-            size="1"
-            style={{ color: 'var(--slate-9)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}
-          >
-            {description}
-          </Text>
-        )}
-      </Box>
-      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
-    </Flex>
-  );
-}
-
-/** Accent-tinted info callout used inside sections */
+/** Accent-tinted info callout used as a standalone banner */
 function InfoCallout({ children }: { children: React.ReactNode }) {
   return (
     <Flex
       align="center"
-      gap="2"
+      gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '10px 12px',
+        padding: '12px',
       }}
     >
-      <MaterialIcon name="info" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
         {children}
       </Text>
@@ -118,18 +57,18 @@ function PlatformConfigNote() {
   const { t } = useTranslation();
   return (
     <Flex
-      align="start"
+      align="center"
       gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '12px 16px',
+        padding: 'var(--space-4)',
       }}
     >
-      <Box style={{ flexShrink: 0, marginTop: 1 }}>
-        <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-      </Box>
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.labs.title')}
@@ -156,11 +95,13 @@ export default function LabsPage() {
   // ── Store selectors (must run every render; see Rules of Hooks) ──
   const form = useLabsStore((s) => s.form);
   const savedForm = useLabsStore((s) => s.savedForm);
+  const availableFlags = useLabsStore((s) => s.availableFlags);
   const errors = useLabsStore((s) => s.errors);
   const discardDialogOpen = useLabsStore((s) => s.discardDialogOpen);
   const isLoading = useLabsStore((s) => s.isLoading);
 
   const setFileSizeLimitMb = useLabsStore((s) => s.setFileSizeLimitMb);
+  const setFlagValue = useLabsStore((s) => s.setFlagValue);
   const setForm = useLabsStore((s) => s.setForm);
   const markSaved = useLabsStore((s) => s.markSaved);
   const setErrors = useLabsStore((s) => s.setErrors);
@@ -182,16 +123,29 @@ export default function LabsPage() {
     }
     const fetchConfig = async () => {
       try {
-        const [settingsResult] = await Promise.allSettled([
+        const [settingsResult, flagsResult] = await Promise.allSettled([
           LabsApi.getSettings(),
+          LabsApi.getAvailableFlags(),
         ]);
 
         const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
+        const flags = flagsResult.status === 'fulfilled' ? flagsResult.value : [];
+
+        // Merge server-provided flag values with descriptor defaults so every
+        // available flag has an effective boolean value in the form.
+        const serverFlags = settings?.featureFlags ?? {};
+        const featureFlags: Record<string, boolean> = {};
+        for (const def of flags) {
+          featureFlags[def.key] =
+            typeof serverFlags[def.key] === 'boolean'
+              ? serverFlags[def.key]
+              : !!def.defaultEnabled;
+        }
 
         setForm({
-            fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
-          featureFlags: {},
-        }, []);
+          fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
+          featureFlags,
+        }, flags);
       } catch {
         setLoading(false);
       }
@@ -299,21 +253,31 @@ export default function LabsPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.labs')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
-        <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title={t('workspace.labs.fileUploadLimit')}>
-            <Flex direction="column" gap="2">
-              <SettingsRow label={t('workspace.labs.fileUploadLimitLabel')} description={t('workspace.labs.fileUploadLimitDescription')}>
-                <Flex direction="column" gap="1">
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
+          <Flex direction="column" gap="3">
+            <SettingsSection>
+              <Flex align="center" justify="between" style={{ width: '100%' }}>
+                {/* Label + description */}
+                <Box style={{ flex: 1 }}>
+                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+                    {t('workspace.labs.fileUploadLimit')}
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}>
+                    {t('workspace.labs.fileUploadLimitDescription')}
+                  </Text>
+                </Box>
+                {/* Input — fixed 158px, right-aligned */}
+                <Flex direction="column" gap="1" style={{ width: 158, flexShrink: 0 }}>
                   <TextField.Root
                     type="number"
                     placeholder={t('workspace.labs.fileUploadLimitPlaceholder')}
@@ -328,13 +292,13 @@ export default function LabsPage() {
                         align="center"
                         justify="center"
                         style={{
-                          backgroundColor: 'var(--accent-3)',
+                          backgroundColor: 'var(--accent-a3)',
                           borderRadius: 'var(--radius-1)',
                           padding: '2px 8px',
-                          height: 24,
+                          height: 18,
                         }}
                       >
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)' }}>
                           {t('units.mb')}
                         </Text>
                       </Flex>
@@ -346,14 +310,67 @@ export default function LabsPage() {
                     </Text>
                   )}
                 </Flex>
-              </SettingsRow>
-
-              <InfoCallout>
-                {t('workspace.labs.callout')}
-              </InfoCallout>
-            </Flex>
-          </SettingsSection>
+              </Flex>
+                <InfoCallout>
+              {t('workspace.labs.callout')}
+            </InfoCallout>
+            </SettingsSection>
+          </Flex>
         </Box>
+
+        {/* ── Feature Flags Section ── */}
+        {availableFlags.length > 0 && (
+          <Box style={{ marginBottom: 'var(--space-5)' }}>
+            <SettingsSection
+              title={t('workspace.labs.featureFlags.title', 'Feature flags')}
+              description={t(
+                'workspace.labs.featureFlags.subtitle',
+                'Toggle experimental capabilities for every agent in this workspace.'
+              )}
+            >
+              {availableFlags.map((flag) => {
+                const checked = !!form.featureFlags[flag.key];
+                return (
+                  <Flex
+                    key={flag.key}
+                    align="center"
+                    justify="between"
+                    style={{ width: '100%', gap: 'var(--space-4)' }}
+                  >
+                    <Box style={{ flex: 1 }}>
+                      <Text
+                        size="2"
+                        weight="medium"
+                        style={{ color: 'var(--slate-12)', display: 'block' }}
+                      >
+                        {flag.label || flag.key}
+                      </Text>
+                      {flag.description && (
+                        <Text
+                          size="1"
+                          style={{
+                            color: 'var(--slate-11)',
+                            display: 'block',
+                            marginTop: 2,
+                            lineHeight: '16px',
+                            fontWeight: 300,
+                          }}
+                        >
+                          {flag.description}
+                        </Text>
+                      )}
+                    </Box>
+                    <Switch
+                      checked={checked}
+                      onCheckedChange={(val) => setFlagValue(flag.key, val)}
+                      style={{ flexShrink: 0, cursor: 'pointer' }}
+                    />
+                  </Flex>
+                );
+              })}
+            </SettingsSection>
+          </Box>
+        )}
 
         {/* ── Platform Configuration note ── */}
         <PlatformConfigNote />

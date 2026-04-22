@@ -150,7 +150,7 @@ export function SearchResultsView() {
         align="center"
         gap="2"
         style={{
-          height: '40px',
+          height: 'var(--space-7)',
           padding: '0 var(--space-2)',
           marginBottom: 'var(--space-2)',
         }}

@@ -4,6 +4,7 @@ import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.t
 
 export enum EventType {
   LLMConfiguredEvent = 'llmConfigured',
+  EmbeddingModelConfiguredEvent = 'embeddingModelConfigured',
   ConnectorPublicUrlChangedEvent = 'connectorPublicUrlChanged',
   GmailUpdatesEnabledEvent = 'gmailUpdatesEnabledEvent',
   GmailUpdatesDisabledEvent = 'gmailUpdatesDisabledEvent',
@@ -46,6 +47,7 @@ export interface Event {
   timestamp: number;
   payload:
     | LLMConfiguredEvent
+    | EmbeddingModelConfiguredEvent
     | ConnectorPublicUrlChangedEvent
     | GmailUpdatesEnabledEvent
     | GmailUpdatesDisabledEvent
@@ -55,6 +57,10 @@ export interface Event {
 }
 
 export interface LLMConfiguredEvent {
+  credentialsRoute: string;
+}
+
+export interface EmbeddingModelConfiguredEvent {
   credentialsRoute: string;
 }
 

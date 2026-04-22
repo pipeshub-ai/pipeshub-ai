@@ -144,3 +144,71 @@ class TestAwaitAndCollectResults:
         results = await await_and_collect_results("conv1")
         assert len(results) == 1
         assert results[0]["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_nested_task_registration_is_drained(self):
+        """A task that itself registers another task must not be lost.
+
+        This is the C5 scenario: if a tool schedules an upload task, and that
+        upload task discovers more work (e.g. per-file sub-tasks it also
+        registers), the stream-layer drainer must wait for all of them.
+        """
+        async def parent():
+            async def child():
+                return {"type": "artifacts", "artifacts": [{"name": "child"}]}
+
+            child_task = asyncio.create_task(child())
+            register_task("conv1", child_task)
+            return {"type": "artifacts", "artifacts": [{"name": "parent"}]}
+
+        parent_task = asyncio.create_task(parent())
+        register_task("conv1", parent_task)
+
+        results = await await_and_collect_results("conv1")
+        names = {a["name"] for r in results for a in r.get("artifacts", [])}
+        assert names == {"parent", "child"}
+
+    @pytest.mark.asyncio
+    async def test_drain_stops_at_pass_limit(self, monkeypatch):
+        """Infinite nesting must be bounded — we refuse to spin forever."""
+        import app.utils.conversation_tasks as ct
+
+        monkeypatch.setattr(ct, "_MAX_DRAIN_PASSES", 3)
+
+        counter = {"n": 0}
+
+        async def spawner():
+            counter["n"] += 1
+
+            async def noop():
+                return None
+
+            register_task("conv_loop", asyncio.create_task(spawner()))
+            return None
+
+        register_task("conv_loop", asyncio.create_task(spawner()))
+        results = await ct.await_and_collect_results("conv_loop")
+
+        # No results because all tasks returned None.
+        assert results == []
+        # We cap the number of passes — so `counter` is bounded (NOT infinite).
+        # Exact bound depends on how many tasks each pass popped; the only
+        # contract is "finite and reasonably small".
+        assert counter["n"] < 50
+
+    @pytest.mark.asyncio
+    async def test_overall_timeout_cancels_slow_task(self, monkeypatch):
+        """A task that never completes must be cancelled once the drain deadline is hit."""
+        import app.utils.conversation_tasks as ct
+
+        monkeypatch.setattr(ct, "_DRAIN_OVERALL_TIMEOUT_S", 0.1)
+
+        async def slow():
+            await asyncio.sleep(10)
+            return {"should_not": "arrive"}
+
+        task = asyncio.create_task(slow())
+        register_task("conv_slow", task)
+        results = await ct.await_and_collect_results("conv_slow")
+        assert results == []
+        assert task.cancelled() or task.done()

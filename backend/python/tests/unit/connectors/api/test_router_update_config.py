@@ -21,6 +21,7 @@ from app.connectors.api.router import (
     stream_record_internal,
     update_connector_instance_config,
 )
+from app.models.entities import RecordType
 
 # ---------------------------------------------------------------------------
 # Module-level patch target
@@ -1059,6 +1060,7 @@ def _mock_record(**overrides):
         "id": "rec-1",
         "org_id": "org-1",
         "record_name": "doc.pdf",
+        "record_type": RecordType.FILE,
         "mime_type": "application/pdf",
         "connector_name": Connectors.GOOGLE_DRIVE,
         "connector_id": "conn-1",

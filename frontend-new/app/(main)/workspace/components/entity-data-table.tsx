@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
+import { EmptyIcon } from '@/app/components/ui/empty-icon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { TableSkeleton, type TableSkeletonColumnShape } from '@/app/components/data-display';
 
@@ -95,9 +96,9 @@ export function EntityDataTable<T>({
       <Flex
         align="center"
         style={{
-          height: '36px',
-          borderBottom: '1px solid var(--slate-6)',
-          backgroundColor: 'var(--slate-2)',
+          height: 'var(--space-9)',
+          borderBottom: '1px solid var(--olive-6)',
+          backgroundColor: 'var(--olive-2)',
           flexShrink: 0,
         }}
       >
@@ -105,7 +106,7 @@ export function EntityDataTable<T>({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', flexShrink: 0, padding: '0 8px' }}
+          style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
@@ -219,7 +220,7 @@ export function EntityDataTable<T>({
               <Flex
                 align="center"
                 justify="center"
-                style={{ width: '38px', flexShrink: 0, padding: '0 8px' }}
+                style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Checkbox
@@ -252,7 +253,7 @@ export function EntityDataTable<T>({
                 <Flex
                   align="center"
                   gap="1"
-                  style={{ width: '80px', flexShrink: 0, padding: '0 8px' }}
+                  style={{ width: '80px', flexShrink: 0, padding: '0 var(--space-2)' }}
                 >
                   {renderRowActions(item)}
                 </Flex>

@@ -131,7 +131,7 @@ function CreateBotButton({ onClick }: { onClick: () => void }) {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        height: 32,
+        height: 'var(--space-8)',
         padding: '0 12px',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-10)' : 'var(--accent-9)',
@@ -143,6 +143,37 @@ function CreateBotButton({ onClick }: { onClick: () => void }) {
       <span style={{ fontSize: 14, fontWeight: 500, color: 'white' }}>
         {t('workspace.bots.createBot')}
       </span>
+    </button>
+  );
+}
+
+function IconButton({ icon, onClick }: { icon: string; onClick: () => void }) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        appearance: 'none',
+        margin: 0,
+        padding: 0,
+        border: '1px solid var(--gray-a4)',
+        outline: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 'var(--space-8)',
+        height: 'var(--space-8)',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: isHovered ? 'var(--gray-a3)' : 'transparent',
+        cursor: 'pointer',
+        transition: 'background-color 150ms ease',
+      }}
+    >
+      <MaterialIcon name={icon} size={16} color="var(--gray-11)" />
     </button>
   );
 }
@@ -174,14 +205,14 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         style={{
           appearance: 'none',
           margin: 0,
-          marginTop: 8,
+          marginTop: 'var(--space-2)',
           font: 'inherit',
           outline: 'none',
           border: 'none',
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          height: 36,
+          height: 'var(--space-9)',
           padding: '0 16px',
           borderRadius: 'var(--radius-2)',
           backgroundColor: isHovered ? 'var(--accent-10)' : 'var(--accent-9)',

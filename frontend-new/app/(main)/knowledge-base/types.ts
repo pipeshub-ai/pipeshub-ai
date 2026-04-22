@@ -450,12 +450,16 @@ export interface RecordDetailsResponse {
     sourceLastModifiedTimestamp: number;
     isDeleted: boolean;
     isArchived: boolean;
-    indexingStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
+    indexingStatus: IndexingStatus;
+    reason?: string;
+    connectorName?: string;
+    hideWeburl?: boolean;
+    previewRenderable?: boolean;
     version: number;
     webUrl: string;
     mimeType: string;
     connectorId: string;
-    sizeInBytes: number;
+    sizeInBytes?: number | null;
     md5Checksum: string;
     extractionStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
     isDirty: boolean;

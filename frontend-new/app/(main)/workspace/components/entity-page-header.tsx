@@ -45,7 +45,7 @@ export function EntityPageHeader({
       align="end"
       style={{
         paddingTop: '64px',
-        paddingBottom: '16px',
+        paddingBottom: 'var(--space-4)',
       }}
     >
       {/* Left: Title + Subtitle */}

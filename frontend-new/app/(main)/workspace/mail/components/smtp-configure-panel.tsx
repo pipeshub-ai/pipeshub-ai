@@ -154,7 +154,7 @@ export function SmtpConfigurePanel({
       color="gray"
       size="1"
       onClick={() => window.open('https://docs.pipeshub.com/smtp', '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
       <Text size="1">{t('workspace.bots.documentation')}</Text>
@@ -174,146 +174,173 @@ export function SmtpConfigurePanel({
       primaryLoading={isSaving}
       onPrimaryClick={handleSave}
       onSecondaryClick={onClose}
+      iconSize={20}
     >
       <Flex direction="column" gap="5">
         {/* ── Info banner ── */}
-        <Flex
-          align="start"
-          gap="2"
+        <Box
           style={{
-            backgroundColor: 'var(--accent-2)',
-            border: '1px solid var(--accent-6)',
+            background: 'var(--olive-2)',
+            border: '1px solid var(--accent-3)',
             borderRadius: 'var(--radius-2)',
-            padding: '10px 12px',
+            overflow: 'hidden',
           }}
         >
-          <MaterialIcon
-            name="info"
-            size={18}
-            color="var(--accent-9)"
-            style={{ flexShrink: 0, marginTop: 1 }}
-          />
-          <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '18px' }}>
-            {t('workspace.mail.infoBanner')}
-          </Text>
-        </Flex>
-
-        {/* ── SMTP Host ── */}
-        <Box>
-          <FieldLabel
-            label={t('workspace.mail.fields.host')}
-            hint={t('workspace.mail.fields.hostHint')}
-          />
-          <TextField.Root
-            placeholder="email-smtp.ap-south-1.amazonaws.com"
-            value={form.host}
-            onChange={handleChange('host')}
-            color={errors.host ? 'red' : undefined}
+          <Flex
+            align="center"
+            gap="3"
+            style={{
+              background: 'var(--accent-a3)',
+              padding: '10px 12px',
+            }}
           >
-            <TextField.Slot>
-              <MaterialIcon name="dns" size={16} color="var(--slate-9)" />
-            </TextField.Slot>
-          </TextField.Root>
-          {errors.host && (
-            <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
-              {errors.host}
+            <Box
+              style={{
+                background: 'var(--olive-a3)',
+                borderRadius: 'var(--radius-1)',
+                padding: 8,
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+            </Box>
+            <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '18px' }}>
+              {t('workspace.mail.infoBanner')}
             </Text>
-          )}
+          </Flex>
         </Box>
 
-        {/* ── Port ── */}
-        <Box>
-          <FieldLabel
-            label={t('workspace.mail.fields.port')}
-            hint={t('workspace.mail.fields.portHint')}
-          />
-          <TextField.Root
-            type="number"
-            placeholder="587"
-            value={form.port === '' ? '' : String(form.port)}
-            onChange={handleChange('port')}
-            color={errors.port ? 'red' : undefined}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="cell_tower" size={16} color="var(--slate-9)" />
-            </TextField.Slot>
-          </TextField.Root>
-          {errors.port && (
-            <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
-              {errors.port}
-            </Text>
-          )}
-        </Box>
-
-        {/* ── From Email Address ── */}
-        <Box>
-          <FieldLabel
-            label={t('workspace.mail.fields.fromEmail')}
-            hint={t('workspace.mail.fields.fromEmailHint')}
-          />
-          <TextField.Root
-            type="email"
-            placeholder="noreply@yourcompany.com"
-            value={form.fromEmail}
-            onChange={handleChange('fromEmail')}
-            color={errors.fromEmail ? 'red' : undefined}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="mail" size={16} color="var(--slate-9)" />
-            </TextField.Slot>
-          </TextField.Root>
-          {errors.fromEmail && (
-            <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
-              {errors.fromEmail}
-            </Text>
-          )}
-        </Box>
-
-        {/* ── Username (Optional) ── */}
-        <Box>
-          <FieldLabel
-            label={t('workspace.mail.fields.username')}
-            hint={t('workspace.mail.fields.usernameHint')}
-          />
-          <TextField.Root
-            placeholder={t('workspace.mail.fields.usernamePlaceholder')}
-            value={form.username}
-            onChange={handleChange('username')}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="manage_accounts" size={16} color="var(--slate-9)" />
-            </TextField.Slot>
-          </TextField.Root>
-        </Box>
-
-        {/* ── Password (Optional) ── */}
-        <Box>
-          <FieldLabel
-            label={t('workspace.mail.fields.password')}
-            hint={t('workspace.mail.fields.passwordHint')}
-          />
-          <TextField.Root
-            type={showPassword ? 'text' : 'password'}
-            placeholder="••••••••••••••••••••"
-            value={form.password}
-            onChange={handleChange('password')}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="lock" size={16} color="var(--slate-9)" />
-            </TextField.Slot>
-            <TextField.Slot side="right">
-              <Box
-                onClick={() => setShowPassword((v) => !v)}
-                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+        {/* ── Fields box ── */}
+        <Box
+          style={{
+            background: 'var(--olive-2)',
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-2)',
+            padding: 'var(--space-4)',
+          }}
+        >
+          <Flex direction="column" gap="5">
+            {/* ── SMTP Host ── */}
+            <Box>
+              <FieldLabel
+                label={t('workspace.mail.fields.host')}
+                hint={t('workspace.mail.fields.hostHint')}
+              />
+              <TextField.Root
+                placeholder={t('workspace.mail.configPanel.hostPlaceholder')}
+                value={form.host}
+                onChange={handleChange('host')}
+                color={errors.host ? 'red' : undefined}
               >
-                <MaterialIcon
-                  name={showPassword ? 'visibility_off' : 'visibility'}
-                  size={16}
-                  color="var(--slate-9)"
-                />
-              </Box>
-            </TextField.Slot>
-          </TextField.Root>
+                <TextField.Slot>
+                  <MaterialIcon name="dns" size={16} color="var(--slate-9)" />
+                </TextField.Slot>
+              </TextField.Root>
+              {errors.host && (
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
+                  {errors.host}
+                </Text>
+              )}
+            </Box>
+
+            {/* ── Port ── */}
+            <Box>
+              <FieldLabel
+                label={t('workspace.mail.fields.port')}
+                hint={t('workspace.mail.fields.portHint')}
+              />
+              <TextField.Root
+                type="number"
+                placeholder="587"
+                value={form.port === '' ? '' : String(form.port)}
+                onChange={handleChange('port')}
+                color={errors.port ? 'red' : undefined}
+              >
+                <TextField.Slot>
+                  <MaterialIcon name="cell_tower" size={16} color="var(--slate-9)" />
+                </TextField.Slot>
+              </TextField.Root>
+              {errors.port && (
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
+                  {errors.port}
+                </Text>
+              )}
+            </Box>
+
+            {/* ── From Email Address ── */}
+            <Box>
+              <FieldLabel
+                label={t('workspace.mail.fields.fromEmail')}
+                hint={t('workspace.mail.fields.fromEmailHint')}
+              />
+              <TextField.Root
+                type="email"
+                placeholder={t('workspace.mail.configPanel.fromEmailPlaceholder')}
+                value={form.fromEmail}
+                onChange={handleChange('fromEmail')}
+                color={errors.fromEmail ? 'red' : undefined}
+              >
+                <TextField.Slot>
+                  <MaterialIcon name="mail" size={16} color="var(--slate-9)" />
+                </TextField.Slot>
+              </TextField.Root>
+              {errors.fromEmail && (
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
+                  {errors.fromEmail}
+                </Text>
+              )}
+            </Box>
+
+            {/* ── Username (Optional) ── */}
+            <Box>
+              <FieldLabel
+                label={t('workspace.mail.fields.username')}
+                hint={t('workspace.mail.fields.usernameHint')}
+              />
+              <TextField.Root
+                placeholder={t('workspace.mail.fields.usernamePlaceholder')}
+                value={form.username}
+                onChange={handleChange('username')}
+              >
+                <TextField.Slot>
+                  <MaterialIcon name="manage_accounts" size={16} color="var(--slate-9)" />
+                </TextField.Slot>
+              </TextField.Root>
+            </Box>
+
+            {/* ── Password (Optional) ── */}
+            <Box>
+              <FieldLabel
+                label={t('workspace.mail.fields.password')}
+                hint={t('workspace.mail.fields.passwordHint')}
+              />
+              <TextField.Root
+                type={showPassword ? 'text' : 'password'}
+                placeholder="••••••••••••••••••••"
+                value={form.password}
+                onChange={handleChange('password')}
+              >
+                <TextField.Slot>
+                  <MaterialIcon name="lock" size={16} color="var(--slate-9)" />
+                </TextField.Slot>
+                <TextField.Slot side="right">
+                  <Box
+                    onClick={() => setShowPassword((v) => !v)}
+                    style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                  >
+                    <MaterialIcon
+                      name={showPassword ? 'visibility_off' : 'visibility'}
+                      size={16}
+                      color="var(--slate-9)"
+                    />
+                  </Box>
+                </TextField.Slot>
+              </TextField.Root>
+            </Box>
+          </Flex>
         </Box>
       </Flex>
     </WorkspaceRightPanel>

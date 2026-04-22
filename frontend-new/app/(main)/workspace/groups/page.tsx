@@ -23,6 +23,7 @@ import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { useGroupsStore } from './store';
 import { GroupsApi } from './api';
+import { isSystemGroup } from './types';
 import type { Group } from './types';
 import { CreateGroupSidebar } from './components/create-group-sidebar';
 import { GroupDetailSidebar } from './components/group-detail-sidebar';
@@ -380,6 +381,7 @@ function GroupsPageContent() {
   // ── Row actions ────────────
   const renderRowActions = useCallback(
     (group: Group) => {
+      const systemGroup = isSystemGroup(group);
       const actions: RowAction[] = [
         {
           icon: 'group',
@@ -393,6 +395,10 @@ function GroupsPageContent() {
           label: t('workspace.groups.actions.delete'),
           variant: 'danger',
           separatorBefore: true,
+          disabled: systemGroup,
+          tooltip: systemGroup
+            ? t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')
+            : undefined,
           onClick: async () => {
             try {
               await GroupsApi.deleteGroup(group._id);
