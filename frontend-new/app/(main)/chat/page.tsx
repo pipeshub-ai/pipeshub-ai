@@ -42,7 +42,6 @@ const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
-
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
