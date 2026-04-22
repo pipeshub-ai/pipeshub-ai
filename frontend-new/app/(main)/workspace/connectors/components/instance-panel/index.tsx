@@ -83,10 +83,12 @@ export function InstanceManagementPanel() {
   const removeConnectorDisabled =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
-  const removeConnectorDisabledTooltip =
+    const removeConnectorDisabledTooltip =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is already being removed.'
-      : undefined;
+      : selectedInstance?.isActive
+        ? 'Turn off sync before removing this connector.'
+        : undefined;
 
   const confirmRemoveConnector = useCallback(async () => {
     const id = pendingDeleteId;
