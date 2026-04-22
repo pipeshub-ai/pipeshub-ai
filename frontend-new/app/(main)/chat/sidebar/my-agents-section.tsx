@@ -131,6 +131,7 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
                   agent={agent}
                   label={label}
                   isActive={isActive}
+                  href={buildChatHref({ agentId: id })}
                   onSelect={() => openAgent(id)}
                   onBeforeNavigate={() => {
                     if (isMobile) useMobileSidebarStore.getState().close();

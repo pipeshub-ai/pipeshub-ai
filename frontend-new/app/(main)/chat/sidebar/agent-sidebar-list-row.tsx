@@ -17,6 +17,8 @@ export interface AgentSidebarListRowProps {
   isActive: boolean;
   /** Opens the agent in chat (row click). */
   onSelect: () => void;
+  /** Navigation href — renders row as <a> for open-in-new-tab support */
+  href?: string;
   /** e.g. close mobile drawer before navigating to edit. */
   onBeforeNavigate?: () => void;
   /** Optional left icon (e.g. smart_toy in the full agents panel). */
@@ -33,6 +35,7 @@ export function AgentSidebarListRow({
   label,
   isActive,
   onSelect,
+  href,
   onBeforeNavigate,
   icon,
   onDeleted,
@@ -83,6 +86,7 @@ export function AgentSidebarListRow({
         icon={icon}
         label={label}
         isActive={isActive}
+        href={href}
         onClick={onSelect}
         textColor="var(--slate-12)"
         fontWeight={500}

@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -57,7 +56,6 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
  * Static navigation section — "New Chat" button, Search, Collections, etc.
  */
 export function StaticNavSection() {
-  const router = useRouter();
   const dispatch = useCommandStore((s) => s.dispatch);
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
@@ -103,7 +101,7 @@ export function StaticNavSection() {
             key={item.route}
             icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} />}
             label={t(item.labelKey)}
-            onClick={() => router.push(item.route)}
+            href={item.route}
           />
         ))}
     </Flex>

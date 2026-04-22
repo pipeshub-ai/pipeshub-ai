@@ -231,6 +231,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
                     label={label}
                     icon={<MaterialIcon name="smart_toy" size={ICON_SIZE_DEFAULT} />}
                     isActive={!!id && onChatRoute && chatAgentId === id}
+                    href={id ? buildChatHref({ agentId: id }) : undefined}
                     onSelect={() => handleSelect(agent)}
                     onBeforeNavigate={() => {
                       if (isMobile) closeMobileSidebar();

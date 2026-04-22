@@ -160,6 +160,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
           label={t('chat.backToChatHome')}
+          href="/chat/"
           onClick={handleBackHome}
         />
 

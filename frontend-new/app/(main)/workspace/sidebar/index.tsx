@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Flex } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
@@ -71,7 +71,6 @@ const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
  * Active item determined from current pathname.
  */
 export default function WorkspaceSidebar() {
-  const router = useRouter();
   const rawPathname = usePathname();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
@@ -107,10 +106,6 @@ export default function WorkspaceSidebar() {
   };
   const isPeopleChildActive = PEOPLE_ROUTES.some((route) => pathname.startsWith(route));
 
-  const handleBack = () => {
-    router.push('/chat');
-  };
-
   const visibleOverviewItems = OVERVIEW_ITEMS.filter((item) => isAdmin || !item.adminOnly);
   const visibleWorkspaceItems = WORKSPACE_ITEMS.filter((item) => isAdmin || !item.adminOnly);
   const visiblePeopleItems = PEOPLE_SUB_ITEMS.filter((item) => isAdmin || !item.adminOnly);
@@ -122,7 +117,7 @@ export default function WorkspaceSidebar() {
         <WorkspaceSidebarItem
           icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
           label={t('workspace.sidebar.backToApp')}
-          onClick={handleBack}
+          href="/chat"
         />
 
         {/* ── Overview section ── */}
@@ -133,7 +128,7 @@ export default function WorkspaceSidebar() {
               key={item.route}
               icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(item.labelKey)}
-              onClick={() => router.push(item.route)}
+              href={item.route}
               isActive={isActive(item.route)}
             />
           ))}
@@ -151,7 +146,7 @@ export default function WorkspaceSidebar() {
                 <WorkspaceSidebarItem
                   key={item.route}
                   label={t(item.labelKey)}
-                  onClick={() => router.push(item.route)}
+                  href={item.route}
                   isActive={isActive(item.route)}
                   paddingLeft={36}
                 />
@@ -169,7 +164,7 @@ export default function WorkspaceSidebar() {
                 key={item.route}
                 icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
                 label={t(item.labelKey)}
-                onClick={() => router.push(item.route)}
+                href={item.route}
                 isActive={isActive(item.route)}
               />
             ))}
@@ -183,7 +178,7 @@ export default function WorkspaceSidebar() {
                 key={item.route}
                 icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
                 label={t(item.labelKey)}
-                onClick={() => router.push(item.route)}
+                href={item.route}
                 isActive={isActive(item.route)}
               />
             ))}
@@ -198,7 +193,7 @@ export default function WorkspaceSidebar() {
               key={item.route}
               icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(item.labelKey)}
-              onClick={() => router.push(item.route)}
+              href={item.route}
               isActive={isActive(item.route)}
             />
           ))}

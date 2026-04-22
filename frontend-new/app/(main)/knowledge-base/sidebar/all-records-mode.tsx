@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
@@ -56,6 +57,8 @@ interface AllRecordsModeProps {
   // Navigation
   onNavigateToConnectors: () => void;
   onNavigateToConnector: (connectorTypeParam: string) => void;
+  connectorsHref: string;
+  buildConnectorHref: (connectorTypeParam: string) => string;
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -98,6 +101,8 @@ export function AllRecordsMode({
   kbPrivateTree,
   onNavigateToConnectors,
   onNavigateToConnector,
+  connectorsHref,
+  buildConnectorHref,
   onReindex,
   onRename,
   onDelete,
@@ -229,19 +234,28 @@ export function AllRecordsMode({
           </Text>
           <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} onNavigate={onNavigateToConnector} />
+              <MoreConnectorItem key={connector.id} connector={connector} href={buildConnectorHref(connector.connectorTypeParam)} onNavigate={onNavigateToConnector} />
             ))}
-            <Button
-              variant="ghost"
-              size="2"
-              color="gray"
-              onClick={onNavigateToConnectors}
+            <Link
+              href={connectorsHref}
+              onClick={(e: React.MouseEvent) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                e.preventDefault();
+                onNavigateToConnectors();
+              }}
               style={{
-                width: '100%',
-                justifyContent: 'space-between',
-                paddingLeft: 'var(--space-3)',
                 display: 'flex',
                 alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                paddingLeft: 'var(--space-3)',
+                paddingRight: 'var(--space-2)',
+                boxSizing: 'border-box',
+                height: '32px',
+                borderRadius: 'var(--radius-1)',
+                textDecoration: 'none',
+                color: 'inherit',
+                cursor: 'pointer',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -257,7 +271,7 @@ export function AllRecordsMode({
               >
                 <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
               </Flex>
-            </Button>
+            </Link>
           </Flex>
         </Box>
       )}
