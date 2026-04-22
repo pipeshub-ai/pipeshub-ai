@@ -36,47 +36,6 @@ const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
-// Background decorative pattern
-const BackgroundPattern = ({ showNewChatView }: { showNewChatView: boolean }) => (
-  <Box
-    style={{
-      position: 'absolute',
-      inset: 0,
-      overflow: 'hidden',
-      pointerEvents: 'none',
-    }}
-  >
-    {showNewChatView ? (
-      <img
-        src="/background/chat-bg.svg"
-        alt=""
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '100%',
-          height: 'auto',
-          opacity: 1,
-        }}
-      />
-    ) : (
-      <Box
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '200%',
-          height: '300px',
-          opacity: 0.3,
-          background: 'radial-gradient(ellipse at center bottom, rgba(11, 122, 89, 0.15) 0%, transparent 70%)',
-        }}
-      />
-    )}
-  </Box>
-);
-
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -741,7 +700,6 @@ function ChatContent() {
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
-      <BackgroundPattern showNewChatView={showNewChatView} />
 
       {historyAndShareAgentId && (
         <AgentChatHeader
