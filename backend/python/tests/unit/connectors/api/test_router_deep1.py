@@ -37,6 +37,7 @@ from app.connectors.api.router import (
     stream_record_internal,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.models.entities import RecordType
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -51,6 +52,7 @@ def _mock_record(**overrides):
         "id": "rec-1",
         "org_id": "org-1",
         "record_name": "doc.pdf",
+        "record_type": RecordType.FILE,
         "mime_type": "application/pdf",
         "connector_name": Connectors.GOOGLE_DRIVE,
         "connector_id": "conn-1",

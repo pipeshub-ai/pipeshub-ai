@@ -204,22 +204,51 @@ _CODE_EXECUTION_APPS: frozenset[str] = frozenset({
 
 
 def _code_execution_enabled(state: ChatState) -> bool:
-    """Return whether this deployment/caller has opted into code-execution tools.
+    """Return whether this deployment/caller has access to code-execution tools.
 
-    Safe-by-default: if unset, code execution is DISABLED. A deployment must
-    explicitly set ``PIPESHUB_ENABLE_CODE_EXECUTION=true`` (or ``1``/``yes``)
-    to expose ``coding_sandbox.*`` and ``database_sandbox.*`` to agents.
+    Source of truth is the ``ENABLE_CODE_EXECUTION`` platform feature flag
+    managed from the admin **Labs** page. Defaults to ENABLED so the feature
+    works out of the box; admins disable it from the UI when desired.
 
-    A per-request override via ``state["enable_code_execution"]`` is also
-    honoured for future per-org plumbing; it short-circuits the env var.
+    Resolution order (first hit wins):
+
+    1. ``state["enable_code_execution"]`` — explicit per-request override
+       (bool). Lets callers force either on/off regardless of deployment
+       configuration.
+    2. ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var — explicit deploy-level
+       override. Honoured only when set to a recognised truthy/falsy value;
+       unset or unrecognised values fall through.
+    3. ``FeatureFlagService`` — reads the ``ENABLE_CODE_EXECUTION`` flag from
+       the platform settings (etcd/kv store) populated by the Labs page.
+    4. Default: ``True``.
     """
     state_flag = state.get("enable_code_execution")
     if isinstance(state_flag, bool):
         return state_flag
 
     import os as _os
-    raw = (_os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION") or "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    env_val = _os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION")
+    if env_val is not None:
+        raw = env_val.strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        # Unrecognised values fall through to the feature flag / default.
+
+    try:
+        from app.services.featureflag.config.config import CONFIG
+        from app.services.featureflag.featureflag import FeatureFlagService
+
+        return bool(
+            FeatureFlagService.get_service().is_feature_enabled(
+                CONFIG.ENABLE_CODE_EXECUTION, default=True
+            )
+        )
+    except Exception:
+        # If the feature flag subsystem is unavailable for any reason,
+        # fail open to the documented default.
+        return True
 
 
 def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[RegistryToolWrapper]:
@@ -270,7 +299,7 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
     code_exec_enabled = _code_execution_enabled(state)
     if state_logger and not code_exec_enabled:
         state_logger.info(
-            "Code-execution tools disabled (set PIPESHUB_ENABLE_CODE_EXECUTION=true to enable)"
+            "Code-execution tools disabled (toggle in Labs → Enable Code Execution)"
         )
 
     for full_name, registry_tool in registry_tools.items():
