@@ -26,3 +26,5 @@ export const PERSONAL_MORE_CONNECTORS: MoreConnectorLink[] = [
   { id: 'dropbox-personal-link', name: 'Dropbox Personal', type: 'dropbox', connectorTypeParam: 'Dropbox Personal' },
   { id: 'nextcloud-link', name: 'Nextcloud', type: 'nextcloud', connectorTypeParam: 'Nextcloud' },
 ];
+
+export const FOLDER_REINDEX_DEPTH = 100;

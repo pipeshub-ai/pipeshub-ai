@@ -36,6 +36,7 @@ def _make_connector():
     logger = MagicMock()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-1"
+    data_entities_processor.reindex_existing_records = AsyncMock()
     data_store_provider = MagicMock()
     config_service = AsyncMock()
     connector_id = "kb-conn-1"

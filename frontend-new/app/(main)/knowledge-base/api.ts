@@ -7,6 +7,7 @@ import type {
   KnowledgeHubQueryParams,
   RecordDetailsResponse,
 } from './types';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { DEFAULT_PAGE_SIZE } from './store';
 
 const BASE_URL = '/api/v1/knowledgeBase';
@@ -750,7 +751,7 @@ export const KnowledgeBaseApi = {
         if (item.nodeType === 'recordGroup') {
           return this.reindexRecordGroup(item.id);
         }
-        return this.reindexItem(item.id, item.nodeType === 'folder' ? 100 : 0);
+        return this.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       })
     );
     return results;

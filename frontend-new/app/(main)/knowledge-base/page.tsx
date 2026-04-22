@@ -58,6 +58,7 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
@@ -1655,11 +1656,11 @@ function KnowledgeBasePageContent() {
         // RecordGroups are connector-app folders — use record-group endpoint
         await KnowledgeBaseApi.reindexRecordGroup(item.id);
       } else if (nodeType === 'folder') {
-        // KB folders — reindex all children (depth=100)
-        await KnowledgeBaseApi.reindexItem(item.id, 100);
+        // KB folders — reindex all children
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       } else {
-        // Regular records — reindex single item
-        await KnowledgeBaseApi.reindexItem(item.id);
+        // Regular records — include children in reindex
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
       toast.update(toastId, {
