@@ -5612,7 +5612,11 @@ paths:
         Send a password reset link to the user's email.
         The link contains a time-limited token that can be used to reset the password.
         <br><br>
-        <b>Note:</b> This endpoint always returns 200 even if the email doesn't exist (to prevent email enumeration).
+        <b>Note:</b> To prevent account enumeration, this endpoint always returns
+        200 with the same generic message regardless of whether the supplied
+        email is registered. If the account exists a reset link is sent;
+        otherwise the request is silently ignored. Internal lookup or mail
+        delivery failures are logged server-side and do not change the response.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -5624,19 +5628,19 @@ paths:
         required: true
       responses:
         '200':
-          description: Password reset email sent successfully (or email not found - same response for security)
+          description: Request accepted. Same response is returned whether the email is registered or not.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  message:
+                  data:
                     type: string
-                    example: "Password reset email sent"
+                    example: "If an account exists for this email, a password reset link has been sent."
         '400':
-          description: Invalid request
-        '429':
-          description: Too many requests - rate limited
+          description: Missing or invalid email in the request body
+        '401':
+          description: CAPTCHA verification failed (when Turnstile is configured)
 
   /userAccount/password/reset/token:
     post:
