@@ -144,12 +144,9 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
     return () => observer.disconnect();
   }, [loadMore]);
 
-  const handleSelect = (agent: AgentListRecord) => {
-    const id = agent.id || agent._key;
-    if (!id) return;
+  const handleSelect = () => {
     if (isMobile) closeMobileSidebar();
     onBack();
-    router.push(buildChatHref({ agentId: id }));
   };
 
   const handleCreateAgent = () => {
@@ -232,7 +229,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
                     icon={<MaterialIcon name="smart_toy" size={ICON_SIZE_DEFAULT} />}
                     isActive={!!id && onChatRoute && chatAgentId === id}
                     href={id ? buildChatHref({ agentId: id }) : undefined}
-                    onSelect={() => handleSelect(agent)}
+                    onSelect={handleSelect}
                     onBeforeNavigate={() => {
                       if (isMobile) closeMobileSidebar();
                       onBack();

@@ -17,7 +17,7 @@ export function ChatSidebarHeader() {
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
       <PipesHubIcon size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
-      <Link href="/workspace/profile/" style={{ textDecoration: 'none', lineHeight: 0 }}>
+      <Link href="/workspace/profile/" aria-label="Open profile" style={{ textDecoration: 'none', lineHeight: 0 }}>
         <UserAvatar
           fullName={profile?.fullName}
           firstName={profile?.firstName}

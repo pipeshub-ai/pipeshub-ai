@@ -128,7 +128,7 @@ export default function WorkspaceSidebar() {
               key={item.route}
               icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(item.labelKey)}
-              href={item.route}
+              href={`${item.route}/`}
               isActive={isActive(item.route)}
             />
           ))}
@@ -146,7 +146,7 @@ export default function WorkspaceSidebar() {
                 <WorkspaceSidebarItem
                   key={item.route}
                   label={t(item.labelKey)}
-                  href={item.route}
+                  href={`${item.route}/`}
                   isActive={isActive(item.route)}
                   paddingLeft={36}
                 />
@@ -164,7 +164,7 @@ export default function WorkspaceSidebar() {
                 key={item.route}
                 icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
                 label={t(item.labelKey)}
-                href={item.route}
+                href={`${item.route}/`}
                 isActive={isActive(item.route)}
               />
             ))}
@@ -178,7 +178,7 @@ export default function WorkspaceSidebar() {
                 key={item.route}
                 icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
                 label={t(item.labelKey)}
-                href={item.route}
+                href={`${item.route}/`}
                 isActive={isActive(item.route)}
               />
             ))}
@@ -193,7 +193,7 @@ export default function WorkspaceSidebar() {
               key={item.route}
               icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(item.labelKey)}
-              href={item.route}
+              href={`${item.route}/`}
               isActive={isActive(item.route)}
             />
           ))}

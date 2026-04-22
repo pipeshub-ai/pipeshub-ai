@@ -236,42 +236,44 @@ export function AllRecordsMode({
             {moreConnectors.map((connector) => (
               <MoreConnectorItem key={connector.id} connector={connector} href={buildConnectorHref(connector.connectorTypeParam)} onNavigate={onNavigateToConnector} />
             ))}
-            <Link
-              href={connectorsHref}
-              onClick={(e: React.MouseEvent) => {
-                if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-                e.preventDefault();
-                onNavigateToConnectors();
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                width: '100%',
-                paddingLeft: 'var(--space-3)',
-                paddingRight: 'var(--space-2)',
-                boxSizing: 'border-box',
-                height: '32px',
-                borderRadius: 'var(--radius-1)',
-                textDecoration: 'none',
-                color: 'inherit',
-                cursor: 'pointer',
-              }}
+            <Button
+              asChild
+              variant="ghost"
+              size="2"
+              color="gray"
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
-                <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
-                  {t('sidebar.seeMoreConnectors')}
-                </Text>
-              </div>
-              <Flex
-                align="center"
-                justify="center"
-                style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+              <Link
+                href={connectorsHref}
+                onClick={(e: React.MouseEvent) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                  e.preventDefault();
+                  onNavigateToConnectors();
+                }}
+                style={{
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  paddingLeft: 'var(--space-3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  textDecoration: 'none',
+                  color: 'inherit',
+                }}
               >
-                <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-              </Flex>
-            </Link>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
+                  <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
+                    {t('sidebar.seeMoreConnectors')}
+                  </Text>
+                </div>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+                >
+                  <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+                </Flex>
+              </Link>
+            </Button>
           </Flex>
         </Box>
       )}
