@@ -185,6 +185,8 @@ tags:
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
     description: Manage individual AI model providers - add, update, delete, and set defaults.
+  - name: Configuration Manager
+    description: Manage organization-level configuration including Slack bot integration, AI models, and metrics collection.
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Metrics Collection
@@ -2234,7 +2236,7 @@ components:
           type: object
           nullable: true
           description: Ticket-specific metadata (present when recordType is TICKET)
-          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          additionalProperties: true
       required:
         - recordName
         - recordType
@@ -3474,11 +3476,13 @@ components:
         API for that capability.
       properties:
         tts:
-          $ref: '#/components/schemas/SpeechCapabilitySummary'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
         stt:
-          $ref: '#/components/schemas/SpeechCapabilitySummary'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -6853,7 +6857,7 @@ paths:
         '404':
           description: Organization configuration not found
 
-  /orgAuthConfig/:
+  /orgAuthConfig:
     post:
       tags:
         - Organization Auth Config
@@ -12427,6 +12431,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: Updated record metadata and content
         content:
           application/json:
             schema:
@@ -14037,6 +14042,7 @@ paths:
         - oauth2: [conversation:chat]
       requestBody:
         required: true
+        description: Audio clip (multipart/form-data) to transcribe, with an optional language hint.
         content:
           multipart/form-data:
             schema:
@@ -14109,6 +14115,7 @@ paths:
         - oauth2: [conversation:chat]
       requestBody:
         required: true
+        description: Text to synthesize and optional voice, format, and speed parameters.
         content:
           application/json:
             schema:
@@ -16810,6 +16817,7 @@ paths:
         - oauth2: [connector:write]
       requestBody:
         required: true
+        description: Google OAuth authorization code received from the consent flow.
         content:
           application/json:
             schema:
@@ -16982,6 +16990,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -17114,6 +17123,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -17149,6 +17159,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -17599,6 +17610,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate agent toolset instance
+      description: Authenticate an agent-bound toolset instance using the provided credentials.
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17615,6 +17627,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17637,6 +17650,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update agent toolset credentials
+      description: Update the stored credentials for an agent-bound toolset instance.
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17653,6 +17667,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17684,6 +17699,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove agent toolset credentials
+      description: Delete the stored credentials for an agent-bound toolset instance.
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17713,6 +17729,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark agent instance for reauthentication
+      description: Flag an agent-bound toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17742,6 +17759,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for agent instance
+      description: Build the OAuth authorization URL to start the consent flow for an agent-bound toolset instance.
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
@@ -17806,6 +17824,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -17845,6 +17864,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get toolset instance
+      description: Retrieve a single toolset instance by its identifier.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -17865,6 +17885,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
+      description: Update an existing toolset instance's configuration (admin only).
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -17876,6 +17897,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated fields for the toolset instance.
         content:
           application/json:
             schema:
@@ -17894,6 +17916,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
+      description: Delete a toolset instance and its associated configuration (admin only).
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -17918,6 +17941,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate toolset instance
+      description: Authenticate a toolset instance using the provided credentials.
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17929,6 +17953,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the toolset instance.
         content:
           application/json:
             schema:
@@ -17949,6 +17974,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset credentials
+      description: Update the stored credentials for a toolset instance.
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
@@ -17960,6 +17986,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the toolset instance.
         content:
           application/json:
             schema:
@@ -17989,6 +18016,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove toolset credentials
+      description: Delete the stored credentials for a toolset instance.
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
@@ -18011,6 +18039,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark instance for reauthentication
+      description: Flag the toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -18033,6 +18062,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for instance
+      description: Build the OAuth authorization URL to start the consent flow for a toolset instance.
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
@@ -18062,6 +18092,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get instance authentication status
+      description: Report whether the toolset instance is configured and authenticated.
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
@@ -18084,6 +18115,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: List OAuth configs by toolset type
+      description: List OAuth client configurations registered for a specific toolset type.
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
@@ -18106,6 +18138,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Update OAuth config
+      description: Update an OAuth client configuration for a specific toolset type.
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -18122,6 +18155,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated OAuth client configuration fields.
         content:
           application/json:
             schema:
@@ -18140,6 +18174,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Delete OAuth config
+      description: Delete an OAuth client configuration for a specific toolset type.
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -20776,6 +20811,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
+        description: MCP JSON-RPC 2.0 request object with method, params, and id.
         content:
           application/json:
             schema:
