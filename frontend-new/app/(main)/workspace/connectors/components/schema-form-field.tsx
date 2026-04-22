@@ -589,14 +589,14 @@ function SelectInput({
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
   // Build options list from field.options or external options prop
-  const optionItems = options ||
+  const optionItems = (options ||
     ('options' in field && Array.isArray(field.options)
       ? field.options.map((opt: string | { id: string; label: string }) =>
           typeof opt === 'string'
             ? { label: opt, value: opt }
             : { label: opt.label, value: opt.id }
         )
-      : []);
+      : [])).filter((opt) => opt.value !== '');
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
