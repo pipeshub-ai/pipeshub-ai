@@ -16436,6 +16436,8 @@ class BaseArangoService:
                         name: toolset.name,
                         displayName: toolset.displayName,
                         type: toolset.type,
+                        instanceId: toolset.instanceId,
+                        instanceName: toolset.instanceName,
                         userId: toolset.userId,
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools

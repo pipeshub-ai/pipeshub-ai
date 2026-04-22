@@ -18420,6 +18420,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         displayName: toolset.displayName,
                         type: toolset.type,
                         instanceId: toolset.instanceId,
+                        instanceName: toolset.instanceName,
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools
                     }}

@@ -346,7 +346,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
               backdropFilter: 'blur(25px)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 2,
+              gap: 'var(--space-2)',
             }}
           >
             {visibleActions.map((action, i) => {

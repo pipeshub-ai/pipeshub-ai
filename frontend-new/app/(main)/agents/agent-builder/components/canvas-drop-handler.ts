@@ -33,6 +33,33 @@ function mergeToolsByKey(a: NormalizedSidebarTool[], b: NormalizedSidebarTool[])
   return Array.from(map.values());
 }
 
+/**
+ * Find an existing toolset node to merge into. Must key off `config.instanceId` when present —
+ * otherwise two Gmail (etc.) instances incorrectly merge into the first node and the wrong
+ * instanceId is sent on create/save.
+ */
+function findExistingToolsetNodeForMerge(
+  nodes: Node<FlowNodeData>[],
+  toolsetName: string,
+  instanceIdRaw: string | undefined
+): Node<FlowNodeData> | undefined {
+  const instanceId = instanceIdRaw?.trim();
+  if (instanceId) {
+    return nodes.find(
+      (n) =>
+        String(n.data?.type ?? '').startsWith('toolset-') &&
+        String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim() ===
+          instanceId
+    );
+  }
+  return nodes.find(
+    (n) =>
+      String(n.data?.type ?? '').startsWith('toolset-') &&
+      (n.data?.config?.toolsetName as string | undefined) === toolsetName &&
+      !String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim()
+  );
+}
+
 /** Call from onDrop with event + deps */
 export function handleFlowCanvasDrop(
   event: React.DragEvent,
@@ -130,9 +157,7 @@ export function handleFlowCanvasDrop(
       : allTools.map((t) => (t.toolName as string) || (t.name as string) || '');
     const normalizedTools = allTools.map((t) => normalizeTool(toolsetName, t));
 
-    const existingToolsetNode = nodes.find(
-      (n) => n.data?.type?.startsWith('toolset-') && n.data.config?.toolsetName === toolsetName
-    );
+    const existingToolsetNode = findExistingToolsetNodeForMerge(nodes, toolsetName, toolsetInstanceId);
 
     if (existingToolsetNode) {
       const existingTools = (existingToolsetNode.data.config?.tools as typeof normalizedTools) || [];
@@ -198,6 +223,10 @@ export function handleFlowCanvasDrop(
 
     const tsType = `toolset-${toolsetName}`;
     const tsNodeId = `${tsType}-${Date.now()}`;
+    const instanceLabel =
+      (toolsetInstanceName && String(toolsetInstanceName).trim()) ||
+      toolsetDisplayName ||
+      toolsetName;
     const newNode: Node<FlowNodeData> = {
       id: tsNodeId,
       type: 'flowNode',
@@ -205,7 +234,7 @@ export function handleFlowCanvasDrop(
       data: {
         id: tsNodeId,
         type: tsType,
-        label: normalizeDisplayName(toolsetDisplayName || toolsetName),
+        label: normalizeDisplayName(instanceLabel),
         description: t('agentBuilder.toolsetNodeDescriptionTools', {
           name: toolsetDisplayName || toolsetName,
           count: (() => {
@@ -273,9 +302,7 @@ export function handleFlowCanvasDrop(
         description: toolDescription || '',
       });
 
-    const existingToolsetNode = nodes.find(
-      (n) => n.data?.type?.startsWith('toolset-') && n.data.config?.toolsetName === toolsetName
-    );
+    const existingToolsetNode = findExistingToolsetNodeForMerge(nodes, toolsetName, toolsetInstanceId);
 
     if (existingToolsetNode) {
       const existingTools = (existingToolsetNode.data.config?.tools as typeof normalizedAvailable) || [];
@@ -313,6 +340,10 @@ export function handleFlowCanvasDrop(
 
     const tsId = `toolset-${toolsetName}-${Date.now()}`;
     const tsTypeSingle = `toolset-${toolsetName}`;
+    const instanceLabelSingle =
+      (toolsetInstanceName && String(toolsetInstanceName).trim()) ||
+      toolsetDisplayName ||
+      toolsetName;
     appendNodeWithAutoConnect({
       id: tsId,
       type: 'flowNode',
@@ -320,7 +351,7 @@ export function handleFlowCanvasDrop(
       data: {
         id: tsId,
         type: tsTypeSingle,
-        label: normalizeDisplayName(toolsetDisplayName || toolsetName),
+        label: normalizeDisplayName(instanceLabelSingle),
         description: toolsetDisplayName || toolsetName,
         icon: toolsetIconPath || 'extension',
         category: 'toolset',

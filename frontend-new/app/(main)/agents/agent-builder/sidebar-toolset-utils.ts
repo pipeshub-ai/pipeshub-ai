@@ -12,6 +12,7 @@ export function normalizeToolsetTypeKey(value: string): string {
 
 export function buildToolsetDragPayload(ts: BuilderSidebarToolset): Record<string, string> {
   const toolsetName = ts.toolsetType || ts.name;
+  /** Logical type only — multiple configured instances share the same prefix; canvas merge + create use `instanceId`. */
   const reactFlowType = `toolset-${toolsetName}`.toLowerCase().replace(/\s+/g, '');
   return {
     'application/reactflow': reactFlowType,

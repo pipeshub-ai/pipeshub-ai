@@ -2638,6 +2638,13 @@ components:
 
     Filters:
       type: object
+      description: |
+        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
+        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
+        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
+        to let the service use the agent’s stored knowledge and tool configuration. Sending
+        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
+        turn (it is not “full org default”).
       properties:
         apps:
           type: array
@@ -3248,6 +3255,83 @@ components:
         updatedAt:
           type: string
           format: date-time
+        startMessage:
+          type: string
+          description: Initial greeting shown when a conversation with this agent starts
+        instructions:
+          type: string
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          description: |
+            Configured model entries for this agent (may be strings or objects with
+            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                properties:
+                  modelKey:
+                    type: string
+                  modelName:
+                    type: string
+                  provider:
+                    type: string
+                  isReasoning:
+                    type: boolean
+        toolsets:
+          type: array
+          description: |
+            Toolset instances linked to the agent (GET /agents/{agentKey} graph projection).
+            Multiple instances of the same integration type are distinguished by `instanceId`
+            and optional `instanceName`.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Integration / toolset type key
+              displayName:
+                type: string
+              type:
+                type: string
+              instanceId:
+                type: string
+                description: Admin-created toolset instance id
+              instanceName:
+                type: string
+                description: Human-readable instance label (e.g. sidebar instance name)
+              iconPath:
+                type: string
+                description: Optional branded icon URL or path
+              tools:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    fullName:
+                      type: string
+                    description:
+                      type: string
+        knowledge:
+          type: array
+          description: Knowledge connectors and indexed scopes linked to the agent
+          items:
+            type: object
+            properties:
+              connectorId:
+                type: string
+              filters:
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - type: string
+        shareWithOrg:
+          type: boolean
+          description: Whether the agent is shared with the whole organization
 
     AgentTemplate:
       type: object

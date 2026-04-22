@@ -42,7 +42,8 @@ function getToolsetPaletteRowState(
     configureIconColor: string;
     configureTooltip: string;
   },
-  normalizedActive: string[],
+  activeInstanceIdSet: Set<string>,
+  activeTypeKeysNoInstanceSet: Set<string>,
   structureLocked: boolean,
   orgCredentialUiLocked: boolean,
   isServiceAccount: boolean,
@@ -52,7 +53,10 @@ function getToolsetPaletteRowState(
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
   const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const dup = normalizedActive.includes(normalizedType);
+  const instanceId = ts.instanceId?.trim();
+  const dup = instanceId
+    ? activeInstanceIdSet.has(instanceId)
+    : activeTypeKeysNoInstanceSet.has(normalizedType);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -150,7 +154,8 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  activeToolsetTypes: string[];
+  activeToolsetInstanceIds: string[];
+  activeToolsetTypeKeysWithoutInstance: string[];
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
@@ -166,7 +171,8 @@ export function AgentBuilderToolsetsSection(props: {
     toolsets,
     loading,
     refreshToolsets,
-    activeToolsetTypes,
+    activeToolsetInstanceIds,
+    activeToolsetTypeKeysWithoutInstance,
     isServiceAccount,
     agentKey,
     onManageAgentToolsetCredentials,
@@ -182,7 +188,14 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const normalizedActive = useMemo(() => activeToolsetTypes.map(normalizeToolsetTypeKey), [activeToolsetTypes]);
+  const activeInstanceIdSet = useMemo(
+    () => new Set(activeToolsetInstanceIds.filter(Boolean)),
+    [activeToolsetInstanceIds]
+  );
+  const activeTypeKeysNoInstanceSet = useMemo(
+    () => new Set(activeToolsetTypeKeysWithoutInstance.map(normalizeToolsetTypeKey).filter(Boolean)),
+    [activeToolsetTypeKeysWithoutInstance]
+  );
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
     setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
@@ -275,7 +288,11 @@ export function AgentBuilderToolsetsSection(props: {
         return;
       }
       if (isFromRegistry) {
-        onNotify(t('agentBuilder.toolsetNotConfiguredNotify', { name: ts.displayName }));
+        onNotify(
+          t('agentBuilder.toolsetNotConfiguredNotify', {
+            name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          })
+        );
         return;
       }
 
@@ -289,13 +306,22 @@ export function AgentBuilderToolsetsSection(props: {
   const handleUnconfiguredDrag = useCallback(
     (ts: BuilderSidebarToolset, isFromRegistry: boolean) => {
       if (isFromRegistry) {
-        onNotify(t('agentBuilder.toolsetNotConfiguredNotify', { name: ts.displayName }));
+        onNotify(
+          t('agentBuilder.toolsetNotConfiguredNotify', {
+            name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          })
+        );
         return;
       }
       const reason = !ts.isConfigured
         ? t('agentBuilder.notConfiguredReason')
         : t('agentBuilder.notAuthenticatedReason');
-      onNotify(t('agentBuilder.toolsetNotReadyNotify', { name: ts.displayName, reason }));
+      onNotify(
+        t('agentBuilder.toolsetNotReadyNotify', {
+          name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          reason,
+        })
+      );
     },
     [onNotify, t]
   );
@@ -383,7 +409,8 @@ export function AgentBuilderToolsetsSection(props: {
                     } = getToolsetPaletteRowState(
                       ts,
                       ui,
-                      normalizedActive,
+                      activeInstanceIdSet,
+                      activeTypeKeysNoInstanceSet,
                       structureLocked,
                       orgCredentialUiLocked,
                       isServiceAccount,

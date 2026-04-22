@@ -16307,6 +16307,7 @@ class Neo4jProvider(IGraphDBProvider):
                 displayName: ts.displayName,
                 type: ts.type,
                 instanceId: ts.instanceId,
+                instanceName: ts.instanceName,
                 selectedTools: ts.selectedTools,
                 tools: tools
             }} AS toolset

@@ -182,6 +182,13 @@ export const ChatApi = {
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
+      const f = request.filters;
+      const apps = (f?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const kb = (f?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
       payload = {
         query: request.query,
         modelKey: request.modelKey,
@@ -190,20 +197,10 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone,
         currentTime: new Date().toISOString(),
-        tools: request.agentStreamTools ?? [],
+        tools: [...(request.agentStreamTools ?? [])],
+        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
+        filters: { apps, kb },
       };
-      // Omit filters when empty so the Python agent stream treats scope as
-      // "derive from agent knowledge" — `{ apps: [], kb: [] }` means explicit no scope.
-      const f = request.filters;
-      const apps = (f?.apps ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      const kb = (f?.kb ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      if (apps.length > 0 || kb.length > 0) {
-        payload.filters = { apps, kb };
-      }
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
