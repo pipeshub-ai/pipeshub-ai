@@ -6,7 +6,24 @@ import { apiClient } from '@/lib/api';
 
 interface SpeechCapabilitySummary {
   provider: string;
+  /**
+   * Active (default) model id the server will dispatch to. Mirrors
+   * `defaultModel`; retained for backwards compatibility with clients that
+   * were written before the field was added.
+   */
   model: string | null;
+  /** Model id the server uses when no explicit override is passed. */
+  defaultModel?: string | null;
+  /** All models exposed by the active provider config, in admin order. */
+  models?: string[];
+  /**
+   * `true` when the returned config was picked because it is flagged
+   * `isDefault` in `aiModels`; `false` when no entry was flagged and the
+   * server fell back to the first configured one.
+   */
+  isDefault?: boolean;
+  /** Stable identifier assigned to the config entry by the admin UI. */
+  modelKey?: string | null;
   friendlyName?: string | null;
 }
 

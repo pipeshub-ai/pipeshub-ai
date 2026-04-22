@@ -117,7 +117,9 @@ async def transcribe_audio(
             language=language,
         )
     except RuntimeError as exc:
-        # e.g. faster-whisper not installed for the 'whisper' provider.
+        # Common operator misconfigurations:
+        #   - 'whisper': faster-whisper not installed.
+        #   - 'wispr':   ffmpeg missing on the host, or transcode failure.
         logger.error("STT transcribe runtime error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except HTTPException:
@@ -270,9 +272,21 @@ async def speech_capabilities(
             for m in str(configuration.get("model", "")).split(",")
             if m.strip()
         ]
+        default_model = models[0] if models else None
         return {
             "provider": cfg.get("provider"),
-            "model": models[0] if models else None,
+            # Active model the server will dispatch to — i.e. the default.
+            # Kept for backwards compatibility with older chat clients.
+            "model": default_model,
+            # Explicit default fields the UI can surface without having to
+            # re-derive them from the comma-separated list.
+            "defaultModel": default_model,
+            "models": models,
+            # True when this config was picked because it is flagged
+            # ``isDefault`` in ``aiModels``, False when we fell back to the
+            # first configured entry.
+            "isDefault": bool(cfg.get("isDefault")),
+            "modelKey": cfg.get("modelKey"),
             "friendlyName": configuration.get("modelFriendlyName"),
         }
 

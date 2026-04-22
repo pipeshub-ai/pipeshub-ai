@@ -3434,39 +3434,101 @@ components:
 
     TranscriptionResponse:
       type: object
+      description: |
+        Result of a successful call to `/chat/transcribe`. The server
+        always includes the provider and model that handled the request
+        so the client can display / log which backend produced the
+        transcript.
       required:
         - text
+        - provider
+        - model
       properties:
         text:
           type: string
-          description: Transcribed text. May be an empty string for silence or
-            unintelligible audio.
+          description: |
+            Transcribed text. May be an empty string for silence,
+            unintelligible audio, or when the provider returned no
+            content.
           example: "Turn on the office lights."
         provider:
           type: string
-          description: Provider id that handled the transcription.
+          description: |
+            Provider id that handled the transcription. One of
+            `openAI`, `whisper` (self-hosted `faster-whisper`),
+            `wispr` (Wispr Flow), or `gemini`.
+          enum: [openAI, whisper, wispr, gemini]
           example: "openAI"
         model:
           type: string
-          description: Model id that handled the transcription.
-          example: "whisper-1"
+          description: |
+            Model id that handled the transcription. Examples:
+            `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`,
+            `base`/`small`/`medium`/`large-v3` for self-hosted
+            `faster-whisper`, `flow` for Wispr, or `gemini-2.5-flash` /
+            `gemini-2.5-pro` for Gemini multimodal.
+          example: "gpt-4o-mini-transcribe"
 
     SpeechCapabilitySummary:
       type: object
-      description: Public summary of an active speech provider. Secrets
-        (api keys, organization ids, etc.) are never included.
+      description: |
+        Public summary of an active speech provider. Secrets (api keys,
+        organization ids, etc.) are never included. The server always picks
+        the config flagged `isDefault` in `aiModels`; when no entry is
+        flagged, the first configured entry is used and `isDefault` is
+        reported as `false` so the chat UI can surface the fallback.
+      required:
+        - provider
       properties:
         provider:
           type: string
-          description: Provider id (e.g. `openAI`, `whisper`).
+          description: Provider id (e.g. `openAI`, `gemini`, `whisper`, `wispr`).
+          example: "openAI"
         model:
           type: string
           nullable: true
-          description: First model id from the configured comma-separated list.
+          description: |
+            Active (default) model id the server will dispatch to. Same
+            value as `defaultModel`; retained for backwards compatibility
+            with older chat clients.
+          example: "gpt-4o-mini-tts"
+        defaultModel:
+          type: string
+          nullable: true
+          description: |
+            Model id the server will use when no explicit `model` is passed
+            to `/chat/speak` or `/chat/transcribe`. Chosen as the first
+            entry from the configured comma-separated `configuration.model`
+            list.
+          example: "gpt-4o-mini-tts"
+        models:
+          type: array
+          items:
+            type: string
+          description: |
+            All model ids the active provider config exposes. Order matches
+            the admin's comma-separated `configuration.model` value; the
+            first entry is the default.
+          example: ["gpt-4o-mini-tts", "tts-1"]
+        isDefault:
+          type: boolean
+          description: |
+            `true` when the returned config was picked because it is
+            flagged `isDefault` in `aiModels`; `false` when no entry was
+            flagged and the server fell back to the first configured one.
+          example: true
+        modelKey:
+          type: string
+          nullable: true
+          description: |
+            Stable identifier assigned to the config entry by the admin
+            UI. Useful for tying the capability summary back to a specific
+            row under `/services/aiModels`.
         friendlyName:
           type: string
           nullable: true
           description: Optional display name configured by the admin.
+          example: "Production TTS"
 
     SpeechCapabilitiesResponse:
       type: object
@@ -6857,7 +6919,7 @@ paths:
         '404':
           description: Organization configuration not found
 
-  /orgAuthConfig:
+  /orgAuthConfig/:
     post:
       tags:
         - Organization Auth Config
@@ -14021,7 +14083,8 @@ paths:
       description: |
         Upload a short audio recording and receive its transcript from the
         configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
-        or a self-hosted `faster-whisper` model).<br><br>
+        a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
+        models such as `gemini-2.5-flash`).<br><br>
         <b>Overview:</b><br>
         The chat UI captures audio via the browser's `MediaRecorder` and
         POSTs it here as `multipart/form-data`. If no STT provider is
@@ -14053,14 +14116,21 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Recorded audio clip.
+                  description: |
+                    Recorded audio clip. Must be ≤ 25 MB. Supported MIME
+                    types include `audio/webm`, `audio/ogg`, `audio/mp4`,
+                    `audio/m4a`, `audio/mpeg`, `audio/wav`, and
+                    `audio/flac`. The browser's `MediaRecorder` default
+                    (`audio/webm;codecs=opus`) is recommended.
                 language:
                   type: string
                   nullable: true
                   description: |
                     Optional ISO-639-1 language hint forwarded to the
                     provider (e.g. `en`, `fr`). When omitted the provider
-                    auto-detects.
+                    auto-detects. The `wispr` provider treats this as a
+                    property hint; Gemini appends it to the transcription
+                    prompt.
                   example: "en"
       responses:
         '200':
@@ -14069,8 +14139,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TranscriptionResponse'
+              examples:
+                openai:
+                  summary: OpenAI `gpt-4o-mini-transcribe`
+                  value:
+                    text: "Turn on the office lights."
+                    provider: "openAI"
+                    model: "gpt-4o-mini-transcribe"
+                wispr:
+                  summary: Wispr Flow
+                  value:
+                    text: "Summarize today's standup notes."
+                    provider: "wispr"
+                    model: "flow"
+                gemini:
+                  summary: Gemini multimodal
+                  value:
+                    text: "Create a ticket to fix the login bug."
+                    provider: "gemini"
+                    model: "gemini-2.5-flash"
         '400':
-          description: Empty audio payload.
+          description: Empty audio payload (`file` read returned 0 bytes).
         '401':
           description: Unauthorized — valid bearer token required.
         '409':
@@ -14078,11 +14167,16 @@ paths:
             No Speech-to-Text provider is configured. The client should fall
             back to the browser Web Speech API.
         '413':
-          description: Audio payload exceeds the 25 MB limit.
+          description: |
+            Audio payload exceeds the 25 MB limit. This matches OpenAI's
+            `audio.transcriptions.create` ceiling and the soft cap enforced
+            by the node proxy (`multer` `fileSize`).
         '500':
           description: |
             Runtime error — for example the optional `faster-whisper`
-            package is not installed for the `whisper` provider.
+            package is not installed for the `whisper` provider, or
+            `ffmpeg` is missing on the host for the `wispr` provider
+            (required to transcode audio to 16 kHz WAV).
         '502':
           description: Upstream provider failure (message is intentionally
             generic; see server logs for details).
@@ -14094,7 +14188,9 @@ paths:
       summary: Synthesize audio for a message (Text-to-Speech)
       description: |
         Generate audio for the supplied text using the configured Text-to-Speech
-        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`). The response body is
+        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
+        `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
+        The response body is
         the raw audio bytes in the requested format.<br><br>
         <b>Overview:</b><br>
         The chat UI calls this when the user clicks "Read aloud" on an

@@ -77,11 +77,14 @@ class ImageGenerationProvider(Enum):
 
 class TTSProvider(Enum):
     OPENAI = "openAI"
+    GEMINI = "gemini"
 
 
 class STTProvider(Enum):
     OPENAI = "openAI"
     WHISPER = "whisper"
+    WISPR = "wispr"
+    GEMINI = "gemini"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -989,6 +992,214 @@ class _OpenAITTSAdapter(TTSAdapter):
             await client.close()
 
 
+# Gemini's generateContent TTS endpoint returns raw PCM: signed 16-bit, mono,
+# 24 kHz. We always receive those bytes and then (a) wrap in a WAV container
+# for the "wav" format, (b) return them untouched for "pcm", or (c) shell out
+# to ffmpeg for the other compressed formats.
+_GEMINI_TTS_DEFAULT_VOICE = "Kore"
+_GEMINI_TTS_VALID_FORMATS = {"wav", "pcm", "mp3", "opus", "aac", "flac"}
+_GEMINI_TTS_PCM_SAMPLE_RATE = 24000
+_GEMINI_TTS_PCM_SAMPLE_WIDTH = 2  # 16-bit
+_GEMINI_TTS_PCM_CHANNELS = 1
+
+
+def _wrap_pcm_as_wav(
+    pcm: bytes,
+    *,
+    sample_rate: int = _GEMINI_TTS_PCM_SAMPLE_RATE,
+    sample_width: int = _GEMINI_TTS_PCM_SAMPLE_WIDTH,
+    channels: int = _GEMINI_TTS_PCM_CHANNELS,
+) -> bytes:
+    """Wrap raw signed 16-bit mono PCM in a minimal WAV container."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sample_width)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm)
+    return buf.getvalue()
+
+
+async def _reencode_pcm_via_ffmpeg(
+    pcm: bytes,
+    *,
+    target_format: str,
+    sample_rate: int = _GEMINI_TTS_PCM_SAMPLE_RATE,
+    channels: int = _GEMINI_TTS_PCM_CHANNELS,
+) -> bytes:
+    """Use ffmpeg to transcode raw 16-bit PCM to mp3/opus/aac/flac/etc."""
+    import asyncio
+
+    # Map our public format name to the ffmpeg output muxer. Opus is wrapped
+    # in ogg so browsers / <audio> elements can play it back.
+    muxer = {
+        "mp3": "mp3",
+        "opus": "ogg",
+        "aac": "adts",
+        "flac": "flac",
+        "wav": "wav",
+    }.get(target_format, target_format)
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(channels),
+            "-i",
+            "pipe:0",
+            "-f",
+            muxer,
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Encoding Gemini TTS audio to "
+            f"{target_format!r} requires ffmpeg on the backend host. Install "
+            "ffmpeg or pick the 'wav' / 'pcm' output format instead."
+        ) from exc
+
+    stdout, stderr = await process.communicate(input=pcm)
+    if process.returncode != 0:
+        err_msg = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"ffmpeg failed to encode Gemini TTS output as {target_format} "
+            f"(exit {process.returncode}): {err_msg or 'no stderr output'}"
+        )
+    if not stdout:
+        raise RuntimeError(
+            f"ffmpeg produced no output while encoding Gemini TTS audio as {target_format}."
+        )
+    return stdout
+
+
+class _GeminiTTSAdapter(TTSAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        default_voice: str | None = None,
+        default_format: str | None = None,
+        endpoint: str | None = None,
+    ) -> None:
+        self.provider = TTSProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+        self.default_voice = default_voice or _GEMINI_TTS_DEFAULT_VOICE
+        self.default_format = (default_format or "wav").lower()
+        self._endpoint = (
+            endpoint or "https://generativelanguage.googleapis.com"
+        ).rstrip("/")
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        import base64
+
+        import httpx
+
+        fmt = (response_format or self.default_format or "wav").lower()
+        if fmt not in _GEMINI_TTS_VALID_FORMATS:
+            fmt = "wav"
+
+        chosen_voice = voice or self.default_voice or _GEMINI_TTS_DEFAULT_VOICE
+        url = f"{self._endpoint}/v1beta/models/{self.model}:generateContent"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": chosen_voice},
+                    }
+                },
+            },
+        }
+        # Gemini TTS ignores `speed` today; we accept it for parity with the
+        # OpenAI adapter but don't forward it.
+        _ = speed
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Gemini TTS synthesis failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Gemini TTS synthesis failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini TTS returned a non-JSON response."
+            ) from exc
+
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        inline_b64: str | None = None
+        if isinstance(candidates, list) and candidates:
+            parts = (
+                candidates[0].get("content", {}).get("parts", [])
+                if isinstance(candidates[0], dict)
+                else []
+            )
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                inline = part.get("inlineData") or part.get("inline_data")
+                if isinstance(inline, dict) and inline.get("data"):
+                    inline_b64 = str(inline["data"])
+                    break
+
+        if not inline_b64:
+            raise RuntimeError(
+                "Gemini TTS response did not contain inline audio data."
+            )
+
+        pcm = base64.b64decode(inline_b64)
+        if fmt == "pcm":
+            return pcm
+        if fmt == "wav":
+            return _wrap_pcm_as_wav(pcm)
+        return await _reencode_pcm_via_ffmpeg(pcm, target_format=fmt)
+
+
 def get_tts_model(
     provider: str,
     config: Dict[str, Any],
@@ -1023,6 +1234,15 @@ def get_tts_model(
             organization=configuration.get("organizationId"),
             default_voice=configuration.get("voice"),
             default_format=configuration.get("responseFormat"),
+        )
+
+    if provider == TTSProvider.GEMINI.value:
+        return _GeminiTTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+            endpoint=configuration.get("endpoint") or None,
         )
 
     raise ValueError(f"Unsupported TTS provider: {provider}")
@@ -1198,6 +1418,286 @@ class _WhisperLocalSTTAdapter(STTAdapter):
         return await asyncio.to_thread(_run)
 
 
+# Wispr Flow expects 16 kHz mono WAV, base64-encoded, <= 25 MB / 6 min.
+# We transcode server-side using ffmpeg so any format the browser produces
+# (webm/opus, mp4/aac, wav, mp3, etc.) is accepted.
+_WISPR_DEFAULT_ENDPOINT = "https://platform-api.wisprflow.ai"
+_WISPR_MAX_WAV_BYTES = 25 * 1024 * 1024
+
+
+async def _transcode_to_wispr_wav(audio: bytes) -> bytes:
+    """Run ffmpeg to convert arbitrary input audio to 16 kHz mono WAV.
+
+    Raises ``RuntimeError`` with an operator-friendly message if ffmpeg
+    isn't installed on PATH or the transcode fails.
+    """
+    import asyncio
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "wav",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "The 'wispr' STT provider requires ffmpeg to transcode audio to "
+            "16 kHz WAV. Install ffmpeg on the backend host (e.g. "
+            "'apt-get install ffmpeg' or 'brew install ffmpeg') and retry."
+        ) from exc
+
+    stdout, stderr = await process.communicate(input=audio)
+    if process.returncode != 0:
+        err_msg = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"ffmpeg failed to transcode audio for Wispr Flow (exit {process.returncode}): "
+            f"{err_msg or 'no stderr output'}"
+        )
+    if not stdout:
+        raise RuntimeError(
+            "ffmpeg produced no output while transcoding audio for Wispr Flow."
+        )
+    return stdout
+
+
+class _WisprFlowSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        endpoint: str | None = None,
+        default_language: str | None = None,
+        default_app_type: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.WISPR.value
+        self.model = model
+        self._api_key = api_key
+        self._endpoint = (endpoint or _WISPR_DEFAULT_ENDPOINT).rstrip("/")
+        self._default_language = (default_language or "").strip() or None
+        self._default_app_type = (default_app_type or "ai").strip() or "ai"
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import base64
+
+        import httpx
+
+        wav_bytes = await _transcode_to_wispr_wav(audio)
+        if len(wav_bytes) > _WISPR_MAX_WAV_BYTES:
+            raise RuntimeError(
+                f"Transcoded audio is {len(wav_bytes)} bytes which exceeds "
+                f"Wispr Flow's 25 MB ceiling. Shorten the recording."
+            )
+
+        payload_audio = base64.b64encode(wav_bytes).decode("ascii")
+        properties: Dict[str, Any] = {
+            "app_type": self._default_app_type,
+        }
+        lang = (language or self._default_language or "").strip()
+        if lang:
+            properties["language"] = lang
+
+        url = f"{self._endpoint}/api/v1/dash/api"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "audio": payload_audio,
+            "properties": properties,
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            # Avoid leaking the raw upstream body (may include request ids).
+            # Log details server-side via the module logger and surface a
+            # compact error to the caller.
+            snippet = ""
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    snippet = str(data.get("detail") or data.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Wispr Flow transcription failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Wispr Flow transcription failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Wispr Flow returned a non-JSON response."
+            ) from exc
+
+        if not isinstance(data, dict):
+            return ""
+        text = data.get("text")
+        return text if isinstance(text, str) else ""
+
+
+# Gemini STT piggybacks on the generic multimodal generateContent endpoint:
+# we pass inline audio bytes plus a short prompt asking for a verbatim
+# transcript. Request size (incl. audio) must stay under 20 MB.
+_GEMINI_STT_TRANSCRIBE_PROMPT = (
+    "Transcribe the following audio verbatim. Return only the raw transcript "
+    "text with no additional commentary, formatting, or quotation marks."
+)
+_GEMINI_STT_MIME_MAP = {
+    "audio/webm": "audio/webm",
+    "audio/ogg": "audio/ogg",
+    "audio/mp4": "audio/mp4",
+    "audio/m4a": "audio/mp4",
+    "audio/mpeg": "audio/mp3",
+    "audio/mp3": "audio/mp3",
+    "audio/wav": "audio/wav",
+    "audio/x-wav": "audio/wav",
+    "audio/flac": "audio/flac",
+    "audio/aac": "audio/aac",
+}
+
+
+def _gemini_stt_mime(mime: str) -> str:
+    """Normalize a browser-supplied mime to a Gemini-accepted value."""
+    if not mime:
+        return "audio/mp3"
+    normalized = mime.split(";")[0].strip().lower()
+    return _GEMINI_STT_MIME_MAP.get(normalized, normalized or "audio/mp3")
+
+
+class _GeminiSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        endpoint: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+        self._endpoint = (
+            endpoint or "https://generativelanguage.googleapis.com"
+        ).rstrip("/")
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import base64
+
+        import httpx
+
+        effective_mime = _gemini_stt_mime(mime)
+        prompt = _GEMINI_STT_TRANSCRIBE_PROMPT
+        if language:
+            prompt = f"{prompt} The speaker is using language code '{language}'."
+
+        url = f"{self._endpoint}/v1beta/models/{self.model}:generateContent"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inlineData": {
+                                "mimeType": effective_mime,
+                                "data": base64.b64encode(audio).decode("ascii"),
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {"responseModalities": ["TEXT"]},
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    err = payload.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Gemini STT transcription failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Gemini STT transcription failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini STT returned a non-JSON response."
+            ) from exc
+
+        if not isinstance(payload, dict):
+            return ""
+
+        candidates = payload.get("candidates") or []
+        if not isinstance(candidates, list) or not candidates:
+            return ""
+
+        parts = (
+            candidates[0].get("content", {}).get("parts", [])
+            if isinstance(candidates[0], dict)
+            else []
+        )
+        pieces: list[str] = []
+        for part in parts:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    pieces.append(text)
+        return "".join(pieces).strip()
+
+
 def get_stt_model(
     provider: str,
     config: Dict[str, Any],
@@ -1235,6 +1735,22 @@ def get_stt_model(
             device=configuration.get("device", "auto"),
             compute_type=configuration.get("computeType", "int8"),
             download_root=configuration.get("modelDir") or None,
+        )
+
+    if provider == STTProvider.WISPR.value:
+        return _WisprFlowSTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            endpoint=configuration.get("endpoint") or None,
+            default_language=configuration.get("language") or None,
+            default_app_type=configuration.get("appType") or "ai",
+        )
+
+    if provider == STTProvider.GEMINI.value:
+        return _GeminiSTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            endpoint=configuration.get("endpoint") or None,
         )
 
     raise ValueError(f"Unsupported STT provider: {provider}")

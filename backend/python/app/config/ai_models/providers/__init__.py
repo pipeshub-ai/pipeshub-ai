@@ -21,6 +21,7 @@ from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .together import TogetherProvider
 from .whisper import WhisperProvider
+from .wispr import WisprProvider
 
 ALL_PROVIDER_CLASSES: list[type] = [
     OpenAIProvider,
@@ -44,6 +45,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     VoyageProvider,
     HuggingFaceProvider,
     WhisperProvider,
+    WisprProvider,
 ]
 
 

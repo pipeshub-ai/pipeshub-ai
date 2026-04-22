@@ -320,6 +320,7 @@
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen stoppen",
     "ttsNotSupported": "Text-to-Speech wird in diesem Browser nicht unterstützt",
+    "ttsFailed": "Text-to-Speech fehlgeschlagen. Bitte erneut versuchen.",
     "copiedAsMarkdown": "Als Markdown kopiert",
     "copiedAsText": "Als Text kopiert",
     "citations": "Zitate",

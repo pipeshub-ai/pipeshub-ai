@@ -336,6 +336,8 @@ class TestCapabilitiesRoute:
 
         stt_cfg = {
             "provider": "openAI",
+            "isDefault": True,
+            "modelKey": "stt-openai-1",
             "configuration": {
                 "model": "whisper-1",
                 "modelFriendlyName": "Whisper cloud",
@@ -353,7 +355,45 @@ class TestCapabilitiesRoute:
         assert result["stt"] == {
             "provider": "openAI",
             "model": "whisper-1",
+            "defaultModel": "whisper-1",
+            "models": ["whisper-1"],
+            "isDefault": True,
+            "modelKey": "stt-openai-1",
             "friendlyName": "Whisper cloud",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reports_is_default_false_when_fallback_entry_used(
+        self, mock_config_service: MagicMock
+    ) -> None:
+        """When no entry is flagged ``isDefault`` the route falls back to the
+        first configured config — ``isDefault`` must reflect that so the UI
+        can tell the user "no explicit default was set"."""
+        from app.api.routes.speech import speech_capabilities
+
+        tts_cfg = {
+            "provider": "openAI",
+            "configuration": {
+                "model": "gpt-4o-mini-tts, tts-1",
+            },
+        }
+        with patch(
+            "app.api.routes.speech.get_tts_config",
+            new=AsyncMock(return_value=tts_cfg),
+        ), patch(
+            "app.api.routes.speech.get_stt_config",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await speech_capabilities(config_service=mock_config_service)
+        assert result["stt"] is None
+        assert result["tts"] == {
+            "provider": "openAI",
+            "model": "gpt-4o-mini-tts",
+            "defaultModel": "gpt-4o-mini-tts",
+            "models": ["gpt-4o-mini-tts", "tts-1"],
+            "isDefault": False,
+            "modelKey": None,
+            "friendlyName": None,
         }
 
     @pytest.mark.asyncio
