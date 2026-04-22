@@ -2650,7 +2650,15 @@ class TestGetAgents:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            result = await get_agents(request, page=1, limit=20, search=None, sort_by="updatedAtTimestamp", sort_order="desc")
+            result = await get_agents(
+                request,
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
             assert result.status_code == 200
 
     @pytest.mark.asyncio
@@ -2666,8 +2674,46 @@ class TestGetAgents:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            result = await get_agents(request, page=1, limit=20, search=None, sort_by="updatedAtTimestamp", sort_order="desc")
+            result = await get_agents(
+                request,
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
             assert result.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_passes_is_deleted_to_graph_provider(self) -> None:
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(
+            return_value={"agents": [], "totalItems": 0}
+        )
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            await get_agents(
+                request,
+                page=1,
+                limit=10,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=True,
+            )
+
+        services["graph_provider"].get_all_agents.assert_awaited_once()
+        call = services["graph_provider"].get_all_agents.await_args
+        assert call is not None
+        assert call.kwargs.get("is_deleted") is True
 
 
 class TestDeleteAgent:
@@ -4510,7 +4556,15 @@ class TestServiceAccountAgentRoutes:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+            result = await get_agents(
+                MagicMock(),
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
 
         assert result.status_code == 200
         body = json.loads(result.body)
@@ -4532,7 +4586,15 @@ class TestServiceAccountAgentRoutes:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+            result = await get_agents(
+                MagicMock(),
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
 
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2

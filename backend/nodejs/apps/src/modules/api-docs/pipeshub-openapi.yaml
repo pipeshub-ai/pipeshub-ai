@@ -13580,6 +13580,117 @@ paths:
         '401':
           description: Unauthorized
 
+  /conversations/show/archives/search:
+    get:
+      tags:
+        - Conversations
+      summary: Search archived conversations
+      description: |
+        Search across all archived conversations (assistant and agent) for the authenticated user.<br><br>
+        <b>Overview:</b><br>
+        Performs a case-insensitive full-text search against conversation titles and message content
+        across both assistant and agent archived conversations.<br><br>
+        <b>Search parameter:</b><br>
+        The <code>search</code> query parameter is required. Maximum 1000 characters.<br><br>
+        <b>Pagination:</b><br>
+        Results are paginated. Use <code>page</code> and <code>limit</code> query parameters.
+      operationId: searchArchivedConversations
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: search
+          in: query
+          required: true
+          description: Search term to match against conversation titles and message content
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+        - name: page
+          in: query
+          description: Page number (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Search results across archived conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Conversation'
+                        - type: object
+                          properties:
+                            source:
+                              type: string
+                              enum: [assistant, agent]
+                              description: Origin of the conversation
+                            agentKey:
+                              type: string
+                              description: Present when source is agent
+                            archivedAt:
+                              type: string
+                              format: date-time
+                            archivedBy:
+                              type: string
+                              format: objectId
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  summary:
+                    type: object
+                    properties:
+                      totalMatches:
+                        type: integer
+                      assistantMatches:
+                        type: integer
+                      agentMatches:
+                        type: integer
+                      searchQuery:
+                        type: string
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Bad request - search parameter missing or invalid
+        '401':
+          description: Unauthorized
+
   /conversations/{conversationId}:
     get:
       tags:
@@ -15809,6 +15920,423 @@ paths:
           description: Unauthorized
         '404':
           description: Agent, conversation, or message not found
+
+  /agents/conversations/show/archives:
+    get:
+      tags:
+        - Agent Conversations
+      summary: List all archived agent conversations grouped by agent
+      description: |
+        Retrieve all archived agent conversations for the authenticated user, grouped by agent.<br><br>
+        <b>Overview:</b><br>
+        Returns archived conversations from every agent the user has interacted with,
+        grouped into per-agent buckets. Each group includes the most recent conversations
+        and a total count so the client can load more on demand.<br><br>
+        <b>Agent-level pagination:</b><br>
+        Use <code>agentPage</code> and <code>agentLimit</code> to page through agent groups
+        (defaults: page 1, limit 10).<br><br>
+        <b>Note:</b><br>
+        Conversations whose agent has been deleted are excluded automatically.
+      operationId: listAllAgentsArchivedConversationsGrouped
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentPage
+          in: query
+          description: Page number for agent-group pagination (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: agentLimit
+          in: query
+          description: Number of agent groups per page (default 10, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        '200':
+          description: Archived agent conversations grouped by agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agentKey:
+                          type: string
+                          description: Agent identifier
+                        conversations:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/AgentConversation'
+                          description: Initial slice of archived conversations for this agent
+                        pagination:
+                          type: object
+                          description: Pagination metadata for this agent's archived conversations
+                          properties:
+                            page:
+                              type: integer
+                            limit:
+                              type: integer
+                            totalCount:
+                              type: integer
+                            totalPages:
+                              type: integer
+                            hasNextPage:
+                              type: boolean
+                            hasPrevPage:
+                              type: boolean
+                  agentPagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/conversations/show/archives:
+    get:
+      tags:
+        - Agent Conversations
+      summary: List archived conversations for a specific agent
+      description: |
+        Retrieve all archived conversations the user has had with a specific agent.<br><br>
+        <b>Overview:</b><br>
+        Returns paginated archived conversations for the given agent. Only conversations
+        owned by the authenticated user are returned.<br><br>
+        <b>Unarchiving:</b><br>
+        Use <code>POST /agents/{agentKey}/conversations/{conversationId}/unarchive</code>
+        to restore a conversation to the active list.
+      operationId: listAllArchivesAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          description: Field to sort by (default lastActivityAt)
+          schema:
+            type: string
+            default: lastActivityAt
+        - name: sortOrder
+          in: query
+          description: Sort direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: List of archived agent conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentConversation'
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  filters:
+                    type: object
+                    description: Applied and available filters
+                  summary:
+                    type: object
+                    properties:
+                      totalArchived:
+                        type: integer
+                      oldestArchive:
+                        type: string
+                        format: date-time
+                      newestArchive:
+                        type: string
+                        format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent not found
+
+  /agents/{agentKey}/conversations/{conversationId}/archive:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Archive an agent conversation
+      description: |
+        Archive an agent conversation to hide it from the active list.<br><br>
+        <b>Overview:</b><br>
+        Archived conversations are preserved but hidden from the default conversation list.
+        Use archiving to clean up your workspace without permanently deleting conversations.<br><br>
+        <b>Retrieval:</b><br>
+        View archived conversations using
+        <code>GET /agents/{agentKey}/conversations/show/archives</code>.
+      operationId: archiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Agent conversation archived successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: objectId
+                  status:
+                    type: string
+                    example: archived
+                  archivedBy:
+                    type: string
+                    format: objectId
+                  archivedAt:
+                    type: string
+                    format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Conversation is already archived
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/unarchive:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Unarchive an agent conversation
+      description: |
+        Restore an archived agent conversation to the active list.<br><br>
+        <b>Overview:</b><br>
+        Removes the archived flag, making the conversation visible in the main list again.
+      operationId: unarchiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Agent conversation unarchived successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: objectId
+                  status:
+                    type: string
+                    example: unarchived
+                  unarchivedBy:
+                    type: string
+                    format: objectId
+                  unarchivedAt:
+                    type: string
+                    format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Conversation is not archived
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/title:
+    patch:
+      tags:
+        - Agent Conversations
+      summary: Update agent conversation title
+      description: |
+        Update the title of an agent conversation.<br><br>
+        <b>Overview:</b><br>
+        Agent conversation titles are auto-generated from the first query by default.
+        Use this endpoint to set a custom, more descriptive title.<br><br>
+        <b>Title Limits:</b><br>
+        <ul>
+        <li>Minimum: 1 character (non-empty after trimming)</li>
+        <li>Maximum: 200 characters</li>
+        </ul>
+      operationId: updateAgentConversationTitle
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: New title for the agent conversation
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: New conversation title
+                  example: "Q4 Planning with Sales Agent"
+      responses:
+        '200':
+          description: Title updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Invalid title - must be non-empty
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
 
   /agents/{agentKey}/unshare:
     post:
