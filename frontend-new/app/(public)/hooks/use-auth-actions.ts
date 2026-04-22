@@ -202,12 +202,13 @@ export function useAuthActions({
     setForgotLoading(true);
     try {
       await AuthApi.forgotPassword(email);
-      toast.success('Password reset link has been emailed', {
-        description: 'Check your email to change your password.',
+      toast.success('Check your inbox', {
+        description:
+          'If an account exists for this email, a password reset link has been sent.',
       });
     } catch (err: unknown) {
       const rawMsg = rawApiErrorMessage(err);
-      toast.error('Could not send password reset email', {
+      toast.error('Could not request password reset', {
         description: rawMsg || 'Please try again later.',
       });
     } finally {
