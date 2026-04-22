@@ -18,6 +18,7 @@ import {
   readAuthValueFromFlatRecord,
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
+import { useTranslation } from 'react-i18next';
 
 // ========================================
 // Component
@@ -41,6 +42,10 @@ export function AuthenticateTab() {
     setAuthFormValue,
     setSelectedAuthType,
   } = useConnectorsStore();
+
+  const { t } = useTranslation();
+
+  if (!connectorSchema || !panelConnector) return null;
 
   const isCreateMode = !panelConnectorId;
   const authConfig = connectorSchema?.auth;
@@ -358,7 +363,7 @@ export function AuthenticateTab() {
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}
-              placeholder="Select auth type..."
+              placeholder={t('workspace.connectors.authTab.methodPlaceholder')}
             />
             <Select.Content
               position="popper"
@@ -417,7 +422,7 @@ export function AuthenticateTab() {
         >
           <MaterialIcon name="check_circle" size={16} color="var(--green-a11)" />
           <Text size="2" style={{ color: 'var(--green-a11)' }}>
-            No authentication required for this connector
+            {t('workspace.connectors.authTab.noAuthRequired')}
           </Text>
         </Flex>
       )}

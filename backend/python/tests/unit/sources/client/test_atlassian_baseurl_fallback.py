@@ -96,19 +96,22 @@ class TestJiraBuildFromServicesOAuthFallback:
 
     @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id_and_no_baseurl(self, logger):
-        """Line 311: instance has no baseUrl and no oauthConfigId → error."""
+        """No baseUrl, no oauthConfigId, and token has zero accessible sites → error."""
         config_service = AsyncMock()
         instance_cfg = _oauth_instance_config()  # no baseUrl, no oauthConfigId
         with patch.object(
             JiraClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
+        ), patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth auth"):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
     async def test_raises_when_shared_oauth_has_no_baseurl(self, logger):
-        """Line 311: shared OAuth app exists but its config.baseUrl is empty."""
+        """Shared OAuth app exists but baseUrl empty AND token has no accessible sites → error."""
         config_service = AsyncMock()
         instance_cfg = _oauth_instance_config(oauth_config_id="oauth-1")
         shared = {"config": {}}  # no baseUrl
@@ -118,13 +121,16 @@ class TestJiraBuildFromServicesOAuthFallback:
         ), patch(
             "app.sources.client.jira.jira.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
+        ), patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth auth"):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
     async def test_raises_when_fetch_returns_none(self, logger):
-        """Line 311: fetch_oauth_config_by_id returns None (not found)."""
+        """fetch_oauth_config_by_id returns None AND token has no accessible sites → error."""
         config_service = AsyncMock()
         instance_cfg = _oauth_instance_config(oauth_config_id="oauth-missing")
         with patch.object(
@@ -133,8 +139,11 @@ class TestJiraBuildFromServicesOAuthFallback:
         ), patch(
             "app.sources.client.jira.jira.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
+        ), patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth auth"):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
 
@@ -196,19 +205,23 @@ class TestJiraBuildFromToolsetOAuthFallback:
 
     @pytest.mark.asyncio
     async def test_raises_when_baseurl_missing_and_no_config_service(self, logger):
-        """Line 420: config_service is None so fallback is skipped; baseUrl remains empty → error."""
+        """config_service is None so shared-oauth fallback is skipped; token has no accessible sites → error."""
         toolset_cfg = {
             "authType": "OAUTH",
             "isAuthenticated": True,
             "credentials": {"access_token": "tok"},
             "auth": {"oauthConfigId": "x"},
         }
-        with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
-            await JiraClient.build_from_toolset(toolset_cfg, logger, config_service=None)
+        with patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
+                await JiraClient.build_from_toolset(toolset_cfg, logger, config_service=None)
 
     @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id_and_no_baseurl(self, logger):
-        """Line 420: config_service present but no oauthConfigId anywhere → error."""
+        """No oauthConfigId anywhere AND token has no accessible sites → error."""
         config_service = AsyncMock()
         toolset_cfg = {
             "authType": "OAUTH",
@@ -216,12 +229,16 @@ class TestJiraBuildFromToolsetOAuthFallback:
             "credentials": {"access_token": "tok"},
             "auth": {},
         }
-        with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
-            await JiraClient.build_from_toolset(toolset_cfg, logger, config_service)
+        with patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
+                await JiraClient.build_from_toolset(toolset_cfg, logger, config_service)
 
     @pytest.mark.asyncio
     async def test_raises_when_shared_toolset_oauth_has_no_baseurl(self, logger):
-        """Line 420: fetch succeeds but shared.config.baseUrl is empty → error."""
+        """Fetch succeeds but shared.config.baseUrl empty AND token has no accessible sites → error."""
         config_service = AsyncMock()
         toolset_cfg = {
             "authType": "OAUTH",
@@ -233,8 +250,11 @@ class TestJiraBuildFromToolsetOAuthFallback:
         with patch(
             "app.sources.client.jira.jira.fetch_toolset_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
+        ), patch.object(
+            JiraClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
+            with pytest.raises(ValueError, match="no accessible Jira sites"):
                 await JiraClient.build_from_toolset(toolset_cfg, logger, config_service)
 
 
@@ -290,19 +310,22 @@ class TestConfluenceBuildFromServicesOAuthFallback:
 
     @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id_and_no_baseurl(self, logger):
-        """Line 321: no baseUrl anywhere → error."""
+        """No baseUrl anywhere AND token has no accessible sites → error."""
         config_service = AsyncMock()
         instance_cfg = _oauth_instance_config()
         with patch.object(
             ConfluenceClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
+        ), patch.object(
+            ConfluenceClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth auth"):
+            with pytest.raises(ValueError, match="no accessible Confluence sites"):
                 await ConfluenceClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
     async def test_raises_when_fetch_returns_none(self, logger):
-        """Line 321: fetch returns None (config not found)."""
+        """fetch returns None AND token has no accessible sites → error."""
         config_service = AsyncMock()
         instance_cfg = _oauth_instance_config(oauth_config_id="missing")
         with patch.object(
@@ -311,8 +334,11 @@ class TestConfluenceBuildFromServicesOAuthFallback:
         ), patch(
             "app.sources.client.confluence.confluence.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
+        ), patch.object(
+            ConfluenceClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth auth"):
+            with pytest.raises(ValueError, match="no accessible Confluence sites"):
                 await ConfluenceClient.build_from_services(logger, config_service, "inst")
 
 
@@ -385,19 +411,23 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
 
     @pytest.mark.asyncio
     async def test_raises_when_no_config_service(self, logger):
-        """Line 405: config_service None skips fallback, baseUrl still missing → error."""
+        """config_service None skips shared-oauth fallback; token has no accessible sites → error."""
         toolset_cfg = {
             "authType": "OAUTH",
             "isAuthenticated": True,
             "credentials": {"access_token": "tok"},
             "auth": {"oauthConfigId": "x"},
         }
-        with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
-            await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service=None)
+        with patch.object(
+            ConfluenceClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+                await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service=None)
 
     @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id(self, logger):
-        """Line 405: config_service present but no oauthConfigId → error."""
+        """No oauthConfigId AND token has no accessible sites → error."""
         config_service = AsyncMock()
         toolset_cfg = {
             "authType": "OAUTH",
@@ -405,12 +435,16 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
             "credentials": {"access_token": "tok"},
             "auth": {},
         }
-        with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
-            await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service)
+        with patch.object(
+            ConfluenceClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+                await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service)
 
     @pytest.mark.asyncio
     async def test_raises_when_shared_has_no_baseurl(self, logger):
-        """Line 405: shared OAuth app exists but config.baseUrl is empty."""
+        """Shared OAuth app baseUrl empty AND token has no accessible sites → error."""
         config_service = AsyncMock()
         toolset_cfg = {
             "authType": "OAUTH",
@@ -422,6 +456,9 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
         with patch(
             "app.sources.client.confluence.confluence.fetch_toolset_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
+        ), patch.object(
+            ConfluenceClient, "get_accessible_resources",
+            new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="Atlassian site URL .* is required for OAuth toolsets"):
+            with pytest.raises(ValueError, match="no accessible Confluence sites"):
                 await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service)

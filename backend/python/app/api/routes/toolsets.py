@@ -820,6 +820,7 @@ async def _build_oauth_config(
 def _format_toolset_data(toolset_name: str, metadata: dict[str, Any], *, include_tools: bool = False) -> dict[str, Any]:
     """Format toolset metadata for API response"""
     tools = metadata.get("tools", [])
+    cfg = metadata.get("config", {}) or {}
     data = {
         "name": toolset_name,
         "displayName": metadata.get("display_name", toolset_name),
@@ -828,6 +829,7 @@ def _format_toolset_data(toolset_name: str, metadata: dict[str, Any], *, include
         "group": metadata.get("group", ""),
         "iconPath": metadata.get("icon_path", ""),
         "supportedAuthTypes": metadata.get("supported_auth_types", []),
+        "documentationLinks": cfg.get("documentationLinks", []),
         "toolCount": len(tools)
     }
 
@@ -1113,6 +1115,7 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, A
     if oauth_registry and oauth_registry.has_config(toolset_type):
         oauth_config = oauth_registry.get_metadata(toolset_type)
 
+    toolset_config = metadata.get("config", {}) or {}
     return {
         "status": "success",
         "toolset": {
@@ -1121,7 +1124,8 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, A
             "description": metadata["description"],
             "category": metadata["category"],
             "supportedAuthTypes": metadata["supported_auth_types"],
-            "config": metadata.get("config", {}),
+            "documentationLinks": toolset_config.get("documentationLinks", []),
+            "config": toolset_config,
             "oauthConfig": oauth_config,
             "tools": metadata.get("tools", []),
         }
@@ -2735,6 +2739,11 @@ async def _build_toolsets_list_response(
         auth_type_upper = auth_type.upper()
         is_authenticated = bool(auth_record and auth_record.get("isAuthenticated", False))
 
+        meta_cfg = (meta.get("config") or {}) if meta else {}
+        doc_links = meta_cfg.get("documentationLinks", []) if isinstance(meta_cfg, dict) else []
+        if not isinstance(doc_links, list):
+            doc_links = []
+
         toolset_entry: dict[str, Any] = {
             "instanceId": inst.get("_id"),
             "instanceName": inst.get("instanceName"),
@@ -2746,6 +2755,7 @@ async def _build_toolsets_list_response(
             "iconPath": meta.get("icon_path", "") if meta else "",
             "category": meta.get("category", "app") if meta else "app",
             "supportedAuthTypes": meta.get("supported_auth_types", []) if meta else [],
+            "documentationLinks": doc_links,
             "toolCount": len(meta.get("tools", [])) if meta else 0,
             "tools": [
                 {
@@ -2815,6 +2825,10 @@ async def _build_toolsets_list_response(
             supported_auth_types = meta.get("supported_auth_types", [])
             auth_type_value = supported_auth_types[0] if supported_auth_types else "NONE"
             raw_tools = meta.get("tools", [])
+            syn_cfg = meta.get("config") or {}
+            syn_doc_links = syn_cfg.get("documentationLinks", []) if isinstance(syn_cfg, dict) else []
+            if not isinstance(syn_doc_links, list):
+                syn_doc_links = []
 
             synthetic_entry: dict[str, Any] = {
                 "instanceId": "",
@@ -2827,6 +2841,7 @@ async def _build_toolsets_list_response(
                 "iconPath": meta.get("icon_path", ""),
                 "category": meta.get("category", "app"),
                 "supportedAuthTypes": supported_auth_types,
+                "documentationLinks": syn_doc_links,
                 "toolCount": len(raw_tools),
                 "tools": [
                     {

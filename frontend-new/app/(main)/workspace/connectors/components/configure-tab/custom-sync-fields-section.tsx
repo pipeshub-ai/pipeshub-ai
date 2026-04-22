@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { SchemaFormField } from '../schema-form-field';
 import type { SyncCustomField } from '../../types';
@@ -20,6 +21,7 @@ export function CustomSyncFieldsSection({
   errors: Record<string, string>;
   onChange: (key: string, value: unknown) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Flex
       direction="column"
@@ -33,10 +35,10 @@ export function CustomSyncFieldsSection({
     >
       <Flex direction="column" gap="1">
         <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          Additional Settings
+          {t('workspace.connectors.configTab.additionalSettings')}
         </Text>
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          Configure connector-specific sync options
+          {t('workspace.connectors.configTab.additionalSettingsDescription')}
         </Text>
       </Flex>
 

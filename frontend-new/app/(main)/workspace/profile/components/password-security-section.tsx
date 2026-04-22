@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSection } from './settings-section';
@@ -18,10 +19,11 @@ export interface PasswordSecuritySectionProps {
 // ========================================
 
 export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecuritySectionProps) {
+  const { t } = useTranslation();
   const [btnHovered, setBtnHovered] = useState(false);
 
   return (
-    <SettingsSection title="Password & Security">
+    <SettingsSection title={t('workspace.profile.passwordSecurity.title')}>
       <Flex align="center" justify="between" style={{ width: '100%' }}>
 
         {/* Left: icon + label + description */}
@@ -45,7 +47,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
               weight="medium"
               style={{ color: 'var(--gray-12)', display: 'block' }}
             >
-              Account Password
+              {t('workspace.profile.passwordSecurity.accountPassword')}
             </Text>
             <Text
               size="1"
@@ -57,7 +59,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
                 fontWeight: 300,
               }}
             >
-              Please follow the instructions in the email to finish setting your password
+              {t('workspace.profile.passwordSecurity.followEmailDescription')}
             </Text>
           </Box>
         </Flex>
@@ -73,7 +75,7 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
             backgroundColor: btnHovered ? 'var(--slate-a4)' : 'var(--slate-a3)',
           }}
         >
-          Change Password
+          {t('workspace.profile.passwordSecurity.changePassword')}
         </Button>
 
       </Flex>

@@ -18,6 +18,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
 from app.sources.external.clickup.clickup import ClickUpDataSource
 
@@ -387,7 +388,17 @@ class UpdateChecklistItemInput(BaseModel):
             app_description="ClickUp OAuth application for agent integration",
         )
     ]) \
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/clickup.svg")) \
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/clickup.svg")
+        .add_documentation_link(DocumentationLink(
+            "ClickUp API Setup",
+            "https://developer.clickup.com/docs/authentication",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/clickup/clickup",
+            "pipeshub",
+        ))) \
     .build_decorator()
 class ClickUp:
     """ClickUp tool exposed to the agents using ClickUpDataSource."""

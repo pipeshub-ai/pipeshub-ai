@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
 import { useBotsStore } from './store';
 import { BotsApi } from './api';
@@ -15,6 +16,7 @@ import { ServiceGate } from '@/app/components/ui/service-gate';
 // ========================================
 
 export default function BotsPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -52,10 +54,10 @@ export default function BotsPage() {
         setAgents(agents.value);
       }
       if (configs.status === 'rejected') {
-        setError('Failed to load bot configurations');
+        setError(t('workspace.bots.errors.loadConfigs'));
       }
     } catch {
-      setError('Failed to load data');
+      setError(t('workspace.bots.errors.loadData'));
     } finally {
       setLoading(false);
     }
@@ -67,7 +69,7 @@ export default function BotsPage() {
 
   const handleRefresh = useCallback(() => {
     fetchData();
-    toast.success('Refreshed');
+    toast.success(t('workspace.bots.refreshed'));
   }, [fetchData]);
 
   return (

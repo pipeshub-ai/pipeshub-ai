@@ -1,8 +1,9 @@
 'use client';
 
+import { useRouter, usePathname } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
+import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
-import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -56,6 +57,8 @@ function oauthAppSelectionError(
 
 export function ConnectorPanel() {
   const router = useRouter();
+  const pathname = usePathname();
+  const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -387,7 +390,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to create connector';
+        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.createError');
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -448,7 +451,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to save auth configuration';
+        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.authSaveError');
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -541,7 +544,7 @@ export function ConnectorPanel() {
         );
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to save configuration';
+      const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.configSaveError');
       setSaveError(message);
     } finally {
       setIsSavingConfig(false);
@@ -605,6 +608,15 @@ export function ConnectorPanel() {
     isLoadingConfig,
     onNext: handleSaveAuth,
     onSave: handleSaveConfig,
+    labels: {
+      next: t('common.next'),
+      fillRequired: t('workspace.aiModels.configFillRequiredTooltip'),
+      cancel: t('action.cancel'),
+      authFirst: t('workspace.connectors.tooltips.authFirst'),
+      loadingConfig: t('workspace.connectors.loadingConfig'),
+      saveConfig: t('workspace.connectors.saveConfig'),
+      back: t('common.back'),
+    },
     onContinueFromAuthorize: async () => {
       await refreshPanelFromServer();
       setPanelActiveTab('configure');
@@ -651,7 +663,7 @@ export function ConnectorPanel() {
       onOpenChange={(open) => {
         if (!open) closePanel();
       }}
-      title={`${connectorTypeName} Configuration`}
+      title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
       headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
@@ -669,7 +681,7 @@ export function ConnectorPanel() {
           justify="center"
           style={{ height: 200 }}
         >
-          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.loadingConfig')} />
         </Flex>
       ) : panelView === 'select-records' ? (
         <SelectRecordsPage />
@@ -679,14 +691,14 @@ export function ConnectorPanel() {
           {isCreateMode && connectorSchema && (
             <Box style={{ marginBottom: 16 }}>
               <FormField
-                label="Instance Name"
+                label={t('workspace.actions.instanceName')}
                 error={instanceNameError ?? undefined}
               >
                 <input
                   type="text"
                   value={instanceName}
                   onChange={(e) => setInstanceName(e.target.value)}
-                  placeholder={`e.g. My ${connectorTypeName}`}
+                  placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
                   style={{
                     height: 32,
                     width: '100%',
@@ -720,7 +732,7 @@ export function ConnectorPanel() {
               }}
             >
               <Tabs.Trigger value="authenticate">
-                Authenticate Instance
+                {t('workspace.connectors.tabs.authenticate')}
               </Tabs.Trigger>
               {showAuthorizeTab ? (
                 <Tabs.Trigger value="authorize">Authorize</Tabs.Trigger>
@@ -730,7 +742,7 @@ export function ConnectorPanel() {
                 disabled={!configureTabEnabled}
                 style={!configureTabEnabled ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
-                Configure Records
+                {t('workspace.connectors.tabs.configureRecords')}
               </Tabs.Trigger>
             </Tabs.List>
 
@@ -792,6 +804,7 @@ function getFooterConfig({
   isLoadingConfig,
   onNext,
   onSave,
+  labels,
   onContinueFromAuthorize,
   onBackFromConfigure,
   onBackFromAuthorize,
@@ -811,6 +824,15 @@ function getFooterConfig({
   isLoadingConfig: boolean;
   onNext: () => void;
   onSave: () => void;
+  labels: {
+    next: string;
+    fillRequired: string;
+    cancel: string;
+    authFirst: string;
+    loadingConfig: string;
+    saveConfig: string;
+    back: string;
+  };
   onContinueFromAuthorize: () => void | Promise<void>;
   onBackFromConfigure: () => void | Promise<void>;
   onBackFromAuthorize: () => void | Promise<void>;
@@ -839,7 +861,7 @@ function getFooterConfig({
           ? 'Fill in all required fields to continue'
           : undefined,
       onPrimary: onNext,
-      secondaryLabel: 'Cancel',
+      secondaryLabel: labels.cancel,
     };
   }
 
@@ -873,7 +895,7 @@ function getFooterConfig({
     : !configureSaveAllowed
     ? 'Complete OAuth authorization before configuring sync and filters.'
     : isLoadingSchema || isLoadingConfig
-    ? 'Loading configuration…'
+    ? labels.loadingConfig
     : undefined;
 
   return {

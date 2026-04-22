@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { ConfirmationDialog, SettingsSaveBar } from '../components';
 import {
@@ -18,6 +19,7 @@ import { useProfilePage } from './hooks/use-profile-page';
 // ========================================
 
 export default function ProfilePage() {
+  const { t } = useTranslation();
   const {
     avatarInputRef,
     userId,
@@ -74,10 +76,10 @@ export default function ProfilePage() {
         {/* ── Page header ── */}
         <Box style={{ marginBottom: 24 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Profile
+            {t('workspace.profile.title')}
           </Heading>
           <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
-            Manage all your personal profile details here
+            {t('workspace.profile.subtitle')}
           </Text>
         </Box>
 
@@ -135,10 +137,10 @@ export default function ProfilePage() {
       <ConfirmationDialog
         open={discardDialogOpen}
         onOpenChange={setDiscardDialogOpen}
-        title="Discard changes?"
-        message="If you discard, your edits won't be saved"
-        confirmLabel="Discard"
-        cancelLabel="Continue Editing"
+        title={t('workspace.profile.discardTitle')}
+        message={t('workspace.profile.discardMessage')}
+        confirmLabel={t('workspace.profile.discardConfirm')}
+        cancelLabel={t('workspace.profile.discardCancel')}
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
       />

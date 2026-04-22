@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -26,6 +27,7 @@ import {
 // ============================================================
 
 export default function WebSearchPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -151,8 +153,8 @@ export default function WebSearchPage() {
 
       addToast({
         variant: 'success',
-        title: `${label} is added`,
-        description: `Web search configured successfully. To use ${label.toLowerCase()}, toggle off any other web search methods`,
+        title: t('workspace.webSearch.toasts.providerAdded', { label }),
+        description: t('workspace.webSearch.toasts.providerAddedDescription', { label: label.toLowerCase() }),
         duration: 5000,
       });
 
@@ -169,7 +171,7 @@ export default function WebSearchPage() {
       if (enabledProviders.length > 1) {
         addToast({
           variant: 'error',
-          title: 'Only one web search provider can be active at a time',
+          title: t('workspace.webSearch.toasts.oneProviderOnly'),
           duration: 5000,
         });
         setIsSaving(false);
@@ -200,15 +202,15 @@ export default function WebSearchPage() {
 
       addToast({
         variant: 'success',
-        title: 'Web search settings saved',
-        description: 'Your changes have been applied successfully.',
+        title: t('workspace.webSearch.toasts.saved'),
+        description: t('workspace.webSearch.toasts.savedDescription'),
         duration: 4000,
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save web search settings',
-        description: 'Please try again.',
+        title: t('workspace.webSearch.toasts.saveError'),
+        description: t('workspace.webSearch.toasts.saveErrorDescription'),
         duration: 5000,
       });
     } finally {
@@ -229,14 +231,14 @@ export default function WebSearchPage() {
         await WebSearchApi.updateSettings(newSettings);
         addToast({
           variant: 'success',
-          title: enabled ? 'Images will be sent to LLM' : 'Images will not be sent to LLM',
+          title: enabled ? t('workspace.webSearch.toasts.imagesEnabled') : t('workspace.webSearch.toasts.imagesDisabled'),
           duration: 3000,
         });
       } catch {
         setSettings(settings);
         addToast({
           variant: 'error',
-          title: 'Failed to update setting',
+          title: t('workspace.webSearch.toasts.settingError'),
           duration: 4000,
         });
       }
@@ -256,7 +258,7 @@ export default function WebSearchPage() {
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-        <LottieLoader variant="loader" size={48} showLabel label="Loading web search settings…" />
+        <LottieLoader variant="loader" size={48} showLabel label={t('workspace.webSearch.loading')} />
       </Flex>
     );
   }
@@ -270,10 +272,10 @@ export default function WebSearchPage() {
         <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Web Search Configuration
+              {t('workspace.webSearch.heading')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Configure web search providers for the chatbot to use when searching the web
+              {t('workspace.webSearch.subtitle')}
             </Text>
           </Box>
 
@@ -289,7 +291,7 @@ export default function WebSearchPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -311,13 +313,13 @@ export default function WebSearchPage() {
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-                Different Web Search Methods
+                {t('workspace.webSearch.methodsSection')}
               </Text>
               <Text
                 size="1"
                 style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
               >
-                Select the method users will use for web search
+                {t('workspace.webSearch.methodsSectionDescription')}
               </Text>
             </Box>
 
@@ -333,7 +335,7 @@ export default function WebSearchPage() {
                 <span className="material-icons-outlined" style={{ fontSize: 15 }}>
                   edit
                 </span>
-                Edit
+                {t('action.edit')}
               </Button>
             )}
           </Flex>
@@ -388,11 +390,10 @@ export default function WebSearchPage() {
           </IconButton>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Web Search Provider Policy
+              {t('workspace.webSearch.policyTitle')}
             </Text>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-              Only one web search provider can be active at a time. To change it, please
-              disable the current one and enable a different method.
+              {t('workspace.webSearch.policyDescription')}
             </Text>
           </Flex>
         </Flex>
@@ -404,7 +405,7 @@ export default function WebSearchPage() {
         isSaving={isSaving}
         onDiscard={handleDiscard}
         onSave={handleSave}
-        saveLabel="Save"
+        saveLabel={t('action.save')}
       />
 
       {/* ── Configure side panel ── */}

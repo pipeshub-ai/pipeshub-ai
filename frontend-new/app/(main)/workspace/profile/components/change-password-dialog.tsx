@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog,
   Flex,
@@ -62,6 +63,7 @@ export function ChangePasswordDialog({
     handleTryAgain,
   } = useChangePassword({ onOpenChange, onSuccess });
 
+  const { t } = useTranslation();
   const isFormValid =
     form.currentPassword.trim() !== '' &&
     form.newPassword.trim() !== '' &&
@@ -103,24 +105,24 @@ export function ChangePasswordDialog({
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>Change Password</Dialog.Title>
+          <Dialog.Title>{t('workspace.profile.changePassword.title')}</Dialog.Title>
         </VisuallyHidden>
 
         {view === 'form' ? (
           /* ── Form view ─── */
           <Flex direction="column" gap="4">
             <Text size="5" weight="bold" style={{ color: 'var(--gray-12)' }}>
-              Change Password
+              {t('workspace.profile.changePassword.title')}
             </Text>
 
             {/* Current Password */}
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                Current Password
+                {t('workspace.profile.changePassword.currentPassword')}
               </Text>
               <TextField.Root
                 type="password"
-                placeholder="Your current password"
+                placeholder={t('workspace.profile.changePassword.currentPasswordPlaceholder')}
                 value={form.currentPassword}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -140,14 +142,14 @@ export function ChangePasswordDialog({
             {/* New Password */}
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                New Password
+                {t('workspace.profile.changePassword.newPassword')}
               </Text>
               <Text size="1" style={{ color: 'var(--gray-10)', fontWeight: 300 }}>
-                Must have at least 8 characters with lowercase, uppercase, number and symbol
+                {t('workspace.profile.changePassword.passwordRequirement')}
               </Text>
               <TextField.Root
                 type={showNewPassword ? 'text' : 'password'}
-                placeholder="Your new password"
+                placeholder={t('workspace.profile.changePassword.newPasswordPlaceholder')}
                 value={form.newPassword}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -161,7 +163,7 @@ export function ChangePasswordDialog({
                       ...prev,
                       confirmPassword:
                         form.confirmPassword !== value
-                          ? "This doesn't match with your new password"
+                          ? t('workspace.profile.changePassword.mismatchError')
                           : undefined,
                     }));
                   }
@@ -195,11 +197,11 @@ export function ChangePasswordDialog({
             {/* Confirm New Password */}
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                Confirm New Password
+                {t('workspace.profile.changePassword.confirmPassword')}
               </Text>
               <TextField.Root
                 type={showConfirmPassword ? 'text' : 'password'}
-                placeholder="Your new password"
+                placeholder={t('workspace.profile.changePassword.confirmPasswordPlaceholder')}
                 value={form.confirmPassword}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -208,7 +210,7 @@ export function ChangePasswordDialog({
                   if (value && value !== form.newPassword) {
                     setErrors((prev) => ({
                       ...prev,
-                      confirmPassword: "This doesn't match with your new password",
+                      confirmPassword: t('workspace.profile.changePassword.mismatchError'),
                     }));
                   } else {
                     setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
@@ -251,7 +253,7 @@ export function ChangePasswordDialog({
                 disabled={isLoading}
                 style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
               <LoadingButton
                 variant="solid"
@@ -260,10 +262,10 @@ export function ChangePasswordDialog({
                 onClick={handleSave}
                 disabled={!isFormValid}
                 loading={isLoading}
-                loadingLabel="Saving..."
+                loadingLabel={t('action.saving')}
                 style={{ background: isSaveDisabled ? 'var(--gray-6)' : 'var(--emerald-9)' }}
               >
-                Save
+                {t('action.save')}
               </LoadingButton>
             </Flex>
           </Flex>
@@ -287,7 +289,7 @@ export function ChangePasswordDialog({
 
             <Flex direction="column" gap="2">
               <Text size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
-                Couldn&apos;t update your password
+                {t('workspace.profile.changePassword.updateError')}
               </Text>
               <Text
                 size="2"
@@ -307,7 +309,7 @@ export function ChangePasswordDialog({
                 onClick={handleClose}
                 style={{ cursor: 'pointer' }}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
               <Button
                 variant="solid"
@@ -316,7 +318,7 @@ export function ChangePasswordDialog({
                 onClick={handleTryAgain}
                 style={{ cursor: 'pointer' }}
               >
-                Try Again
+                {t('message.tryAgain')}
               </Button>
             </Flex>
           </Flex>

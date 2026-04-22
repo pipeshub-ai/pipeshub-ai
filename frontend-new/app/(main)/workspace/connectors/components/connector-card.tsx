@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import type { Connector } from '../types';
@@ -131,6 +132,7 @@ export function ConnectorCard({
 /** "+ Setup" button for registry / unconfigured connectors. */
 function SetupButton({ onClick }: { onClick?: () => void }) {
   const [isHovered, setIsHovered] = useState(false);
+  const { t } = useTranslation();
 
   return (
     <button
@@ -168,7 +170,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
           color: 'var(--gray-11)',
         }}
       >
-        Setup
+        {t('workspace.actions.cta.setup')}
       </span>
     </button>
   );
@@ -187,6 +189,7 @@ function ActiveInstanceBar({
   onBadgeClick?: () => void;
 }) {
   const [isAddHovered, setIsAddHovered] = useState(false);
+  const { t } = useTranslation();
   const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
 
   const handleBadgeClick = (e: React.MouseEvent) => {
@@ -220,7 +223,7 @@ function ActiveInstanceBar({
             }}
           >
             <Text size="1" weight="medium" style={{ color: 'var(--green-a11)', whiteSpace: 'nowrap' }}>
-              {activeCount === 1 ? '1 Active Instance' : `${activeCount} Active Instances`}
+              {activeCount === 1 ? t('workspace.actions.card.activeOne') : t('workspace.actions.card.activeMany', { count: activeCount })}
             </Text>
           </Flex>
         )}
@@ -242,7 +245,7 @@ function ActiveInstanceBar({
             }}
           >
             <Text size="1" weight="medium" style={{ color: 'var(--red-a11)', whiteSpace: 'nowrap' }}>
-              {inactiveCount === 1 ? '1 Inactive Instance' : `${inactiveCount} Inactive Instances`}
+              {inactiveCount === 1 ? t('workspace.actions.card.inactiveOne') : t('workspace.actions.card.inactiveMany', { count: inactiveCount })}
             </Text>
           </Flex>
         )}

@@ -21,6 +21,8 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
+import { parseDownloadMarkers } from '../../utils/parse-download-markers';
+import { DownloadTasks } from './download-tasks';
 import { useTranslation } from 'react-i18next';
 
 // Stable empty reference — avoids creating new objects in default params
@@ -158,10 +160,16 @@ export const ChatResponse = React.memo(function ChatResponse({
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
   // Always strip backend citation links → `[N]` so `AnswerContent` can render chips.
-  const displayContent = processMarkdownContent(
+  const processedContent = processMarkdownContent(
     isStreaming && streamingContent
       ? repairStreamingMarkdown(streamingContent)
       : answer,
+  );
+  // Extract download-task markers so the markdown pipeline doesn't try to
+  // render them. Parsed AFTER citation stripping, matching the old frontend.
+  const { text: displayContent, tasks: downloadTasks } = useMemo(
+    () => parseDownloadMarkers(processedContent),
+    [processedContent],
   );
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
@@ -205,6 +213,12 @@ export const ChatResponse = React.memo(function ChatResponse({
                 citationCallbacks={wrappedCallbacks}
               />
             )}
+
+            {/* Render download buttons for any ::download_conversation_task markers
+                the backend emitted (e.g. "CSV of full query results"). Works for
+                both S3 presigned URLs and local storage endpoints — see
+                DownloadTasks for the auth-handling split. */}
+            {downloadTasks.length > 0 && <DownloadTasks tasks={downloadTasks} />}
           </Box>
         );
       case 'sources':
