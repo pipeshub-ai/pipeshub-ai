@@ -45,28 +45,30 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
         align="center"
         justify="between"
         gap="3"
-        style={{ padding: '12px 16px' }}
+        style={{ padding: 'var(--space-3) var(--space-4)' }}
       >
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-1)',
-            backgroundColor: 'var(--accent-2)',
-            flexShrink: 0,
-          }}
-        >
-          <MaterialIcon name="edit_note" size={20} color="var(--accent-9)" />
-        </Flex>
-        <Flex direction="column" gap="1" style={{ flex: 1 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('workspace.prompts.systemPrompt')}
-          </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            {t('workspace.prompts.systemPromptDescription')}
-          </Text>
+        <Flex align="center" gap="3">
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              width: 'var(--space-9)',
+              height: 'var(--space-9)',
+              borderRadius: 'var(--radius-1)',
+              background: 'var(--slate-a2)',
+              flexShrink: 0,
+            }}
+          >
+            <MaterialIcon name="chat" size={16} color="var(--slate-11)" />
+          </Flex>
+          <Flex direction="column" gap="1">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('workspace.prompts.systemPrompt')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+              {t('workspace.prompts.systemPromptDescription')}
+            </Text>
+          </Flex>
         </Flex>
         {action}
       </Flex>
@@ -76,7 +78,7 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
             <Box style={{ height: 1, background: 'var(--olive-3)' }} />
           </Box>
       {/* Content */}
-      <Flex direction="column" gap="3" style={{ padding: 16 }}>
+      <Flex direction="column" gap="3" style={{ padding: 'var(--space-4)' }}>
         {children}
       </Flex>
     </Flex>
@@ -91,7 +93,7 @@ function PromptConfigCallout() {
       gap="3"
       style={{
         background: 'var(--accent-a2)',
-        padding: '12px 16px',
+        padding: 'var(--space-3) var(--space-4)',
       }}
     >
        <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
@@ -192,12 +194,12 @@ export default function PromptsPage() {
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
 
         {/* ── Page Header ── */}
-        <Flex align="center" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.prompts.heading')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.prompts.subtitle')}
             </Text>
           </Box>
@@ -215,31 +217,34 @@ export default function PromptsPage() {
         </Flex>
 
         {/* ── System Prompt Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <PromptSectionCard>
             {/* Label row */}
-            <Flex align="center" justify="between">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {t('workspace.prompts.heading')}
-              </Text>
-              <Button
-                variant="outline"
-                color="gray"
-                size="2"
-                onClick={handleUseDefault}
-              >
-                {t('workspace.prompts.useDefault')}
-              </Button>
-            </Flex>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('workspace.prompts.heading')}
+            </Text>
 
-            {/* Textarea */}
-            <TextArea
-              rows={6}
-              placeholder={t('workspace.prompts.placeholder')}
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              style={{ resize: 'vertical' }}
-            />
+            {/* Textarea + button overlay */}
+            <Box style={{ position: 'relative' }}>
+              <TextArea
+                rows={6}
+                placeholder={t('workspace.prompts.placeholder')}
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                style={{ resize: 'vertical' }}
+              />
+              <Box style={{ position: 'absolute', top: 8, right: 8 }}>
+                <Button
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={handleUseDefault}
+                  style={{ border: '1px solid var(--emerald-a8)', borderRadius: 'var(--radius-1)', color: 'var(--emerald-a11)', gap: 4, background: 'var(--olive-2)' }}
+                >
+                  {t('workspace.prompts.useDefault')}
+                </Button>
+              </Box>
+            </Box>
 
             {/* Helper text */}
             <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>

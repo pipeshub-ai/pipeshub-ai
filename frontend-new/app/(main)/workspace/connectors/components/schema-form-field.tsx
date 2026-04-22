@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useContext } from 'react';
-import { Flex, Text, Box, Checkbox, Switch, Select, IconButton } from '@radix-ui/themes';
+import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { useToastStore } from '@/lib/store/toast-store';
 import type { SchemaField } from '../types';
 
 /** Extra left padding when `startAdornment` is set (icon column) */
@@ -179,6 +180,109 @@ export function SchemaFormField({
 // Sub-components for each field type
 // ========================================
 
+/**
+ * Compact, copyable list of labeled example values rendered below an input.
+ *
+ * Used when a single `placeholder` can't convey all the variants a user may
+ * need (e.g. Azure AI endpoint URLs differ per model family). Each row has a
+ * label, the example value in a monospace pill, and a copy button so the user
+ * doesn't have to hand-type or squint at a truncated placeholder.
+ */
+function FieldExamples({
+  examples,
+}: {
+  examples: { label: string; value: string }[];
+}) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [copiedValue, setCopiedValue] = useState<string | null>(null);
+
+  const handleCopy = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(value);
+      window.setTimeout(() => {
+        setCopiedValue((v) => (v === value ? null : v));
+      }, 1800);
+    } catch {
+      addToast({
+        variant: 'error',
+        title: 'Failed to copy',
+        duration: 3000,
+      });
+    }
+  };
+
+  return (
+    <Box
+      style={{
+        marginTop: 6,
+        padding: '8px 10px',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--gray-a4)',
+        backgroundColor: 'var(--gray-a2)',
+      }}
+    >
+      <Flex align="center" gap="1" style={{ marginBottom: 6 }}>
+        <MaterialIcon name="info" size={14} color="var(--gray-10)" />
+        <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
+          {examples.length > 1 ? 'Examples' : 'Example'}
+        </Text>
+      </Flex>
+      <Flex direction="column" gap="2">
+        {examples.map((ex) => {
+          const justCopied = copiedValue === ex.value;
+          return (
+            <Flex key={`${ex.label}:${ex.value}`} direction="column" gap="1">
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                {ex.label}
+              </Text>
+              <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                <Box
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '4px 8px',
+                    borderRadius: 'var(--radius-1)',
+                    border: '1px solid var(--gray-a5)',
+                    backgroundColor: 'var(--color-surface)',
+                    fontFamily: 'var(--code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                    fontSize: 12,
+                    color: 'var(--gray-12)',
+                    overflowX: 'auto',
+                    whiteSpace: 'nowrap',
+                    userSelect: 'all',
+                  }}
+                >
+                  {ex.value}
+                </Box>
+                <Tooltip content={justCopied ? 'Copied' : 'Copy to clipboard'}>
+                  <IconButton
+                    type="button"
+                    variant="soft"
+                    color="gray"
+                    size="1"
+                    aria-label={`Copy example ${ex.label}`}
+                    onClick={() => {
+                      void handleCopy(ex.value);
+                    }}
+                    style={{ cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    <MaterialIcon
+                      name={justCopied ? 'check' : 'content_copy'}
+                      size={14}
+                      color={justCopied ? 'var(--green-11)' : 'var(--gray-11)'}
+                    />
+                  </IconButton>
+                </Tooltip>
+              </Flex>
+            </Flex>
+          );
+        })}
+      </Flex>
+    </Box>
+  );
+}
+
 function StartAdornmentOverlay({
   startAdornment,
   children,
@@ -234,6 +338,9 @@ function TextInput({
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
+  const examples =
+    'examples' in field && Array.isArray(field.examples) ? field.examples : undefined;
+
   return (
     <>
       <StartAdornmentOverlay startAdornment={startAdornment}>
@@ -258,6 +365,7 @@ function TextInput({
           {field.description}
         </Text>
       )}
+      {examples && examples.length > 0 ? <FieldExamples examples={examples} /> : null}
     </>
   );
 }

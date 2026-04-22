@@ -1414,7 +1414,10 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size: recordDetails.record.sizeInBytes,
+          size:
+            recordDetails.record.sizeInBytes ??
+            recordDetails.record.fileRecord?.sizeInBytes ??
+            undefined,
           isLoading: false,
           recordDetails,
         });
@@ -1463,7 +1466,10 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size: recordDetails.record.sizeInBytes,
+          size:
+            recordDetails.record.sizeInBytes ??
+            recordDetails.record.fileRecord?.sizeInBytes ??
+            undefined,
           isLoading: false,
           recordDetails,
         });
@@ -2056,7 +2062,7 @@ function KnowledgeBasePageContent() {
         <Box
           style={{ 
             position: 'absolute',
-            bottom: '24px',
+            bottom: 'var(--space-6)',
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,

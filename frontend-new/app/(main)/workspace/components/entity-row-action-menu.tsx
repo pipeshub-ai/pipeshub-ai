@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { IconButton, Flex, Text, Box, Popover } from '@radix-ui/themes';
+import { IconButton, Flex, Text, Box, Popover, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 
@@ -48,6 +48,10 @@ export interface RowAction {
    * which replaces the action card — the action card is hidden while the sub-menu is open.
    */
   subMenu?: SubMenuConfig;
+  /** When true the item is greyed out and not clickable. */
+  disabled?: boolean;
+  /** Tooltip shown on hover (useful when disabled to explain why). */
+  tooltip?: string;
 }
 
 export interface EntityRowActionMenuProps {
@@ -347,13 +351,18 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
           >
             {visibleActions.map((action, i) => {
               const isDanger = action.variant === 'danger';
-              return (
+              const isDisabled = action.disabled === true;
+
+              const row = (
                 <Flex
-                  key={i}
+                  role="menuitem"
+                  aria-disabled={isDisabled || undefined}
+                  tabIndex={isDisabled ? -1 : 0}
                   align="center"
                   gap="1"
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (isDisabled) return;
                     if (action.subMenu) {
                       setView('rolePicker');
                     } else {
@@ -361,7 +370,21 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                       handleOpenChange(false);
                     }
                   }}
+                  onKeyDown={(e) => {
+                    if (isDisabled) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (action.subMenu) {
+                        setView('rolePicker');
+                      } else {
+                        action.onClick?.();
+                        handleOpenChange(false);
+                      }
+                    }
+                  }}
                   onMouseEnter={({ currentTarget }) => {
+                    if (isDisabled) return;
                     (currentTarget as HTMLElement).style.backgroundColor =
                       isDanger ? 'var(--red-a3)' : 'var(--slate-a3)';
                   }}
@@ -373,7 +396,8 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     height: 24,
                     padding: '0 8px',
                     borderRadius: 'var(--radius-1)',
-                    cursor: 'pointer',
+                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                    opacity: isDisabled ? 0.45 : 1,
                   }}
                 >
                   <MaterialIcon
@@ -390,6 +414,14 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     {action.label}
                   </Text>
                 </Flex>
+              );
+
+              return action.tooltip ? (
+                <Tooltip key={i} content={action.tooltip} side="left">
+                  {row}
+                </Tooltip>
+              ) : (
+                <React.Fragment key={i}>{row}</React.Fragment>
               );
             })}
           </Box>
@@ -410,9 +442,9 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
               {/* Radio options */}
               {subMenuAction.subMenu.options.map((option, index) => {
-                const subMenu = subMenuAction.subMenu;
-                const isSelected = option.value === subMenu.value;
-                const isLast = index === subMenu.options.length - 1;
+                const isSelected = option.value === subMenuAction.subMenu!.value;
+                const isLast =
+                  index === subMenuAction.subMenu!.options.length - 1;
 
                 return (
                   <Flex
@@ -420,7 +452,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     align="center"
                     justify="between"
                     onClick={() => {
-                      subMenu.onValueChange(option.value);
+                      subMenuAction.subMenu!.onValueChange(option.value);
                       handleOpenChange(false);
                     }}
                     onMouseEnter={(e) => {
@@ -432,7 +464,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                         'transparent';
                     }}
                     style={{
-                      padding: '8px 16px',
+                      padding: 'var(--space-2) var(--space-4)',
                       paddingBottom: isLast ? 12 : 8,
                       cursor: 'pointer',
                     }}

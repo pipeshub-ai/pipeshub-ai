@@ -34,7 +34,7 @@ export function EntityFilterBar({ filters, renderFilter }: EntityFilterBarProps)
       gap="2"
       style={{
         height: '40px',
-        padding: '0 16px',
+        padding: '0 var(--space-4)',
         borderBottom: '1px solid var(--olive-6)',
         backgroundColor: 'var(--olive-2)',
       }}
@@ -67,7 +67,7 @@ function DefaultFilterChip({ filter }: { filter: FilterChipConfig }) {
         padding: '4px 10px',
         display: 'flex',
         alignItems: 'center',
-        gap: '4px',
+        gap: 'var(--space-1)',
       }}
     >
       <MaterialIcon name={filter.icon} size={12} color="var(--slate-11)" />

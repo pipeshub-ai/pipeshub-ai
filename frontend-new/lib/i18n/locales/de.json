@@ -865,7 +865,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1078,6 +1079,84 @@
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
       "discardCancel": "Continue Editing"
+    }
+  },
+  "recordView": {
+    "sections": {
+      "documentSummary": "Überblick",
+      "documentFields": "Dokument",
+      "recordMetadata": "Datensatzinformationen"
+    },
+    "metadata": {
+      "departments": "Abteilungen",
+      "documentCategory": "Dokumentkategorie",
+      "subcategory1": "Unterkategorie Ebene 1",
+      "subcategory2": "Unterkategorie Ebene 2",
+      "subcategory3": "Unterkategorie Ebene 3",
+      "topics": "Themen",
+      "languages": "Sprachen"
+    },
+    "mail": {
+      "from": "Von",
+      "to": "An",
+      "cc": "Cc",
+      "labels": "Labels",
+      "date": "Datum"
+    },
+    "emptyState": {
+      "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
+    },
+    "indexingReasonAria": "Details zur Indexierung",
+    "tabRecordInformation": "Datensatzinformationen",
+    "tabDocumentDetails": "Dokumentdetails",
+    "chat": "Chat",
+    "download": "Herunterladen",
+    "openFullscreen": "Vollbild öffnen",
+    "exitFullscreen": "Vollbild beenden",
+    "close": "Schließen",
+    "forceReindex": "Neu indizieren",
+    "retryIndexing": "Indizierung wiederholen",
+    "startIndexing": "Indizierung starten",
+    "resumeIndexing": "Indizierung fortsetzen",
+    "reindexLoading": "Neu-Indizierungsanfrage wird übermittelt…",
+    "reindexSuccess": "Neu-Indizierungsanfrage erfolgreich übermittelt",
+    "reindexError": "Neu-Indizierungsanfrage konnte nicht übermittelt werden",
+    "loading": "Wird geladen…",
+    "loadFailed": "Dieser Datensatz konnte nicht geladen werden.",
+    "externalSource": "Externe Quelle",
+    "collectionUpload": "Sammlung",
+    "openExternal": "Öffnen",
+    "previewUnavailable": "Vorschau für diesen Datensatztyp nicht verfügbar.",
+    "permissionOwner": "Inhaber",
+    "permissionReader": "Leser",
+    "permissionWriter": "Bearbeiter",
+    "labels": {
+      "name": "Name",
+      "fileName": "Dateiname",
+      "fileSize": "Dateigröße",
+      "recordId": "Datensatz-ID",
+      "origin": "Herkunft",
+      "originConnector": "Konnektor",
+      "originUpload": "Sammlungs-Upload",
+      "recordType": "Datensatztyp",
+      "version": "Version",
+      "createdAt": "Erstellt am",
+      "updatedAt": "Aktualisiert am",
+      "collection": "Sammlung",
+      "permissions": "Berechtigungen",
+      "noPermissions": "Keine Berechtigungen zugewiesen",
+      "indexingStatus": "Indexierungsstatus",
+      "connector": "Herkunft",
+      "folder": "Ordner",
+      "connectorId": "Konnektor-ID",
+      "notAvailable": "k. A.",
+      "typeEmail": "E-Mail",
+      "typeTicket": "Ticket",
+      "typeWebpage": "Webseite",
+      "typeMessage": "Nachricht",
+      "mailSubject": "Betreff",
+      "ticketSummary": "Zusammenfassung",
+      "ticketDescription": "Beschreibung"
     }
   }
 }

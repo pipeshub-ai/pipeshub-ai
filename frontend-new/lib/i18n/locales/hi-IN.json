@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "यह पृष्ठ केवल पासवर्ड-रीसेट ईमेल लिंक से ही उपलब्ध है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प का उपयोग करें।",
+      "inviteExpiredMessage": "यह आमंत्रण लिंक समाप्त हो गया है। कृपया अपने संगठन व्यवस्थापक से नया आमंत्रण भेजने के लिए कहें।",
+      "resetExpiredMessage": "यह पासवर्ड रीसेट लिंक समाप्त हो गया है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प से नया अनुरोध करें।",
+      "backToSignIn": "साइन इन पर वापस जाएं",
+      "genericLinkInvalidMessage": "यह लिंक समाप्त हो गया होगा। कृपया अपने संगठन व्यवस्थापक से नया आमंत्रण भेजने के लिए कहें।"
+    }
+  },
   "agents": {
     "createPageTitle": "एजेंट बनाएँ",
     "createPageDescription": "नया एजेंट बनाने के लिए यह पृष्ठ है। यहाँ अपना फ़ॉर्म जोड़ें या अपने एजेंट बिल्डर पर रीडायरेक्ट करें।",
@@ -319,7 +328,7 @@
     "differentModesOfQuery": "प्रश्न के विभिन्न तरीके",
     "askMore": "और पूछें",
     "failedToLoad": "लोड करने में विफल",
-    "generatingTitle": "शीर्षक उत्पन्न किया जा रहा है…",
+    "generatingTitle": "चैट उत्पन्न किया जा रहा है…",
     "newChat": "नया चैट",
     "startChat": "चैट शुरू करें",
     "searchAgents": "एजेंट खोजें…",
@@ -546,6 +555,12 @@
         "resendInvite": "आमंत्रण पुनः भेजें",
         "editInvite": "आमंत्रण संपादित करें",
         "cancelInvite": "आमंत्रण रद्द करें",
+        "cancelInviteConfirmTitle": "आमंत्रण रद्द करें?",
+        "cancelInviteConfirmMessage": "क्या आप वाकई {{email}} के लिए आमंत्रण रद्द करना चाहते हैं?",
+        "cancelInviteSuccess": "आमंत्रण रद्द किया गया",
+        "cancelInviteSuccessDescription": "{{email}} को भेजा गया आमंत्रण रद्द कर दिया गया है",
+        "cancelInviteError": "आमंत्रण रद्द करने में विफल",
+        "keepInviteButton": "आमंत्रण रखें",
         "comingSoonTitle": "समर्थित नहीं",
         "comingSoonDescription": "यह कार्रवाई जल्द आ रही है",
         "unblock": "अनब्लॉक करें",
@@ -556,7 +571,8 @@
         "unblockConfirmAction": "अनब्लॉक करें",
         "unblockSuccess": "उपयोगकर्ता सफलतापूर्वक अनब्लॉक किया गया",
         "unblockError": "उपयोगकर्ता को अनब्लॉक करने में विफल",
-        "unblocking": "अनब्लॉक हो रहा है…"
+        "unblocking": "अनब्लॉक हो रहा है…",
+        "edit": "संपादित करें"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -1511,7 +1527,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1994,6 +2011,84 @@
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
     "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+  },
+  "recordView": {
+    "sections": {
+      "documentSummary": "सारांश",
+      "documentFields": "दस्तावेज़",
+      "recordMetadata": "रिकॉर्ड जानकारी"
+    },
+    "metadata": {
+      "departments": "विभाग",
+      "documentCategory": "दस्तावेज़ श्रेणी",
+      "subcategory1": "उप-श्रेणी स्तर 1",
+      "subcategory2": "उप-श्रेणी स्तर 2",
+      "subcategory3": "उप-श्रेणी स्तर 3",
+      "topics": "विषय",
+      "languages": "भाषाएँ"
+    },
+    "mail": {
+      "from": "प्रेषक",
+      "to": "प्राप्तकर्ता",
+      "cc": "Cc",
+      "labels": "लेबल",
+      "date": "दिनांक"
+    },
+    "emptyState": {
+      "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
+    },
+    "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "tabRecordInformation": "रिकॉर्ड जानकारी",
+    "tabDocumentDetails": "दस्तावेज़ विवरण",
+    "chat": "चैट",
+    "download": "डाउनलोड",
+    "openFullscreen": "पूर्ण स्क्रीन में खोलें",
+    "exitFullscreen": "पूर्ण स्क्रीन से बाहर निकलें",
+    "close": "बंद करें",
+    "forceReindex": "बलपूर्वक पुनः अनुक्रमण",
+    "retryIndexing": "अनुक्रमण पुनः प्रयास करें",
+    "startIndexing": "अनुक्रमण शुरू करें",
+    "resumeIndexing": "अनुक्रमण जारी रखें",
+    "reindexLoading": "पुनः अनुक्रमण अनुरोध भेजा जा रहा है…",
+    "reindexSuccess": "पुनः अनुक्रमण अनुरोध सफलतापूर्वक भेजा गया",
+    "reindexError": "पुनः अनुक्रमण अनुरोध भेजने में विफल",
+    "loading": "लोड हो रहा है…",
+    "loadFailed": "यह रिकॉर्ड लोड नहीं हो सका।",
+    "externalSource": "बाहरी स्रोत",
+    "collectionUpload": "संग्रह",
+    "openExternal": "खोलें",
+    "previewUnavailable": "इस रिकॉर्ड प्रकार के लिए पूर्वावलोकन उपलब्ध नहीं है।",
+    "permissionOwner": "स्वामी",
+    "permissionReader": "पाठक",
+    "permissionWriter": "लेखक",
+    "labels": {
+      "name": "नाम",
+      "fileName": "फ़ाइल नाम",
+      "fileSize": "फ़ाइल आकार",
+      "recordId": "रिकॉर्ड ID",
+      "origin": "मूल",
+      "originConnector": "कनेक्टर",
+      "originUpload": "संग्रह अपलोड",
+      "recordType": "रिकॉर्ड प्रकार",
+      "version": "संस्करण",
+      "createdAt": "निर्माण तिथि",
+      "updatedAt": "अद्यतन तिथि",
+      "collection": "संग्रह",
+      "permissions": "अनुमतियाँ",
+      "noPermissions": "कोई अनुमति निर्धारित नहीं",
+      "indexingStatus": "अनुक्रमण स्थिति",
+      "connector": "मूल",
+      "folder": "फ़ोल्डर",
+      "connectorId": "कनेक्टर ID",
+      "notAvailable": "लागू नहीं",
+      "typeEmail": "ईमेल",
+      "typeTicket": "टिकट",
+      "typeWebpage": "वेब पृष्ठ",
+      "typeMessage": "संदेश",
+      "mailSubject": "विषय",
+      "ticketSummary": "सारांश",
+      "ticketDescription": "विवरण"
+    }
   },
   "oauthConsent": {
     "loading": "प्राधिकरण अनुरोध लोड हो रहा है…",

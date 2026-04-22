@@ -200,7 +200,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       gap="3"
       style={{
         minHeight: '40px',
-        padding: '6px 16px',
+        padding: 'var(--space-2) var(--space-4)',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
         backdropFilter: 'blur(8px)',
@@ -287,7 +287,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           onClick={resetFilter}
           style={{
             height: '26px',
-            padding: '0 8px',
+            padding: '0 var(--space-2)',
             borderRadius: 'var(--radius-2)',
             border: '1px dashed var(--gray-a7)',
             cursor: 'pointer',

@@ -67,6 +67,7 @@ import {
   formatPreviousConversations,
   getPaginationParams,
   sortMessages,
+  attachPopulatedCitations,
 } from '../utils/utils';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import EnterpriseSemanticSearch, {
@@ -822,22 +823,17 @@ export const createConversation =
         if (!updatedConversation) {
           throw new InternalServerError('Failed to update conversation');
         }
-        const plainConversation: IConversation = updatedConversation.toObject();
+        const responseConversation = await attachPopulatedCitations(
+          updatedConversation._id as mongoose.Types.ObjectId,
+          updatedConversation.toObject() as IConversation,
+          citations,
+          false,
+          session,
+        );
         return {
           conversation: {
             _id: updatedConversation._id,
-            ...plainConversation,
-            messages: plainConversation.messages.map((message: IMessage) => ({
-              ...message,
-              citations: message.citations?.map(
-                (citation: IMessageCitation) => ({
-                  ...citation,
-                  citationData: citations.find(
-                    (c: ICitation) => c._id === citation.citationId,
-                  ),
-                }),
-              ),
-            })),
+            ...responseConversation,
           },
         };
       } catch (error: any) {
@@ -1178,23 +1174,15 @@ export const addMessage =
           }
 
           // Return the updated conversation with new messages.
-          const plainConversation = updatedConversation.toObject();
+          const responseConversation = await attachPopulatedCitations(
+            updatedConversation._id as mongoose.Types.ObjectId,
+            updatedConversation.toObject() as IConversation,
+            savedCitations,
+            false,
+            session,
+          );
           return {
-            conversation: {
-              ...plainConversation,
-              messages: plainConversation.messages.map((message: IMessage) => ({
-                ...message,
-                citations:
-                  message.citations?.map((citation: IMessageCitation) => ({
-                    ...citation,
-                    citationData: savedCitations.find(
-                      (c) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-              })),
-            },
+            conversation: responseConversation,
             recordsUsed: savedCitations.length, // or validated record count if needed
           };
         } catch (error: any) {
@@ -1585,24 +1573,13 @@ export const addMessageStream =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const plainConversation = updatedConversation.toObject();
-              const responseConversation = {
-                ...plainConversation,
-                messages: plainConversation.messages.map(
-                  (message: IMessage) => ({
-                    ...message,
-                    citations:
-                      message.citations?.map((citation: IMessageCitation) => ({
-                        ...citation,
-                        citationData: savedCitations.find(
-                          (c) =>
-                            (c as mongoose.Document).id.toString() ===
-                            citation.citationId?.toString(),
-                        ),
-                      })) || [],
-                  }),
-                ),
-              };
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                updatedConversation.toObject() as IConversation,
+                savedCitations,
+                false,
+                session,
+              );
 
               // Send the final conversation data in the same format as addMessage
               const responsePayload = {
@@ -5249,22 +5226,17 @@ export const createAgentConversation =
         if (!updatedConversation) {
           throw new InternalServerError('Failed to update conversation');
         }
-        const plainConversation: IConversation = updatedConversation.toObject();
+        const responseConversation = await attachPopulatedCitations(
+          updatedConversation._id as mongoose.Types.ObjectId,
+          updatedConversation.toObject() as IAgentConversation,
+          citations,
+          true,
+          session,
+        );
         return {
           conversation: {
             _id: updatedConversation._id,
-            ...plainConversation,
-            messages: plainConversation.messages.map((message: IMessage) => ({
-              ...message,
-              citations: message.citations?.map(
-                (citation: IMessageCitation) => ({
-                  ...citation,
-                  citationData: citations.find(
-                    (c: ICitation) => c._id === citation.citationId,
-                  ),
-                }),
-              ),
-            })),
+            ...responseConversation,
           },
         };
       } catch (error: any) {
@@ -5569,23 +5541,15 @@ export const createAgentConversation =
           }
 
           // Return the updated conversation with new messages.
-          const plainConversation = updatedConversation.toObject();
+          const responseConversation = await attachPopulatedCitations(
+            updatedConversation._id as mongoose.Types.ObjectId,
+            updatedConversation.toObject() as IAgentConversation,
+            savedCitations,
+            true,
+            session,
+          );
           return {
-            conversation: {
-              ...plainConversation,
-              messages: plainConversation.messages.map((message: IMessage) => ({
-                ...message,
-                citations:
-                  message.citations?.map((citation: IMessageCitation) => ({
-                    ...citation,
-                    citationData: savedCitations.find(
-                      (c) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-              })),
-            },
+            conversation: responseConversation,
             recordsUsed: savedCitations.length, // or validated record count if needed
           };
         } catch (error: any) {
@@ -5974,24 +5938,13 @@ export const addMessageStreamToAgentConversation =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const plainConversation = updatedConversation.toObject();
-              const responseConversation = {
-                ...plainConversation,
-                messages: plainConversation.messages.map(
-                  (message: IMessage) => ({
-                    ...message,
-                    citations:
-                      message.citations?.map((citation: IMessageCitation) => ({
-                        ...citation,
-                        citationData: savedCitations.find(
-                          (c) =>
-                            (c as mongoose.Document).id.toString() ===
-                            citation.citationId?.toString(),
-                        ),
-                      })) || [],
-                  }),
-                ),
-              };
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                updatedConversation.toObject() as IAgentConversation,
+                savedCitations,
+                true,
+                session,
+              );
 
               // Send the final conversation data in the same format as addMessage
               const responsePayload = {

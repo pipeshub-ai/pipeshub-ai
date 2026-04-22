@@ -74,7 +74,7 @@ export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: Configu
       color="gray"
       size="1"
       onClick={() => window.open(METHOD_DOC_URLS[method], '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
       <Text size="1">{t('workspaceMenu.documentation')}</Text>

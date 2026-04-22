@@ -1,10 +1,16 @@
 """Unit tests for app.utils.time_conversion."""
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from app.utils.time_conversion import (
+    _strip_or_none,
+    _utc_offset_hh_mm,
+    build_llm_time_context,
+    datetime_to_epoch_ms,
+    epoch_ms_to_iso,
+    format_user_timezone_prompt_line,
     get_epoch_timestamp_in_ms,
     parse_timestamp,
     prepare_iso_timestamps,
@@ -141,4 +147,186 @@ class TestStringToDatetime:
         assert string_to_datetime("1970-01-01T00:00:00Z") == datetime(
             1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc
         )
+
+
+class TestStripOrNone:
+    """Tests for _strip_or_none()."""
+
+    def test_none_input(self) -> None:
+        assert _strip_or_none(None) is None
+
+    def test_whitespace_only(self) -> None:
+        assert _strip_or_none("   ") is None
+
+    def test_empty_string(self) -> None:
+        assert _strip_or_none("") is None
+
+    def test_trims_value(self) -> None:
+        assert _strip_or_none("  hello  ") == "hello"
+
+    def test_passthrough(self) -> None:
+        assert _strip_or_none("abc") == "abc"
+
+
+class TestUtcOffsetHhMm:
+    """Tests for _utc_offset_hh_mm()."""
+
+    def test_naive_datetime_returns_zero_offset(self) -> None:
+        # datetime without tzinfo → utcoffset() is None → "+00:00" branch
+        dt = datetime(2024, 1, 1, 12, 0, 0)
+        assert _utc_offset_hh_mm(dt) == "+00:00"
+
+    def test_utc_aware(self) -> None:
+        dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert _utc_offset_hh_mm(dt) == "+00:00"
+
+    def test_positive_offset(self) -> None:
+        tz = timezone(timedelta(hours=5, minutes=30))
+        dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=tz)
+        assert _utc_offset_hh_mm(dt) == "+05:30"
+
+    def test_negative_offset(self) -> None:
+        tz = timezone(timedelta(hours=-8))
+        dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=tz)
+        assert _utc_offset_hh_mm(dt) == "-08:00"
+
+
+class TestFormatUserTimezonePromptLine:
+    """Tests for format_user_timezone_prompt_line()."""
+
+    def test_empty_name_returns_empty_string(self) -> None:
+        assert format_user_timezone_prompt_line("") == ""
+        assert format_user_timezone_prompt_line(None) == ""
+        assert format_user_timezone_prompt_line("   ") == ""
+
+    def test_invalid_iana_returns_raw_label(self) -> None:
+        result = format_user_timezone_prompt_line("Not/A_Real_Zone")
+        assert result == "**Time zone**: Not/A_Real_Zone"
+
+    def test_valid_iana_without_moment(self) -> None:
+        result = format_user_timezone_prompt_line("UTC")
+        assert "**Time zone**: UTC" in result
+        assert "UTC+00:00" in result
+
+    def test_valid_iana_with_naive_moment(self) -> None:
+        moment = datetime(2024, 6, 15, 12, 0, 0)
+        result = format_user_timezone_prompt_line("America/New_York", moment=moment)
+        assert "America/New_York" in result
+        # Offset should be present in the formatted output
+        assert "UTC-" in result or "UTC+" in result
+
+    def test_valid_iana_with_aware_moment(self) -> None:
+        moment = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        result = format_user_timezone_prompt_line("Asia/Kolkata", moment=moment)
+        assert "Asia/Kolkata" in result
+        assert "UTC+05:30" in result
+
+
+class TestBuildLlmTimeContext:
+    """Tests for build_llm_time_context()."""
+
+    def test_both_empty_returns_empty_string(self) -> None:
+        assert build_llm_time_context() == ""
+        assert build_llm_time_context(current_time=None, time_zone=None) == ""
+        assert build_llm_time_context(current_time="  ", time_zone="  ") == ""
+
+    def test_only_current_time(self) -> None:
+        result = build_llm_time_context(current_time="2024-06-15T12:00:00Z")
+        assert "## Time context" in result
+        assert "**Current time**: 2024-06-15T12:00:00Z" in result
+        # No `**Time zone**:` line (the subline mentions the phrase but without a colon)
+        assert "**Time zone**:" not in result
+
+    def test_only_time_zone_adds_utc_fallback(self) -> None:
+        result = build_llm_time_context(time_zone="UTC")
+        assert "## Time context" in result
+        # When current_time is not provided, the default reference ends with (UTC)
+        assert "**Current time**:" in result
+        assert "(UTC)" in result
+        assert "**Time zone**: UTC" in result
+
+    def test_both_set(self) -> None:
+        result = build_llm_time_context(
+            current_time="2024-06-15T12:00:00Z",
+            time_zone="Asia/Kolkata",
+        )
+        assert "**Current time**: 2024-06-15T12:00:00Z" in result
+        assert "Asia/Kolkata" in result
+        assert "(UTC)" not in result  # current_time was explicit
+
+    def test_invalid_timezone_still_emits_line(self) -> None:
+        result = build_llm_time_context(
+            current_time="2024-06-15T12:00:00Z",
+            time_zone="Bad/Zone",
+        )
+        assert "**Time zone**: Bad/Zone" in result
+
+
+class TestEpochMsToIso:
+    """Tests for epoch_ms_to_iso()."""
+
+    def test_epoch_zero(self) -> None:
+        assert epoch_ms_to_iso(0).startswith("1970-01-01T00:00:00")
+
+    def test_known_ms(self) -> None:
+        # 1704067200000 ms = 2024-01-01T00:00:00 UTC
+        result = epoch_ms_to_iso(1704067200000)
+        assert result.startswith("2024-01-01T00:00:00")
+        assert "+00:00" in result
+
+
+class TestDatetimeToEpochMs:
+    """Tests for datetime_to_epoch_ms()."""
+
+    def test_none_returns_none(self) -> None:
+        assert datetime_to_epoch_ms(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert datetime_to_epoch_ms("") is None
+
+    def test_aware_datetime(self) -> None:
+        dt = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert datetime_to_epoch_ms(dt) == 1704067200000
+
+    def test_naive_datetime_treated_as_utc(self) -> None:
+        dt = datetime(2024, 1, 1, 0, 0, 0)
+        # Naive datetime path (line 163: dt.tzinfo is None → replace with UTC)
+        assert datetime_to_epoch_ms(dt) == 1704067200000
+
+    def test_iso_string_fallback(self) -> None:
+        # No strptime_format → falls to parse_timestamp
+        result = datetime_to_epoch_ms("2024-01-01T00:00:00Z")
+        assert result == 1704067200000
+
+    def test_strptime_format_happy_path(self) -> None:
+        # Typical ServiceNow-style format
+        result = datetime_to_epoch_ms(
+            "2024-01-01 00:00:00",
+            strptime_format="%Y-%m-%d %H:%M:%S",
+        )
+        assert result == 1704067200000
+
+    def test_strptime_format_failure_falls_back_to_parse(self) -> None:
+        # Provide a strptime_format that won't match but the string is a valid ISO
+        # timestamp, so the fallback parse_timestamp path should return an int.
+        result = datetime_to_epoch_ms(
+            "2024-01-01T00:00:00Z",
+            strptime_format="%Y-%m-%d %H:%M:%S",
+        )
+        assert result == 1704067200000
+
+    def test_invalid_string_returns_none(self) -> None:
+        # Neither strptime nor fromisoformat can parse this → exception → None
+        assert datetime_to_epoch_ms("not-a-date") is None
+
+    def test_strptime_aware_datetime_preserved(self) -> None:
+        # strptime parses as naive; code replaces tzinfo with UTC
+        result = datetime_to_epoch_ms(
+            "2024-06-15 00:00:00",
+            strptime_format="%Y-%m-%d %H:%M:%S",
+        )
+        expected = int(
+            datetime(2024, 6, 15, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000
+        )
+        assert result == expected
 

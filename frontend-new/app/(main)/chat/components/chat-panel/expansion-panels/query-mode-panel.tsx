@@ -147,8 +147,8 @@ function QueryModeItem({ mode, isActive, onSelect }: QueryModeItemProps) {
         align="center"
         justify="center"
         style={{
-          width: '16px',
-          height: '16px',
+          width: 'var(--space-4)',
+          height: 'var(--space-4)',
           borderRadius: '50%',
           border: isActive
             ? '5px solid var(--accent-9)'

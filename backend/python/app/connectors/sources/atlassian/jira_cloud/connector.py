@@ -2494,7 +2494,8 @@ class JiraConnector(BaseConnector):
             project_id,
             jira_users,
             project_last_sync_time,
-            resume_from_timestamp
+            resume_from_timestamp,
+            is_new_project=is_new_project,
         ):
             batch_number += 1
             batch_size = len(issues_batch)
@@ -2557,7 +2558,8 @@ class JiraConnector(BaseConnector):
         project_id: str,
         users: list[AppUser],
         last_sync_time: Optional[int] = None,
-        resume_from_timestamp: Optional[int] = None
+        resume_from_timestamp: Optional[int] = None,
+        is_new_project: bool = False,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission]]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -2672,7 +2674,10 @@ class JiraConnector(BaseConnector):
 
             # Build records for this batch
             async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(batch_issues, project_id, users, tx_store)
+                records_batch = await self._build_issue_records(
+                    batch_issues, project_id, users, tx_store,
+                    is_new_project=is_new_project,
+                )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -2921,10 +2926,16 @@ class JiraConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store
+        tx_store,
+        is_new_project: bool = False,
     ) -> list[tuple[Record, list[Permission]]]:
         """
-        Build issue records with permissions from raw issue data, respecting Jira hierarchy
+        Build issue records with permissions from raw issue data, respecting Jira hierarchy.
+
+        When is_new_project is True (full sync wiped sync points), the "skip unchanged
+        issues" short-circuit is bypassed so every issue flows through _process_record
+        and its BELONGS_TO / RECORD_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
+        recreated after full-sync edge deletion.
         """
         all_records: list[tuple[Record, list[Permission]]] = []
         skipped_unchanged_count = 0
@@ -2989,8 +3000,10 @@ class JiraConnector(BaseConnector):
                 version = existing_record.version if existing_record else 0
                 # Skip unchanged issues silently - no need to log every unchanged issue
 
-            # Skip processing if issue is unchanged
-            if not is_issue_changed:
+            # Skip processing if issue is unchanged, unless this is a full sync
+            # (is_new_project=True means sync points were wiped, so edges need to be
+            # recreated even for unchanged issues; _process_record is idempotent).
+            if not is_issue_changed and not is_new_project:
                 skipped_unchanged_count += 1
                 continue
 

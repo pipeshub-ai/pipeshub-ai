@@ -154,7 +154,7 @@ export function SmtpConfigurePanel({
       color="gray"
       size="1"
       onClick={() => window.open('https://docs.pipeshub.com/smtp', '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
       <Text size="1">{t('workspace.bots.documentation')}</Text>
@@ -230,7 +230,7 @@ export function SmtpConfigurePanel({
                 hint={t('workspace.mail.fields.hostHint')}
               />
               <TextField.Root
-                placeholder="email-smtp.ap-south-1.amazonaws.com"
+                placeholder={t('workspace.mail.configPanel.hostPlaceholder')}
                 value={form.host}
                 onChange={handleChange('host')}
                 color={errors.host ? 'red' : undefined}
@@ -240,7 +240,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.host && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.host}
                 </Text>
               )}
@@ -264,7 +264,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.port && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.port}
                 </Text>
               )}
@@ -278,7 +278,7 @@ export function SmtpConfigurePanel({
               />
               <TextField.Root
                 type="email"
-                placeholder="noreply@yourcompany.com"
+                placeholder={t('workspace.mail.configPanel.fromEmailPlaceholder')}
                 value={form.fromEmail}
                 onChange={handleChange('fromEmail')}
                 color={errors.fromEmail ? 'red' : undefined}
@@ -288,7 +288,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.fromEmail && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.fromEmail}
                 </Text>
               )}

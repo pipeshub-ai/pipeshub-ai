@@ -1,3 +1,5 @@
+import type { ChatArtifact } from '../types';
+
 /**
  * Parse `::download_conversation_task[label](url)` markers out of streamed
  * assistant content. The backend emits one marker per downloadable artifact
@@ -15,6 +17,45 @@ export function parseDownloadMarkers(content: string): {
     return '';
   });
   return { text: text.trimEnd(), tasks };
+}
+
+/**
+ * Parse `::artifact[fileName](downloadUrl){mime|documentId|recordId}` markers
+ * from the assistant's final answer content. These are appended by the backend
+ * when sandbox tools (coding / database) generate output files, and are the
+ * persistent record of artifacts once SSE streaming ends.
+ *
+ * During streaming, artifacts are delivered via SSE `artifact` events; those
+ * live in the slot's transient `artifacts` array. After completion, the saved
+ * message content is the source of truth — parse the markers back into
+ * `ChatArtifact` entries so the panel keeps rendering.
+ */
+export function parseArtifactMarkers(content: string): {
+  text: string;
+  artifacts: ChatArtifact[];
+} {
+  const artifacts: ChatArtifact[] = [];
+  // Greedy on name/url, but braces are delimited; mime|docId|recordId may be empty segments.
+  const regex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g;
+  const text = content.replace(regex, (_, fileName, url, meta) => {
+    const [mime = '', docId = '', recordId = ''] = String(meta).split('|');
+    const cleanName = String(fileName).trim() || 'artifact';
+    const cleanUrl = String(url).trim();
+    const cleanMime = mime.trim() || 'application/octet-stream';
+    const cleanRecordId = recordId.trim();
+    const cleanDocId = docId.trim();
+    artifacts.push({
+      id: cleanRecordId || cleanDocId || `artifact-${artifacts.length}-${cleanName}`,
+      fileName: cleanName,
+      mimeType: cleanMime,
+      sizeBytes: 0,
+      downloadUrl: cleanUrl,
+      artifactType: 'OTHER',
+      recordId: cleanRecordId || undefined,
+    });
+    return '';
+  });
+  return { text: text.trimEnd(), artifacts };
 }
 
 /**

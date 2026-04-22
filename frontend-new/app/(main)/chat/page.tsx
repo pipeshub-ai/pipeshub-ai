@@ -776,7 +776,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isInputCentered ? (isMobile ? '20px' : '24px') : isMobile ? '32px' : '48px',
+              marginBottom: isInputCentered ? (isMobile ? 'var(--space-5)' : 'var(--space-6)') : isMobile ? 'var(--space-8)' : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -785,14 +785,14 @@ function ChatContent() {
               size="4"
               weight="medium"
               style={{
-                color: 'var(--slate-11)',
+                color: 'var(--slate-12)',
                 display: 'block',
                 marginBottom: 'var(--space-1)',
               }}
             >
               {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
             </Text>
-            <Text size="4" weight="medium" style={{ color: 'var(--slate-11)' }}>
+            <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('chat.greeting')}
             </Text>
           </Box>
@@ -855,7 +855,7 @@ function ChatContent() {
       <Box
         style={{
           position: 'absolute',
-          bottom: isMobile ? 0 : '24px',
+          bottom: isMobile ? 0 : 'var(--space-4)',
           left: isMobile ? 0 : '50%',
           right: isMobile ? 0 : undefined,
           transform: isMobile ? undefined : 'translateX(-50%)',

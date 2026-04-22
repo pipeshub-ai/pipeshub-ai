@@ -16,7 +16,7 @@ export function normalizeDocumentationLinks(v: unknown): DocumentationLink[] {
     const url = o.url;
     if (typeof title !== 'string' || typeof url !== 'string') continue;
     const rawType = o.type ?? o.doc_type;
-    let typeStr = typeof rawType === 'string' ? rawType : 'setup';
+    let typeStr = typeof rawType === 'string' ? rawType.toLowerCase() : 'setup';
     if (typeStr === 'reference') typeStr = 'setup';
     const type = (DOC_LINK_TYPES.includes(typeStr as DocumentationLink['type'])
       ? typeStr

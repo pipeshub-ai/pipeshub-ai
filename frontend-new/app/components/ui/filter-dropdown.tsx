@@ -146,6 +146,12 @@ export function FilterDropdown({
   const hasSelection = selectedValues.length > 0;
   const isServerSearch = !!onSearch;
 
+  const optionLabelByValue = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of options) map.set(o.value, o.label);
+    return map;
+  }, [options]);
+
   // Filter options by search query (only when not using server search)
   const filteredOptions = useMemo(() => {
     if (isServerSearch) return options; // server already filtered
@@ -275,11 +281,35 @@ export function FilterDropdown({
             </Button>
           </Popover.Trigger>
           {summaryBelowTrigger && hasSelection ? (
-            <Flex align="center" gap="2" wrap="wrap" justify="between">
-              <Badge color="jade" variant="soft" size="1" radius="full">
-                {selectedValues.length} selected
-              </Badge>
-              {clearSelectionButton()}
+            <Flex direction="column" gap="2">
+              <Flex align="center" gap="2" wrap="wrap" justify="between">
+                <Badge color="jade" variant="soft" size="1" radius="full">
+                  {selectedValues.length} selected
+                </Badge>
+                {clearSelectionButton()}
+              </Flex>
+              <Flex wrap="wrap" gap="1" align="start">
+                {selectedValues.map((val) => {
+                  const text = optionLabelByValue.get(val) ?? val;
+                  return (
+                    <Badge
+                      key={val}
+                      color="jade"
+                      variant="soft"
+                      size="1"
+                      title={text}
+                      style={{
+                        maxWidth: '100%',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {text}
+                    </Badge>
+                  );
+                })}
+              </Flex>
             </Flex>
           ) : !summaryBelowTrigger && hasSelection ? (
             clearSelectionButton()
@@ -348,8 +378,7 @@ export function FilterDropdown({
                 }}
               >
                 {selectedValues.map((val) => {
-                  const opt = options.find((o) => o.value === val);
-                  const text = opt?.label ?? val;
+                  const text = optionLabelByValue.get(val) ?? val;
                   return (
                     <Badge
                       key={val}

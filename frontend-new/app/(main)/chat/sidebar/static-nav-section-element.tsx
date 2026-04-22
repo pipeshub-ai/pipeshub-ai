@@ -43,7 +43,7 @@ export function StaticNavSectionElement({
           textAlign: 'left',
           fontWeight: 400,
           fontSize: 14,
-          lineHeight: '20px',
+          lineHeight: 'var(--line-height-2)',
           color: 'var(--slate-11)',
         }}
       >

@@ -36,8 +36,8 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
+          width: 'var(--space-9)',
+          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--slate-3)',
           flexShrink: 0,

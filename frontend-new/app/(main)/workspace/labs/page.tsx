@@ -10,6 +10,7 @@ import {
   Heading,
   TextField,
   IconButton,
+  Switch,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
@@ -62,7 +63,7 @@ function PlatformConfigNote() {
         backgroundColor: 'var(--accent-a2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '16px',
+        padding: 'var(--space-4)',
       }}
     >
       <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
@@ -94,11 +95,13 @@ export default function LabsPage() {
   // ── Store selectors (must run every render; see Rules of Hooks) ──
   const form = useLabsStore((s) => s.form);
   const savedForm = useLabsStore((s) => s.savedForm);
+  const availableFlags = useLabsStore((s) => s.availableFlags);
   const errors = useLabsStore((s) => s.errors);
   const discardDialogOpen = useLabsStore((s) => s.discardDialogOpen);
   const isLoading = useLabsStore((s) => s.isLoading);
 
   const setFileSizeLimitMb = useLabsStore((s) => s.setFileSizeLimitMb);
+  const setFlagValue = useLabsStore((s) => s.setFlagValue);
   const setForm = useLabsStore((s) => s.setForm);
   const markSaved = useLabsStore((s) => s.markSaved);
   const setErrors = useLabsStore((s) => s.setErrors);
@@ -120,16 +123,29 @@ export default function LabsPage() {
     }
     const fetchConfig = async () => {
       try {
-        const [settingsResult] = await Promise.allSettled([
+        const [settingsResult, flagsResult] = await Promise.allSettled([
           LabsApi.getSettings(),
+          LabsApi.getAvailableFlags(),
         ]);
 
         const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
+        const flags = flagsResult.status === 'fulfilled' ? flagsResult.value : [];
+
+        // Merge server-provided flag values with descriptor defaults so every
+        // available flag has an effective boolean value in the form.
+        const serverFlags = settings?.featureFlags ?? {};
+        const featureFlags: Record<string, boolean> = {};
+        for (const def of flags) {
+          featureFlags[def.key] =
+            typeof serverFlags[def.key] === 'boolean'
+              ? serverFlags[def.key]
+              : !!def.defaultEnabled;
+        }
 
         setForm({
-            fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
-          featureFlags: {},
-        }, []);
+          fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
+          featureFlags,
+        }, flags);
       } catch {
         setLoading(false);
       }
@@ -237,21 +253,31 @@ export default function LabsPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.labs')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
-        <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title={t('workspace.labs.fileUploadLimit')}>
-            <Flex direction="column" gap="2">
-              <SettingsRow label={t('workspace.labs.fileUploadLimitLabel')} description={t('workspace.labs.fileUploadLimitDescription')}>
-                <Flex direction="column" gap="1">
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
+          <Flex direction="column" gap="3">
+            <SettingsSection>
+              <Flex align="center" justify="between" style={{ width: '100%' }}>
+                {/* Label + description */}
+                <Box style={{ flex: 1 }}>
+                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+                    {t('workspace.labs.fileUploadLimit')}
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}>
+                    {t('workspace.labs.fileUploadLimitDescription')}
+                  </Text>
+                </Box>
+                {/* Input — fixed 158px, right-aligned */}
+                <Flex direction="column" gap="1" style={{ width: 158, flexShrink: 0 }}>
                   <TextField.Root
                     type="number"
                     placeholder={t('workspace.labs.fileUploadLimitPlaceholder')}
@@ -272,7 +298,7 @@ export default function LabsPage() {
                           height: 18,
                         }}
                       >
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)' }}>
                           {t('units.mb')}
                         </Text>
                       </Flex>
@@ -284,14 +310,67 @@ export default function LabsPage() {
                     </Text>
                   )}
                 </Flex>
-              </SettingsRow>
-
-              <InfoCallout>
-                {t('workspace.labs.callout')}
-              </InfoCallout>
-            </Flex>
-          </SettingsSection>
+              </Flex>
+                <InfoCallout>
+              {t('workspace.labs.callout')}
+            </InfoCallout>
+            </SettingsSection>
+          </Flex>
         </Box>
+
+        {/* ── Feature Flags Section ── */}
+        {availableFlags.length > 0 && (
+          <Box style={{ marginBottom: 'var(--space-5)' }}>
+            <SettingsSection
+              title={t('workspace.labs.featureFlags.title', 'Feature flags')}
+              description={t(
+                'workspace.labs.featureFlags.subtitle',
+                'Toggle experimental capabilities for every agent in this workspace.'
+              )}
+            >
+              {availableFlags.map((flag) => {
+                const checked = !!form.featureFlags[flag.key];
+                return (
+                  <Flex
+                    key={flag.key}
+                    align="center"
+                    justify="between"
+                    style={{ width: '100%', gap: 'var(--space-4)' }}
+                  >
+                    <Box style={{ flex: 1 }}>
+                      <Text
+                        size="2"
+                        weight="medium"
+                        style={{ color: 'var(--slate-12)', display: 'block' }}
+                      >
+                        {flag.label || flag.key}
+                      </Text>
+                      {flag.description && (
+                        <Text
+                          size="1"
+                          style={{
+                            color: 'var(--slate-11)',
+                            display: 'block',
+                            marginTop: 2,
+                            lineHeight: '16px',
+                            fontWeight: 300,
+                          }}
+                        >
+                          {flag.description}
+                        </Text>
+                      )}
+                    </Box>
+                    <Switch
+                      checked={checked}
+                      onCheckedChange={(val) => setFlagValue(flag.key, val)}
+                      style={{ flexShrink: 0, cursor: 'pointer' }}
+                    />
+                  </Flex>
+                );
+              })}
+            </SettingsSection>
+          </Box>
+        )}
 
         {/* ── Platform Configuration note ── */}
         <PlatformConfigNote />

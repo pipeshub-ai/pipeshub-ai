@@ -1021,7 +1021,8 @@ class LinearConnector(BaseConnector):
                                 parent_created_at=issue_created_at,
                                 parent_updated_at=issue_updated_at,
                                 parent_weburl=ticket_record.weburl,
-                                exclude_images=True
+                                exclude_images=True,
+                                is_full_sync=(last_sync_time is None),
                             )
                             batch_records.extend(new_file_records)
 
@@ -1051,7 +1052,8 @@ class LinearConnector(BaseConnector):
                                     parent_updated_at=comment_updated_at,
                                     parent_weburl=comment_url,
                                     exclude_images=True,
-                                    indexing_filter_key=IndexingFilterKey.FILES
+                                    indexing_filter_key=IndexingFilterKey.FILES,
+                                    is_full_sync=(last_sync_time is None),
                                 )
                                 batch_records.extend(new_comment_file_records)
 
@@ -1586,7 +1588,6 @@ class LinearConnector(BaseConnector):
                         # Extract files (not images) from project description and create FileRecords
                         project_content = full_project_data.get("content", "")
                         if project_content:
-                            # Extract files from project content (excluding images)
                             new_file_records, _ = await self._extract_files_from_markdown(
                                 markdown_text=project_content,
                                 parent_external_id=project_id,
@@ -1598,9 +1599,9 @@ class LinearConnector(BaseConnector):
                                 parent_updated_at=project_record.source_updated_at,
                                 parent_weburl=project_record.weburl,
                                 exclude_images=True,
-                                indexing_filter_key=IndexingFilterKey.PROJECTS
+                                indexing_filter_key=IndexingFilterKey.PROJECTS,
+                                is_full_sync=(last_sync_time is None),
                             )
-                            # Add file records to batch
                             batch_records.extend(new_file_records)
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
@@ -2160,7 +2161,8 @@ class LinearConnector(BaseConnector):
         parent_updated_at: Optional[int] = None,
         parent_weburl: Optional[str] = None,
         exclude_images: bool = False,
-        indexing_filter_key: Optional[IndexingFilterKey] = IndexingFilterKey.FILES
+        indexing_filter_key: Optional[IndexingFilterKey] = IndexingFilterKey.FILES,
+        is_full_sync: bool = False,
     ) -> Tuple[List[Tuple[Record, List[Permission]]], List[ChildRecord]]:
         """
         Extract files from markdown text and create FileRecords.
@@ -2177,11 +2179,17 @@ class LinearConnector(BaseConnector):
             parent_weburl: Web URL of parent record (used for file weburl)
             exclude_images: If True, exclude image patterns and only extract file links
             indexing_filter_key: Indexing filter key to use (defaults to FILES)
+            is_full_sync: If True, existing FileRecords are also rebuilt and returned in
+                the first list (so on_new_records recreates their edges after a full-sync
+                edge wipe). Default False preserves the incremental contract.
 
         Returns:
             Tuple of:
-            - List of (FileRecord, permissions) tuples for NEW files only (safe for on_new_records)
-            - List of ChildRecord objects for EXISTING files (for children_records during streaming)
+            - List of (FileRecord, permissions) tuples for records to emit through
+              on_new_records. Contains NEW files, plus EXISTING files when
+              is_full_sync=True (rebuilt with preserved id/version).
+            - List of ChildRecord objects for EXISTING files (for children_records
+              during streaming).
         """
         file_records: List[Tuple[Record, List[Permission]]] = []
         existing_file_children: List[ChildRecord] = []
@@ -2208,18 +2216,20 @@ class LinearConnector(BaseConnector):
                 )
 
                 # If file already exists, add to children_records (for streaming)
-                # BUT don't return it in file_records (to avoid breaking on_new_records with base Record)
+                existing_file_record = None
                 if existing_file and existing_file.record_type == RecordType.FILE:
-                    # Create ChildRecord for existing file (needed for BlockGroup children_records)
-                    # Works for both typed FileRecord and base Record
                     existing_file_children.append(ChildRecord(
                         child_type=ChildType.RECORD,
                         child_id=existing_file.id,
                         child_name=existing_file.record_name or filename
                     ))
-                    continue  # Skip creating new record
+                    if not is_full_sync:
+                        # Incremental: edges already present, skip re-emission
+                        continue
+                    # Full sync: edges were wiped; fall through to rebuild with
+                    # existing_record so _link_record_to_group restores them.
+                    existing_file_record = existing_file
 
-                # File doesn't exist, create new FileRecord
                 file_record = await self._transform_file_url_to_file_record(
                     file_url=file_url,
                     filename=filename,
@@ -2227,7 +2237,7 @@ class LinearConnector(BaseConnector):
                     parent_node_id=parent_node_id,
                     parent_record_type=parent_record_type,
                     team_id=team_id,
-                    existing_record=None,  # No existing record, creating new one
+                    existing_record=existing_file_record,
                     parent_created_at=parent_created_at,
                     parent_updated_at=parent_updated_at,
                     parent_weburl=parent_weburl
@@ -2955,17 +2965,24 @@ class LinearConnector(BaseConnector):
             # For files, we don't track updatedAt, so keep same version unless URL changed
             version = existing_record.version if existing_record else 0
 
-        # Get file size from URL using HEAD request
+        # Get file size from URL using HEAD request — skip for existing records to
+        # avoid an N-HEAD-request fan-out on full resync; reuse the cached value.
         size_in_bytes = 0
-        try:
-            if self.data_source:
-                datasource = await self._get_fresh_datasource()
-                file_size = await datasource.get_file_size(file_url)
-                if file_size is not None:
-                    size_in_bytes = file_size
-        except Exception as e:
-            # Log error but don't fail - use 0 as fallback
-            self.logger.debug(f"⚠️ Could not fetch file size for {file_url}: {e}")
+        if existing_record is not None:
+            size_in_bytes = getattr(existing_record, "size_in_bytes", 0) or 0
+        else:
+            try:
+                if self.data_source:
+                    datasource = await self._get_fresh_datasource()
+                    file_size = await datasource.get_file_size(file_url)
+                    if file_size is not None:
+                        size_in_bytes = file_size
+            except Exception as e:
+                # Log error but don't fail - use 0 as fallback
+                self.logger.debug(f"⚠️ Could not fetch file size for {file_url}: {e}")
+
+        now_ms = get_epoch_timestamp_in_ms()
+        created_at = existing_record.created_at if existing_record and existing_record.created_at else now_ms
 
         file_record = FileRecord(
             id=record_id,
@@ -2983,8 +3000,8 @@ class LinearConnector(BaseConnector):
             connector_id=self.connector_id,
             mime_type=mime_type,
             weburl=parent_weburl or file_url,  # Use parent's weburl if available, otherwise fallback to file_url
-            created_at=get_epoch_timestamp_in_ms(),
-            updated_at=get_epoch_timestamp_in_ms(),
+            created_at=created_at,
+            updated_at=now_ms,
             source_created_at=parent_created_at,
             source_updated_at=parent_updated_at,
             preview_renderable=True,

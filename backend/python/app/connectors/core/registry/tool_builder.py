@@ -45,6 +45,7 @@ class ToolsetCategory(str, Enum):
     CALENDAR = "calendar"  # Calendar toolsets
     PROJECT_MANAGEMENT = "project_management"  # Project management toolsets (Jira, etc.)
     DOCUMENTATION = "documentation"  # Documentation toolsets (Confluence, etc.)
+    CODE_EXECUTION = "code_execution"  # Code execution sandbox toolsets
 
 
 @dataclass

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner, Button } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
@@ -258,15 +258,12 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       align="center"
       justify="between"
       onClick={() => onSelect(model)}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-1)',
         border: '1px solid var(--olive-3)',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        backgroundColor: 'var(--olive-2)',
         cursor: 'pointer',
-        transition: 'background-color 0.12s ease',
       }}
     >
       {/* Left: all content left-aligned */}
@@ -320,31 +317,18 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
         </Flex>
       </Flex>
 
-      {/* Right: Radio indicator */}
-      <Flex
-        align="center"
-        justify="center"
+      {/* Right: Radio indicator — vertically centered */}
+      <RadioGroup.Root
+        value={isSelected ? 'selected' : ''}
         style={{
-          width: '16px',
-          height: '16px',
-          borderRadius: '50%',
-          border: isSelected
-            ? '2px solid var(--accent-9)'
-            : '1px solid var(--slate-7)',
           flexShrink: 0,
           marginLeft: 'var(--space-3)',
-        }}
+          pointerEvents: 'none',
+          '--accent-indicator': 'var(--accent-9)',
+        } as React.CSSProperties}
       >
-        {isSelected && (
-          <Image
-            src="/icons/common/ellipse.svg"
-            alt="selected"
-            width={16}
-            height={20}
-            style={{ display: 'block' }}
-          />
-        )}
-      </Flex>
+        <RadioGroup.Item value="selected" />
+      </RadioGroup.Root>
     </Flex>
   );
 }
