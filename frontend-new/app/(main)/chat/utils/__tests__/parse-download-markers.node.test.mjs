@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Standalone regression test for artifact URL classification.
  *
