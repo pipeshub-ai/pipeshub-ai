@@ -43,6 +43,8 @@ function transformToCollectionItems(
 interface CollectionsTabProps {
   selectedKbIds: string[];
   onToggleKb: (kbId: string) => void;
+  /** When set, only these KB ids are listed (e.g. agent-scoped collections). */
+  restrictToKbIds?: string[] | null;
 }
 
 /**
@@ -52,6 +54,7 @@ interface CollectionsTabProps {
 export function CollectionsTab({
   selectedKbIds,
   onToggleKb,
+  restrictToKbIds = null,
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
@@ -67,12 +70,19 @@ export function CollectionsTab({
       setIsLoading(true);
       setHasError(false);
       const response = await ChatApi.listCollectionsForChat();
-      const items = transformToCollectionItems(response.knowledgeBases);
+      let items = transformToCollectionItems(response.knowledgeBases);
+      if (restrictToKbIds && restrictToKbIds.length > 0) {
+        const allow = new Set(restrictToKbIds);
+        items = items.filter((c) => allow.has(c.id));
+      }
+
       setCollections(items);
 
       // Populate collection name cache for display in ChatInput cards
       const nameMap: Record<string, string> = {};
-      items.forEach((item) => { nameMap[item.id] = item.name; });
+      items.forEach((item) => {
+        nameMap[item.id] = item.name;
+      });
       setCollectionNamesCache(nameMap);
     } catch (err) {
       setHasError(true);
@@ -80,7 +90,7 @@ export function CollectionsTab({
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [restrictToKbIds, setCollectionNamesCache]);
 
   useEffect(() => {
     fetchCollections();

@@ -100,7 +100,8 @@ export function AgentBuilderSidebar(props: {
   nodeTemplates: NodeTemplate[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
-  activeToolsetTypes: string[];
+  activeToolsetInstanceIds: string[];
+  activeToolsetTypeKeysWithoutInstance: string[];
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,
@@ -124,7 +125,8 @@ export function AgentBuilderSidebar(props: {
     nodeTemplates,
     configuredConnectors,
     toolsets,
-    activeToolsetTypes,
+    activeToolsetInstanceIds,
+    activeToolsetTypeKeysWithoutInstance,
     refreshToolsets,
     onNotify,
     agentKey = null,
@@ -337,7 +339,7 @@ export function AgentBuilderSidebar(props: {
                           isExpanded={expanded[expandKey] ?? true}
                           onToggle={() => toggle(expandKey)}
                         >
-                          {instances.map((inst) => {
+                          {instances.map((inst, instIdx) => {
                             const tmpl = nodeTemplates.find(
                               (n) => n.type === `app-${inst.name.toLowerCase().replace(/\s+/g, '-')}`
                             );
@@ -349,7 +351,7 @@ export function AgentBuilderSidebar(props: {
                             });
                             return (
                               <DraggableRow
-                                key={inst._key || `${connectorTypeLabel}-${inst.name}`}
+                                key={`${connectorTypeLabel}-${instIdx}-${inst._key ?? inst.name ?? 'connector'}`}
                                 comfortable
                                 data={dragData}
                                 disabled={paletteStructureLocked}
@@ -436,7 +438,8 @@ export function AgentBuilderSidebar(props: {
                 toolsets={toolsets}
                 loading={loading}
                 refreshToolsets={refreshToolsets}
-                activeToolsetTypes={activeToolsetTypes}
+                activeToolsetInstanceIds={activeToolsetInstanceIds}
+                activeToolsetTypeKeysWithoutInstance={activeToolsetTypeKeysWithoutInstance}
                 isServiceAccount={isServiceAccount}
                 agentKey={agentKey}
                 onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}

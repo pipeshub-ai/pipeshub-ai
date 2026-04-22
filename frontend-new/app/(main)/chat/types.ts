@@ -430,7 +430,10 @@ export interface StreamChatRequest {
   conversationId?: string;
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
-  /** Jira-style tool fullNames from agent detail — agent streams only */
+  /**
+   * Agent streams only → JSON `tools`: every enabled tool `fullName` (resolved from the
+   * catalog when the UI means “all tools”; `[]` = none).
+   */
   agentStreamTools?: string[];
 }
 
