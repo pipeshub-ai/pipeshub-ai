@@ -81,7 +81,12 @@ class TestLocalExecutorPython:
                 return pip_result
             return run_result
 
-        with patch.object(executor, "_subprocess", side_effect=_mock_sub):
+        # Force "package is not on the host" so pip install is exercised
+        # regardless of what's installed in the test environment.
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=([], ["pandas"]),
+        ), patch.object(executor, "_subprocess", side_effect=_mock_sub):
             result = await executor.execute(
                 "import pandas",
                 SandboxLanguage.PYTHON,
@@ -91,12 +96,39 @@ class TestLocalExecutorPython:
             assert call_count == 2
 
     @pytest.mark.asyncio
+    async def test_run_python_skips_pip_for_host_installed_packages(self, executor):
+        """Packages already present in the host interpreter must skip pip."""
+        run_result = ExecutionResult(success=True, stdout="ok", exit_code=0)
+
+        # Simulate "pandas is already installed on the host" -- the executor
+        # must not invoke pip in that case, so _subprocess is called exactly
+        # once (for the actual script run).
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=(["pandas"], []),
+        ), patch.object(
+            executor, "_subprocess", new_callable=AsyncMock, return_value=run_result,
+        ) as mock_sub:
+            result = await executor.execute(
+                "import pandas",
+                SandboxLanguage.PYTHON,
+                packages=["pandas"],
+            )
+            assert result.success is True
+            assert mock_sub.await_count == 1
+            # The single call must be the script run, not pip.
+            run_cmd = mock_sub.await_args_list[0].args[0]
+            assert "-m" not in run_cmd or "pip" not in run_cmd
+
+    @pytest.mark.asyncio
     async def test_run_python_pip_fail(self, executor):
-        """A real pip failure should surface as pip install failed."""
+        """A real pip failure (non-network) should surface as pip install failed."""
         pip_result = ExecutionResult(success=False, stderr="ERROR", exit_code=1)
 
-        with patch.object(executor, "_subprocess", new_callable=AsyncMock, return_value=pip_result):
-            # Allowlisted package, but pretend pip itself fails (network, etc.).
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=([], ["pandas"]),
+        ), patch.object(executor, "_subprocess", new_callable=AsyncMock, return_value=pip_result):
             result = await executor.execute(
                 "import missing",
                 SandboxLanguage.PYTHON,
@@ -104,6 +136,33 @@ class TestLocalExecutorPython:
             )
             assert result.success is False
             assert "pip install failed" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_run_python_pip_offline_has_actionable_error(self, executor):
+        """When pip fails with DNS/connection errors, return a hint, not urllib3 noise."""
+        pip_result = ExecutionResult(
+            success=False,
+            stderr=(
+                "WARNING: Retrying after connection broken by "
+                "NewConnectionError: [Errno 11001] getaddrinfo failed\n"
+                "ERROR: Could not find a version that satisfies the requirement reportlab"
+            ),
+            exit_code=1,
+        )
+
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=([], ["reportlab"]),
+        ), patch.object(executor, "_subprocess", new_callable=AsyncMock, return_value=pip_result):
+            result = await executor.execute(
+                "import reportlab",
+                SandboxLanguage.PYTHON,
+                packages=["reportlab"],
+            )
+            assert result.success is False
+            err = result.error or ""
+            assert "cannot reach PyPI" in err
+            assert "reportlab" in err
 
     @pytest.mark.asyncio
     async def test_python_non_allowlisted_package_rejected(self, executor):
@@ -127,17 +186,22 @@ class TestLocalExecutorPython:
             captured_calls.append({"cmd": cmd, "cwd": cwd, "env": env})
             return ExecutionResult(success=True, exit_code=0)
 
-        with patch.object(executor, "_subprocess", side_effect=_mock_sub):
+        # Force "package is not on the host" so pip install is exercised.
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=([], ["pandas"]),
+        ), patch.object(executor, "_subprocess", side_effect=_mock_sub):
             await executor.execute(
                 "import pandas",
                 SandboxLanguage.PYTHON,
                 packages=["pandas"],
             )
 
-        # First call = pip install, second call = python3 main.py
+        # First call = pip install, second call = sys.executable main.py
         assert len(captured_calls) == 2
         pip_cmd = captured_calls[0]["cmd"]
-        assert "pip" in pip_cmd[0]
+        # pip is now invoked as "<sys.executable> -m pip install ...".
+        assert pip_cmd[1:4] == ["-m", "pip", "install"]
         assert "--target" in pip_cmd
         target_idx = pip_cmd.index("--target")
         deps_dir = pip_cmd[target_idx + 1]
@@ -145,7 +209,6 @@ class TestLocalExecutorPython:
         # The deps dir should live inside the per-execution work_dir.
         assert os.path.dirname(deps_dir) == captured_calls[0]["cwd"]
         # pip must NOT be asked to touch the host global site-packages.
-        assert "install" in pip_cmd
         assert "--user" not in pip_cmd
 
         # Run step must have PYTHONPATH pointing at the same deps dir.
