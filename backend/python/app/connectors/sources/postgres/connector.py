@@ -475,14 +475,26 @@ class PostgreSQLConnector(BaseConnector):
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
 
-    def _get_filter_values(self) -> Tuple[Optional[List[str]], Optional[List[str]]]:
+    def _get_filter_values(
+        self,
+    ) -> Tuple[Optional[List[str]], str, Optional[List[str]], str]:
         schema_filter = self.sync_filters.get("schemas")
-        selected_schemas = schema_filter.value if schema_filter and schema_filter.value else None
+        if schema_filter and schema_filter.value:
+            selected_schemas = schema_filter.value
+            schemas_op = schema_filter.operator_value
+        else:
+            selected_schemas = None
+            schemas_op = MultiselectOperator.IN.value
 
         table_filter = self.sync_filters.get("tables")
-        selected_tables = table_filter.value if table_filter and table_filter.value else None
+        if table_filter and table_filter.value:
+            selected_tables = table_filter.value
+            tables_op = table_filter.operator_value
+        else:
+            selected_tables = None
+            tables_op = MultiselectOperator.IN.value
 
-        return selected_schemas, selected_tables
+        return selected_schemas, schemas_op, selected_tables, tables_op
 
     async def _run_full_sync_internal(self) -> None:
         try:
@@ -494,21 +506,27 @@ class PostgreSQLConnector(BaseConnector):
 
             await self._create_database_record_group()
 
-            selected_schemas, selected_tables = self._get_filter_values()
+            selected_schemas, schemas_op, selected_tables, tables_op = self._get_filter_values()
 
             schemas = await self._fetch_schemas()
-            
+
             if selected_schemas:
-                schemas = [s for s in schemas if s.name in selected_schemas]
+                if schemas_op == MultiselectOperator.NOT_IN.value:
+                    schemas = [s for s in schemas if s.name not in selected_schemas]
+                else:
+                    schemas = [s for s in schemas if s.name in selected_schemas]
 
             await self._sync_schemas(schemas)
             self.sync_stats.schemas_synced = len(schemas)
 
             for schema in schemas:
                 tables = await self._fetch_tables(schema.name)
-                
+
                 if selected_tables:
-                    tables = [t for t in tables if t.fqn in selected_tables]
+                    if tables_op == MultiselectOperator.NOT_IN.value:
+                        tables = [t for t in tables if t.fqn not in selected_tables]
+                    else:
+                        tables = [t for t in tables if t.fqn in selected_tables]
 
                 await self._sync_tables(schema.name, tables)
                 self.sync_stats.tables_new += len(tables)
@@ -984,8 +1002,10 @@ class PostgreSQLConnector(BaseConnector):
                 for fqn, state in raw_states.items()
             }
             
-            selected_schemas, selected_tables = self._get_filter_values()
-            current_stats = await self._get_current_table_states(selected_schemas, selected_tables)
+            selected_schemas, schemas_op, selected_tables, tables_op = self._get_filter_values()
+            current_stats = await self._get_current_table_states(
+                selected_schemas, schemas_op, selected_tables, tables_op
+            )
             
             # Detect changes
             new_tables: List[str] = []
@@ -1032,26 +1052,37 @@ class PostgreSQLConnector(BaseConnector):
     async def _get_current_table_states(
         self,
         selected_schemas: Optional[List[str]],
-        selected_tables: Optional[List[str]]
+        schemas_op: str = MultiselectOperator.IN.value,
+        selected_tables: Optional[List[str]] = None,
+        tables_op: str = MultiselectOperator.IN.value,
     ) -> Dict[str, PostgresTableState]:
         """Fetch current table states from PostgreSQL for comparison.
-        
+
         Retrieves cumulative DML counters (n_tup_ins, n_tup_upd, n_tup_del) along with
         column hash for reliable change detection that survives ANALYZE runs.
         """
         table_states: Dict[str, PostgresTableState] = {}
-        
-        stats_response = await self.data_source.get_table_stats(selected_schemas)
+
+        schemas_exclude = schemas_op == MultiselectOperator.NOT_IN.value
+        tables_exclude = tables_op == MultiselectOperator.NOT_IN.value
+
+        # For IN, push schema filter down to SQL; for NOT_IN, fetch all and exclude client-side.
+        stats_scope = None if schemas_exclude else selected_schemas
+        stats_response = await self.data_source.get_table_stats(stats_scope)
         if not stats_response.success:
             self.logger.warning(f"Failed to get table stats: {stats_response.error}")
             return table_states
-        
+
         stats_by_fqn: Dict[str, TableStats] = {}
         for stat_dict in stats_response.data:
             stat = TableStats.model_validate(stat_dict)
             fqn = f"{stat.schema_name}.{stat.table_name}"
-            if selected_tables and fqn not in selected_tables:
+            if schemas_exclude and selected_schemas and stat.schema_name in selected_schemas:
                 continue
+            if selected_tables:
+                is_in = fqn in selected_tables
+                if (tables_exclude and is_in) or (not tables_exclude and not is_in):
+                    continue
             stats_by_fqn[fqn] = stat
         
         for fqn, stat in stats_by_fqn.items():
@@ -1199,8 +1230,10 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _save_tables_sync_state(self, sync_point_key: str) -> None:
         """Save current table states for next incremental sync comparison."""
-        selected_schemas, selected_tables = self._get_filter_values()
-        current_states = await self._get_current_table_states(selected_schemas, selected_tables)
+        selected_schemas, schemas_op, selected_tables, tables_op = self._get_filter_values()
+        current_states = await self._get_current_table_states(
+            selected_schemas, schemas_op, selected_tables, tables_op
+        )
         count = len(current_states)
         serialized_states = json.dumps(
             {fqn: state.model_dump() for fqn, state in current_states.items()}

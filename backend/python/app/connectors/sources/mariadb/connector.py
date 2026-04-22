@@ -407,10 +407,11 @@ class MariaDBConnector(BaseConnector):
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
 
-    def _get_filter_values(self) -> Optional[List[str]]:
+    def _get_filter_values(self) -> Tuple[Optional[List[str]], str]:
         table_filter = self.sync_filters.get("tables")
-        selected_tables = table_filter.value if table_filter and table_filter.value else None
-        return selected_tables
+        if not table_filter or not table_filter.value:
+            return None, MultiselectOperator.IN.value
+        return table_filter.value, table_filter.operator_value
 
     async def _run_full_sync_internal(self) -> None:
         try:
@@ -419,7 +420,7 @@ class MariaDBConnector(BaseConnector):
 
             await self._create_app_users()
 
-            selected_tables = self._get_filter_values()
+            selected_tables, filter_op = self._get_filter_values()
 
             if not self.database_name:
                 raise ValueError("Database name must be configured for MariaDB connector")
@@ -428,7 +429,10 @@ class MariaDBConnector(BaseConnector):
 
             tables = await self._fetch_tables(self.database_name)
             if selected_tables:
-                tables = [t for t in tables if t.fqn in selected_tables]
+                if filter_op == MultiselectOperator.NOT_IN.value:
+                    tables = [t for t in tables if t.fqn not in selected_tables]
+                else:
+                    tables = [t for t in tables if t.fqn in selected_tables]
 
             await self._sync_tables(self.database_name, tables)
             self.sync_stats.tables_new += len(tables)
@@ -833,8 +837,8 @@ class MariaDBConnector(BaseConnector):
                 for fqn, state in raw_states.items()
             }
             
-            selected_tables = self._get_filter_values()
-            current_stats = await self._get_current_table_states(selected_tables)
+            selected_tables, filter_op = self._get_filter_values()
+            current_stats = await self._get_current_table_states(selected_tables, filter_op)
             
             new_tables: List[str] = []
             changed_tables: List[str] = []
@@ -874,32 +878,36 @@ class MariaDBConnector(BaseConnector):
 
     async def _get_current_table_states(
         self,
-        selected_tables: Optional[List[str]]
+        selected_tables: Optional[List[str]],
+        filter_op: str = MultiselectOperator.IN.value,
     ) -> Dict[str, MariaDBTableState]:
         """Fetch current table states from MariaDB for comparison.
-        
+
         Uses TABLE_ROWS and UPDATE_TIME from information_schema.TABLES along with
         column hash for change detection.
         """
         table_states: Dict[str, MariaDBTableState] = {}
-        
+
         if not self.database_name:
             self.logger.warning("Database name is not configured")
             return table_states
 
         databases_to_check = [self.database_name]
-        
+
         stats_response = await self.data_source.get_table_stats(databases_to_check)
         if not stats_response.success:
             self.logger.warning(f"Failed to get table stats: {stats_response.error}")
             return table_states
-        
+
+        exclude = filter_op == MultiselectOperator.NOT_IN.value
         stats_by_fqn: Dict[str, TableStatsEntry] = {}
         for stat_dict in stats_response.data:
             stat = TableStatsEntry.model_validate(stat_dict)
             fqn = f"{stat.database_name}.{stat.table_name}"
-            if selected_tables and fqn not in selected_tables:
-                continue
+            if selected_tables:
+                is_in = fqn in selected_tables
+                if (exclude and is_in) or (not exclude and not is_in):
+                    continue
             stats_by_fqn[fqn] = stat
         
         for fqn, stat in stats_by_fqn.items():
@@ -1048,8 +1056,8 @@ class MariaDBConnector(BaseConnector):
 
     async def _save_tables_sync_state(self, sync_point_key: str) -> None:
         """Save current table states for next incremental sync comparison."""
-        selected_tables = self._get_filter_values()
-        current_states = await self._get_current_table_states(selected_tables)
+        selected_tables, filter_op = self._get_filter_values()
+        current_states = await self._get_current_table_states(selected_tables, filter_op)
         count = len(current_states)
         serialized_states = json.dumps(
             {fqn: state.model_dump() for fqn, state in current_states.items()}

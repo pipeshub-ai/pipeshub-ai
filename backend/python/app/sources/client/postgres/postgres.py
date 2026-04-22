@@ -10,7 +10,9 @@ psycopg2 Documentation: https://www.psycopg.org/docs/
 
 import logging
 from typing import Any, Dict, List, Optional, Union
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from urllib.parse import unquote, urlparse
+
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -293,17 +295,46 @@ class PostgreSQLConfig(BaseModel):
 
 class AuthConfig(BaseModel):
     """Authentication configuration for PostgreSQL connector."""
-    
-    host: str = Field(..., description="PostgreSQL server host")
+
+    host: Optional[str] = Field(default=None, description="PostgreSQL server host")
     port: int = Field(default=5432, description="PostgreSQL server port")
-    database: str = Field(..., description="Database name")
-    user: str = Field(
-        ...,
+    database: Optional[str] = Field(default=None, description="Database name")
+    user: Optional[str] = Field(
+        default=None,
         description="Username",
         validation_alias=AliasChoices("username", "user"),
     )
     password: str = Field(default="", description="Password")
     sslmode: str = Field(default="prefer", description="SSL mode")
+    connection_string: Optional[str] = Field(
+        default=None,
+        description="Full DSN/URI; used when authType is CONNECTION_STRING",
+        validation_alias=AliasChoices("connectionString", "connection_string"),
+    )
+
+    @model_validator(mode="after")
+    def _populate_from_connection_string(self) -> "AuthConfig":
+        if self.connection_string:
+            parsed = urlparse(self.connection_string)
+            set_fields = self.model_fields_set
+            if parsed.hostname and "host" not in set_fields:
+                self.host = parsed.hostname
+            if parsed.port and "port" not in set_fields:
+                self.port = parsed.port
+            if parsed.path and "database" not in set_fields:
+                self.database = parsed.path.lstrip("/") or None
+            if parsed.username and "user" not in set_fields:
+                self.user = unquote(parsed.username)
+            if parsed.password and "password" not in set_fields:
+                self.password = unquote(parsed.password)
+
+        missing = [f for f in ("host", "database", "user") if not getattr(self, f)]
+        if missing:
+            raise ValueError(
+                f"Missing required PostgreSQL auth fields: {missing}. "
+                "Provide them directly or via connection_string."
+            )
+        return self
 
 
 class PostgreSQLConnectorConfig(BaseModel):
