@@ -135,6 +135,16 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     }));
   }, [availableFilters]);
 
+  // Connector instances (All Records) — options from API; IDs may also come from URL/deep links
+  const connectorOptions = useMemo(() => {
+    if (!availableFilters?.connectors) return [];
+    return availableFilters.connectors.map((opt) => ({
+      value: opt.id,
+      label: opt.label,
+      icon: 'hub',
+    }));
+  }, [availableFilters]);
+
   // Common size options (hardcoded - not from API)
   const SIZE_OPTIONS = [
     { value: 'lt1mb', label: t('filter.lt1mb') },
@@ -148,6 +158,9 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const handleStatusChange = (values: string[]) => updateFilter({ indexingStatus: values as IndexingStatus[] });
 
   const handleSourceChange = (values: string[]) => updateFilter({ origins: values as NodeOrigin[] });
+
+  const handleConnectorChange = (values: string[]) =>
+    updateFilter({ connectorIds: values.length > 0 ? values : undefined });
 
   const handleSizeChange = (values: string[]) => updateFilter({ sizeRanges: values as SizeRange[] });
 
@@ -191,6 +204,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     (activeFilter.recordTypes?.length ?? 0) > 0 ||
     (activeFilter.indexingStatus?.length ?? 0) > 0 ||
     (activeFilter.origins?.length ?? 0) > 0 ||
+    (activeFilter.connectorIds?.length ?? 0) > 0 ||
     (activeFilter.sizeRanges?.length ?? 0) > 0 ||
     activeFilter.createdAfter || activeFilter.createdBefore ||
     activeFilter.updatedAfter || activeFilter.updatedBefore
@@ -245,6 +259,22 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           searchable
           disabled={sourceOptions.length === 0}
           pluralLabel={t('filter.sources')}
+        />
+      )}
+
+      {/* Connector instances — All Records only */}
+      {!isCollectionsMode && (
+        <FilterDropdown
+          label={t('filter.connector')}
+          icon="hub"
+          options={connectorOptions}
+          selectedValues={activeFilter.connectorIds || []}
+          onSelectionChange={handleConnectorChange}
+          searchable
+          disabled={
+            connectorOptions.length === 0 && (activeFilter.connectorIds?.length ?? 0) === 0
+          }
+          pluralLabel={t('filter.connectors')}
         />
       )}
 

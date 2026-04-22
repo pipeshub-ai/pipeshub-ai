@@ -176,10 +176,6 @@ export function buildAllRecordsQueryParams(
     params.indexingStatus = filter.indexingStatus.join(',');
   }
 
-  if (filter.collectionIds && filter.collectionIds.length > 0) {
-    params.kbIds = filter.collectionIds.join(',');
-  }
-
   if (filter.connectorIds && filter.connectorIds.length > 0) {
     params.connectorIds = filter.connectorIds.join(',');
   }

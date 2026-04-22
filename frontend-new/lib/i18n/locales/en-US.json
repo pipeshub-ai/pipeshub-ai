@@ -183,6 +183,8 @@
     "dateCreated": "Date Created",
     "lastUpdated": "Last Updated",
     "source": "Source",
+    "connector": "Connector",
+    "connectors": "Connectors",
     "createdAt": "Created At",
     "folder": "Folder",
     "file": "File",
