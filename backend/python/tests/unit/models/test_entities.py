@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, GroupType, BlockGroupChildren, IndexRange
 from app.models.entities import (
     DealRecord,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
+    LlmTextContent,
     MailRecord,
     ProductRecord,
     ProjectRecord,
@@ -1966,3 +1968,116 @@ class TestDealRecord:
         assert "Graph Deal" in ctx
         assert "DealInfo relations" in ctx
         assert "Products in this deal" in ctx
+
+
+# ============================================================================
+# FileRecord.to_llm_full_context
+# ============================================================================
+
+
+def _make_file_record_with_blocks(blocks=None, block_groups=None, record_id="rec-1"):
+    container = BlocksContainer(
+        blocks=blocks or [],
+        block_groups=block_groups or [],
+    )
+    rec = FileRecord(**_record_kwargs(
+        id=record_id,
+        org_id="org-1",
+        is_file=True,
+        extension="txt",
+    ))
+    rec.block_containers = container
+    return rec
+
+
+class TestFileRecordToLlmFullContext:
+    def test_returns_list_of_llm_text_content(self):
+        rec = _make_file_record_with_blocks()
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert isinstance(items, list)
+        assert all(isinstance(i, LlmTextContent) for i in items)
+
+    def test_header_item_contains_record_id(self):
+        rec = _make_file_record_with_blocks(record_id="rec-42")
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert any("rec-42" in item.text for item in items)
+
+    def test_text_block_produces_content_item(self):
+        block = Block(type=BlockType.TEXT, data="Hello world", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        texts = [i.text for i in items]
+        assert any("Hello world" in t for t in texts)
+
+    def test_image_block_is_skipped(self):
+        image_block = Block(type=BlockType.IMAGE, data="img_data", parent_index=None)
+        text_block = Block(type=BlockType.TEXT, data="visible", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[image_block, text_block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        texts = " ".join(i.text for i in items)
+        assert "img_data" not in texts
+        assert "visible" in texts
+
+    def test_table_block_with_children_none_produces_no_row_content(self):
+        """TABLE group with children=None → rows_to_be_included_list stays empty."""
+        row_block = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "row A"}, parent_index=0)
+        group = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            children=None,
+        )
+        rec = _make_file_record_with_blocks(blocks=[row_block], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            items = rec.to_llm_full_context()
+        texts = " ".join(i.text for i in items)
+        assert "row A" not in texts
+
+    def test_table_block_with_single_range_renders_rows(self):
+        """TABLE group with block_ranges=[0..0] → the row block text appears."""
+        row_block = Block(
+            type=BlockType.TABLE_ROW,
+            data={"row_natural_language_text": "row content"},
+            parent_index=0,
+        )
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=0)])
+        group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
+        rec = _make_file_record_with_blocks(blocks=[row_block], block_groups=[group])
+
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]), \
+             patch("app.agents.actions.util.parse_file.LlmTextContent", LlmTextContent):
+            from jinja2 import Template
+            with patch("app.models.entities.Template") as mock_tpl:
+                mock_tpl.return_value.render = MagicMock(return_value="TABLE_RENDERED")
+                items = rec.to_llm_full_context()
+
+        texts = " ".join(i.text for i in items)
+        assert "TABLE_RENDERED" in texts
+
+    def test_table_block_multi_range_expands_correctly(self):
+        """block_ranges=[0..1] expands to indices [0, 1]."""
+        row0 = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "r0"}, parent_index=0)
+        row1 = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "r1"}, parent_index=0)
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=1)])
+        group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
+        rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
+
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            from jinja2 import Template
+            with patch("app.models.entities.Template") as mock_tpl:
+                captured = {}
+
+                def _render(**kwargs):
+                    captured.update(kwargs)
+                    return "RENDERED"
+
+                mock_tpl.return_value.render = MagicMock(side_effect=_render)
+                rec.to_llm_full_context()
+
+        blocks_passed = captured.get("blocks", [])
+        contents = [b["content"] for b in blocks_passed]
+        assert "r0" in contents
+        assert "r1" in contents

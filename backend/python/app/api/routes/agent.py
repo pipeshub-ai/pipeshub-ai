@@ -1086,6 +1086,8 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 reranker_service,
                 config_service,
                 org_info,
+                query_info.modelName,
+                query_info.modelKey,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1098,6 +1100,8 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 graph_provider,
                 reranker_service,
                 config_service,
+                query_info.modelName,
+                query_info.modelKey,
                 org_info,
                 graph_type,
             )
@@ -1165,6 +1169,8 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: dict[str, Any] = None,
+    modelName: str = None,
+    modelKey: str = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
@@ -1182,6 +1188,8 @@ async def stream_response(
                 reranker_service,
                 config_service,
                 org_info,
+                modelName,
+                modelKey,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1194,6 +1202,8 @@ async def stream_response(
                 graph_provider,
                 reranker_service,
                 config_service,
+                modelName,
+                modelKey,
                 org_info,
                 graph_type,
             )
@@ -1245,6 +1255,8 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 reranker_service,
                 config_service,
                 org_info,
+                query_info.modelName,
+                query_info.modelKey,
             ),
             media_type="text/event-stream",
             headers={
@@ -2768,6 +2780,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 reranker_service,
                 config_service,
                 org_info,
+                chat_query.modelName,
+                chat_query.modelKey,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2780,6 +2794,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 graph_provider,
                 reranker_service,
                 config_service,
+                chat_query.modelName,
+                chat_query.modelKey,
                 org_info,
                 graph_type,
             )
@@ -3139,6 +3155,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
+            "modelName": model_name,
+            "modelKey": model_key,
         }
 
         return StreamingResponse(
@@ -3152,6 +3170,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 reranker_service,
                 config_service,
                 org_info,
+                modelName=model_name,
+                modelKey=model_key,
             ),
             media_type="text/event-stream",
             headers={

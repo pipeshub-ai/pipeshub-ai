@@ -20,6 +20,12 @@ class AnswerWithMetadataJSON(BaseModel):
 
 
 
+agent_block_group_prompt = """* Block Group Index: {{block_group_index}}
+* Block Group Type: {{label}}
+* Block Group Content/Blocks:{% for block in blocks %}
+  - Block Content: {{block.content}}
+{% endfor %}
+"""
 
 table_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: table
