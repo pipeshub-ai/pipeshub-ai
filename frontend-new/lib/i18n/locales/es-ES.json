@@ -1483,6 +1483,11 @@
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
+        "credentialsSubtext": "Introduce los detalles de autenticación de {{name}}",
+        "oauthCreateHelperAdmin": "Si existen apps OAuth guardadas, elige una arriba o elige «Crear nueva app OAuth» e introduce las credenciales de cliente abajo. Registra primero esta URL de redirección en tu IdP.",
+        "oauthCreateHelperNonAdmin": "Selecciona una app OAuth guardada registrada por tu administrador. No introduzcas secretos de cliente aquí. Registra la URL de redirección en el IdP si lo exige tu organización.",
+        "oauthCredentialsSubtextAdmin": "Introduce o revisa credenciales de cliente (nuevo registro o app guardada elegida arriba).",
+        "oauthCredentialsSubtextNonAdmin": "Se utiliza la app OAuth seleccionada en esta instancia. Los secretos de cliente los administran quienes administran; no hace falta que los introduzcas.",
         "noAuthRequired": "No authentication required for this connector"
       },
       "docSection": {

@@ -5,7 +5,11 @@ import { Flex, Text, Select, Box, Separator, IconButton, Tooltip } from '@radix-
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SchemaFormField } from '../schema-form-field';
 import { useConnectorsStore } from '../../store';
-import { isNoneAuthType, isOAuthType } from '../../utils/auth-helpers';
+import {
+  isNoneAuthType,
+  isOAuthType,
+  shouldRenderOAuthAuthSchemaField,
+} from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
 import { OAuthAppSelector, OAuthAppInUseReadonly } from './oauth-app-selector';
 import { resolveAuthFields, formatAuthTypeName } from './helpers';
@@ -19,10 +23,6 @@ import {
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
 import { useTranslation } from 'react-i18next';
-
-// ========================================
-// Component
-// ========================================
 
 export function AuthenticateTab() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
@@ -52,7 +52,6 @@ export function AuthenticateTab() {
   const supportedAuthTypes = authConfig?.supportedAuthTypes ?? [];
   const showAuthTypeSelector = isCreateMode && supportedAuthTypes.length > 1;
 
-  // Resolve current auth schema fields based on selected auth type
   const currentSchemaFields = resolveAuthFields(authConfig, selectedAuthType);
   const linkedOAuthAppId = useMemo(() => {
     const fromForm = (formData.auth.oauthConfigId as string | undefined)?.trim();
@@ -61,11 +60,39 @@ export function AuthenticateTab() {
     return typeof auth?.oauthConfigId === 'string' ? auth.oauthConfigId.trim() : '';
   }, [formData.auth.oauthConfigId, connectorConfig?.config?.auth]);
 
+  const hasLinkedOAuthApp = Boolean(linkedOAuthAppId);
+
   const authFieldsForForm = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return currentSchemaFields;
-    // `oauthConfigId` is chosen via OAuth app picker / saved binding — not a free-form schema field here.
     return currentSchemaFields.filter((f) => f.name !== 'oauthConfigId');
   }, [currentSchemaFields, selectedAuthType]);
+
+  const visibleAuthFields = useMemo(() => {
+    return authFieldsForForm.filter((field) => {
+      if (selectedAuthType === 'OAUTH') {
+        if (
+          !shouldRenderOAuthAuthSchemaField(field.name, {
+            isCreateMode,
+            isAdmin,
+            hasLinkedOAuthApp,
+          })
+        ) {
+          return false;
+        }
+      }
+      if (conditionalDisplay[field.name] !== undefined) {
+        return conditionalDisplay[field.name];
+      }
+      return true;
+    });
+  }, [
+    authFieldsForForm,
+    selectedAuthType,
+    isCreateMode,
+    isAdmin,
+    hasLinkedOAuthApp,
+    conditionalDisplay,
+  ]);
 
   const oauthCredentialFieldNames = useMemo(() => {
     if (selectedAuthType !== 'OAUTH' || !authConfig) return [];
@@ -184,8 +211,7 @@ export function AuthenticateTab() {
     isOAuthType(selectedAuthType) &&
     (selectedAuthType === 'OAUTH' || (Boolean(callbackUrl) && displayRedirect !== false));
 
-  /** One olive card for redirect + app binding + schema credentials (avoids a large gap between shells). */
-  const mergeOAuthCredentialSurface = showOAuthConnectionCard && authFieldsForForm.length > 0;
+  const mergeOAuthCredentialSurface = showOAuthConnectionCard && visibleAuthFields.length > 0;
 
   const configureCardShell = {
     padding: 16,
@@ -196,10 +222,6 @@ export function AuthenticateTab() {
     boxSizing: 'border-box' as const,
   };
 
-  if (!connectorSchema || !panelConnector) {
-    return null;
-  }
-
   const oauthConnectionCardInner = (
     <>
       {callbackUrl && displayRedirect !== false && (
@@ -209,7 +231,7 @@ export function AuthenticateTab() {
               Redirect URL
             </Text>
             <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-              Add this exact URL to the allowed redirect list on your identity provider (same path as the legacy app).
+              Add this exact URL to the allowed redirect list on your identity provider.
             </Text>
           </Flex>
           <Flex
@@ -285,8 +307,9 @@ export function AuthenticateTab() {
           {isCreateMode ? <OAuthAppSelector /> : <OAuthAppInUseReadonly />}
           {isCreateMode ? (
             <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-              If saved OAuth apps exist for this connector, pick one above; otherwise enter client credentials below.
-              Register this redirect URL in your IdP first.
+              {isAdmin === true
+                ? t('workspace.connectors.authTab.oauthCreateHelperAdmin')
+                : t('workspace.connectors.authTab.oauthCreateHelperNonAdmin')}
             </Text>
           ) : (
             <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
@@ -304,41 +327,52 @@ export function AuthenticateTab() {
     </>
   );
 
-  const authCredentialBlockInner = (
-    <>
-      <Flex direction="column" gap="1">
-        <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {formatAuthTypeName(selectedAuthType)} credentials
-        </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-          Enter your {panelConnector.name} authentication details
-        </Text>
-      </Flex>
+  const credentialsSubtext = (() => {
+    if (isOAuthType(selectedAuthType) && isProfileInitialized) {
+      if (isAdmin === true) {
+        return t('workspace.connectors.authTab.oauthCredentialsSubtextAdmin', {
+          name: panelConnector.name,
+        });
+      }
+      if (isAdmin === false || isAdmin === null) {
+        return t('workspace.connectors.authTab.oauthCredentialsSubtextNonAdmin');
+      }
+    }
+    return t('workspace.connectors.authTab.credentialsSubtext', { name: panelConnector.name });
+  })();
 
-      <Flex direction="column" gap="5">
-        {authFieldsForForm.map((field) => {
-          const isVisible =
-            conditionalDisplay[field.name] !== undefined ? conditionalDisplay[field.name] : true;
+  const authCredentialBlockInner =
+    visibleAuthFields.length === 0 ? null : (
+      <>
+        <Flex direction="column" gap="1">
+          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {t('workspace.connectors.authTab.credentialsHeading', {
+              name: formatAuthTypeName(selectedAuthType),
+            })}
+          </Text>
+          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            {credentialsSubtext}
+          </Text>
+        </Flex>
 
-          return (
+        <Flex direction="column" gap="5">
+          {visibleAuthFields.map((field) => (
             <SchemaFormField
               key={field.name}
               field={field}
               value={formData.auth[field.name]}
               onChange={setAuthFormValue}
-              visible={isVisible}
+              visible={true}
               error={formErrors[field.name]}
               disabled={authFieldsDisabled}
             />
-          );
-        })}
-      </Flex>
-    </>
-  );
+          ))}
+        </Flex>
+      </>
+    );
 
   return (
     <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
-      {/* ── A. Setup Documentation ── */}
       {docLinks.length > 0 && (
         <DocumentationSection
           links={docLinks}
@@ -346,7 +380,6 @@ export function AuthenticateTab() {
         />
       )}
 
-      {/* ── Auth Type Selector (create mode only, multiple auth types) ── */}
       {showAuthTypeSelector && (
         <Flex direction="column" gap="4" style={configureCardShell}>
           <Flex direction="column" gap="1">
@@ -380,7 +413,6 @@ export function AuthenticateTab() {
         </Flex>
       )}
 
-      {/* OAuth redirect + app + credentials: one card when merged (no double gap / double border). */}
       {mergeOAuthCredentialSurface ? (
         <Flex direction="column" gap="4" style={configureCardShell}>
           {oauthConnectionCardInner}
@@ -395,7 +427,7 @@ export function AuthenticateTab() {
             </Flex>
           )}
 
-          {authFieldsForForm.length > 0 && (
+          {visibleAuthFields.length > 0 && (
             <Flex
               direction="column"
               gap={isOAuthType(selectedAuthType) ? '4' : '5'}
@@ -407,9 +439,6 @@ export function AuthenticateTab() {
         </>
       )}
 
-      {/* OAuth consent runs on the Authorize tab after the instance id exists. */}
-
-      {/* ── For NONE auth type, show info message ── */}
       {isNoneAuthType(selectedAuthType) && (
         <Flex
           align="center"

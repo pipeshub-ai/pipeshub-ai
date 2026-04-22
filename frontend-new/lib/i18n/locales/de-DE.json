@@ -1486,6 +1486,11 @@
         "methodLabel": "Authentifizierungsmethode",
         "methodPlaceholder": "Authentifizierungstyp wählen...",
         "credentialsHeading": "{{name}}-Anmeldedaten",
+        "credentialsSubtext": "Geben Sie Ihre {{name}}-Anmeldedaten ein",
+        "oauthCreateHelperAdmin": "Wenn gespeicherte OAuth-Apps vorhanden sind, wählen Sie oben eine, oder wählen Sie „Neue OAuth-App“ und tragen Sie die Client-Anmeldedaten unten ein. Tragen Sie diese Weiterleitungs-URL zuerst in Ihrem IdP ein.",
+        "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Weiterleitungs-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
+        "oauthCredentialsSubtextAdmin": "Client-Anmeldedaten eingeben oder prüfen (für eine neue Registrierung oder eine oben ausgewählte gespeicherte App).",
+        "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
       },
       "docSection": {

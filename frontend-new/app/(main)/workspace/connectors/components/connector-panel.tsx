@@ -2,8 +2,8 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
-import React, { useEffect, useCallback, useRef } from 'react';
+import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
+import React, { useEffect, useCallback, useRef, useMemo } from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -24,6 +24,7 @@ import {
   isOAuthType,
   isConnectorConfigAuthenticated,
   isConnectorInstanceAuthenticatedForUi,
+  shouldRenderOAuthAuthSchemaField,
 } from '../utils/auth-helpers';
 import { trimConnectorConfig } from '../utils/trim-config';
 import {
@@ -99,6 +100,7 @@ export function ConnectorPanel() {
     bumpCatalogRefresh,
     oauthAuthorizeUiEpoch,
     selectedScope,
+    conditionalDisplay,
   } = useConnectorsStore();
 
   const isCreateMode = !panelConnectorId;
@@ -619,10 +621,55 @@ export function ConnectorPanel() {
     bumpCatalogRefresh,
   ]);
 
-  // ── Footer logic ─────────────────────────────────────────────
-
   const isAuthReady =
     authState === 'success' || isNoneAuthType(selectedAuthType);
+
+  // const linkedOAuthAppIdForGate = useMemo(() => {
+  //   const fromForm = (formData.auth.oauthConfigId as string | undefined)?.trim();
+  //   if (fromForm) return fromForm;
+  //   const auth = connectorConfig?.config?.auth as { oauthConfigId?: string } | undefined;
+  //   return typeof auth?.oauthConfigId === 'string' ? auth.oauthConfigId.trim() : '';
+  // }, [formData.auth.oauthConfigId, connectorConfig?.config?.auth]);
+
+  // const hasLinkedOAuthAppForGate = Boolean(linkedOAuthAppIdForGate);
+
+  // const areRequiredAuthFieldsFilled = useMemo(() => {
+  //   if (!connectorSchema) return false;
+  //   const authFields = resolveAuthFields(connectorSchema.auth, selectedAuthType);
+  //   const requiredFields = authFields.filter((f) => f.required);
+  //   if (requiredFields.length === 0) return true;
+
+  //   const fieldApplies = (name: string): boolean => {
+  //     if (selectedAuthType === 'OAUTH') {
+  //       if (!shouldRenderOAuthAuthSchemaField(name, {
+  //         isCreateMode,
+  //         isAdmin,
+  //         hasLinkedOAuthApp: hasLinkedOAuthAppForGate,
+  //       })) {
+  //         return false;
+  //       }
+  //     }
+  //     if (conditionalDisplay[name] !== undefined) {
+  //       return conditionalDisplay[name];
+  //     }
+  //     return true;
+  //   };
+
+  //   return requiredFields.filter((f) => fieldApplies(f.name)).every((f) => {
+  //     const val = formData.auth[f.name];
+  //     if (val === undefined || val === null || val === '') return false;
+  //     if (typeof val === 'string' && val.trim() === '') return false;
+  //     return true;
+  //   });
+  // }, [
+  //   connectorSchema,
+  //   selectedAuthType,
+  //   isCreateMode,
+  //   isAdmin,
+  //   hasLinkedOAuthAppForGate,
+  //   conditionalDisplay,
+  //   formData.auth,
+  // ]);
 
   const handleBackFromConfigure = useCallback(async () => {
     await refreshPanelFromServer();
