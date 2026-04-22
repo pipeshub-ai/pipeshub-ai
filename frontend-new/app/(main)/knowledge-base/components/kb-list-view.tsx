@@ -29,6 +29,11 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
 }
 
+/** All Records rows extended with sourceName/sourceType from getSourceDisplay */
+function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
+  return 'sourceName' in item && 'sourceType' in item;
+}
+
 interface TableHeaderCellProps {
   label: string;
   field?: SortField;
@@ -224,11 +229,19 @@ function TableRow({
   // Status label for tooltip
   const getStatusLabel = (): string => {
     if (isKnowledgeHubNode(item)) {
+      // No status from API — do not imply "Queued"
+      if (item.indexingStatus == null) {
+        return '';
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED': return 'Completed';
         case 'IN_PROGRESS': return 'In Progress';
         case 'FAILED': return 'Failed';
         case 'FILE_TYPE_NOT_SUPPORTED': return 'File Type Not Supported';
+        case 'NOT_STARTED': return 'Not Started';
+        case 'QUEUED': return 'Queued';
+        case 'AUTO_INDEX_OFF': return 'Manual Indexing';
+        case 'EMPTY': return 'Empty';
         default: return 'Queued';
       }
     }
@@ -247,6 +260,10 @@ function TableRow({
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
+      // Missing status — no icon (avoid looking like "queued" via default branch)
+      if (item.indexingStatus == null) {
+        return null;
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
@@ -255,7 +272,23 @@ function TableRow({
         case 'FAILED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
         case 'FILE_TYPE_NOT_SUPPORTED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;  
+          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        case 'NOT_STARTED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
+          );
+        case 'QUEUED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          );
+        case 'AUTO_INDEX_OFF':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={16} color="var(--olive-11)" />
+          );
+        case 'EMPTY':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
+          );
         default:
           return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
       }
@@ -432,31 +465,34 @@ function TableRow({
         )}
       </Flex>
 
-      {/* Status */}
+      {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
-        <Tooltip content={getStatusLabel()} side="top" delayDuration={200}>
-          <Box style={{ display: 'inline-flex' }}>
-            {getStatusIcon()}
-          </Box>
-        </Tooltip>
+        {(() => {
+          const statusIcon = getStatusIcon();
+          const statusLabel = getStatusLabel();
+          if (!statusIcon) {
+            return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
+          }
+          return (
+            <Tooltip content={statusLabel} side="top" delayDuration={200}>
+              <Box style={{ display: 'inline-flex' }}>{statusIcon}</Box>
+            </Tooltip>
+          );
+        })()}
       </Flex>
 
-      {/* Source - Only shown in All Records mode */}
-      {showSourceColumn && (
+      {/* Source — All Records rows only; icon + source name on hover */}
+      {showSourceColumn && isAllRecordDisplayRow(item) && (
         <Flex align="center" justify="center" gap="2" style={{ width: '70px', padding: '0 var(--space-2)' }}>
-          {item.nodeType === 'app' ? (
-            <ConnectorIcon
-              type={item.sourceType}
-              size={16}
-            />
-          ) : (
-            <FolderIcon
-              variant="default"
-              size={16}
-              color="var(--emerald-11)"
-              style={{ marginRight: '4px' }}
-            />
-          )}
+          <Tooltip content={item.sourceName} side="top" delayDuration={200}>
+            <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+              {item.sourceType === 'collection' ? (
+                <FolderIcon variant="default" size={16} color="var(--emerald-11)" />
+              ) : (
+                <ConnectorIcon type={item.sourceType} size={16} />
+              )}
+            </Box>
+          </Tooltip>
         </Flex>
       )}
 
