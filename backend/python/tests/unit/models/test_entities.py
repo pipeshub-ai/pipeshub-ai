@@ -1590,10 +1590,30 @@ class TestRecordToLlmContextEdgeCases:
         assert "https://app.example.com/path/to/doc" in ctx
 
     def test_to_llm_context_weburl_without_http_no_frontend(self):
-        """Weburl not starting with http without frontend_url uses raw."""
+        """Weburl not starting with http without frontend_url falls back to localhost."""
         rec = Record(**_record_kwargs(weburl="/path/to/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "/path/to/doc" in ctx
+        assert "http://localhost:3000/path/to/doc" in ctx
+
+    def test_to_llm_context_relative_weburl_without_frontend_url(self):
+        """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
+        rec = Record(**_record_kwargs(weburl="/record/abc"))
+        ctx = rec.to_llm_context()
+        assert "Web URL         : http://localhost:3000/record/abc" in ctx
+
+    def test_to_llm_context_frontend_url_with_trailing_slash(self):
+        """Trailing slash on frontend_url should not produce a double slash."""
+        rec = Record(**_record_kwargs(weburl="/record/abc"))
+        ctx = rec.to_llm_context(frontend_url="https://app.example.com/")
+        assert "https://app.example.com/record/abc" in ctx
+        assert "https://app.example.com//record/abc" not in ctx
+
+    def test_to_llm_context_absolute_weburl_unchanged(self):
+        """Absolute weburl should pass through untouched regardless of frontend_url."""
+        rec = Record(**_record_kwargs(weburl="https://example.com/doc"))
+        ctx = rec.to_llm_context(frontend_url=None)
+        assert "Web URL         : https://example.com/doc" in ctx
+        assert "localhost" not in ctx
 
 
 # ============================================================================
