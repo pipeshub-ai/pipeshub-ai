@@ -400,7 +400,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
-    searchArchivedConversations,
+    searchArchivedConversations(appConfig),
   );
 
   return router;
@@ -538,7 +538,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
-    listAllAgentsArchivedConversationsGrouped,
+    listAllAgentsArchivedConversationsGrouped(appConfig),
   );
 
   router.post(
@@ -672,7 +672,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
-    listAllArchivesAgentConversation,
+    listAllArchivesAgentConversation(),
   );
 
   router.post(

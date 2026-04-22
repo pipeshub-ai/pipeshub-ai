@@ -97,6 +97,72 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
+const AGENT_LIST_PAGE_LIMIT = 200;
+const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
+const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
+
+/**
+ * Loads soft-deleted agent instance keys the user can still see via permissions
+ * from the AI backend list-agents API (`isDeleted=true`). Callers should exclude
+ * these keys in Mongo (e.g. `agentKey: { $nin: keys }`). Returns null when the AI
+ * backend cannot be queried so callers can omit filtering instead of hiding all results.
+ */
+async function fetchDeletedAgentKeysForUser(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+): Promise<string[] | null> {
+  const keys: string[] = [];
+  let page = 1;
+  try {
+    while (true) {
+      const queryParams = new URLSearchParams();
+      queryParams.set('page', String(page));
+      queryParams.set('limit', String(AGENT_LIST_PAGE_LIMIT));
+      queryParams.set('isDeleted', 'true');
+      const uri = `${appConfig.aiBackend}/api/v1/agent/?${queryParams.toString()}`;
+      const aiCommand = new AIServiceCommand({
+        uri,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      });
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse || aiResponse.statusCode !== 200) {
+        logger.warn(
+          'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
+          { statusCode: aiResponse?.statusCode },
+        );
+        return null;
+      }
+      const data = aiResponse.data as {
+        agents?: Array<Record<string, unknown>>;
+        pagination?: { hasNext?: boolean };
+      };
+      const agents = data.agents ?? [];
+      for (const a of agents) {
+        const raw = a._key ?? a.id;
+        if (raw !== undefined && raw !== null && String(raw).length > 0) {
+          keys.push(String(raw));
+        }
+      }
+      if (!data.pagination?.hasNext) break;
+      page += 1;
+      if (page > 5000) {
+        logger.warn('fetchDeletedAgentKeysForUser: page cap hit');
+        break;
+      }
+    }
+    return keys;
+  } catch (e: any) {
+    logger.warn('fetchDeletedAgentKeysForUser failed; skipping agent soft-delete filter', {
+      message: e?.message,
+    });
+    return null;
+  }
+}
+
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
  * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
@@ -3209,6 +3275,7 @@ export const archiveConversation = async (
             $set: {
               isArchived: true,
               archivedBy: userId,
+              lastActivityAt: Date.now(),
             },
           },
           {
@@ -3319,6 +3386,7 @@ export const unarchiveConversation = async (
             $set: {
               isArchived: false,
               archivedBy: null,
+              lastActivityAt: Date.now(),
             },
           },
           {
@@ -3471,11 +3539,9 @@ export const listAllArchivesConversation = async (
  *
  * GET /api/v1/conversations/show/archives/search?search=foo&page=1&limit=20
  */
-export const searchArchivedConversations = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const searchArchivedConversations =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   try {
@@ -3485,6 +3551,8 @@ export const searchArchivedConversations = async (
     if (!userId || !orgId) {
       throw new BadRequestError('User ID and Organization ID are required');
     }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
 
     // ── Search parameter (required) ────────────────────────────────
     const rawSearch = req.query.search;
@@ -3551,6 +3619,9 @@ export const searchArchivedConversations = async (
       userId: userOid,
       $and: [searchCondition],
     };
+    if (deletedAgentKeys !== null) {
+      agentFilter.agentKey = { $nin: deletedAgentKeys };
+    }
 
     // ── Execute queries: $unionWith aggregation + per-source counts ──
     // $unionWith (Mongo 4.4+) merges both collections server-side so that
@@ -3622,7 +3693,7 @@ export const searchArchivedConversations = async (
     });
     next(error);
   }
-};
+  };
 
 export const search =
   (appConfig: AppConfig) =>
@@ -6687,6 +6758,7 @@ export const archiveAgentConversation = async (
           $set: {
             isArchived: true,
             archivedBy: userId,
+            lastActivityAt: Date.now(),
           },
         },
         { new: true, session: s, runValidators: true },
@@ -6787,6 +6859,7 @@ export const unarchiveAgentConversation = async (
           $set: {
             isArchived: false,
             archivedBy: null,
+            lastActivityAt: Date.now(),
           },
         },
         { new: true, session: s, runValidators: true },
@@ -6838,11 +6911,8 @@ export const unarchiveAgentConversation = async (
   }
 };
 
-export const listAllArchivesAgentConversation = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const listAllArchivesAgentConversation = () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   try {
@@ -6914,7 +6984,7 @@ export const listAllArchivesAgentConversation = async (
     });
     next(error);
   }
-};
+  };
 
 export const updateAgentConversationTitle = async (
   req: AuthenticatedUserRequest,
@@ -7052,8 +7122,6 @@ export const getAgentPermissions =
   }
 };
 
-const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
-const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
 
 /**
  * GET /api/v1/agents/conversations/show/archives
@@ -7064,12 +7132,13 @@ const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
  *
  * Each group contains the first {@link AGENT_ARCHIVES_INITIAL_CHAT_LIMIT} conversations plus
  * a totalCount so the frontend can render a "More Chats" affordance without extra round-trips.
+ *
+ * Conversations whose agent instance is soft-deleted in the AI backend are omitted
+ * (Mongo `agentKey` not in the user's deleted-agent list from the AI backend).
  */
-export const listAllAgentsArchivedConversationsGrouped = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const listAllAgentsArchivedConversationsGrouped =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   try {
@@ -7079,6 +7148,8 @@ export const listAllAgentsArchivedConversationsGrouped = async (
     if (!userId || !orgId) {
       throw new BadRequestError('User ID and Organization ID are required');
     }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
 
     // Agent-level pagination params
     const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
@@ -7095,13 +7166,16 @@ export const listAllAgentsArchivedConversationsGrouped = async (
       agentLimit,
     });
 
-    const filter = {
+    const filter: Record<string, unknown> = {
       orgId: new mongoose.Types.ObjectId(`${orgId}`),
       $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
       isArchived: true,
       archivedBy: { $exists: true },
       isDeleted: false,
     };
+    if (deletedAgentKeys !== null) {
+      filter.agentKey = { $nin: deletedAgentKeys };
+    }
 
     const aggregationResult = await AgentConversation.aggregate([
       { $match: filter },

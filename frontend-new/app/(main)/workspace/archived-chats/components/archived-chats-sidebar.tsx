@@ -211,7 +211,7 @@ function AgentGroupSection({
           {group.pagination.hasNextPage && (
             <LoadMoreButton
               isLoading={group.isLoadingMore}
-              label={t('workspace.archivedChats.moreChats')}
+              label={t('workspace.archivedChats.showMore')}
               onClick={() => {
                 onLoadMore(group.agentKey, group.pagination.page + 1);
               }}

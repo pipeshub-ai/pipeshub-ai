@@ -11,7 +11,7 @@ import { useChatStore } from '@/chat/store';
 import { debugLog } from '@/chat/debug-logger';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatSectionElement } from './chat-section-element';
-import { MAX_VISIBLE_CHATS, AGENT_CONVERSATIONS_PAGE_SIZE } from '../constants';
+import { AGENT_CONVERSATIONS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
 import type { Conversation } from '@/chat/types';
@@ -22,8 +22,11 @@ interface AgentMoreChatsSidebarProps {
 }
 
 /**
- * Secondary panel for agent chat sidebar — overflow list + search (API `search` param)
- * + infinite scroll, mirroring MoreChatsSidebar for the main chat list.
+ * Secondary panel for agent chat sidebar — shows ALL agent conversations
+ * with inline search and infinite scroll.
+ *
+ * Fetches independently from page 1 (page size 20) so the panel shows
+ * the complete list including chats already visible in the main sidebar.
  */
 export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
   agentId,
@@ -35,84 +38,66 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
   const searchParams = useSearchParams();
   const currentConversationId = searchParams.get('conversationId');
 
-  const agentConversations = useChatStore((s) => s.agentConversations);
-  const agentPagination = useChatStore((s) => s.agentConversationsPagination);
   const moveConversationToTop = useChatStore((s) => s.moveConversationToTop);
-  const agentMoreChatsPagination = useChatStore((s) => s.agentMoreChatsPagination);
-  const setAgentMoreChatsPagination = useChatStore((s) => s.setAgentMoreChatsPagination);
-  const appendAgentConversations = useChatStore((s) => s.appendAgentConversations);
 
   const { t } = useTranslation();
 
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedSearch(searchInput, 300);
-  const [searchRows, setSearchRows] = useState<Conversation[]>([]);
-  const [searchPagination, setSearchPagination] = useState<{
+
+  // Independent local state — panel fetches its own data from page 1
+  const [rows, setRows] = useState<Conversation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [pagination, setPagination] = useState<{
     page: number;
     hasNextPage: boolean;
-    isLoadingMore: boolean;
   } | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const agentMoreChatsPaginationRef = useRef(agentMoreChatsPagination);
+  const paginationRef = useRef(pagination);
   const debouncedSearchRef = useRef(debouncedSearch);
-  const searchPaginationRef = useRef(searchPagination);
   useEffect(() => {
-    agentMoreChatsPaginationRef.current = agentMoreChatsPagination;
-  }, [agentMoreChatsPagination]);
+    paginationRef.current = pagination;
+  }, [pagination]);
   useEffect(() => {
     debouncedSearchRef.current = debouncedSearch;
   }, [debouncedSearch]);
-  useEffect(() => {
-    searchPaginationRef.current = searchPagination;
-  }, [searchPagination]);
 
   const searching = debouncedSearch.trim().length > 0;
 
-  // Reset search UI when panel opens
+  // Fetch page 1 on mount AND when search query changes
   useEffect(() => {
-    setSearchInput('');
-    setSearchRows([]);
-    setSearchPagination(null);
-  }, [agentId]);
-
-  // Server search: page 1 when debounced query changes
-  useEffect(() => {
-    if (!searching) {
-      setSearchRows([]);
-      setSearchPagination(null);
-      return;
-    }
     let cancelled = false;
+    setIsLoading(true);
+
     (async () => {
       try {
         const result = await AgentsApi.fetchAgentConversations(agentId, {
           page: 1,
           limit: AGENT_CONVERSATIONS_PAGE_SIZE,
-          search: debouncedSearch.trim(),
+          search: debouncedSearch.trim() || undefined,
         });
         if (cancelled) return;
-        setSearchRows(result.conversations);
-        setSearchPagination({
+        setRows(result.conversations);
+        setPagination({
           page: result.pagination.page,
           hasNextPage: result.pagination.hasNextPage,
-          isLoadingMore: false,
         });
       } catch {
         if (!cancelled) {
-          setSearchRows([]);
-          setSearchPagination(null);
+          setRows([]);
+          setPagination(null);
         }
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [agentId, debouncedSearch, searching]);
-
-  const sourceConversations = searching
-    ? searchRows
-    : agentConversations.slice(MAX_VISIBLE_CHATS);
+  }, [agentId, debouncedSearch]);
 
   const handleSelect = (id: string) => {
     moveConversationToTop(id);
@@ -120,55 +105,20 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
     onBack();
   };
 
-  useEffect(() => {
-    if (searching) return;
-    if (agentMoreChatsPagination === null && agentPagination) {
-      setAgentMoreChatsPagination({
-        page: agentPagination.page,
-        hasNextPage: agentPagination.hasNextPage,
-        isLoadingMore: false,
-      });
-    }
-  }, [searching, agentMoreChatsPagination, agentPagination, setAgentMoreChatsPagination]);
+  const loadMore = useCallback(async () => {
+    const pag = paginationRef.current;
+    const search = debouncedSearchRef.current.trim() || undefined;
+    if (!pag?.hasNextPage || isLoadingMore || isLoading) return;
 
-  const loadMoreNonSearch = useCallback(async () => {
-    const current = agentMoreChatsPaginationRef.current;
-    if (!current || current.isLoadingMore || !current.hasNextPage) return;
-
-    const nextPage = current.page + 1;
-    setAgentMoreChatsPagination({ ...current, isLoadingMore: true });
-
+    const nextPage = pag.page + 1;
+    setIsLoadingMore(true);
     try {
       const result = await AgentsApi.fetchAgentConversations(agentId, {
         page: nextPage,
         limit: AGENT_CONVERSATIONS_PAGE_SIZE,
+        search,
       });
-      appendAgentConversations(result.conversations);
-      setAgentMoreChatsPagination({
-        page: nextPage,
-        hasNextPage: result.pagination.hasNextPage,
-        isLoadingMore: false,
-      });
-    } catch {
-      setAgentMoreChatsPagination({ ...current, isLoadingMore: false });
-    }
-  }, [agentId, appendAgentConversations, setAgentMoreChatsPagination]);
-
-  const loadMoreSearch = useCallback(async () => {
-    const sp = searchPaginationRef.current;
-    if (!sp || sp.isLoadingMore || !sp.hasNextPage) return;
-    const q = debouncedSearchRef.current.trim();
-    if (!q) return;
-
-    setSearchPagination({ ...sp, isLoadingMore: true });
-    try {
-      const nextPage = sp.page + 1;
-      const result = await AgentsApi.fetchAgentConversations(agentId, {
-        page: nextPage,
-        limit: AGENT_CONVERSATIONS_PAGE_SIZE,
-        search: q,
-      });
-      setSearchRows((prev) => {
+      setRows((prev) => {
         const seen = new Set(prev.map((c) => c.id));
         const merged = [...prev];
         for (const row of result.conversations) {
@@ -179,24 +129,18 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
         }
         return merged;
       });
-      setSearchPagination({
+      setPagination({
         page: nextPage,
         hasNextPage: result.pagination.hasNextPage,
-        isLoadingMore: false,
       });
     } catch {
-      setSearchPagination({ ...sp, isLoadingMore: false });
+      // keep existing list; user can scroll to retry
+    } finally {
+      setIsLoadingMore(false);
     }
-  }, [agentId]);
+  }, [agentId, isLoadingMore, isLoading]);
 
-  const loadMore = useCallback(() => {
-    if (searching) {
-      loadMoreSearch();
-    } else {
-      loadMoreNonSearch();
-    }
-  }, [searching, loadMoreSearch, loadMoreNonSearch]);
-
+  // IntersectionObserver: fires loadMore when sentinel becomes visible
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
@@ -210,13 +154,7 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
     return () => observer.disconnect();
   }, [loadMore]);
 
-  const isLoadingMore = searching
-    ? searchPagination?.isLoadingMore ?? false
-    : agentMoreChatsPagination?.isLoadingMore ?? false;
-  const hasNextPage = searching
-    ? searchPagination?.hasNextPage ?? false
-    : agentMoreChatsPagination?.hasNextPage ?? false;
-
+  const hasNextPage = pagination?.hasNextPage ?? false;
   const showSentinel = hasNextPage || isLoadingMore;
 
   return (
@@ -243,8 +181,12 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
         </TextField.Root>
 
         <Flex direction="column" gap="1" className="no-scrollbar" style={{ flex: 1, overflowY: 'auto' }}>
-          {sourceConversations.length > 0 ? (
-            sourceConversations.map((conv) => (
+          {isLoading ? (
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
+              <LottieLoader variant="loader" size={28} showLabel />
+            </Flex>
+          ) : rows.length > 0 ? (
+            rows.map((conv) => (
               <ChatSectionElement
                 key={conv.id}
                 conversation={conv}

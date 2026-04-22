@@ -2679,7 +2679,7 @@ class TestDeleteAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
-        services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 1, "toolsets_deleted": 0, "tools_deleted": 0, "knowledge_deleted": 0, "edges_deleted": 0})
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
         services["graph_provider"].commit_transaction = AsyncMock()
 
         request = MagicMock()
@@ -2690,6 +2690,9 @@ class TestDeleteAgent:
 
             result = await delete_agent(request, "a1")
             assert result.status_code == 200
+            services["graph_provider"].delete_agent.assert_awaited_once_with(
+                "a1", "k1", "o1", transaction="txn-1"
+            )
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
@@ -2726,7 +2729,7 @@ class TestDeleteAgent:
                 await delete_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_hard_delete_failure_rolls_back(self) -> None:
+    async def test_soft_delete_failure_rolls_back(self) -> None:
         from fastapi import HTTPException
 
         from app.api.routes.agent import delete_agent
@@ -2735,7 +2738,7 @@ class TestDeleteAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
-        services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 0})
+        services["graph_provider"].delete_agent = AsyncMock(return_value=False)
         services["graph_provider"].rollback_transaction = AsyncMock()
 
         request = MagicMock()

@@ -18941,6 +18941,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         search: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        is_deleted: bool = False,
         transaction: str | None = None,
     ) -> list[dict] | dict[str, Any]:
         """Get agents accessible to a user with optional pagination and search.
@@ -18984,7 +18985,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
-                    FILTER agent.isDeleted != true
+                    FILTER @is_deleted ? agent.isDeleted == true : agent.isDeleted != true
                     RETURN {{
                         agent_id: agent._id,
                         agent: agent,
@@ -19002,7 +19003,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
-                    FILTER agent.isDeleted != true
+                    FILTER @is_deleted ? agent.isDeleted == true : agent.isDeleted != true
                     RETURN {{
                         agent_id: agent._id,
                         agent: agent,
@@ -19020,7 +19021,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
-                    FILTER agent.isDeleted != true
+                    FILTER @is_deleted ? agent.isDeleted == true : agent.isDeleted != true
                     RETURN {{
                         agent_id: agent._id,
                         agent: agent,
@@ -19133,6 +19134,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "do_page": do_page,
                 "offset": offset,
                 "limit": page_limit,
+                "is_deleted": is_deleted,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)

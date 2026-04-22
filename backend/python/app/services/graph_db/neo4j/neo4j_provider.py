@@ -16930,6 +16930,7 @@ class Neo4jProvider(IGraphDBProvider):
         search: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        is_deleted: bool = False,
         transaction: str | None = None,
     ) -> list[dict] | dict[str, Any]:
         """Get all agents accessible to a user via individual, team, or org access.
@@ -16995,12 +16996,17 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 search_clause = ""
 
+            if is_deleted:
+                deleted_clause = "AND agent.isDeleted = true"
+            else:
+                deleted_clause = "AND (agent.isDeleted IS NULL OR agent.isDeleted = false)"
+
             # ── Step 1c: fetch visible (and optionally search-filtered) agents ─
             combined_query = f"""
             // Individual user permissions
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'USER'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
+            {deleted_clause}{search_clause}
             RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type, 1 AS priority
 
             UNION ALL
@@ -17009,7 +17015,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE t.id IN $team_ids
             AND p.type = 'TEAM'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
+            {deleted_clause}{search_clause}
             RETURN agent, p.role AS role, 'TEAM' AS access_type, 2 AS priority
 
             UNION ALL
@@ -17017,7 +17023,7 @@ class Neo4jProvider(IGraphDBProvider):
             // Org permissions
             MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'ORG'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
+            {deleted_clause}{search_clause}
             RETURN agent, p.role AS role, 'ORG' AS access_type, 3 AS priority
             """
 

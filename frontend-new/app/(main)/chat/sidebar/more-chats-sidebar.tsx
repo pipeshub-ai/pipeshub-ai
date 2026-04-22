@@ -1,22 +1,20 @@
 'use client';
 
-import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SecondaryPanel, SidebarBackHeader } from '@/app/components/sidebar';
-import { ICON_SIZE_DEFAULT, KBD_BADGE_PADDING } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
-import { useCommandStore } from '@/lib/store/command-store';
-import { getModifierSymbol } from '@/lib/utils/platform';
-import { SidebarItem } from './sidebar-item';
 import { debugLog } from '@/chat/debug-logger';
 import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
-import { MAX_VISIBLE_CHATS, MORE_CHATS_PAGE_SIZE } from '../constants';
+import { MORE_CHATS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
+import type { Conversation } from '@/chat/types';
 
 interface MoreChatsSidebarProps {
   /** Which section ("shared" | "your") the user opened "More" from */
@@ -26,12 +24,12 @@ interface MoreChatsSidebarProps {
 }
 
 /**
- * MoreChatsSidebar — secondary panel that shows all chats
- * for a given section with local search filtering and infinite scroll.
+ * MoreChatsSidebar — secondary panel that shows ALL chats
+ * for a given section with inline search and infinite scroll.
  *
- * Renders inside SecondaryPanel (opens to the right of the main sidebar).
- * When a chat is selected, it is moved to the top of the list
- * (ChatGPT-style reordering) and the panel is closed.
+ * Fetches conversations independently from page 1 (page size 20)
+ * so the panel shows the complete list including chats already
+ * visible in the main sidebar.
  *
  * Wrapped in React.memo to prevent parent-cascade re-renders.
  */
@@ -42,35 +40,67 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
   const searchParams = useSearchParams();
   const currentConversationId = searchParams.get('conversationId');
 
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
   const moveConversationToTop = useChatStore((s) => s.moveConversationToTop);
-  const pagination = useChatStore((s) => s.pagination);
-  const moreChatsPagination = useChatStore((s) => s.moreChatsPagination);
-  const setMoreChatsPagination = useChatStore((s) => s.setMoreChatsPagination);
-  const appendConversations = useChatStore((s) => s.appendConversations);
-  const appendSharedConversations = useChatStore((s) => s.appendSharedConversations);
 
   const { t } = useTranslation();
-  const dispatch = useCommandStore((s) => s.dispatch);
-  const modKey = useMemo(() => getModifierSymbol(), []);
+
+  const [searchInput, setSearchInput] = useState('');
+  const debouncedSearch = useDebouncedSearch(searchInput, 300);
+
+  // Independent local state — panel fetches its own data from page 1
+  const [rows, setRows] = useState<Conversation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [pagination, setPagination] = useState<{
+    page: number;
+    hasNextPage: boolean;
+  } | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
-  // Stable ref to the latest moreChatsPagination to avoid stale closures in the observer
-  const moreChatsPaginationRef = useRef(moreChatsPagination);
+  const paginationRef = useRef(pagination);
+  const debouncedSearchRef = useRef(debouncedSearch);
   useEffect(() => {
-    moreChatsPaginationRef.current = moreChatsPagination;
-  }, [moreChatsPagination]);
+    paginationRef.current = pagination;
+  }, [pagination]);
+  useEffect(() => {
+    debouncedSearchRef.current = debouncedSearch;
+  }, [debouncedSearch]);
 
-  // Slice off the first MAX_VISIBLE_CHATS items — those are already shown in the
-  // main sidebar, so "More Chats" only displays the overflow (index 10+) to avoid duplicates.
-  const allSourceConversations = sectionType === 'shared' ? sharedConversations : conversations;
-  const sourceConversations = allSourceConversations.slice(MAX_VISIBLE_CHATS);
+  const searching = debouncedSearch.trim().length > 0;
 
-  const handleOpenSearch = () => dispatch('openCommandPalette');
+  // Fetch page 1 on mount AND when search query changes
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+
+    (async () => {
+      try {
+        const result = await ChatApi.fetchConversations(1, MORE_CHATS_PAGE_SIZE, {
+          search: debouncedSearch.trim() || undefined,
+        });
+        if (cancelled) return;
+        const items = sectionType === 'your' ? result.conversations : result.sharedConversations;
+        setRows(items);
+        setPagination({
+          page: result.pagination.page,
+          hasNextPage: result.pagination.hasNextPage,
+        });
+      } catch {
+        if (!cancelled) {
+          setRows([]);
+          setPagination(null);
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch, sectionType]);
 
   const handleSelect = (id: string) => {
-    // Move selected chat to top (ChatGPT-style behavior)
     if (sectionType === 'your') {
       moveConversationToTop(id);
     }
@@ -78,112 +108,91 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     onBack();
   };
 
-  // Initialize moreChatsPagination from the main pagination on first open
-  useEffect(() => {
-    console.log('[MoreChats] mount — pagination from store:', pagination, '| moreChatsPagination:', moreChatsPagination);
-    if (moreChatsPagination === null && pagination) {
-      const init = { page: pagination.page, hasNextPage: pagination.hasNextPage, isLoadingMore: false };
-      console.log('[MoreChats] initializing moreChatsPagination →', init);
-      setMoreChatsPagination(init);
-    } else if (!pagination) {
-      console.warn('[MoreChats] no main pagination available yet — infinite scroll disabled');
-    }
-  }, []);
-
   const loadMore = useCallback(async () => {
-    const current = moreChatsPaginationRef.current;
-    console.log('[MoreChats] loadMore called — current:', current);
-    if (!current) { console.log('[MoreChats] skip: moreChatsPagination not initialized'); return; }
-    if (current.isLoadingMore) { console.log('[MoreChats] skip: already loading'); return; }
-    if (!current.hasNextPage) { console.log('[MoreChats] skip: no next page'); return; }
+    const pag = paginationRef.current;
+    const search = debouncedSearchRef.current.trim() || undefined;
+    if (!pag?.hasNextPage || isLoadingMore || isLoading) return;
 
-    const nextPage = current.page + 1;
-    console.log(`[MoreChats] fetching page ${nextPage}, limit ${MORE_CHATS_PAGE_SIZE}`);
-    setMoreChatsPagination({ ...current, isLoadingMore: true });
-
+    const nextPage = pag.page + 1;
+    setIsLoadingMore(true);
     try {
-      const result = await ChatApi.fetchConversations(nextPage, MORE_CHATS_PAGE_SIZE);
-      console.log(`[MoreChats] page ${nextPage} response — conversations:`, result.conversations.length, '| sharedConversations:', result.sharedConversations.length, '| pagination:', result.pagination);
-      if (sectionType === 'your') {
-        appendConversations(result.conversations);
-      } else {
-        appendSharedConversations(result.sharedConversations);
-      }
-      const next = { page: nextPage, hasNextPage: result.pagination.hasNextPage, isLoadingMore: false };
-      console.log('[MoreChats] updating moreChatsPagination →', next);
-      setMoreChatsPagination(next);
-    } catch (err) {
-      console.error('[MoreChats] fetch failed:', err);
-      // On error, restore the previous pagination state so the user can retry
-      setMoreChatsPagination({ ...current, isLoadingMore: false });
+      const result = await ChatApi.fetchConversations(nextPage, MORE_CHATS_PAGE_SIZE, {
+        search,
+      });
+      const newItems = sectionType === 'your' ? result.conversations : result.sharedConversations;
+      setRows((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        const merged = [...prev];
+        for (const row of newItems) {
+          if (!seen.has(row.id)) {
+            seen.add(row.id);
+            merged.push(row);
+          }
+        }
+        return merged;
+      });
+      setPagination({
+        page: nextPage,
+        hasNextPage: result.pagination.hasNextPage,
+      });
+    } catch {
+      // keep existing list; user can scroll to retry
+    } finally {
+      setIsLoadingMore(false);
     }
-  }, [sectionType, appendConversations, appendSharedConversations, setMoreChatsPagination]);
+  }, [sectionType, isLoadingMore, isLoading]);
 
   // IntersectionObserver: fires loadMore when sentinel becomes visible
   useEffect(() => {
     const sentinel = sentinelRef.current;
-    if (!sentinel) {
-      console.log('[MoreChats] observer: no sentinel (hasNextPage=false or searching)');
-      return;
-    }
-    console.log('[MoreChats] observer: attaching to sentinel');
+    if (!sentinel) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        const entry = entries[0];
-        console.log('[MoreChats] sentinel intersection:', entry?.isIntersecting, '| ratio:', entry?.intersectionRatio);
-        if (entry?.isIntersecting) {
+        if (entries[0]?.isIntersecting) {
           loadMore();
         }
       },
       { threshold: 0.1 }
     );
-
     observer.observe(sentinel);
-    return () => { console.log('[MoreChats] observer: disconnecting'); observer.disconnect(); };
+    return () => observer.disconnect();
   }, [loadMore]);
 
   const title = sectionType === 'shared' ? t('chat.sharedChats') : t('chat.yourChats');
-  const isLoadingMore = moreChatsPagination?.isLoadingMore ?? false;
-  const hasNextPage = moreChatsPagination?.hasNextPage ?? false;
+  const hasNextPage = pagination?.hasNextPage ?? false;
+  const showSentinel = hasNextPage || isLoadingMore;
 
   return (
     <SecondaryPanel
       header={<SidebarBackHeader title={title} onBack={onBack} backgroundColor='var(--olive-1)'/>}
     >
-      <Flex direction="column" gap="4">
-        {/* Search Chats — opens command palette */}
-        <SidebarItem
-          icon={<MaterialIcon name="search" size={ICON_SIZE_DEFAULT} />}
-          label={t('nav.searchChats')}
-          onClick={handleOpenSearch}
-          rightSlot={
-            <span
-              style={{
-                background: 'var(--slate-1)',
-                border: '1px solid var(--slate-3)',
-                padding: KBD_BADGE_PADDING,
-                borderRadius: 'var(--radius-2)',
-                fontSize: 12,
-                lineHeight: 'var(--line-height-1)',
-                letterSpacing: '0.04px',
-                color: 'var(--slate-12)',
-                fontWeight: 400,
-              }}
-            >
-              {modKey} +K
-            </span>
-          }
-        />
+      <Flex direction="column" gap="3">
+        {/* Inline search */}
+        <TextField.Root
+          size="2"
+          placeholder={t('form.searchPlaceholder')}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          style={{ width: '100%' }}
+        >
+          <TextField.Slot side="left">
+            <MaterialIcon name="search" size={18} color="var(--slate-11)" />
+          </TextField.Slot>
+        </TextField.Root>
 
-        {/* Flat chat list */}
+        {/* Chat list */}
         <Flex
           direction="column"
           gap="1"
           className="no-scrollbar"
           style={{ flex: 1, overflowY: 'auto' }}
         >
-          {sourceConversations.length > 0 ? (
-            sourceConversations.map((conv) => (
+          {isLoading ? (
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
+              <LottieLoader variant="loader" size={28} showLabel />
+            </Flex>
+          ) : rows.length > 0 ? (
+            rows.map((conv) => (
               <ChatSectionElement
                 key={conv.id}
                 conversation={conv}
@@ -198,13 +207,13 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
               style={{ padding: 'var(--space-4) var(--space-3)' }}
             >
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                {t('chat.noChatsYet')}
+                {searching ? t('message.noResults') : t('chat.noChatsYet')}
               </Text>
             </Flex>
           )}
 
-          {/* Sentinel + spinner: only shown when more pages exist */}
-          {(hasNextPage || isLoadingMore) && (
+          {/* Sentinel + spinner for infinite scroll */}
+          {showSentinel && (
             <Box ref={sentinelRef} style={{ padding: 'var(--space-2) 0', textAlign: 'center' }}>
               {isLoadingMore && (
                 <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-1) 0' }}>
