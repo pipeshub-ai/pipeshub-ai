@@ -258,6 +258,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                         name: artifact.fileName,
                         type: artifact.mimeType,
                         size: artifact.sizeBytes,
+                        hideFileDetails: true,
                       });
                       return;
                     } catch {
@@ -270,6 +271,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                     name: artifact.fileName,
                     type: artifact.mimeType,
                     size: artifact.sizeBytes,
+                    hideFileDetails: true,
                   });
                 }}
               />

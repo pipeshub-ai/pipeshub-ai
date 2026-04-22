@@ -47,12 +47,21 @@ export function getFileType(fileName: string, _mimeType?: string): FileType {
 }
 
 /**
- * Get tab configuration based on source
+ * Get tab configuration based on source.
+ *
+ * The ``hideFileDetails`` option lets a specific preview invocation suppress
+ * the "File Details" tab — e.g. chat-generated artifacts, which are not
+ * backed by a KB record and have nothing meaningful to show there. Left
+ * undefined / false, the tab is visible (existing behaviour).
  */
-export function getTabsForSource(_source: FilePreviewSource): TabConfig[] {
+export function getTabsForSource(
+  _source: FilePreviewSource,
+  options: { hideFileDetails?: boolean } = {}
+): TabConfig[] {
+  const { hideFileDetails = false } = options;
   return [
     { id: 'preview', label: 'Preview', visible: true },
-    { id: 'file-details', label: 'File Details', visible: true },
+    { id: 'file-details', label: 'File Details', visible: !hideFileDetails },
   ];
 }
 
