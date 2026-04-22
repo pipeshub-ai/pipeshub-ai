@@ -27,7 +27,7 @@ interface ProviderGridProps {
   onCapabilitySectionChange: (section: CapabilitySection) => void;
   onAdd: (provider: AIModelProvider, capability: string) => void;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
-  onSetDefault: (modelType: string, modelKey: string) => void;
+  onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   isLoading?: boolean;
   onRefresh: () => void;

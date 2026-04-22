@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Text, TextField, IconButton } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -41,8 +42,8 @@ export interface PasswordFieldProps {
 const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(function PasswordField({
   value,
   onChange,
-  label = 'Password',
-  placeholder = 'Enter your password',
+  label,
+  placeholder,
   error,
   hint,
   showForgotPassword = false,
@@ -55,6 +56,9 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
   onKeyDown,
   onBlur,
 }, ref) {
+  const { t } = useTranslation();
+  const resolvedLabel = label ?? t('auth.common.passwordLabel');
+  const resolvedPlaceholder = placeholder ?? t('auth.common.passwordPlaceholder');
   const [visible, setVisible] = useState(false);
 
   return (
@@ -69,7 +73,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
           lineHeight: '20px',
         }}
       >
-        {label}
+        {resolvedLabel}
       </Text>
 
       <TextField.Root
@@ -80,7 +84,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
         onBlur={onBlur}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         autoComplete={autoComplete}
         autoFocus={autoFocus}
         required
@@ -101,7 +105,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
             variant="ghost"
             color="gray"
             onClick={() => setVisible((v) => !v)}
-            aria-label={visible ? 'Hide password' : 'Show password'}
+            aria-label={visible ? t('auth.common.hidePassword') : t('auth.common.showPassword')}
           >
             <span
               className="material-icons-outlined"
@@ -140,7 +144,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
               }}
               onClick={onForgotPassword}
             >
-              <span>{forgotLoading ? 'Sending…' : 'Forgot Password'}</span>
+              <span>{forgotLoading ? t('auth.common.sending') : t('auth.common.forgotPassword')}</span>
             </Text>
           )}
         </Flex>

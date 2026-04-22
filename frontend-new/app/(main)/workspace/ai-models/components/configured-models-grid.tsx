@@ -2,7 +2,7 @@
 
 import type { TFunction } from 'i18next';
 import React, { useMemo, useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import { Button, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
@@ -54,7 +54,7 @@ interface ConfiguredModelsGridProps {
   capabilitySection: CapabilitySection;
   searchQuery: string;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
-  onSetDefault: (modelType: string, modelKey: string) => void;
+  onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   isLoading?: boolean;
   /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
@@ -170,11 +170,12 @@ function ConfiguredModelRow({
   model: ConfiguredModel;
   provider: AIModelProvider | undefined;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
-  onSetDefault: (modelType: string, modelKey: string) => void;
+  onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
+  const [settingDefault, setSettingDefault] = useState(false);
   const modelName =
     model.modelFriendlyName ||
     (model.configuration?.model as string) ||
@@ -256,6 +257,28 @@ function ConfiguredModelRow({
             flexShrink: 0,
           }}
         >
+          
+          {!model.isDefault && (
+            <Button
+              variant="outline"
+              color="gray"
+              size="1"
+              loading={settingDefault}
+              disabled={settingDefault}
+              style={{ cursor: settingDefault ? 'default' : 'pointer', gap: 4 }}
+              onClick={async () => {
+                setSettingDefault(true);
+                try {
+                  await onSetDefault(mt, model.modelKey);
+                } finally {
+                  setSettingDefault(false);
+                }
+              }}
+            >
+              <MaterialIcon name="star_outline" size={14} color="var(--gray-11)" />
+              {t('workspace.aiModels.actionSetDefault')}
+            </Button>
+          )}
           <IconBtn
             icon="edit"
             title={t('workspace.aiModels.actionEdit')}
@@ -264,13 +287,6 @@ function ConfiguredModelRow({
               if (provider) onEdit(provider, capReg, model);
             }}
           />
-          {!model.isDefault && (
-            <IconBtn
-              icon="star_outline"
-              title={t('workspace.aiModels.actionSetDefault')}
-              onClick={() => onSetDefault(mt, model.modelKey)}
-            />
-          )}
           <IconBtn
             icon="delete"
             title={t('workspace.aiModels.actionDelete')}

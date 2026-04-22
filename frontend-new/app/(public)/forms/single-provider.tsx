@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from 'react';
 import { Box, Flex, Text, Button, Callout } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { isValidEmail } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import AuthTitleSection from '../components/auth-title-section';
@@ -51,6 +52,7 @@ export default function SingleProvider({
   authProviders,
   onBack,
 }: SingleProviderProps) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [emailError, setEmailError] = useState('');
@@ -65,12 +67,12 @@ export default function SingleProvider({
   const ensureValidEmail = () => {
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
-      setEmailError('Email is required.');
+      setEmailError(t('auth.common.emailRequired'));
       emailRef.current?.focus();
       return false;
     }
     if (!isValidEmail(trimmedEmail)) {
-      setEmailError('Please enter a valid email address.');
+      setEmailError(t('auth.common.emailInvalid'));
       emailRef.current?.focus();
       return false;
     }
@@ -86,7 +88,7 @@ export default function SingleProvider({
       return;
     }
     if (!password) {
-      setPasswordRequiredError('Password is required.');
+      setPasswordRequiredError(t('auth.common.passwordRequired'));
       passwordRef.current?.focus();
       return;
     }
@@ -98,7 +100,7 @@ export default function SingleProvider({
     try {
       await auth.signInWithMicrosoft(credentials, method === 'azureAd' ? 'azureAd' : 'microsoft');
     } catch {
-      setProviderError('Authentication failed. Please try again.');
+      setProviderError(t('auth.common.authFailed'));
     }
   };
 
@@ -130,9 +132,9 @@ export default function SingleProvider({
     const inlinePasswordError =
       passwordRequiredError ||
       (auth.error?.type === 'wrongPassword'
-        ? 'Incorrect password.'
+        ? t('auth.common.incorrectPassword')
         : auth.error?.type === 'noPasswordSet'
-          ? 'No password set. Use Forgot Password below.'
+          ? t('auth.common.noPasswordSet')
           : undefined);
 
     return (
@@ -189,7 +191,7 @@ export default function SingleProvider({
                 size="3"
                 disabled={!password || !email.trim() || !isValidEmail(email.trim())}
                 loading={auth.loading}
-                loadingLabel="Signing in…"
+                loadingLabel={t('auth.common.signingIn')}
                 style={{
                   flex: 1,
                   backgroundColor: 'var(--accent-9)',
@@ -197,7 +199,7 @@ export default function SingleProvider({
                   fontWeight: 500,
                 }}
               >
-                Sign In
+                {t('auth.common.signIn')}
               </LoadingButton>
             </Flex>
           </Flex>
@@ -259,7 +261,7 @@ export default function SingleProvider({
                   primary
                 />
               ) : (
-                <Text size="2" color="gray">Google sign-in is not configured for your organisation.</Text>
+                <Text size="2" color="gray">{t('auth.common.googleNotConfigured')}</Text>
               )}
             </Box>
           </Flex>
@@ -299,7 +301,7 @@ export default function SingleProvider({
                   primary
                 />
               ) : (
-                <Text size="2" color="gray">Microsoft sign-in is not configured for your organisation.</Text>
+                <Text size="2" color="gray">{t('auth.common.microsoftNotConfigured')}</Text>
               )}
             </Box>
           </Flex>
@@ -354,7 +356,7 @@ export default function SingleProvider({
                   primary
                 />
               ) : (
-                <Text size="2" color="gray">OAuth sign-in is not configured for your organisation.</Text>
+                <Text size="2" color="gray">{t('auth.common.oauthNotConfigured')}</Text>
               )}
             </Box>
           </Flex>

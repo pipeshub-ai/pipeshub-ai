@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Flex, Box, Text, Button, TextField, Spinner } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getSmtpConfig, saveSmtpConfig } from '../api';
@@ -18,6 +19,7 @@ export function StepSmtp({
   systemStepIndex,
   totalSystemSteps,
 }: StepSmtpProps) {
+  const { t } = useTranslation();
   const { smtp, setSmtp, markStepCompleted, unmarkStepCompleted, submitting, setSubmitting, setSubmitStatus } =
     useOnboardingStore();
 
@@ -122,7 +124,7 @@ export function StepSmtp({
           size="1"
           style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
         >
-          System Configuration
+          {t('onboarding.systemConfig')}
         </Text>
         <Text
           as="div"
@@ -130,21 +132,21 @@ export function StepSmtp({
           weight="bold"
           style={{ color: 'var(--gray-12)' }}
         >
-          Step {systemStepIndex}/{totalSystemSteps}: Configure SMTP*
+          {t('onboarding.stepHeading', { current: systemStepIndex, total: totalSystemSteps, name: t('onboarding.stepSmtp.stepName') })}
         </Text>
       </Box>
 
       {/* Scrollable fields */}
       <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
         <Flex direction="column" gap="6">
-        <InfoBanner message="This is a recommended step to enable emails, invites & password resets" />
+        <InfoBanner message={t('onboarding.stepSmtp.infoBanner')} />
         {/* SMTP Host */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            SMTP Host*
+            {t('onboarding.stepSmtp.hostLabel')}
           </Text>
           <TextField.Root
-            placeholder="eg: smtp.gmail.com"
+            placeholder={t('onboarding.stepSmtp.hostPlaceholder')}
             value={form.host}
             onChange={(e) => handleChange('host', e.target.value)}
             disabled={submitting}
@@ -154,10 +156,10 @@ export function StepSmtp({
         {/* Port */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Port
+            {t('onboarding.stepSmtp.portLabel')}
           </Text>
           <TextField.Root
-            placeholder="eg: 587"
+            placeholder={t('onboarding.stepSmtp.portPlaceholder')}
             value={String(form.port)}
             onChange={(e) => handleChange('port', Number(e.target.value))}
             disabled={submitting}
@@ -168,10 +170,10 @@ export function StepSmtp({
         {/* From Email */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            From Email*
+            {t('onboarding.stepSmtp.fromEmailLabel')}
           </Text>
           <TextField.Root
-            placeholder="eg: noreply@company.com"
+            placeholder={t('onboarding.stepSmtp.fromEmailPlaceholder')}
             value={form.fromEmail}
             onChange={(e) => handleChange('fromEmail', e.target.value)}
             disabled={submitting}
@@ -183,10 +185,10 @@ export function StepSmtp({
         <Flex gap="2">
           <Flex direction="column" gap="1" style={{ flex: 1 }}>
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Username
+              {t('onboarding.stepSmtp.usernameLabel')}
             </Text>
             <TextField.Root
-              placeholder="eg: user@gmail.com"
+              placeholder={t('onboarding.stepSmtp.usernamePlaceholder')}
               value={form.username}
               onChange={(e) => handleChange('username', e.target.value)}
               disabled={submitting}
@@ -194,11 +196,11 @@ export function StepSmtp({
           </Flex>
           <Flex direction="column" gap="1" style={{ flex: 1 }}>
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Password
+              {t('onboarding.stepSmtp.passwordLabel')}
             </Text>
             <TextField.Root
               type={showPassword ? 'text' : 'password'}
-              placeholder="Enter Password"
+              placeholder={t('onboarding.stepSmtp.passwordPlaceholder')}
               value={form.password}
               onChange={(e) => handleChange('password', e.target.value)}
               disabled={submitting}
@@ -248,10 +250,10 @@ export function StepSmtp({
           {submitting ? (
             <Flex align="center" gap="2">
               <Spinner size="1" />
-              Saving…
+              {t('onboarding.saving')}
             </Flex>
           ) : (
-            'Save'
+            t('onboarding.save')
           )}
         </Button>
       </Box>

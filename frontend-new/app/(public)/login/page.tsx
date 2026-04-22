@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { GuestGuard } from '@/app/components/ui/guest-guard';
@@ -54,6 +55,7 @@ export default function LoginPage() {
   const router = useRouter();
   const splitLayout = useAuthWideLayout();
   const isHydrated = useAuthStore((s) => s.isHydrated);
+  const { t } = useTranslation();
   const [step, setStep] = useState<AuthStep>({ type: 'loading' });
 
   // Prevents the initAuth call from running twice in React Strict Mode
@@ -71,13 +73,13 @@ export default function LoginPage() {
     if (emailVerify === 'success' || emailVerify === 'error') {
       emailVerifyHandledRef.current = true;
       if (emailVerify === 'success') {
-        toast.success('Email verified', {
-          description: 'Your email address was updated. Sign in with your new email.',
+        toast.success(t('auth.login.emailVerifiedTitle'), {
+          description: t('auth.login.emailVerifiedDescription'),
         });
       } else {
         const detail = params.get('email_verify_msg');
-        toast.error('Email verification failed', {
-          description: detail?.trim() || 'The link may be invalid or expired.',
+        toast.error(t('auth.login.emailVerifyFailedTitle'), {
+          description: detail?.trim() || t('auth.login.emailVerifyFailedDescription'),
         });
       }
       router.replace('/login');
@@ -94,7 +96,7 @@ export default function LoginPage() {
     const samlErrorCode = params.get('saml_error');
     if (samlErrorCode) {
       samlErrorHandledRef.current = true;
-      toast.error('Error in logging in with SAML', {
+      toast.error(t('auth.login.samlErrorTitle'), {
         description: getSamlErrorDescription(samlErrorCode),
       });
       router.replace('/login');
@@ -103,8 +105,8 @@ export default function LoginPage() {
 
     if (params.get('error') === 'saml_sso') {
       samlErrorHandledRef.current = true;
-      toast.error('Sign-in failed', {
-        description: 'SAML SSO could not complete. Please try again.',
+      toast.error(t('auth.login.samlSignInFailedTitle'), {
+        description: t('auth.login.samlSignInFailedDescription'),
       });
       router.replace('/login');
     }

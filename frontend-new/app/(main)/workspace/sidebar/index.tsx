@@ -34,8 +34,8 @@ const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
 ];
 
 const PEOPLE_SUB_ITEMS = [
-  { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users' },
-  { labelKey: 'workspace.sidebar.nav.groups', route: '/workspace/groups' },
+  { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users', adminOnly: true },
+  { labelKey: 'workspace.sidebar.nav.groups', route: '/workspace/groups', adminOnly: true },
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];
 
@@ -113,6 +113,7 @@ export default function WorkspaceSidebar() {
 
   const visibleOverviewItems = OVERVIEW_ITEMS.filter((item) => isAdmin || !item.adminOnly);
   const visibleWorkspaceItems = WORKSPACE_ITEMS.filter((item) => isAdmin || !item.adminOnly);
+  const visiblePeopleItems = PEOPLE_SUB_ITEMS.filter((item) => isAdmin || !item.adminOnly);
 
   return (
     <SidebarBase>
@@ -137,8 +138,8 @@ export default function WorkspaceSidebar() {
             />
           ))}
 
-          {/* People collapsible — admin only */}
-          {isAdmin && (
+          {/* People collapsible — visible to all, sub-items filtered by role */}
+          {visiblePeopleItems.length > 0 && (
             <CollapsibleSection
               icon="groups"
               label={t('workspace.sidebar.sections.people')}
@@ -146,7 +147,7 @@ export default function WorkspaceSidebar() {
               onToggle={() => setIsPeopleExpanded((prev) => !prev)}
               hasActiveChild={isPeopleChildActive}
             >
-              {PEOPLE_SUB_ITEMS.map((item) => (
+              {visiblePeopleItems.map((item) => (
                 <WorkspaceSidebarItem
                   key={item.route}
                   label={t(item.labelKey)}

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { PipesHubIcon } from '@/app/components/ui';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -24,10 +25,13 @@ export interface AuthTitleSectionProps {
  * Matches the Figma node shared across sign-in, change-password, SSO, etc.
  */
 export default function AuthTitleSection({
-  title = 'Welcome to Pipeshub',
-  subtitle = "Your organization's knowledge, finally searchable and connected.",
+  title,
+  subtitle,
   marginBottom = '28px',
 }: AuthTitleSectionProps) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t('auth.titleSection.defaultTitle');
+  const resolvedSubtitle = subtitle !== undefined ? subtitle : t('auth.titleSection.defaultSubtitle');
   return (
     <Box style={{ marginBottom }}>
       {/* ── Logo mark ─────────────────────────────────────────── */}
@@ -48,9 +52,9 @@ export default function AuthTitleSection({
             lineHeight: '30px',
           }}
         >
-          {title}
+          {resolvedTitle}
         </Text>
-        {subtitle ? (
+        {resolvedSubtitle ? (
           <Text
             style={{
               color: 'var(--gray-11)',
@@ -59,7 +63,7 @@ export default function AuthTitleSection({
               lineHeight: '20px',
             }}
           >
-            {subtitle}
+            {resolvedSubtitle}
           </Text>
         ) : null}
       </Flex>
