@@ -1213,7 +1213,7 @@
       "dataCollectionReason5": "To personalize your user experience",
       "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
-      "removeLogoAria": "Remove organization logo",
+      "editLogoAria": "Edit organization logo",
       "toasts": {
         "loadError": "Failed to load organization",
         "loadErrorDescription": "Could not fetch your organization details",
@@ -1659,6 +1659,7 @@
       "general": {
         "avatarLabel": "Your Display Picture",
         "avatarDescription": "Recommended size is 256px by 256px",
+        "editAvatarAria": "Edit profile picture",
         "fullName": "Full Name",
         "fullNameDescription": "Please write your full name",
         "fullNamePlaceholder": "eg: John Doe",
