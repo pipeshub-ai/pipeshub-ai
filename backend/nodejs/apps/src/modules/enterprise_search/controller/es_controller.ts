@@ -129,10 +129,10 @@ async function fetchDeletedAgentKeysForUser(
         },
       });
       const aiResponse = await aiCommand.execute();
-      if (!aiResponse || aiResponse.statusCode !== 200) {
+      if (aiResponse.statusCode !== 200) {
         logger.warn(
           'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
-          { statusCode: aiResponse?.statusCode },
+          { statusCode: aiResponse.statusCode },
         );
         return null;
       }
@@ -143,7 +143,9 @@ async function fetchDeletedAgentKeysForUser(
       const agents = data.agents ?? [];
       for (const a of agents) {
         const raw = a._key ?? a.id;
-        if (raw !== undefined && raw !== null && String(raw).length > 0) {
+        if (typeof raw === 'string' && raw.length > 0) {
+          keys.push(raw);
+        } else if (typeof raw === 'number' && !Number.isNaN(raw)) {
           keys.push(String(raw));
         }
       }
@@ -155,10 +157,14 @@ async function fetchDeletedAgentKeysForUser(
       }
     }
     return keys;
-  } catch (e: any) {
-    logger.warn('fetchDeletedAgentKeysForUser failed; skipping agent soft-delete filter', {
-      message: e?.message,
-    });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : undefined;
+    logger.warn(
+      'fetchDeletedAgentKeysForUser failed; skipping agent soft-delete filter',
+      {
+        message,
+      },
+    );
     return null;
   }
 }
