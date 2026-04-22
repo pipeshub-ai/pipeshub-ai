@@ -107,6 +107,8 @@ interface ConnectorsState {
   newlyConfiguredConnectorId: string | null;
   /** Bumped after connector list should refetch (create/save/delete). */
   catalogRefreshToken: number;
+  /** IDs of instances we've optimistically removed; filtered out of list updates until the backend stops returning them. */
+  deletedInstanceIds: string[];
 
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
@@ -166,6 +168,8 @@ interface ConnectorsState {
   upsertConnectorInstance: (updated: Connector) => void;
   /** Drop cached config/stats for one instance (e.g. after delete starts). */
   removeConnectorInstanceCaches: (connectorId: string) => void;
+  /** Remove an instance from active list + instance list + clear selection/panel. */
+  removeConnectorInstance: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -262,6 +266,7 @@ const initialState = {
   showConfigSuccessDialog: false,
   newlyConfiguredConnectorId: null as string | null,
   catalogRefreshToken: 0,
+  deletedInstanceIds: [] as string[],
 };
 
 // Panel-specific fields to reset when closing
@@ -307,12 +312,18 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setRegistryConnectors: (connectors) =>
         set((s) => {
-          s.registryConnectors = connectors;
+          const blocked = new Set(s.deletedInstanceIds);
+          s.registryConnectors = blocked.size
+            ? connectors.filter((c) => !c._key || !blocked.has(c._key))
+            : connectors;
         }),
 
       setActiveConnectors: (connectors) =>
         set((s) => {
-          s.activeConnectors = connectors;
+          const blocked = new Set(s.deletedInstanceIds);
+          s.activeConnectors = blocked.size
+            ? connectors.filter((c) => !c._key || !blocked.has(c._key))
+            : connectors;
         }),
 
       setSearchQuery: (query) =>
@@ -661,6 +672,23 @@ export const useConnectorsStore = create<ConnectorsState>()(
           if (!connectorId) return;
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
+        }),
+
+      removeConnectorInstance: (connectorId) =>
+        set((s) => {
+          if (!connectorId) return;
+          s.activeConnectors = s.activeConnectors.filter((c) => c._key !== connectorId);
+          s.instances = s.instances.filter((i) => i._key !== connectorId);
+          delete s.instanceConfigs[connectorId];
+          delete s.instanceStats[connectorId];
+          if (!s.deletedInstanceIds.includes(connectorId)) {
+            s.deletedInstanceIds.push(connectorId);
+          }
+          if (s.selectedInstance?._key === connectorId) {
+            s.selectedInstance = null;
+            s.isInstancePanelOpen = false;
+            s.instancePanelTab = 'overview';
+          }
         }),
 
       clearInstanceData: () =>

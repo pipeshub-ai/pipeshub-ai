@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, Avatar, Box, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
@@ -17,10 +17,6 @@ interface SettingsTabProps {
   config?: ConnectorConfig | null;
   /** Opens remove confirmation (parent owns the dialog). */
   onRequestRemoveConnector?: () => void;
-  /** When true, remove control is disabled (e.g. sync still on, or already deleting). */
-  removeConnectorDisabled?: boolean;
-  /** Shown when remove is disabled. */
-  removeConnectorDisabledReason?: string | null;
 }
 
 // ========================================
@@ -31,8 +27,6 @@ export function SettingsTab({
   instance,
   config,
   onRequestRemoveConnector,
-  removeConnectorDisabled,
-  removeConnectorDisabledReason,
 }: SettingsTabProps) {
   const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
@@ -40,33 +34,20 @@ export function SettingsTab({
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
   const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
 
-  const removeDisabled = Boolean(removeConnectorDisabled);
-  const removeConnectorButton = onRequestRemoveConnector ? (
+  const removeConnectorControl = onRequestRemoveConnector ? (
     <Button
       type="button"
       color="red"
       variant="soft"
-      disabled={removeDisabled}
       style={{
         alignSelf: 'flex-start',
-        cursor: removeDisabled ? 'not-allowed' : 'pointer',
+        cursor: 'pointer',
       }}
-      onClick={removeDisabled ? undefined : () => onRequestRemoveConnector()}
+      onClick={() => onRequestRemoveConnector()}
     >
       Remove connector instance
     </Button>
   ) : null;
-
-  const removeConnectorControl =
-    removeConnectorButton &&
-    removeDisabled &&
-    removeConnectorDisabledReason ? (
-      <Tooltip content={removeConnectorDisabledReason}>
-        <span style={{ alignSelf: 'flex-start', display: 'inline-flex' }}>{removeConnectorButton}</span>
-      </Tooltip>
-    ) : (
-      removeConnectorButton
-    );
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
