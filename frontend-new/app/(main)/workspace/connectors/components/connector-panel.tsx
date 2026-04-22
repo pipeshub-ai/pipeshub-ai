@@ -103,16 +103,29 @@ export function ConnectorPanel() {
   const isLoading = isLoadingSchema || isLoadingConfig;
   const connectorName = panelConnector?.name ?? '';
   const connectorType = panelConnector?.type ?? '';
+  const storedListAuthType = panelConnectorId ? (panelConnector?.authType ?? '') : '';
+  const schemaTypes = connectorSchema?.auth?.supportedAuthTypes ?? [];
+  // Once the schema is loaded, only treat the stored authType as authoritative if the
+  // schema still supports it. This prevents the Authorize tab from persisting on
+  // connectors whose auth type was migrated (e.g. OAUTH → CUSTOM).
+  const resolvedListAuthForOAuth =
+    storedListAuthType &&
+    (!connectorSchema || schemaTypes.length === 0 || schemaTypes.includes(storedListAuthType))
+      ? storedListAuthType
+      : '';
   /** Prefer list row `authType` when editing an instance so tabs stay correct before config fetch. */
   const authTypeForOAuthUi =
-    (panelConnectorId ? panelConnector?.authType : undefined) ||
+    resolvedListAuthForOAuth ||
     selectedAuthType ||
     connectorConfig?.authType ||
     panelConnector?.authType ||
     '';
   const showAuthorizeTab = Boolean(panelConnectorId && isOAuthType(authTypeForOAuthUi));
+  // Prefer schema-resolved selectedAuthType over the stored connectorConfig?.authType so that
+  // connectors migrated from OAUTH→CUSTOM (old DB rows carry "OAUTH") still unlock the
+  // Configure tab once CUSTOM credentials have been saved.
   const authTypeForConfigureGate =
-    connectorConfig?.authType || selectedAuthType || panelConnector?.authType || '';
+    selectedAuthType || connectorConfig?.authType || panelConnector?.authType || '';
   /**
    * OAuth gate: inferred auth from GET `/config` (incl. nested tokens), explicit `false` on
    * config over stale list rows, else list-row while config omits a top-level flag.

@@ -61,6 +61,15 @@ function mergeFlatOAuthRegistrationMetadata(
   }
 }
 
+// Standard Google Cloud Service Account JSON field names.
+// Used to reconstruct the JSON blob when credentials were stored as flat fields
+// (legacy OAUTH connectors that have now migrated to CUSTOM auth type).
+const SERVICE_ACCOUNT_JSON_KEYS = [
+  'type', 'project_id', 'private_key_id', 'private_key', 'client_email',
+  'client_id', 'auth_uri', 'token_uri', 'auth_provider_x509_cert_url',
+  'client_x509_cert_url', 'universe_domain',
+] as const;
+
 function extractAuthValues(
   configAuth: Partial<ConnectorAuthConfig> | undefined,
   schema: ConnectorSchemaResponse['schema'],
@@ -87,6 +96,26 @@ function extractAuthValues(
     for (const key of fieldNames) {
       if (key in flat) result[key] = flat[key];
     }
+
+    // If the schema has a `serviceAccountJson` FILE field but no value was found for it,
+    // try to reconstruct the JSON string from flat service account fields stored by the
+    // legacy OAUTH connector. The FILE field component stores/expects raw JSON text.
+    if (
+      fieldNames.includes('serviceAccountJson') &&
+      result.serviceAccountJson === undefined &&
+      flat.type === 'service_account' &&
+      flat.client_id &&
+      flat.project_id
+    ) {
+      const saObj: Record<string, unknown> = {};
+      for (const k of SERVICE_ACCOUNT_JSON_KEYS) {
+        if (k in flat) saObj[k] = flat[k];
+      }
+      if (Object.keys(saObj).length > 0) {
+        result.serviceAccountJson = JSON.stringify(saObj, null, 2);
+      }
+    }
+
     mergeFlatOAuthRegistrationMetadata(result, configAuth);
     return result;
   }
@@ -104,11 +133,16 @@ export function mergeConfigWithSchema(
   configResponse: ConnectorConfig | null,
   schemaResponse: ConnectorSchemaResponse['schema']
 ): MergedConfig {
+  // Prefer the top-level authType from the config response over config.auth.type.
+  // config.auth.type can be a field *value* (e.g. "service_account" from a Google
+  // service account JSON) and must not be used as the auth-type key for schema lookup.
+  // If the stored authType is not in the schema's supportedAuthTypes (e.g. a connector
+  // was migrated from OAUTH→CUSTOM), fall through to the schema default.
+  const rawAuthType = configResponse?.authType || '';
+  const supportedTypes = schemaResponse.auth?.supportedAuthTypes ?? [];
+  const schemaSupportsRaw = !rawAuthType || supportedTypes.includes(rawAuthType);
   const storedAuthType =
-    configResponse?.config?.auth?.type ||
-    configResponse?.authType ||
-    schemaResponse.auth?.supportedAuthTypes?.[0] ||
-    '';
+    (schemaSupportsRaw ? rawAuthType : '') || supportedTypes[0] || '';
 
   const authValues = extractAuthValues(
     configResponse?.config?.auth,
