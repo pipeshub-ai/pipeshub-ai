@@ -197,11 +197,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     );
   }
 
+  const conversationHref = buildChatHref({ agentId, conversationId: conversation.id });
+
   return (
     <>
       <SidebarItem
         label={isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title}
         isActive={isActive}
+        href={conversationHref}
         onClick={onClick}
         textColor="var(--slate-12)"
         fontWeight={500}
