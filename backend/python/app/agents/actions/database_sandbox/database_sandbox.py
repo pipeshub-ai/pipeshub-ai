@@ -107,7 +107,7 @@ class DatabaseSandbox:
                     )
 
                 csv_bytes = _rows_to_csv_bytes(columns, row_tuples)
-                file_name = f"{label}_{int(time.time())}.csv"
+                file_name = f"{label}_{uuid4().hex[:8]}.csv"
 
                 upload_info = await blob_store.save_conversation_file_to_storage(
                     org_id=org_id,
