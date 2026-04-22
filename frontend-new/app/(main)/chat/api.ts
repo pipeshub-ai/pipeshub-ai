@@ -516,7 +516,7 @@ export const ChatApi = {
           limit: 100,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
-          origins: 'KB',
+          origins: 'COLLECTION',
         },
       }
     );

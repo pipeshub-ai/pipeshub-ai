@@ -48,6 +48,7 @@ function deriveRecordsStatus(
       notStarted: 0,
       autoIndexOff: 0,
       queued: 0,
+      empty: 0,
     };
   }
 
@@ -61,6 +62,7 @@ function deriveRecordsStatus(
     notStarted: idx.NOT_STARTED ?? 0,
     autoIndexOff: idx.AUTO_INDEX_OFF ?? 0,
     queued: idx.QUEUED ?? 0,
+    empty: idx.EMPTY ?? 0,
   };
 }
 
@@ -282,7 +284,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
 
         {/* Stats grid */}
         <Flex direction="column" gap="2">
-          {/* Top row: Total + Failed */}
+          {/* Row 1: Total + Completed */}
           <Flex gap="2" style={{ width: '100%' }}>
             <StatCard
               label={t('workspace.connectors.overview.statTotal')}
@@ -291,26 +293,53 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
               onClick={() => navigateToRecords()}
             />
             <StatCard
+              label={t('workspace.connectors.overview.statCompleted')}
+              value={recordsStatus.completed}
+              subtitle={t('workspace.connectors.overview.statCompletedSub')}
+              onClick={() => navigateToRecords(['COMPLETED'])}
+            />
+          </Flex>
+          {/* Row 2: Failed, Processing, Queued, Manual indexing */}
+          <Flex gap="2" style={{ width: '100%' }}>
+            <StatCard
               label={t('status.failed')}
               value={recordsStatus.failed}
               subtitle={t('workspace.connectors.overview.statFailedSub')}
               valueColor={recordsStatus.failed > 0 ? 'var(--red-11)' : undefined}
               onClick={() => navigateToRecords(['FAILED'])}
             />
-          </Flex>
-          {/* Bottom row: Unsupported + In Progress + Not Started */}
-          <Flex gap="2" style={{ width: '100%' }}>
-            <StatCard
-              label={t('workspace.connectors.overview.statUnsupported')}
-              value={recordsStatus.unsupported}
-              subtitle={t('workspace.connectors.overview.statUnsupportedSub')}
-              onClick={() => navigateToRecords(['FILE_TYPE_NOT_SUPPORTED'])}
-            />
             <StatCard
               label={t('status.processing')}
               value={recordsStatus.inProgress}
               subtitle={t('workspace.connectors.overview.statInProgressSub')}
               onClick={() => navigateToRecords(['IN_PROGRESS'])}
+            />
+            <StatCard
+              label={t('workspace.connectors.overview.statQueued')}
+              value={recordsStatus.queued}
+              subtitle={t('workspace.connectors.overview.statQueuedSub')}
+              onClick={() => navigateToRecords(['QUEUED'])}
+            />
+            <StatCard
+              label={t('workspace.connectors.overview.statManualIndexing')}
+              value={recordsStatus.autoIndexOff}
+              subtitle={t('workspace.connectors.overview.statManualIndexingSub')}
+              onClick={() => navigateToRecords(['AUTO_INDEX_OFF'])}
+            />
+          </Flex>
+          {/* Row 3 (last): Empty, Unsupported, Not started */}
+          <Flex gap="2" style={{ width: '100%' }}>
+            <StatCard
+              label={t('workspace.connectors.overview.statEmpty')}
+              value={recordsStatus.empty}
+              subtitle={t('workspace.connectors.overview.statEmptySub')}
+              onClick={() => navigateToRecords(['EMPTY'])}
+            />
+            <StatCard
+              label={t('workspace.connectors.overview.statUnsupported')}
+              value={recordsStatus.unsupported}
+              subtitle={t('workspace.connectors.overview.statUnsupportedSub')}
+              onClick={() => navigateToRecords(['FILE_TYPE_NOT_SUPPORTED'])}
             />
             <StatCard
               label={t('workspace.connectors.overview.statNotStarted')}
@@ -473,18 +502,29 @@ function StatCard({
         transition: 'background-color 150ms ease',
       }}
     >
-      <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+      <Text
+        size="2"
+        weight="medium"
+        style={{
+          color: 'var(--gray-12)',
+          textAlign: 'center',
+          width: '100%',
+        }}
+      >
         {label}
       </Text>
-      <Flex direction="column" align="center" gap="2">
+      <Flex direction="column" align="center" gap="2" style={{ width: '100%' }}>
         <Text
           size="6"
           weight="medium"
-          style={{ color: valueColor || 'var(--gray-12)' }}
+          style={{ color: valueColor || 'var(--gray-12)', textAlign: 'center', width: '100%' }}
         >
           {value}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', textAlign: 'center' }}>
+        <Text
+          size="1"
+          style={{ color: 'var(--gray-10)', textAlign: 'center', width: '100%' }}
+        >
           {subtitle}
         </Text>
       </Flex>

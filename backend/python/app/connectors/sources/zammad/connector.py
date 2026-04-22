@@ -148,6 +148,11 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
         .with_icon("/assets/icons/connectors/zammad.svg")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
+            "Zammad API Token Setup",
+            "https://docs.zammad.org/en/latest/api/user-access-token.html",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/zammad/zammad',
             'pipeshub'

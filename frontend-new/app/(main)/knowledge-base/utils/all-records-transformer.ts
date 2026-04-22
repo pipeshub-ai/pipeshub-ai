@@ -96,7 +96,7 @@ export function getSourceDisplay(
   node: KnowledgeHubNode,
   kbLookup: Map<string, string>
 ): { sourceName: string; sourceType: 'collection' | ConnectorType; sourceIcon: string } {
-  if (node.origin === 'KB') {
+  if (node.origin === 'COLLECTION' || node.connector === 'KB') {
     // For KB items, extract KB name from webUrl or use lookup
     const kbId = extractKbIdFromNode(node);
     const kbName = kbId ? kbLookup.get(kbId) || 'Collection' : 'Collection';
