@@ -427,7 +427,9 @@ export const modelType = z.enum([
   'slm',
   'reasoning',
   'multiModal',
-  'imageGeneration'
+  'imageGeneration',
+  'tts',
+  'stt',
 ]);
 
 // Provider validation is now dynamic — the Python backend registry is the
@@ -513,10 +515,12 @@ export const aiModelsConfigSchema = z.object({
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
       imageGeneration: z.array(modelConfigurationSchema).optional(),
+      tts: z.array(modelConfigurationSchema).optional(),
+      stt: z.array(modelConfigurationSchema).optional(),
       custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, and custom_system_prompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, and custom_system_prompt',
     })
     .refine(
       (data) => {
@@ -543,6 +547,8 @@ export const modelTypeSchema = z.object({
       'reasoning',
       'multiModal',
       'imageGeneration',
+      'tts',
+      'stt',
     ]),
   }),
 });
@@ -557,6 +563,8 @@ export const updateDefaultModelSchema = z.object({
       'reasoning',
       'multiModal',
       'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
@@ -572,6 +580,8 @@ export const deleteProviderSchema = z.object({
       'reasoning',
       'multiModal',
       'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),

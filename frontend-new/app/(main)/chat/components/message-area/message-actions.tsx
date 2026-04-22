@@ -13,7 +13,7 @@ import type { ModelInfo } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
-import { useSpeechSynthesis } from '@/lib/hooks/use-speech-synthesis';
+import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 
 // ========================================
 // Types
@@ -89,7 +89,7 @@ export function MessageActions({
   const [readAloudHovered, setReadAloudHovered] = useState(false);
   const { t, i18n } = useTranslation();
 
-  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useSpeechSynthesis({
+  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useChatSpeechSynthesis({
     lang: i18n.language,
     onError: () => {
       toast.error(t('chat.ttsNotSupported'));

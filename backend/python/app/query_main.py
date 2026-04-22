@@ -14,6 +14,7 @@ from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
@@ -311,6 +312,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
+app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")

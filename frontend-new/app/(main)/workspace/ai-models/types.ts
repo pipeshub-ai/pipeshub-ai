@@ -83,6 +83,8 @@ export interface AllModelsResponse {
     reasoning: ConfiguredModel[];
     multiModal: ConfiguredModel[];
     imageGeneration?: ConfiguredModel[];
+    tts?: ConfiguredModel[];
+    stt?: ConfiguredModel[];
   };
   message: string;
 }
@@ -113,13 +115,20 @@ export const MODEL_TYPE_TO_CAPABILITY: Record<string, string> = Object.fromEntri
 );
 
 /** Primary capability tabs on the AI Models page (registry + configured filtering). */
-export type CapabilitySection = 'text_generation' | 'embedding' | 'image_generation';
+export type CapabilitySection =
+  | 'text_generation'
+  | 'embedding'
+  | 'image_generation'
+  | 'tts'
+  | 'stt';
 
 /** Order of primary capability section tabs; labels come from i18n. */
 export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'text_generation',
   'embedding',
   'image_generation',
+  'tts',
+  'stt',
 ];
 
 /** Model API buckets shown under the "For LLMs" tab. */
@@ -140,6 +149,8 @@ export const REGISTRY_BADGE_CAPABILITY_KEYS = [
   'video',
   'image_generation',
   'embedding',
+  'tts',
+  'stt',
 ] as const;
 
 export type RegistryBadgeCapabilityKey = (typeof REGISTRY_BADGE_CAPABILITY_KEYS)[number];

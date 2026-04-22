@@ -2535,6 +2535,8 @@ export const getAIModelsProviders =
             reasoning: [],
             multiModal: [],
             imageGeneration: [],
+            tts: [],
+            stt: [],
           },
           message: 'No AI models found',
         });
@@ -2557,6 +2559,8 @@ export const getAIModelsProviders =
         reasoning: [],
         multiModal: [],
         imageGeneration: [],
+        tts: [],
+        stt: [],
       };
 
       for (const key of Object.keys(defaultStructure)) {
@@ -2596,6 +2600,8 @@ export const getModelsByType =
         'reasoning',
         'multiModal',
         'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2666,6 +2672,8 @@ export const getAvailableModelsByType =
         'reasoning',
         'multiModal',
         'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2793,6 +2801,8 @@ export const addAIModelProvider =
         'reasoning',
         'multiModal',
         'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2866,6 +2876,8 @@ export const addAIModelProvider =
         reasoning: [],
         multiModal: [],
         imageGeneration: [],
+        tts: [],
+        stt: [],
       };
       for (const key of Object.keys(defaultStructure)) {
         if (!(key in aiModels)) {
@@ -3379,6 +3391,9 @@ export const updateDefaultAIModel =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (healthCheckSupportedTypes.includes(targetModelType)) {
         const healthCheckPayload = {

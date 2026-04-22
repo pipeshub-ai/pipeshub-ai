@@ -20,6 +20,7 @@ from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .together import TogetherProvider
+from .whisper import WhisperProvider
 
 ALL_PROVIDER_CLASSES: list[type] = [
     OpenAIProvider,
@@ -42,6 +43,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     JinaAIProvider,
     VoyageProvider,
     HuggingFaceProvider,
+    WhisperProvider,
 ]
 
 

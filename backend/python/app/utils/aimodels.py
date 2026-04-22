@@ -28,6 +28,8 @@ class ModelType(str, Enum):
     REASONING = "reasoning"
     MULTIMODAL = "multiModal"
     IMAGE_GENERATION = "imageGeneration"
+    TTS = "tts"
+    STT = "stt"
 
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
@@ -71,6 +73,15 @@ class LLMProvider(Enum):
 class ImageGenerationProvider(Enum):
     OPENAI = "openAI"
     GEMINI = "gemini"
+
+
+class TTSProvider(Enum):
+    OPENAI = "openAI"
+
+
+class STTProvider(Enum):
+    OPENAI = "openAI"
+    WHISPER = "whisper"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -887,3 +898,343 @@ def get_image_generation_model(
         )
 
     raise ValueError(f"Unsupported image generation provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Text-to-Speech (TTS)
+# ---------------------------------------------------------------------------
+
+
+_OPENAI_TTS_DEFAULT_VOICE = "alloy"
+_OPENAI_TTS_VALID_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+_TTS_FORMAT_TO_MIME = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
+
+
+def tts_format_mime(response_format: str) -> str:
+    """Return an HTTP ``Content-Type`` string for a given TTS format."""
+    return _TTS_FORMAT_TO_MIME.get(response_format, "application/octet-stream")
+
+
+class TTSAdapter:
+    """Thin wrapper around a TTS provider SDK that returns raw audio bytes."""
+
+    provider: str
+    model: str
+    default_voice: str = _OPENAI_TTS_DEFAULT_VOICE
+    default_format: str = "mp3"
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        raise NotImplementedError
+
+
+class _OpenAITTSAdapter(TTSAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+        default_voice: str | None = None,
+        default_format: str | None = None,
+    ) -> None:
+        self.provider = TTSProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+        self.default_voice = default_voice or _OPENAI_TTS_DEFAULT_VOICE
+        self.default_format = default_format or "mp3"
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        from openai import AsyncOpenAI
+
+        fmt = (response_format or self.default_format or "mp3").lower()
+        if fmt not in _OPENAI_TTS_VALID_FORMATS:
+            fmt = "mp3"
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+        try:
+            response = await client.audio.speech.create(
+                model=self.model,
+                voice=voice or self.default_voice,
+                input=text,
+                response_format=fmt,
+                speed=speed,
+            )
+            return await response.aread()
+        finally:
+            await client.close()
+
+
+def get_tts_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> TTSAdapter:
+    """Return a TTS adapter for the given provider/config.
+
+    Mirrors the ``get_image_generation_model`` signature.
+    """
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [
+        name.strip()
+        for name in str(configuration.get("model", "")).split(",")
+        if name.strip()
+    ]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No TTS model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+
+    logger.info(f"Getting TTS model: provider={provider}, model_name={model_name}")
+
+    if provider == TTSProvider.OPENAI.value:
+        return _OpenAITTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+        )
+
+    raise ValueError(f"Unsupported TTS provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Speech-to-Text (STT)
+# ---------------------------------------------------------------------------
+
+
+class STTAdapter:
+    """Thin wrapper around an STT provider SDK that returns a transcript."""
+
+    provider: str
+    model: str
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        raise NotImplementedError
+
+
+def _stt_filename_for_mime(mime: str, fallback: str | None = None) -> str:
+    if fallback:
+        return fallback
+    ext_map = {
+        "audio/webm": "audio.webm",
+        "audio/ogg": "audio.ogg",
+        "audio/mp4": "audio.mp4",
+        "audio/m4a": "audio.m4a",
+        "audio/mpeg": "audio.mp3",
+        "audio/wav": "audio.wav",
+        "audio/x-wav": "audio.wav",
+        "audio/flac": "audio.flac",
+    }
+    return ext_map.get(mime.lower(), "audio.webm")
+
+
+class _OpenAISTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+        file_tuple = (
+            _stt_filename_for_mime(mime, filename),
+            audio,
+            mime or "application/octet-stream",
+        )
+        try:
+            kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "file": file_tuple,
+            }
+            if language:
+                kwargs["language"] = language
+            response = await client.audio.transcriptions.create(**kwargs)
+        finally:
+            await client.close()
+
+        text = getattr(response, "text", None)
+        if text is None and isinstance(response, dict):
+            text = response.get("text")
+        return text or ""
+
+
+# Process-level cache so we don't reload the Whisper weights on every request.
+# Keyed by (model_name, device, compute_type, download_root).
+_WHISPER_MODEL_CACHE: Dict[tuple, Any] = {}
+
+
+class _WhisperLocalSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        device: str = "auto",
+        compute_type: str = "int8",
+        download_root: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.WHISPER.value
+        self.model = model
+        self._device = device or "auto"
+        self._compute_type = compute_type or "int8"
+        self._download_root = download_root or None
+
+    def _get_whisper_model(self) -> Any:
+        key = (
+            self.model,
+            self._device,
+            self._compute_type,
+            self._download_root,
+        )
+        cached = _WHISPER_MODEL_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "The 'whisper' STT provider requires the 'faster-whisper' "
+                "package. Install the optional extra: "
+                "pip install 'pipeshub-ai[whisper]' or "
+                "pip install faster-whisper"
+            ) from exc
+
+        logger.info(
+            f"Loading faster-whisper model='{self.model}' device='{self._device}' "
+            f"compute_type='{self._compute_type}'"
+        )
+        whisper_kwargs: Dict[str, Any] = {
+            "device": self._device,
+            "compute_type": self._compute_type,
+        }
+        if self._download_root:
+            whisper_kwargs["download_root"] = self._download_root
+
+        model_instance = WhisperModel(self.model, **whisper_kwargs)
+        _WHISPER_MODEL_CACHE[key] = model_instance
+        return model_instance
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import asyncio
+        import io
+
+        def _run() -> str:
+            whisper_model = self._get_whisper_model()
+            segments, _info = whisper_model.transcribe(
+                io.BytesIO(audio),
+                language=language,
+            )
+            parts: list[str] = []
+            for seg in segments:
+                text = getattr(seg, "text", "") or ""
+                if text:
+                    parts.append(text)
+            return "".join(parts).strip()
+
+        return await asyncio.to_thread(_run)
+
+
+def get_stt_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> STTAdapter:
+    """Return an STT adapter for the given provider/config."""
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [
+        name.strip()
+        for name in str(configuration.get("model", "")).split(",")
+        if name.strip()
+    ]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No STT model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+
+    logger.info(f"Getting STT model: provider={provider}, model_name={model_name}")
+
+    if provider == STTProvider.OPENAI.value:
+        return _OpenAISTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        )
+
+    if provider == STTProvider.WHISPER.value:
+        return _WhisperLocalSTTAdapter(
+            model=model_name,
+            device=configuration.get("device", "auto"),
+            compute_type=configuration.get("computeType", "int8"),
+            download_root=configuration.get("modelDir") or None,
+        )
+
+    raise ValueError(f"Unsupported STT provider: {provider}")

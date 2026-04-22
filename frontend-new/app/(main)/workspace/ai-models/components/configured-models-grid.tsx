@@ -38,6 +38,8 @@ function isEmbeddingBuiltinPlaceholder(model: ConfiguredModel): boolean {
 function modelTypesForSection(section: CapabilitySection): readonly string[] {
   if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
   if (section === 'embedding') return ['embedding'];
+  if (section === 'tts') return ['tts'];
+  if (section === 'stt') return ['stt'];
   return ['imageGeneration'];
 }
 
