@@ -161,20 +161,30 @@ export const attachPopulatedCitations = async <
         ...message,
         citations:
           message.citations?.map((citation: IMessageCitation) => {
-            // After populate, `citationId` is the full Citation document.
+            // After populate, `citationId` is the full Citation document;
+            // otherwise it's still an ObjectId / string reference. We must
+            // explicitly exclude ObjectId here because some bson versions
+            // expose inherited properties that make a plain `'_id' in x`
+            // check truthy on an ObjectId.
             const populated = citation.citationId as unknown as
               | (ICitation & { _id?: mongoose.Types.ObjectId })
               | mongoose.Types.ObjectId
+              | string
               | undefined;
-            if (
-              populated &&
+            const isPopulatedCitationDoc =
+              !!populated &&
               typeof populated === 'object' &&
-              '_id' in populated
-            ) {
+              !(populated instanceof mongoose.Types.ObjectId) &&
+              (populated as any)._bsontype !== 'ObjectId' &&
+              '_id' in populated;
+            if (isPopulatedCitationDoc) {
+              const doc = populated as ICitation & {
+                _id?: mongoose.Types.ObjectId;
+              };
               return {
                 ...citation,
-                citationId: populated._id,
-                citationData: populated as ICitation,
+                citationId: doc._id,
+                citationData: doc as ICitation,
               };
             }
             // Fallback to the newly-created citations for this response.

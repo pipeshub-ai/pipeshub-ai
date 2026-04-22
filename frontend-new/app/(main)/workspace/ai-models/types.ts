@@ -119,7 +119,7 @@ export type CapabilitySection = 'text_generation' | 'embedding' | 'image_generat
 export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'text_generation',
   'embedding',
-  // 'image_generation',
+  'image_generation',
 ];
 
 /** Model API buckets shown under the "For LLMs" tab. */
