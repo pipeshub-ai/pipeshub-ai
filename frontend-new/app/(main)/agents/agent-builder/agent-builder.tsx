@@ -489,9 +489,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         // Persist the visual layout so positions survive subsequent edits.
         flow: { nodes, edges },
         flowSchemaVersion: 2,
-        orchestrationMode: nodes.some((node) => node.data?.type === 'conditional-check')
+        orchestrationMode: (nodes.some((node) => node.data?.type === 'conditional-check')
           ? 'conditional'
-          : 'linear',
+          : 'linear') as 'conditional' | 'linear',
       };
 
       if (loadedAgent) {
@@ -562,9 +562,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         ),
         flow: { nodes, edges },
         flowSchemaVersion: 2,
-        orchestrationMode: nodes.some((node) => node.data?.type === 'conditional-check')
+        orchestrationMode: (nodes.some((node) => node.data?.type === 'conditional-check')
           ? 'conditional'
-          : 'linear',
+          : 'linear') as 'conditional' | 'linear',
       };
 
       if (currentAgent) {
