@@ -1,3 +1,4 @@
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple, Union
@@ -168,7 +169,9 @@ class QdrantService(IVectorDBService):
         """Get all collections"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.get_collections()
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.get_collections()
+        return await asyncio.to_thread(self.client.get_collections)
 
     async def get_collection(
         self,
@@ -177,7 +180,9 @@ class QdrantService(IVectorDBService):
         """Get a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.get_collection(collection_name)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.get_collection(collection_name)
+        return await asyncio.to_thread(self.client.get_collection, collection_name)
 
     async def delete_collection(
         self,
@@ -186,7 +191,10 @@ class QdrantService(IVectorDBService):
         """Delete a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        self.client.delete_collection(collection_name)
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.delete_collection(collection_name)
+            return
+        await asyncio.to_thread(self.client.delete_collection, collection_name)
 
     async def create_collection(
         self,
@@ -229,13 +237,23 @@ class QdrantService(IVectorDBService):
                 )
             )
 
-        self.client.create_collection(
-            collection_name=collection_name,
-            vectors_config=vectors_config,
-            sparse_vectors_config=sparse_vectors_config,
-            optimizers_config=optimizers_config,
-            quantization_config=quantization_config,
-        )
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_vectors_config,
+                optimizers_config=optimizers_config,
+                quantization_config=quantization_config,
+            )
+        else:
+            await asyncio.to_thread(
+                self.client.create_collection,
+                collection_name=collection_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_vectors_config,
+                optimizers_config=optimizers_config,
+                quantization_config=quantization_config,
+            )
         logger.info(f"✅ Created collection {collection_name}")
 
     async def create_index(
@@ -253,8 +271,10 @@ class QdrantService(IVectorDBService):
                 type=KeywordIndexType.KEYWORD,
             )
 
-        # TODO: Add handling for Async client
-        self.client.create_payload_index(collection_name, field_name, field_schema)
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.create_payload_index(collection_name, field_name, field_schema)
+        else:
+            await asyncio.to_thread(self.client.create_payload_index, collection_name, field_name, field_schema)
 
     async def filter_collection(
         self,
@@ -368,7 +388,9 @@ class QdrantService(IVectorDBService):
         """Scroll through a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.scroll(collection_name, scroll_filter, limit)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.scroll(collection_name, scroll_filter, limit)
+        return await asyncio.to_thread(self.client.scroll, collection_name, scroll_filter, limit)
 
     def overwrite_payload(
         self,
@@ -381,7 +403,7 @@ class QdrantService(IVectorDBService):
             raise RuntimeError("Client not connected. Call connect() first.")
         self.client.overwrite_payload(collection_name, payload, points)
 
-    def query_nearest_points(
+    async def query_nearest_points(
         self,
         collection_name: str,
         requests: List[QueryRequest],
@@ -389,7 +411,9 @@ class QdrantService(IVectorDBService):
         """Query batch points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.query_batch_points(collection_name, requests)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.query_batch_points(collection_name, requests)
+        return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
 
     def upsert_points(
         self,
