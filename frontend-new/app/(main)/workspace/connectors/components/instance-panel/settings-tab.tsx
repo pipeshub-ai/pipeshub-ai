@@ -43,9 +43,10 @@ export function SettingsTab({
       type="button"
       color="red"
       variant="soft"
+      disabled={removeDisabled}
       style={{
         alignSelf: 'flex-start',
-        cursor: 'pointer',
+        cursor: removeDisabled ? 'not-allowed' : 'pointer',
       }}
       onClick={() => {
         if (removeDisabled) return;
