@@ -111,10 +111,10 @@ class TestCreateKbConnectorNoMetadataReal:
         svc.graph_provider.get_org_apps = AsyncMock(return_value=[])
 
         with patch(
-            "app.services.messaging.kafka.handlers.entity.KnowledgeBaseConnector",
+            "app.connectors.sources.localKB.connector.KnowledgeBaseConnector",
             FakeConnector,
         ), patch(
-            "app.services.messaging.kafka.handlers.entity.KB_CONNECTOR_NAME",
+            "app.connectors.sources.localKB.connector.KB_CONNECTOR_NAME",
             "kb",
             create=True,
         ):
@@ -143,10 +143,10 @@ class TestCreateKbConnectorMissingConnectorsMap:
             _connector_metadata = {"name": "KB", "appGroup": "Local Storage"}
 
         with patch(
-            "app.services.messaging.kafka.handlers.entity.KnowledgeBaseConnector",
+            "app.connectors.sources.localKB.connector.KnowledgeBaseConnector",
             FakeKB,
         ), patch(
-            "app.services.messaging.kafka.handlers.entity.KB_CONNECTOR_NAME",
+            "app.connectors.sources.localKB.connector.KB_CONNECTOR_NAME",
             "kb",
             create=True,
         ), patch(
