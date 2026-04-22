@@ -113,7 +113,7 @@ export function SettingsSection({
             />
           }
           label={t('workspaceMenu.workspaceSettings')}
-          href="/workspace"
+          href="/workspace/"
           onClick={onWorkspaceSettings}
         />
       )}

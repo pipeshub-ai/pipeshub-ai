@@ -117,7 +117,7 @@ export default function WorkspaceSidebar() {
         <WorkspaceSidebarItem
           icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
           label={t('workspace.sidebar.backToApp')}
-          href="/chat"
+          href="/chat/"
         />
 
         {/* ── Overview section ── */}
