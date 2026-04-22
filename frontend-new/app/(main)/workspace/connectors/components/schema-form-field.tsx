@@ -747,7 +747,7 @@ function executeValidationRules(
             };
           }
         }
-        const missing = (rule.fields ?? []).filter((f) => !(f in parsedJson!));
+        const missing = (rule.requiredFields ?? []).filter((f) => !(f in parsedJson!));
         if (missing.length > 0) {
           const msg = (rule.errorMessage ?? 'Missing required fields: {missing}').replace(
             '{missing}',

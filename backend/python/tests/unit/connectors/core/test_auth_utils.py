@@ -37,6 +37,8 @@ class TestAuthFieldToDict:
         assert result["defaultValue"] == ""
         assert result["validation"]["minLength"] == 1
         assert result["validation"]["maxLength"] == 500
+        assert "acceptedFileTypes" not in result["validation"]
+        assert "validationRules" not in result["validation"]
         assert result["isSecret"] is False
 
     def test_secret_field(self):
@@ -72,7 +74,7 @@ class TestAuthFieldToDict:
         rules = [
             FileContentValidationRule(
                 type=ValidationRuleType.JSON_HAS_FIELDS,
-                fields=["a"],
+                required_fields=["a"],
                 error_message="err",
             ),
         ]
@@ -84,9 +86,10 @@ class TestAuthFieldToDict:
             validation_rules=rules,
         )
         result = auth_field_to_dict(field)
+        assert result["validation"]["acceptedFileTypes"] == []
         vr = result["validation"]["validationRules"]
         assert len(vr) == 1
-        assert vr[0] == {"type": "json_has_fields", "fields": ["a"], "errorMessage": "err"}
+        assert vr[0] == {"type": "json_has_fields", "requiredFields": ["a"], "errorMessage": "err"}
 
     def test_default_values(self):
         field = AuthField(name="f", display_name="F")
@@ -97,6 +100,19 @@ class TestAuthFieldToDict:
         assert result["defaultValue"] == ""
         assert result["validation"]["minLength"] == 1
         assert result["validation"]["maxLength"] == 1000
+        assert "acceptedFileTypes" not in result["validation"]
+        assert "validationRules" not in result["validation"]
+
+    def test_file_field_includes_empty_file_validation_keys(self):
+        field = AuthField(
+            name="creds",
+            display_name="Credentials",
+            field_type="FILE",
+            min_length=0,
+        )
+        result = auth_field_to_dict(field)
+        assert result["validation"]["acceptedFileTypes"] == []
+        assert result["validation"]["validationRules"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -114,7 +114,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
                         ),
                         FileContentValidationRule(
                             type=ValidationRuleType.JSON_HAS_FIELDS,
-                            fields=["type", "client_id", "project_id"],
+                            required_fields=["type", "client_id", "project_id"],
                             error_message="Missing required fields: {missing}",
                         ),
                         FileContentValidationRule(

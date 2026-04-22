@@ -6,9 +6,9 @@ from pydantic import ValidationError
 from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 
 
-def test_json_has_fields_requires_fields() -> None:
+def test_json_has_fields_requires_required_fields() -> None:
     with pytest.raises(ValidationError):
-        FileContentValidationRule(type=ValidationRuleType.JSON_HAS_FIELDS, fields=[])
+        FileContentValidationRule(type=ValidationRuleType.JSON_HAS_FIELDS, required_fields=[])
 
 
 def test_json_field_equals_requires_field_and_value() -> None:
@@ -39,3 +39,14 @@ def test_accepts_wire_alias_error_message() -> None:
         {"type": "json_valid", "errorMessage": "bad json"}
     )
     assert r.error_message == "bad json"
+
+
+def test_accepts_legacy_fields_wire_key_for_json_has_fields() -> None:
+    r = FileContentValidationRule.model_validate(
+        {
+            "type": "json_has_fields",
+            "fields": ["a", "b"],
+            "errorMessage": "x",
+        }
+    )
+    assert r.required_fields == ["a", "b"]

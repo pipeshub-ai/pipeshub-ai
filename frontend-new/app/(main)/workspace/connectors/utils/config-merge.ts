@@ -142,10 +142,7 @@ export function mergeConfigWithSchema(
   const supportedTypes = schemaResponse.auth?.supportedAuthTypes ?? [];
   const schemaSupportsRaw = !rawAuthType || supportedTypes.includes(rawAuthType);
   const storedAuthType =
-    (schemaSupportsRaw ? rawAuthType : '') ||
-    supportedTypes[0] ||
-    configResponse?.config?.auth?.type ||
-    '';
+    (schemaSupportsRaw ? rawAuthType : '') || supportedTypes[0] || '';
 
   const authValues = extractAuthValues(
     configResponse?.config?.auth,

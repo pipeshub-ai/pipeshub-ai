@@ -95,7 +95,7 @@ export type ValidationRuleTypeValue = typeof ValidationRuleType[keyof typeof Val
 export interface ValidationRule {
   type: ValidationRuleTypeValue;
   /** For json_has_fields: list of required top-level keys */
-  fields?: string[];
+  requiredFields?: string[];
   /** For json_field_equals: the key to check */
   field?: string;
   /** For json_field_equals: the expected value */
@@ -106,13 +106,19 @@ export interface ValidationRule {
   errorMessage?: string;
 }
 
+/**
+ * Shared validation payload from connector/sync schemas.
+ * The backend omits `acceptedFileTypes` and `validationRules` unless
+ * `fieldType === 'FILE'` — treat them as absent unless the field is a file input.
+ */
 export interface FieldValidation {
   minLength?: number;
   maxLength?: number;
   pattern?: string;
   format?: string;
+  /** Present when `fieldType === 'FILE'` (wire schema from Python). */
   acceptedFileTypes?: string[];
-  /** Ordered list of validation rules executed on file content after selection. */
+  /** Present when `fieldType === 'FILE'`. Ordered rules on file content after selection. */
   validationRules?: ValidationRule[];
 }
 

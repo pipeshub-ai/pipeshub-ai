@@ -266,7 +266,7 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
                     ),
                     FileContentValidationRule(
                         type=ValidationRuleType.JSON_HAS_FIELDS,
-                        fields=["type", "client_id", "project_id"],
+                        required_fields=["type", "client_id", "project_id"],
                         error_message="Missing required fields: {missing}",
                     ),
                     FileContentValidationRule(

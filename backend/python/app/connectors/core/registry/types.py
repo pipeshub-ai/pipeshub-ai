@@ -46,10 +46,14 @@ class FileContentValidationRule(BaseModel):
     ``frontend-new`` remain the contract for the dashboard until codegen is wired.
     """
 
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+    model_config = ConfigDict(extra="forbid", use_enum_values=True, populate_by_name=True)
 
     type: ValidationRuleType
-    fields: Optional[list[str]] = None
+    required_fields: Optional[list[str]] = Field(
+        default=None,
+        validation_alias=AliasChoices("requiredFields", "required_fields", "fields"),
+        serialization_alias="requiredFields",
+    )
     field: Optional[str] = None
     value: Optional[str] = None
     pattern: Optional[str] = None
@@ -61,11 +65,13 @@ class FileContentValidationRule(BaseModel):
 
     @model_validator(mode="after")
     def _require_payload_for_rule_type(self) -> Self:
-        t = self.type.value if isinstance(self.type, ValidationRuleType) else self.type
+        t = self.type
 
         if t == ValidationRuleType.JSON_HAS_FIELDS.value:
-            if not self.fields:
-                raise ValueError("json_has_fields rules require a non-empty 'fields' list")
+            if not self.required_fields:
+                raise ValueError(
+                    "json_has_fields rules require a non-empty 'required_fields' / 'requiredFields' list"
+                )
         elif t == ValidationRuleType.JSON_FIELD_EQUALS.value:
             if self.field is None or self.field == "":
                 raise ValueError("json_field_equals rules require 'field'")
