@@ -353,13 +353,21 @@ export const useConnectorsStore = create<ConnectorsState>()(
           // Open tab: authenticated → Configure; OAuth pending consent → Authorize; else → Authenticate.
           const listAuthType = connector.authType ?? '';
           const rowAuthenticated = isConnectorConfigAuthenticated(connector);
+          // Legacy guard: Gmail/Drive Workspace team connectors were migrated from OAUTH→CUSTOM.
+          // Old DB rows still carry authType:"OAUTH" but the schema no longer supports it, so
+          // opening on the Authorize tab would show an unusable OAuth consent button.
+          const LEGACY_WORKSPACE_TEAM_TYPES = ['Gmail Workspace', 'Drive Workspace'];
+          const isLegacyWorkspaceOAuth =
+            LEGACY_WORKSPACE_TEAM_TYPES.includes(connector.type ?? '') &&
+            scope === 'team' &&
+            isOAuthType(listAuthType);
           if (
             connectorId &&
             (rowAuthenticated ||
               (isNoneAuthType(listAuthType) && connector.isConfigured === true))
           ) {
             s.panelActiveTab = 'configure';
-          } else if (connectorId && isOAuthType(listAuthType) && !rowAuthenticated) {
+          } else if (connectorId && isOAuthType(listAuthType) && !rowAuthenticated && !isLegacyWorkspaceOAuth) {
             s.panelActiveTab = 'authorize';
           } else {
             s.panelActiveTab = 'authenticate';
@@ -451,9 +459,15 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.connectorConfig = config ?? null;
 
           const merged = mergeConfigWithSchema(config ?? null, schema);
+          const configAuthType = config?.authType || '';
+          const supportedTypes = schema.auth?.supportedAuthTypes ?? [];
+          // Stored authType may be from a migration (e.g. OAUTH→CUSTOM). If the schema no
+          // longer lists it, fall through to the schema default.
+          const schemaSupportsStored =
+            !configAuthType || supportedTypes.includes(configAuthType);
           const authType =
-            config?.authType ||
-            schema.auth?.supportedAuthTypes?.[0] ||
+            (schemaSupportsStored ? configAuthType : '') ||
+            supportedTypes[0] ||
             '';
 
           s.selectedAuthType = authType;
@@ -474,6 +488,12 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.authState = 'success';
           } else {
             s.authState = 'empty';
+          }
+
+          // If the panel was waiting on OAuth consent but auth type is no longer OAuth
+          // (schema migration), reset to Authenticate tab so the fields are visible.
+          if (s.panelActiveTab === 'authorize' && !isOAuthType(authType)) {
+            s.panelActiveTab = 'authenticate';
           }
         }),
 

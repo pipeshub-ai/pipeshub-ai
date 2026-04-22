@@ -268,7 +268,7 @@ class CountryToRegionMapper:
     .with_categories(["Storage", "Documentation"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.CUSTOM).fields([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
                 name="clientId",
                 display_name="Application (Client) ID",
