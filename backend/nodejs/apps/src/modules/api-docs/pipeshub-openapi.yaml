@@ -2639,10 +2639,12 @@ components:
     Filters:
       type: object
       description: |
-        App connector types and knowledge-base UUIDs that narrow retrieval scope for a turn.
-        Streaming clients SHOULD always send this object on SSE stream requests (including
-        `{ "apps": [], "kb": [] }` when using full default org scope) so the service does not
-        infer filters from partial client state.
+        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
+        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
+        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
+        to let the service use the agent’s stored knowledge and tool configuration. Sending
+        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
+        turn (it is not “full org default”).
       properties:
         apps:
           type: array
