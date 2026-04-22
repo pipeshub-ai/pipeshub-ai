@@ -174,7 +174,7 @@ export function AllRecordsMode({
             categorizedTree={categorizedTree}
             onReindex={onReindex}
             onRename={onRename}
-            onDelete={onDelete}
+            onDelete={isKbApp ? onDelete : undefined}
             maxVisible={SIDEBAR_COLLECTION_LIMIT}
             onMore={() => onOpenMoreFolders?.(app.id, app.name, app.connector || app.name)}
           />
