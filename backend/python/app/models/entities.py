@@ -261,7 +261,8 @@ class Record(BaseModel):
 
         if self.weburl:
             if not self.weburl.startswith("http"):
-                weburl = f"{frontend_url}{self.weburl}" if frontend_url else self.weburl
+                base_url = frontend_url or "http://localhost:3000"
+                weburl = f"{base_url.rstrip('/')}{self.weburl}"
             else:
                 weburl = self.weburl
 

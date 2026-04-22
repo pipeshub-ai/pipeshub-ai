@@ -57,6 +57,66 @@ function statusMessageRestreaming(): StatusMessage {
   };
 }
 
+interface StatusDwellScheduler {
+  /** Force-apply a status immediately (bypasses dwell window). Used by restreaming. */
+  applyStatus: (msg: StatusMessage | null) => void;
+  /** Enqueue a status; coalesces bursts so each visible status dwells ≥ `minDwellMs`. */
+  scheduleStatus: (msg: StatusMessage) => void;
+  /** Drop any pending status and cancel the dwell timer. */
+  cancelPendingStatus: () => void;
+}
+
+/**
+ * Minimum-dwell scheduler for SSE status messages.
+ *
+ * Backend can emit bursts of status events (planning → executing → analyzing
+ * → generating) within a few ms. Writing each one directly to the store
+ * overwrites the previous before React paints, so users see statuses blink
+ * past. This scheduler guarantees each visible status stays for at least
+ * `minDwellMs`. Events arriving inside the window are coalesced — latest
+ * wins — and flushed when the window elapses.
+ */
+function createStatusDwellScheduler(
+  slotId: string,
+  minDwellMs = 400
+): StatusDwellScheduler {
+  let lastStatusAt = 0;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingStatus: StatusMessage | null = null;
+
+  function applyStatus(msg: StatusMessage | null): void {
+    lastStatusAt = Date.now();
+    useChatStore.getState().updateSlot(slotId, { currentStatusMessage: msg });
+  }
+
+  function scheduleStatus(msg: StatusMessage): void {
+    const elapsed = Date.now() - lastStatusAt;
+    if (elapsed >= minDwellMs) {
+      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+      pendingStatus = null;
+      applyStatus(msg);
+      return;
+    }
+    pendingStatus = msg;
+    if (statusTimer !== null) return;
+    statusTimer = setTimeout(() => {
+      statusTimer = null;
+      if (pendingStatus) {
+        const m = pendingStatus;
+        pendingStatus = null;
+        applyStatus(m);
+      }
+    }, minDwellMs - elapsed);
+  }
+
+  function cancelPendingStatus(): void {
+    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+    pendingStatus = null;
+  }
+
+  return { applyStatus, scheduleStatus, cancelPendingStatus };
+}
+
 /**
  * Stream a message for a specific slot.
  *
@@ -139,47 +199,10 @@ export async function streamMessageForSlot(
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
 
-  // ── Minimum-dwell scheduler for SSE status messages ─────────────────
-  // Backend can emit bursts of status events (planning → executing →
-  // analyzing → generating) within a few ms. Writing each one directly
-  // to the store overwrites the previous before React paints, so users
-  // see statuses blink past. Guarantee each visible status stays for at
-  // least MIN_STATUS_DWELL_MS. Events arriving inside the window are
-  // coalesced — latest wins — and flushed when the window elapses.
-  const MIN_STATUS_DWELL_MS = 400;
-  let lastStatusAt = 0;
-  let statusTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingStatus: StatusMessage | null = null;
-
-  function applyStatus(msg: StatusMessage | null) {
-    lastStatusAt = Date.now();
-    useChatStore.getState().updateSlot(slotId, { currentStatusMessage: msg });
-  }
-
-  function scheduleStatus(msg: StatusMessage) {
-    const elapsed = Date.now() - lastStatusAt;
-    if (elapsed >= MIN_STATUS_DWELL_MS) {
-      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-      pendingStatus = null;
-      applyStatus(msg);
-      return;
-    }
-    pendingStatus = msg;
-    if (statusTimer !== null) return;
-    statusTimer = setTimeout(() => {
-      statusTimer = null;
-      if (pendingStatus) {
-        const m = pendingStatus;
-        pendingStatus = null;
-        applyStatus(m);
-      }
-    }, MIN_STATUS_DWELL_MS - elapsed);
-  }
-
-  function cancelPendingStatus() {
-    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-    pendingStatus = null;
-  }
+  // Minimum-dwell scheduler for SSE status messages (see
+  // createStatusDwellScheduler for the rationale).
+  const { applyStatus, scheduleStatus, cancelPendingStatus } =
+    createStatusDwellScheduler(slotId);
 
   function flushContentToStore() {
     debugLog.rafFlush();
@@ -470,41 +493,10 @@ export async function streamRegenerateForSlot(
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
 
-  // Minimum-dwell scheduler for SSE status messages (see streamMessageForSlot).
-  const MIN_STATUS_DWELL_MS = 400;
-  let lastStatusAt = 0;
-  let statusTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingStatus: StatusMessage | null = null;
-
-  function applyStatus(msg: StatusMessage | null) {
-    lastStatusAt = Date.now();
-    useChatStore.getState().updateSlot(slotId, { currentStatusMessage: msg });
-  }
-
-  function scheduleStatus(msg: StatusMessage) {
-    const elapsed = Date.now() - lastStatusAt;
-    if (elapsed >= MIN_STATUS_DWELL_MS) {
-      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-      pendingStatus = null;
-      applyStatus(msg);
-      return;
-    }
-    pendingStatus = msg;
-    if (statusTimer !== null) return;
-    statusTimer = setTimeout(() => {
-      statusTimer = null;
-      if (pendingStatus) {
-        const m = pendingStatus;
-        pendingStatus = null;
-        applyStatus(m);
-      }
-    }, MIN_STATUS_DWELL_MS - elapsed);
-  }
-
-  function cancelPendingStatus() {
-    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-    pendingStatus = null;
-  }
+  // Minimum-dwell scheduler for SSE status messages (see
+  // createStatusDwellScheduler for the rationale).
+  const { applyStatus, scheduleStatus, cancelPendingStatus } =
+    createStatusDwellScheduler(slotId);
 
   function flushContentToStore() {
     debugLog.rafFlush();

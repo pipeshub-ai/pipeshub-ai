@@ -109,6 +109,49 @@ def get_mime_type_from_record(record: Record) -> str:
     return "application/octet-stream"
 
 
+# File types that require conversion to PDF for streaming
+_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx"})
+_PDF_CONVERTIBLE_MIME_TYPES: frozenset[str] = frozenset({
+    MimeTypes.PPT.value,
+    MimeTypes.PPTX.value,
+    MimeTypes.GOOGLE_SLIDES.value,
+})
+
+
+def get_pdf_conversion_info(
+    record: Record, mime_type: str | None = None
+) -> tuple[bool, str, str | None]:
+    """
+    Determine whether a record should be converted to PDF (e.g., PPT/PPTX/Google
+    Slides) and return the record's display name and file extension.
+
+    Args:
+        record: The record object
+        mime_type: Optional pre-resolved MIME type. If not provided, it will be
+            resolved via ``get_mime_type_from_record``.
+
+    Returns:
+        tuple of (needs_conversion, record_name, file_extension)
+    """
+    record_name = (
+        getattr(record, "record_name", None)
+        or getattr(record, "name", None)
+        or "file"
+    )
+
+    file_extension: str | None = None
+    if record_name and "." in record_name:
+        file_extension = record_name.rsplit(".", 1)[-1].lower()
+
+    resolved_mime = mime_type if mime_type else get_mime_type_from_record(record)
+    needs_conversion = (
+        file_extension in _PDF_CONVERTIBLE_EXTENSIONS
+        or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
+    )
+
+    return needs_conversion, record_name, file_extension
+
+
 async def _stream_artifact_from_storage(
     record: Record,
     org_id: str,
@@ -157,22 +200,8 @@ async def _stream_artifact_from_storage(
     mime = record.mime_type if record.mime_type else "application/octet-stream"
 
     if convert_to == MimeTypes.PDF.value:
-        record_name = (
-            getattr(record, 'record_name', None)
-            or getattr(record, 'name', None)
-            or 'file'
-        )
-        file_extension = None
-        if record_name and '.' in record_name:
-            file_extension = record_name.rsplit('.', 1)[-1].lower()
-
-        needs_conversion = (
-            file_extension in ['ppt', 'pptx']
-            or mime in [
-                MimeTypes.PPT.value,
-                MimeTypes.PPTX.value,
-                MimeTypes.GOOGLE_SLIDES.value,
-            ]
+        needs_conversion, record_name, file_extension = get_pdf_conversion_info(
+            record, mime_type=mime
         )
 
         if needs_conversion:
@@ -870,21 +899,8 @@ async def stream_record(
 
             # Handle conversion after getting the buffer
             if convertTo == MimeTypes.PDF.value:
-                mime_type = get_mime_type_from_record(record)
-                record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None) or 'file'
-
-                file_extension = None
-                if record_name and '.' in record_name:
-                    file_extension = record_name.split('.')[-1].lower()
-
-                # Check if this file type needs conversion (PPT, PPTX, Google Slides)
-                needs_conversion = (
-                    file_extension in ['ppt', 'pptx'] or
-                    mime_type in [
-                        MimeTypes.PPT.value,
-                        MimeTypes.PPTX.value,
-                        MimeTypes.GOOGLE_SLIDES.value
-                    ]
+                needs_conversion, record_name, file_extension = (
+                    get_pdf_conversion_info(record)
                 )
 
                 if needs_conversion:
