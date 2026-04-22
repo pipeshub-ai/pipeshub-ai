@@ -380,6 +380,7 @@ function GroupsPageContent() {
   // ── Row actions ────────────
   const renderRowActions = useCallback(
     (group: Group) => {
+      const isSystemGroup = group.type !== 'custom';
       const actions: RowAction[] = [
         {
           icon: 'group',
@@ -393,6 +394,10 @@ function GroupsPageContent() {
           label: t('workspace.groups.actions.delete'),
           variant: 'danger',
           separatorBefore: true,
+          disabled: isSystemGroup,
+          tooltip: isSystemGroup
+            ? t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')
+            : undefined,
           onClick: async () => {
             try {
               await GroupsApi.deleteGroup(group._id);

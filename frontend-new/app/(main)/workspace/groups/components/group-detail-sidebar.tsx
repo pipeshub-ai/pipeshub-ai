@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Badge, Button, Tooltip } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -519,45 +519,59 @@ export function GroupDetailSidebar({
       </Box>
 
       {/* Delete Group section (edit mode only) — separate box */}
-      {isEditMode && (
-        <Box
-          style={{
-            marginTop: 'var(--space-4)',
-            padding: 'var(--space-4)',
-            backgroundColor: 'var(--olive-2)',
-            border: '1px solid var(--olive-3)',
-            borderRadius: 'var(--radius-2)',
-          }}
-        >
-          <Flex align="center" justify="between">
-            <Flex direction="column" gap="1">
-              <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {t('workspace.groups.edit.deleteTitle', {
-                  name: detailGroup?.name,
-                  defaultValue: `Delete '${detailGroup?.name}' Group`,
-                })}
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                {t(
-                  'workspace.groups.edit.deleteDescription',
-                  'Permanently remove this group from the workspace'
-                )}
-              </Text>
+      {isEditMode && (() => {
+        const isSystemGroup = detailGroup?.type !== 'custom';
+        const deleteButton = (
+          <LoadingButton
+            variant="outline"
+            color="red"
+            size="1"
+            onClick={handleDeleteGroup}
+            loading={isDeleting}
+            disabled={isSystemGroup}
+            loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
+            style={{ flexShrink: 0 }}
+          >
+            {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+          </LoadingButton>
+        );
+
+        return (
+          <Box
+            style={{
+              marginTop: 'var(--space-4)',
+              padding: 'var(--space-4)',
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-2)',
+            }}
+          >
+            <Flex align="center" justify="between">
+              <Flex direction="column" gap="1">
+                <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('workspace.groups.edit.deleteTitle', {
+                    name: detailGroup?.name,
+                    defaultValue: `Delete '${detailGroup?.name}' Group`,
+                  })}
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  {t(
+                    'workspace.groups.edit.deleteDescription',
+                    'Permanently remove this group from the workspace'
+                  )}
+                </Text>
+              </Flex>
+              {isSystemGroup ? (
+                <Tooltip content={t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')}>
+                  <span style={{ display: 'inline-flex' }}>{deleteButton}</span>
+                </Tooltip>
+              ) : (
+                deleteButton
+              )}
             </Flex>
-            <LoadingButton
-              variant="outline"
-              color="red"
-              size="1"
-              onClick={handleDeleteGroup}
-              loading={isDeleting}
-              loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
-              style={{ flexShrink: 0 }}
-            >
-              {t('workspace.groups.edit.deleteButton', 'Delete Group')}
-            </LoadingButton>
-          </Flex>
-        </Box>
-      )}
+          </Box>
+        );
+      })()}
     </WorkspaceRightPanel>
   );
 }
