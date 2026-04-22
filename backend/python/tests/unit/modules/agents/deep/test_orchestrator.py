@@ -3,7 +3,6 @@ Tests for app.modules.agents.deep.orchestrator helper functions.
 
 Covers:
 - _normalize_tasks: single/multi-domain splitting
-- _parse_orchestrator_response: JSON parsing with markdown stripping
 - _build_knowledge_context: knowledge base detection
 - _build_tool_guidance: tool listing from state
 - _build_agent_instructions: agent instructions assembly
@@ -29,7 +28,6 @@ from app.modules.agents.deep.orchestrator import (
     _build_user_context,
     _create_retrieval_task,
     _normalize_tasks,
-    _parse_orchestrator_response,
     should_dispatch,
 )
 
@@ -163,69 +161,7 @@ class TestNormalizeTasks:
 
 
 # ============================================================================
-# 2. _parse_orchestrator_response
-# ============================================================================
-
-class TestParseOrchestratorResponse:
-    """Tests for _parse_orchestrator_response()."""
-
-    def test_clean_json(self):
-        log = _mock_log()
-        content = '{"can_answer_directly": true, "reasoning": "Simple greeting"}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert result["reasoning"] == "Simple greeting"
-
-    def test_markdown_wrapped_json(self):
-        log = _mock_log()
-        content = '```json\n{"tasks": [{"task_id": "t1"}], "reasoning": "test"}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert len(result["tasks"]) == 1
-
-    def test_malformed_json_fallback(self):
-        log = _mock_log()
-        content = "I cannot parse this as JSON at all, sorry!"
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "I cannot parse" in result["reasoning"]
-
-    def test_non_dict_json_fallback(self):
-        log = _mock_log()
-        content = '[1, 2, 3]'
-        result = _parse_orchestrator_response(content, log)
-        # Array is not a dict, so fallback
-        assert result["can_answer_directly"] is True
-
-    def test_json_embedded_in_text(self):
-        log = _mock_log()
-        content = 'Here is my plan:\n{"tasks": [{"task_id": "t1"}], "can_answer_directly": false}'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert result["can_answer_directly"] is False
-
-    def test_empty_content_fallback(self):
-        log = _mock_log()
-        content = ""
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_markdown_code_block_with_json_prefix(self):
-        log = _mock_log()
-        content = '```json\n{\n  "can_answer_directly": false,\n  "tasks": []\n}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is False
-        assert result["tasks"] == []
-
-    def test_nested_json_with_special_chars(self):
-        log = _mock_log()
-        content = '{"tasks": [{"task_id": "t1", "description": "Search for \\"bugs\\""}]}'
-        result = _parse_orchestrator_response(content, log)
-        assert len(result["tasks"]) == 1
-
-
-# ============================================================================
-# 3. _build_knowledge_context
+# 2. _build_knowledge_context
 # ============================================================================
 
 class TestBuildKnowledgeContext:
@@ -834,7 +770,7 @@ class TestOrchestratorNode:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"jira": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -933,7 +869,7 @@ class TestOrchestratorNode:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"unknown_domain": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -947,37 +883,7 @@ class TestOrchestratorNode:
 
 
 # ============================================================================
-# 12. _parse_orchestrator_response — additional branches
-# ============================================================================
-
-class TestParseOrchestratorResponseExtra:
-    """Additional branch coverage for _parse_orchestrator_response()."""
-
-    def test_json_embedded_after_text_with_brace_in_text(self):
-        """Content has braces before the real JSON."""
-        log = _mock_log()
-        content = 'Here is {some text} and now: {"can_answer_directly": false, "tasks": []}'
-        result = _parse_orchestrator_response(content, log)
-        assert isinstance(result, dict)
-
-    def test_markdown_block_without_json_tag(self):
-        """Markdown block starting with ``` but no json tag."""
-        log = _mock_log()
-        content = '```\n{"can_answer_directly": true}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_double_json_decode_error_fallback(self):
-        """When both direct parse and regex fail, returns fallback."""
-        log = _mock_log()
-        content = '{"broken: json, and {also broken}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "broken" in result.get("reasoning", "")
-
-
-# ============================================================================
-# 13. _build_iteration_context — branch coverage
+# 12. _build_iteration_context — branch coverage
 # ============================================================================
 
 class TestBuildIterationContextExtra:
@@ -1321,7 +1227,7 @@ class TestOrchestratorNodeAdditional:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"jira": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -1677,3 +1583,167 @@ class TestBuildKnowledgeContextRoutingMatrix:
         """Connector_id must appear in the task description example."""
         result = self._ctx([self._J])
         assert "jira-cid-1" in result
+
+
+# ============================================================================
+# 20. orchestrator_node — reflection-wrapper integration
+# ============================================================================
+
+class TestOrchestratorNodeReflectionIntegration:
+    """
+    Tests covering the new orchestrator_node behavior introduced when the
+    LLM call was wrapped in run_orchestrator_with_reflection and the critic
+    feedback channel was added.
+    """
+
+    def _make_state(self, **overrides):
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "query": "search for bugs",
+            "deep_iteration_count": 0,
+            "previous_conversations": [],
+            "has_knowledge": False,
+            "tools": [],
+            "system_prompt": "",
+            "instructions": "",
+            "current_time": None,
+            "timezone": None,
+            "user_info": {},
+            "user_email": "",
+            "completed_tasks": [],
+            "evaluation": {},
+            "conversation_summary": None,
+        }
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_critic_available_domains_set(self):
+        """Orchestrator records sorted available_domains in state for the critic."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "ok"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain",
+                   return_value={"jira": [], "slack": []}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        domains = result.get("_critic_available_domains")
+        assert domains is not None
+        # tool-group domains plus the virtual retrieval/knowledge domains
+        assert set(domains) == {"jira", "slack", "retrieval", "knowledge"}
+        # Stored as a sorted list for deterministic prompts
+        assert domains == sorted(domains)
+
+    @pytest.mark.asyncio
+    async def test_reflection_exhaustion_sets_friendly_error(self):
+        """When run_orchestrator_with_reflection raises, orchestrator stops and
+        sets a user-facing error (not the raw exception)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+        from app.modules.agents.deep.orchestrator_reflection import (
+            OrchestratorReflectionError,
+        )
+
+        llm = AsyncMock()
+        # Will not actually be called — we patch the reflection wrapper directly.
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch(
+                 "app.modules.agents.deep.orchestrator.run_orchestrator_with_reflection",
+                 new_callable=AsyncMock,
+                 side_effect=OrchestratorReflectionError("invalid plan after retries"),
+             ):
+            result = await orchestrator_node(state, config, writer)
+
+        err = result.get("error")
+        assert err is not None
+        assert err["status_code"] == 500
+        # User-facing message must NOT leak the raw exception text.
+        assert "rephrasing" in err["message"].lower() or "support" in err["message"].lower()
+        assert "invalid plan after retries" not in err["message"]
+        # But the internal detail should retain the underlying reason.
+        assert "invalid plan after retries" in err.get("detail", "")
+        # No tasks dispatched on failure.
+        assert "sub_agent_tasks" not in result or result.get("sub_agent_tasks") in (None, [])
+
+    @pytest.mark.asyncio
+    async def test_critic_feedback_is_injected_and_consumed(self):
+        """When state['critic_feedback'] is set, it's piped into the orchestrator
+        message list and then cleared so it isn't re-injected on the next pass."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Revised plan",
+            "tasks": [
+                {"task_id": "t1", "description": "Search Jira",
+                 "domains": ["jira"], "depends_on": []}
+            ],
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        state = self._make_state(
+            llm=llm,
+            tools=["jira.search"],
+            critic_feedback="Use jira instead of slack.",
+            critic_issues=[{"severity": "major", "rule": "D2",
+                            "description": "wrong domain", "fix": "use jira"}],
+            task_plan={"can_answer_directly": False, "tasks": [
+                {"task_id": "t1", "domains": ["slack"]}
+            ]},
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            for t in tasks:
+                t["tools"] = [MagicMock()]
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain",
+                   return_value={"jira": []}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Feedback must be cleared after consumption (single-shot semantics).
+        assert result.get("critic_feedback") == ""
+        assert result.get("critic_issues") is None
+
+        # Orchestrator must have seen the feedback in its prompt.
+        sent_messages = llm.ainvoke.call_args[0][0]
+        flat = "\n".join(getattr(m, "content", "") for m in sent_messages)
+        assert "Use jira instead of slack" in flat
