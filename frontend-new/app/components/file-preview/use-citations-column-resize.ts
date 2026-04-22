@@ -21,7 +21,8 @@ export function useCitationsColumnResize() {
     document.body.style.userSelect = 'none';
     let finalW = startW;
     const move = (ev: PointerEvent) => {
-      finalW = clamp(startW + (ev.clientX - startX), CITATIONS_MIN_PX, CITATIONS_MAX_PX);
+      // Handle is the left edge of the citations column: drag right (larger clientX) narrows it.
+      finalW = clamp(startW + (startX - ev.clientX), CITATIONS_MIN_PX, CITATIONS_MAX_PX);
       setCitationsWidthPx(finalW);
     };
     const up = () => {

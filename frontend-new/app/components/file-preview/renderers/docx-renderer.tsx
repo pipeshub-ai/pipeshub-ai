@@ -156,13 +156,9 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
   // `useTextHighlighter.applyHighlights` schedules work in rAF; wait briefly before scrolling
   // so the `.highlight-*` spans exist (mirrors `TextRenderer` / `HtmlRenderer`).
   useEffect(() => {
-    if (!activeCitationId || !documentReady) return;
+    if (!activeCitationId || !documentReady || !citations?.length) return;
     const container = containerRef.current;
     if (!container) return;
-
-    if (citations?.length) {
-      applyHighlights(container);
-    }
 
     const start = setTimeout(() => {
       const attemptScroll = (attempts: number) => {
@@ -179,7 +175,7 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     }, 150);
 
     return () => clearTimeout(start);
-  }, [activeCitationId, documentReady, scrollToHighlight, citations, applyHighlights]);
+  }, [activeCitationId, documentReady, scrollToHighlight, citations]);
 
   // ── Inject scoped styles for docx-preview highlights ──────────────
   useEffect(() => {
