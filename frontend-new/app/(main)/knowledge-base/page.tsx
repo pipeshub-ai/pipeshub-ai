@@ -61,7 +61,12 @@ import { getIsAllRecordsMode } from './utils/nav';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
-import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
+import {
+  isPresentationFile,
+  isDocxFile,
+  isLegacyWordDocFile,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 
 function KnowledgeBasePageContent() {
@@ -1401,8 +1406,10 @@ function KnowledgeBasePageContent() {
         setPreviewMode('sidebar');
 
         // 2. Fetch record details and stream file in parallel
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const streamOptions = isPresentationFile(item.mimeType, item.name) ? { convertTo: 'application/pdf' } : undefined;
+        const streamAsPdf =
+          isPresentationFile(item.mimeType, item.name) ||
+          isLegacyWordDocFile(item.mimeType, item.name);
+        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, streamOptions),
@@ -1410,8 +1417,21 @@ function KnowledgeBasePageContent() {
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
-        const resolvedType = recordDetails.record.mimeType || item.extension || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const recordMime = recordDetails.record.mimeType || item.extension || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          recordMime,
+          item.name,
+          blob,
+          !!streamOptions,
+        );
+        const fr = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          item.extension ?? undefined,
+          fr?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         // 4. Update state with actual file URL and/or Blob
@@ -1455,16 +1475,31 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const legacyStreamOptions = isPresentationFile(item.fileType, item.name) ? { convertTo: 'pdf' } : undefined;
+        const legacyStreamAsPdf =
+          isPresentationFile(item.fileType, item.name) ||
+          isLegacyWordDocFile(item.fileType, item.name);
+        const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
         ]);
 
         // DOCX uses the Blob directly; other types stay on URLs.
-        const resolvedType = recordDetails.record.mimeType || item.fileType || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          legacyRecordMime,
+          item.name,
+          blob,
+          !!legacyStreamOptions,
+        );
+        const frLegacy = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          undefined,
+          frLegacy?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         setPreviewFile({
@@ -2180,6 +2215,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
             // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
             if (previewFile.url && previewFile.url.startsWith('blob:')) {

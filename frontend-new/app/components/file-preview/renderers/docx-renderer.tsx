@@ -23,7 +23,9 @@ interface DocxRendererProps {
 const DOCX_PREVIEW_OPTIONS = {
   className: 'docx',
   inWrapper: true,
-  ignoreWidth: false,
+  // Reflow document layout to the preview pane width (Word page width is often ~816px and
+  // would otherwise be clipped in a narrow sidebar without horizontal scroll).
+  ignoreWidth: true,
   ignoreHeight: false,
   ignoreFonts: false,
   breakPages: true,
@@ -151,27 +153,32 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
   }, [documentReady, citations, applyHighlights, clearHighlights]);
 
   // ── Step 3: Scroll to active citation (retry pattern) ─────────────
+  // `useTextHighlighter.applyHighlights` schedules work in rAF; wait briefly before scrolling
+  // so the `.highlight-*` spans exist (mirrors `TextRenderer` / `HtmlRenderer`).
   useEffect(() => {
     if (!activeCitationId || !documentReady) return;
     const container = containerRef.current;
     if (!container) return;
 
-    // Re-apply to update active state
     if (citations?.length) {
       applyHighlights(container);
     }
 
-    const attemptScroll = (attempts: number) => {
-      if (attempts <= 0) return;
-      const el = container.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
-      if (el) {
-        scrollToHighlight(activeCitationId, container);
-      } else if (attempts > 1) {
-        setTimeout(() => attemptScroll(attempts - 1), 100);
-      }
-    };
+    const start = setTimeout(() => {
+      const attemptScroll = (attempts: number) => {
+        const root = containerRef.current;
+        if (attempts <= 0 || !root) return;
+        const el = root.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
+        if (el) {
+          scrollToHighlight(activeCitationId, root);
+        } else if (attempts > 1) {
+          setTimeout(() => attemptScroll(attempts - 1), 120);
+        }
+      };
+      attemptScroll(12);
+    }, 150);
 
-    attemptScroll(3);
+    return () => clearTimeout(start);
   }, [activeCitationId, documentReady, scrollToHighlight, citations, applyHighlights]);
 
   // ── Inject scoped styles for docx-preview highlights ──────────────
@@ -182,14 +189,27 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     const style = document.createElement('style');
     style.id = styleId;
     style.textContent = `
-      /* Ensure docx-preview wrapper fills available space */
+      /* Fill parent width — docx-preview defaults can leave fixed "page" widths */
       .docx-wrapper {
         background: white !important;
         padding: 16px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
       }
       .docx-wrapper > section.docx {
         box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important;
         margin-bottom: 16px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .docx-wrapper .docx {
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .docx-wrapper table {
+        max-width: 100% !important;
       }
       /* Ensure highlights inherit text color inside docx-preview */
       .docx .ph-highlight * {
@@ -204,46 +224,75 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     };
   }, []);
 
-  if (isLoading) {
-    return (
-      <Flex align="center" justify="center" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <Text size="2" color="gray">Loading document...</Text>
-      </Flex>
-    );
-  }
-
-  if (error) {
-    return (
-      <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
-          error_outline
-        </span>
-        <Text size="3" weight="medium" color="red">{error}</Text>
-      </Flex>
-    );
-  }
-
+  // IMPORTANT: The mount target for `docx-preview.renderAsync` must stay in the DOM while
+  // we async-load bytes + the library. If we only render a loading screen, `containerRef`
+  // is null and the effect bails out — same symptom as the old "blank preview" bug.
   return (
     <Box
       style={{
         width: '100%',
+        maxWidth: '100%',
+        minWidth: 0,
         height: '100%',
+        minHeight: 0,
         position: 'relative',
         overflow: 'hidden',
         borderRadius: 'var(--radius-3)',
         border: '1px solid var(--olive-6)',
+        boxSizing: 'border-box',
       }}
     >
       <Box
         ref={containerRef}
         style={{
           width: '100%',
+          maxWidth: '100%',
+          minWidth: 0,
           height: '100%',
+          minHeight: 0,
           overflow: 'auto',
-          minHeight: '100px',
+          boxSizing: 'border-box',
+          WebkitOverflowScrolling: 'touch',
+          visibility: error ? 'hidden' : 'visible',
         }}
       />
-      {/* docx-preview renders directly into containerRef */}
+
+      {isLoading && (
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2,
+            backgroundColor: 'var(--color-panel-solid)',
+            padding: 'var(--space-6)',
+          }}
+        >
+          <Text size="2" color="gray">Loading document...</Text>
+        </Flex>
+      )}
+
+      {error && !isLoading && (
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          gap="3"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2,
+            backgroundColor: 'var(--color-panel-solid)',
+            padding: 'var(--space-6)',
+          }}
+        >
+          <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+            error_outline
+          </span>
+          <Text size="3" weight="medium" color="red">{error}</Text>
+        </Flex>
+      )}
     </Box>
   );
 }

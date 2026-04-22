@@ -10,6 +10,8 @@ interface CitationsPanelProps {
   activeCitationId?: string | null;
   /** Called when a citation card is clicked */
   onCitationClick?: (citation: PreviewCitation) => void;
+  /** Column width in pixels (parent may resize via drag handle). Default 260. */
+  widthPx?: number;
 }
 
 /**
@@ -31,6 +33,7 @@ export function CitationsPanel({
   citations,
   activeCitationId,
   onCitationClick,
+  widthPx = 260,
 }: CitationsPanelProps) {
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -54,7 +57,9 @@ export function CitationsPanel({
     <Flex
       direction="column"
       style={{
-        width: '260px',
+        width: `${widthPx}px`,
+        minWidth: `${widthPx}px`,
+        maxWidth: `${widthPx}px`,
         flexShrink: 0,
         height: '100%',
         overflow: 'hidden',

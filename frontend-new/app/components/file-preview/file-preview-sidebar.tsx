@@ -15,6 +15,15 @@ import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { getTabsForSource, shouldShowPagination } from './utils';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
+import {
+  PANEL_MAX_PX,
+  PANEL_MIN_PX,
+  PANEL_WIDTH_LS_KEY,
+  readSavedPanelWidthPx,
+  clamp,
+  viewportMaxPanelPx,
+} from './resize-storage';
+import { useCitationsColumnResize } from './use-citations-column-resize';
 
 export function FilePreviewSidebar({
   open,
@@ -34,6 +43,8 @@ export function FilePreviewSidebar({
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const [panelWidthPx, setPanelWidthPx] = useState(() => readSavedPanelWidthPx(hasCitations));
+  const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
@@ -53,6 +64,43 @@ export function FilePreviewSidebar({
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
   }, [file.id, file.url, initialPage]);
+
+  // Keep panel width within viewport when the window resizes
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => {
+      setPanelWidthPx((w) => Math.min(w, viewportMaxPanelPx()));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [open]);
+
+  const beginPanelEdgeResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelWidthPx;
+    const maxW = Math.min(PANEL_MAX_PX, viewportMaxPanelPx());
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    let finalW = startW;
+    const move = (ev: PointerEvent) => {
+      finalW = clamp(startW + (startX - ev.clientX), PANEL_MIN_PX, maxW);
+      setPanelWidthPx(finalW);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        localStorage.setItem(PANEL_WIDTH_LS_KEY, String(finalW));
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [panelWidthPx]);
 
   // Handle page detection callback from renderer
   const handleTotalPagesDetected = useCallback((numPages: number) => {
@@ -134,7 +182,7 @@ export function FilePreviewSidebar({
           top: 10,
           right: 10,
           bottom: 10,
-          width: hasCitations ? '860px' : '37.5rem',
+          width: `${panelWidthPx}px`,
           maxWidth: '100vw',
           maxHeight: 'calc(100vh - 20px)',
           padding: 0,
@@ -228,27 +276,49 @@ export function FilePreviewSidebar({
           <FilePreviewTabs tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
         </Box>
 
-        {/* Content Area with Floating Controls + optional Citations Panel */}
-        <Flex style={{ flex: 1, overflow: 'hidden' }}>
-          {/* Main preview / details content */}
-          <Box 
+        {/* Content area: tab body + optional citations; left strip resizes whole panel width.
+            Must be a flex column so the inner row can use flex:1 + minHeight:0; otherwise block
+            layout ignores flex on children and the preview never gets a bounded height → no Y scroll. */}
+        <Box
+          style={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            position: 'relative',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', alignItems: 'stretch' }}>
+          {/* Main preview / details content — flex column + minHeight:0 so the tab body can scroll in Y */}
+          <Box
             className="no-scrollbar"
-            style={{ 
-                flex: 1, 
-                position: 'relative',
-                overflow: 'hidden',
-                paddingLeft: 'var(--space-4)',
-                paddingRight: 'var(--space-4)',
-                paddingBottom: 'var(--space-2)',
-                paddingTop: 'var(--space-2)',
-                minWidth: 0,
-              }}
-            >
+            style={{
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              paddingLeft: 'var(--space-4)',
+              paddingRight: 'var(--space-4)',
+              paddingBottom: 'var(--space-2)',
+              paddingTop: 'var(--space-2)',
+            }}
+          >
               {/* Tab Content */}
               <Box 
                 style={{ 
+                  flex: 1,
+                  minHeight: 0,
                   height: '100%',
+                  width: '100%',
+                  maxWidth: '100%',
+                  minWidth: 0,
                   overflow: 'auto',
+                  boxSizing: 'border-box',
                 }} 
                 className="no-scrollbar"
               >
@@ -381,20 +451,73 @@ export function FilePreviewSidebar({
 
           {/* Citations Panel — only when citations are provided */}
           {hasCitations && (
-            <Box
-              style={{
-                borderLeft: '1px solid var(--olive-3)',
-                height: '100%',
-              }}
-            >
-              <CitationsPanel
-                citations={citations}
-                activeCitationId={activeCitationId}
-                onCitationClick={handleCitationClick}
+            <>
+              <Box
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize citations panel"
+                onPointerDown={beginCitationsSplitResize}
+                style={{
+                  width: '6px',
+                  flexShrink: 0,
+                  alignSelf: 'stretch',
+                  cursor: 'col-resize',
+                  touchAction: 'none',
+                  borderLeft: '1px solid var(--olive-3)',
+                  backgroundColor: 'transparent',
+                }}
+                onPointerEnter={(ev) => {
+                  ev.currentTarget.style.backgroundColor = 'var(--olive-4)';
+                }}
+                onPointerLeave={(ev) => {
+                  ev.currentTarget.style.backgroundColor = 'transparent';
+                }}
               />
-            </Box>
+              <Box
+                style={{
+                  width: `${citationsWidthPx}px`,
+                  flexShrink: 0,
+                  minWidth: 0,
+                  height: '100%',
+                  minHeight: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+              >
+                <CitationsPanel
+                  citations={citations}
+                  activeCitationId={activeCitationId}
+                  onCitationClick={handleCitationClick}
+                  widthPx={citationsWidthPx}
+                />
+              </Box>
+            </>
           )}
         </Flex>
+
+        <Box
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize file preview panel"
+          onPointerDown={beginPanelEdgeResize}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: '6px',
+            zIndex: 20,
+            cursor: 'col-resize',
+            touchAction: 'none',
+          }}
+          onPointerEnter={(ev) => {
+            ev.currentTarget.style.backgroundColor = 'var(--olive-5)';
+          }}
+          onPointerLeave={(ev) => {
+            ev.currentTarget.style.backgroundColor = 'transparent';
+          }}
+        />
+        </Box>
       </Dialog.Content>
     </Dialog.Root>
   );

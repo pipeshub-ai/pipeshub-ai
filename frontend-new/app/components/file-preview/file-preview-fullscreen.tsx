@@ -11,12 +11,14 @@ import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { shouldShowPagination } from './utils';
 import type { FilePreviewProps, PaginationControls } from './types';
+import { useCitationsColumnResize } from './use-citations-column-resize';
 
 export function FilePreviewFullscreen({
   source: _source,
   file,
   defaultTab: _defaultTab = 'preview',
   onClose,
+  onExitFullscreen,
   isLoading = false,
   error,
   recordDetails: _recordDetails,
@@ -27,6 +29,7 @@ export function FilePreviewFullscreen({
 }: FilePreviewProps) {
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
 
@@ -100,6 +103,7 @@ export function FilePreviewFullscreen({
       style={{
         position: 'fixed',
         inset: 0,
+        minHeight: 0,
         backgroundColor: 'var(--color-background)',
         display: 'flex',
         flexDirection: 'column',
@@ -138,36 +142,52 @@ export function FilePreviewFullscreen({
           </Text>
         </Flex>
 
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={onClose}
-          title="Close"
-        >
-          <MaterialIcon name="close" size={ICON_SIZES.HEADER} />
-        </IconButton>
+        <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {onExitFullscreen && (
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="1"
+              onClick={onExitFullscreen}
+              title="Exit full screen"
+            >
+              <MaterialIcon name="close_fullscreen" size={ICON_SIZES.HEADER} />
+            </IconButton>
+          )}
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size="1"
+            onClick={onClose}
+            title="Close"
+          >
+            <MaterialIcon name="close" size={ICON_SIZES.HEADER} />
+          </IconButton>
+        </Flex>
       </Flex>
 
       {/* Main Content Area */}
-      <Flex style={{ flex: 1, overflow: 'hidden' }}>
+      <Flex style={{ flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0, alignItems: 'stretch' }}>
         {/* Left Side - Document Preview */}
         <Box
           style={{
             flex: 1,
+            minWidth: 0,
+            minHeight: 0,
             position: 'relative',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            justifyContent: 'flex-start',
             padding: 'var(--space-6)',
             overflow: 'auto',
             background: 'linear-gradient(180deg, var(--slate-2) 0%, var(--slate-1) 100%)',
-            borderRight: hasCitations ? '1px solid var(--olive-3)' : undefined,
+            boxSizing: 'border-box',
           }}
           className="no-scrollbar"
         >
           {isLoading ? (
-            <Flex align="center" justify="center">
+            <Flex align="center" justify="center" style={{ flex: 1, minHeight: '12rem' }}>
               <div className="loading-spinner" />
             </Flex>
           ) : hasError ? (
@@ -184,18 +204,20 @@ export function FilePreviewFullscreen({
               </Text>
             </Flex>
           ) : (
-            <FilePreviewRenderer
-              fileUrl={file.url}
-              fileName={file.name}
-              fileType={file.type}
-              fileBlob={file.blob}
-              pagination={paginationControls}
-              highlightBox={hasCitations ? syncHighlightBox : highlightBox}
-              highlightPage={hasCitations ? syncHighlightPage : undefined}
-              citations={hasCitations ? citations : undefined}
-              activeCitationId={hasCitations ? activeCitationId : undefined}
-              onHighlightClick={hasCitations ? handleHighlightClick : undefined}
-            />
+            <Box style={{ width: '100%', maxWidth: '100%', minWidth: 0, flex: 1, minHeight: 0 }}>
+              <FilePreviewRenderer
+                fileUrl={file.url}
+                fileName={file.name}
+                fileType={file.type}
+                fileBlob={file.blob}
+                pagination={paginationControls}
+                highlightBox={hasCitations ? syncHighlightBox : highlightBox}
+                highlightPage={hasCitations ? syncHighlightPage : undefined}
+                citations={hasCitations ? citations : undefined}
+                activeCitationId={hasCitations ? activeCitationId : undefined}
+                onHighlightClick={hasCitations ? handleHighlightClick : undefined}
+              />
+            </Box>
           )}
 
           {/* Floating Pagination - Bottom Center */}
@@ -262,13 +284,49 @@ export function FilePreviewFullscreen({
           )}
         </Box>
 
-        {/* Citations Panel — only when citations are provided */}
+        {/* Citations — resizable column */}
         {hasCitations && (
-          <CitationsPanel
-            citations={citations}
-            activeCitationId={activeCitationId}
-            onCitationClick={handleCitationClick}
-          />
+          <>
+            <Box
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize citations panel"
+              onPointerDown={beginCitationsSplitResize}
+              style={{
+                width: '6px',
+                flexShrink: 0,
+                alignSelf: 'stretch',
+                cursor: 'col-resize',
+                touchAction: 'none',
+                borderLeft: '1px solid var(--olive-3)',
+                backgroundColor: 'transparent',
+              }}
+              onPointerEnter={(ev) => {
+                ev.currentTarget.style.backgroundColor = 'var(--olive-4)';
+              }}
+              onPointerLeave={(ev) => {
+                ev.currentTarget.style.backgroundColor = 'transparent';
+              }}
+            />
+            <Box
+              style={{
+                width: `${citationsWidthPx}px`,
+                flexShrink: 0,
+                minWidth: 0,
+                height: '100%',
+                minHeight: 0,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <CitationsPanel
+                citations={citations}
+                activeCitationId={activeCitationId}
+                onCitationClick={handleCitationClick}
+                widthPx={citationsWidthPx}
+              />
+            </Box>
+          </>
         )}
 
 

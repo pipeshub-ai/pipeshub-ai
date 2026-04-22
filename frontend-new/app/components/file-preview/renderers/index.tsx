@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import type { FilePreviewRendererProps } from '../types';
 
@@ -13,10 +14,30 @@ export { MediaRenderer } from './media-renderer';
 export { SpreadsheetRenderer } from './spreadsheet-renderer';
 export { DocxRenderer } from './docx-renderer';
 
-// Fallback renderer for unsupported Office documents
-export function DocumentPreview({ fileUrl, fileName }: FilePreviewRendererProps) {
-  // For Office documents (Word, Excel, PowerPoint)
-  // No good web rendering library - offer download
+// Fallback renderer for unsupported Office documents (e.g. legacy Word .doc when not converted to PDF)
+export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRendererProps) {
+  const [blobUrl, setBlobUrl] = useState('');
+
+  useEffect(() => {
+    if (fileUrl?.trim()) {
+      setBlobUrl('');
+      return;
+    }
+    if (!fileBlob || fileBlob.size === 0) {
+      setBlobUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(fileBlob);
+    setBlobUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [fileUrl, fileBlob]);
+
+  const downloadHref = (fileUrl && fileUrl.trim() !== '') ? fileUrl : blobUrl;
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  const isLegacyDoc = ext === 'doc';
+
   return (
     <Flex
       direction="column"
@@ -38,11 +59,13 @@ export function DocumentPreview({ fileUrl, fileName }: FilePreviewRendererProps)
         {fileName}
       </Text>
       <Text size="2" color="gray" style={{ textAlign: 'center', maxWidth: '400px' }}>
-        Preview not available for this document type. Please download to view.
+        {isLegacyDoc
+          ? 'This file is in legacy Word (.doc) format. In-browser preview is not supported here; download it to open in Word, or save a copy as .docx to preview in Pipeshub.'
+          : 'Preview not available for this document type. Please download to view.'}
       </Text>
-      {fileUrl && fileUrl.trim() !== '' && (
+      {downloadHref && downloadHref.trim() !== '' && (
         <a
-          href={fileUrl}
+          href={downloadHref}
           download={fileName}
           style={{
             display: 'flex',
