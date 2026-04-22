@@ -89,21 +89,20 @@ export function AuthMethodRow({
         align="center"
         justify="center"
         style={{
-          width: 'var(--space-9)',
-          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
-          backgroundColor: 'var(--slate-3)',
+          backgroundColor: 'var(--slate-a2)',
           flexShrink: 0,
+          padding: 'var(--space-2)'
         }}
       >
         {meta.iconType === 'image' ? (
           <img
             src={meta.icon}
             alt={meta.label}
-            style={{ width: 18, height: 18, objectFit: 'contain' }}
+            style={{ width: 16, height: 16, objectFit: 'contain' }}
           />
         ) : (
-          <MaterialIcon name={meta.icon} size={18} color="var(--slate-11)" />
+          <MaterialIcon name={meta.icon} size={16} color="var(--slate-11)" />
         )}
       </Flex>
 
@@ -158,7 +157,8 @@ export function AuthMethodRow({
             <span style={{ display: 'inline-flex', alignItems: 'center' }}>
               <Switch
                 color="gray"
-                size="2"
+                size="1"
+                variant="classic"
                 checked={state.enabled}
                 disabled={toggleDisabled}
                 onCheckedChange={() => onToggle(state.type)}
@@ -169,7 +169,8 @@ export function AuthMethodRow({
         ) : (
           <Switch
             color="gray"
-            size="2"
+            size="1"
+            variant="classic"
             checked={state.enabled}
             disabled={toggleDisabled}
             onCheckedChange={() => onToggle(state.type)}

@@ -426,7 +426,6 @@ export function ShareSidebar({
                     <>
                       <Text
                         size="1"
-                        weight="medium"
                         style={{
                           color: 'var(--slate-11)',
                           marginTop: 8,
@@ -434,6 +433,8 @@ export function ShareSidebar({
                           display: 'block',
                           // textTransform: 'uppercase',
                           letterSpacing: '0.05em',
+                          fontWeight: 500,
+                          fontStyle: 'normal',
                         }}
                       >
                         Suggested teams
@@ -464,7 +465,6 @@ export function ShareSidebar({
                     <>
                       <Text
                         size="1"
-                        weight="medium"
                         style={{
                           color: 'var(--slate-11)',
                           marginTop: 16,
@@ -472,11 +472,14 @@ export function ShareSidebar({
                           display: 'block',
                           // textTransform: 'uppercase',
                           letterSpacing: '0.05em',
+                          fontWeight: 500,
+                          fontStyle: 'normal',
                         }}
                       >
                         Suggested members
                       </Text>
-                      {filteredMembers.map((user) => (
+                      {/* Cap suggestions at 5; search narrows further */}
+                      {filteredMembers.slice(0, 5).map((user) => (
                         <ShareableRow
                           key={user.id}
                           type="member"

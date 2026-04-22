@@ -75,7 +75,7 @@ export function MenuItem({
         backgroundColor: isActive
           ? 'var(--slate-a3)'
           : isHovered
-            ? 'var(--olive-3)'
+            ? 'var(--slate-a3)'
             : 'transparent',
         border: isActive
           ? '1px solid var(--slate-a4)'
