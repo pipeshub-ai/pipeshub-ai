@@ -337,6 +337,7 @@
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
+    "ttsFailed": "Error en la conversión de texto a voz. Inténtalo de nuevo.",
     "copiedAsMarkdown": "Copiado como markdown",
     "copiedAsText": "Copiado como texto",
     "citations": "Citas",

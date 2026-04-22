@@ -337,6 +337,7 @@
     "readAloud": "Read Aloud",
     "stopReading": "Stop Reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
+    "ttsFailed": "Text-to-speech failed. Please try again.",
     "copiedAsMarkdown": "Copied as markdown",
     "copiedAsText": "Copied as a text",
     "citations": "Citations",

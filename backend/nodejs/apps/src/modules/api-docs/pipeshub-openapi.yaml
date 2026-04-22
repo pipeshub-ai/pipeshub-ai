@@ -140,6 +140,15 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Conversational Speech
+    description: |
+      Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
+
+      These endpoints are used by the chat frontend when an admin has configured a
+      TTS/STT provider under the AI Models configuration. When no provider is
+      configured the client falls back to the browser's native Web Speech API, so
+      callers should treat a `409` response as "unconfigured, use browser APIs"
+      rather than as a fatal error.
 
   # Connector Manager
   - name: Connector Registry
@@ -176,6 +185,8 @@ tags:
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
     description: Manage individual AI model providers - add, update, delete, and set defaults.
+  - name: Configuration Manager
+    description: Manage organization-level configuration including Slack bot integration, AI models, and metrics collection.
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Metrics Collection
@@ -2225,7 +2236,7 @@ components:
           type: object
           nullable: true
           description: Ticket-specific metadata (present when recordType is TICKET)
-          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          additionalProperties: true
       required:
         - recordName
         - recordType
@@ -3464,6 +3475,161 @@ components:
           type: string
           description: JSON-encoded event payload
 
+    # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
+    SpeakRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: |
+            UTF-8 text to synthesize. Capped at 4096 characters to match the
+            underlying provider limit (OpenAI TTS) and avoid unbounded cost.
+          example: "Hello, this is a PipesHub voice test."
+        voice:
+          type: string
+          nullable: true
+          description: |
+            Provider voice override. If omitted, the voice configured by the
+            admin for the active TTS provider is used. For OpenAI: one of
+            `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+          example: "alloy"
+        format:
+          type: string
+          nullable: true
+          enum: [mp3, opus, aac, flac, wav, pcm]
+          description: |
+            Audio response format. Unknown values are silently coerced to
+            `mp3` server-side.
+          example: "mp3"
+        speed:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0.25
+          maximum: 4.0
+          description: |
+            Playback speed multiplier. Values outside the documented range
+            are clamped server-side.
+          example: 1.0
+
+    TranscriptionResponse:
+      type: object
+      description: |
+        Result of a successful call to `/chat/transcribe`. The server
+        always includes the provider and model that handled the request
+        so the client can display / log which backend produced the
+        transcript.
+      required:
+        - text
+        - provider
+        - model
+      properties:
+        text:
+          type: string
+          description: |
+            Transcribed text. May be an empty string for silence,
+            unintelligible audio, or when the provider returned no
+            content.
+          example: "Turn on the office lights."
+        provider:
+          type: string
+          description: |
+            Provider id that handled the transcription. One of
+            `openAI`, `whisper` (self-hosted `faster-whisper`),
+            `wispr` (Wispr Flow), or `gemini`.
+          enum: [openAI, whisper, wispr, gemini]
+          example: "openAI"
+        model:
+          type: string
+          description: |
+            Model id that handled the transcription. Examples:
+            `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`,
+            `base`/`small`/`medium`/`large-v3` for self-hosted
+            `faster-whisper`, `flow` for Wispr, or `gemini-2.5-flash` /
+            `gemini-2.5-pro` for Gemini multimodal.
+          example: "gpt-4o-mini-transcribe"
+
+    SpeechCapabilitySummary:
+      type: object
+      description: |
+        Public summary of an active speech provider. Secrets (api keys,
+        organization ids, etc.) are never included. The server always picks
+        the config flagged `isDefault` in `aiModels`; when no entry is
+        flagged, the first configured entry is used and `isDefault` is
+        reported as `false` so the chat UI can surface the fallback.
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          description: Provider id (e.g. `openAI`, `gemini`, `whisper`, `wispr`).
+          example: "openAI"
+        model:
+          type: string
+          nullable: true
+          description: |
+            Active (default) model id the server will dispatch to. Same
+            value as `defaultModel`; retained for backwards compatibility
+            with older chat clients.
+          example: "gpt-4o-mini-tts"
+        defaultModel:
+          type: string
+          nullable: true
+          description: |
+            Model id the server will use when no explicit `model` is passed
+            to `/chat/speak` or `/chat/transcribe`. Chosen as the first
+            entry from the configured comma-separated `configuration.model`
+            list.
+          example: "gpt-4o-mini-tts"
+        models:
+          type: array
+          items:
+            type: string
+          description: |
+            All model ids the active provider config exposes. Order matches
+            the admin's comma-separated `configuration.model` value; the
+            first entry is the default.
+          example: ["gpt-4o-mini-tts", "tts-1"]
+        isDefault:
+          type: boolean
+          description: |
+            `true` when the returned config was picked because it is
+            flagged `isDefault` in `aiModels`; `false` when no entry was
+            flagged and the server fell back to the first configured one.
+          example: true
+        modelKey:
+          type: string
+          nullable: true
+          description: |
+            Stable identifier assigned to the config entry by the admin
+            UI. Useful for tying the capability summary back to a specific
+            row under `/services/aiModels`.
+        friendlyName:
+          type: string
+          nullable: true
+          description: Optional display name configured by the admin.
+          example: "Production TTS"
+
+    SpeechCapabilitiesResponse:
+      type: object
+      description: |
+        Reports whether the server has a TTS/STT provider configured. When a
+        bucket is `null` the chat UI falls back to the browser's Web Speech
+        API for that capability.
+      properties:
+        tts:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
+        stt:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
+
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
       type: string
@@ -4080,7 +4246,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4155,6 +4321,16 @@ components:
             $ref: '#/components/schemas/AIModelProviderConfig'
         imageGeneration:
           type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        tts:
+          type: array
+          description: Text-to-Speech providers used to generate chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        stt:
+          type: array
+          description: Speech-to-Text providers used to transcribe chat audio.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
@@ -12401,6 +12577,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: Updated record metadata and content
         content:
           application/json:
             schema:
@@ -13980,6 +14157,229 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+
+  # -------------------- Conversational Speech --------------------
+  /chat/transcribe:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Transcribe an audio clip (Speech-to-Text)
+      description: |
+        Upload a short audio recording and receive its transcript from the
+        configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
+        a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
+        models such as `gemini-2.5-flash`).<br><br>
+        <b>Overview:</b><br>
+        The chat UI captures audio via the browser's `MediaRecorder` and
+        POSTs it here as `multipart/form-data`. If no STT provider is
+        configured the endpoint returns <code>409</code> and the client falls
+        back to the browser's native Web Speech Recognition.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Audio payload is capped at 25 MB (matches OpenAI's
+              <code>audio.transcriptions.create</code> limit).</li>
+          <li>Supported MIME types include <code>audio/webm</code>,
+              <code>audio/ogg</code>, <code>audio/mp4</code>,
+              <code>audio/mpeg</code>, <code>audio/wav</code>, and
+              <code>audio/flac</code>.</li>
+        </ul>
+      operationId: transcribeChatAudio
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Audio clip (multipart/form-data) to transcribe, with an optional language hint.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: |
+                    Recorded audio clip. Must be ≤ 25 MB. Supported MIME
+                    types include `audio/webm`, `audio/ogg`, `audio/mp4`,
+                    `audio/m4a`, `audio/mpeg`, `audio/wav`, and
+                    `audio/flac`. The browser's `MediaRecorder` default
+                    (`audio/webm;codecs=opus`) is recommended.
+                language:
+                  type: string
+                  nullable: true
+                  description: |
+                    Optional ISO-639-1 language hint forwarded to the
+                    provider (e.g. `en`, `fr`). When omitted the provider
+                    auto-detects. The `wispr` provider treats this as a
+                    property hint; Gemini appends it to the transcription
+                    prompt.
+                  example: "en"
+      responses:
+        '200':
+          description: Transcription succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+              examples:
+                openai:
+                  summary: OpenAI `gpt-4o-mini-transcribe`
+                  value:
+                    text: "Turn on the office lights."
+                    provider: "openAI"
+                    model: "gpt-4o-mini-transcribe"
+                wispr:
+                  summary: Wispr Flow
+                  value:
+                    text: "Summarize today's standup notes."
+                    provider: "wispr"
+                    model: "flow"
+                gemini:
+                  summary: Gemini multimodal
+                  value:
+                    text: "Create a ticket to fix the login bug."
+                    provider: "gemini"
+                    model: "gemini-2.5-flash"
+        '400':
+          description: Empty audio payload (`file` read returned 0 bytes).
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Speech-to-Text provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: |
+            Audio payload exceeds the 25 MB limit. This matches OpenAI's
+            `audio.transcriptions.create` ceiling and the soft cap enforced
+            by the node proxy (`multer` `fileSize`).
+        '500':
+          description: |
+            Runtime error — for example the optional `faster-whisper`
+            package is not installed for the `whisper` provider, or
+            `ffmpeg` is missing on the host for the `wispr` provider
+            (required to transcode audio to 16 kHz WAV).
+        '502':
+          description: Upstream provider failure (message is intentionally
+            generic; see server logs for details).
+
+  /chat/speak:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Synthesize audio for a message (Text-to-Speech)
+      description: |
+        Generate audio for the supplied text using the configured Text-to-Speech
+        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
+        `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
+        The response body is
+        the raw audio bytes in the requested format.<br><br>
+        <b>Overview:</b><br>
+        The chat UI calls this when the user clicks "Read aloud" on an
+        assistant message. If no TTS provider is configured the endpoint
+        returns <code>409</code> and the client falls back to the browser's
+        <code>speechSynthesis</code> API.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Input text is capped at 4096 characters.</li>
+          <li><code>speed</code> is clamped to the range
+              [<code>0.25</code>, <code>4.0</code>].</li>
+          <li>Unknown <code>format</code> values silently fall back to
+              <code>mp3</code>.</li>
+        </ul>
+      operationId: synthesizeChatSpeech
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Text to synthesize and optional voice, format, and speed parameters.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeakRequest'
+      responses:
+        '200':
+          description: |
+            Raw audio bytes in the negotiated format. Response headers
+            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            the provider/model that produced the audio.
+          headers:
+            X-TTS-Provider:
+              schema:
+                type: string
+              description: Provider id that produced the audio.
+            X-TTS-Model:
+              schema:
+                type: string
+              description: Model id that produced the audio.
+            Cache-Control:
+              schema:
+                type: string
+              description: Always <code>no-store</code>.
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/pcm:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Request body missing or `text` is empty / whitespace.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Text-to-Speech provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: Text exceeds the 4096-character limit.
+        '502':
+          description: Upstream provider failure.
+
+  /chat/speech/capabilities:
+    get:
+      tags:
+        - Conversational Speech
+      summary: Report configured TTS/STT providers
+      description: |
+        Lightweight probe that tells the chat UI whether to use the server
+        speech routes or the browser Web Speech API. Only public provider
+        metadata is returned; API keys and organization ids are never
+        exposed.
+      operationId: getChatSpeechCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      responses:
+        '200':
+          description: Current TTS/STT capability summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechCapabilitiesResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
   /search:
@@ -16597,6 +16997,7 @@ paths:
         - oauth2: [connector:write]
       requestBody:
         required: true
+        description: Google OAuth authorization code received from the consent flow.
         content:
           application/json:
             schema:
@@ -16769,6 +17170,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -16901,6 +17303,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -16936,6 +17339,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -17386,6 +17790,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate agent toolset instance
+      description: Authenticate an agent-bound toolset instance using the provided credentials.
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17402,6 +17807,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17424,6 +17830,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update agent toolset credentials
+      description: Update the stored credentials for an agent-bound toolset instance.
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17440,6 +17847,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17471,6 +17879,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove agent toolset credentials
+      description: Delete the stored credentials for an agent-bound toolset instance.
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17500,6 +17909,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark agent instance for reauthentication
+      description: Flag an agent-bound toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17529,6 +17939,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for agent instance
+      description: Build the OAuth authorization URL to start the consent flow for an agent-bound toolset instance.
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
@@ -17593,6 +18004,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -17632,6 +18044,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get toolset instance
+      description: Retrieve a single toolset instance by its identifier.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -17652,6 +18065,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
+      description: Update an existing toolset instance's configuration (admin only).
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -17663,6 +18077,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated fields for the toolset instance.
         content:
           application/json:
             schema:
@@ -17681,6 +18096,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
+      description: Delete a toolset instance and its associated configuration (admin only).
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -17705,6 +18121,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate toolset instance
+      description: Authenticate a toolset instance using the provided credentials.
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17716,6 +18133,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the toolset instance.
         content:
           application/json:
             schema:
@@ -17736,6 +18154,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset credentials
+      description: Update the stored credentials for a toolset instance.
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
@@ -17747,6 +18166,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the toolset instance.
         content:
           application/json:
             schema:
@@ -17776,6 +18196,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove toolset credentials
+      description: Delete the stored credentials for a toolset instance.
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
@@ -17798,6 +18219,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark instance for reauthentication
+      description: Flag the toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17820,6 +18242,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for instance
+      description: Build the OAuth authorization URL to start the consent flow for a toolset instance.
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
@@ -17849,6 +18272,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get instance authentication status
+      description: Report whether the toolset instance is configured and authenticated.
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
@@ -17871,6 +18295,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: List OAuth configs by toolset type
+      description: List OAuth client configurations registered for a specific toolset type.
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
@@ -17893,6 +18318,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Update OAuth config
+      description: Update an OAuth client configuration for a specific toolset type.
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -17909,6 +18335,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated OAuth client configuration fields.
         content:
           application/json:
             schema:
@@ -17927,6 +18354,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Delete OAuth config
+      description: Delete an OAuth client configuration for a specific toolset type.
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -20563,6 +20991,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
+        description: MCP JSON-RPC 2.0 request object with method, params, and id.
         content:
           application/json:
             schema:

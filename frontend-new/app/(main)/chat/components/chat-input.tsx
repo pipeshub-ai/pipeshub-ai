@@ -29,7 +29,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
-import { useSpeechRecognition } from '@/lib/hooks/use-speech-recognition';
+import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import type { UploadedFile, ActiveMessageAction, ModelOverride } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
@@ -125,7 +125,7 @@ export function ChatInput({
     toggle: toggleSpeech,
     stop: stopSpeech,
     resetTranscript,
-  } = useSpeechRecognition({
+  } = useChatSpeechRecognition({
     lang: i18n.language,
     onError: (error) => {
       if (error === 'not-allowed') {
