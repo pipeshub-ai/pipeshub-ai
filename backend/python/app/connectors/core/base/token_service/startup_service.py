@@ -9,6 +9,9 @@ import logging
 from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.base.token_service.mcp_token_refresh_service import (
+    MCPTokenRefreshService,
+)
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
@@ -25,6 +28,7 @@ class StartupService:
         self.logger = logging.getLogger(__name__)
         self._token_refresh_service: Optional[TokenRefreshService] = None
         self._toolset_token_refresh_service: Optional[ToolsetTokenRefreshService] = None
+        self._mcp_token_refresh_service: Optional[MCPTokenRefreshService] = None
         self._initialize_lock = asyncio.Lock()
         self._initialized = False
 
@@ -49,6 +53,12 @@ class StartupService:
                 self._toolset_token_refresh_service = toolset_token_refresh_service
                 self.logger.info("✅ Toolset token refresh service initialized")
 
+                # Initialize MCP token refresh service (separate from toolsets)
+                mcp_token_refresh_service = MCPTokenRefreshService(configuration_service)
+                await mcp_token_refresh_service.start()
+                self._mcp_token_refresh_service = mcp_token_refresh_service
+                self.logger.info("✅ MCP token refresh service initialized")
+
                 self._initialized = True
                 self.logger.info("Startup services initialized successfully")
 
@@ -68,6 +78,13 @@ class StartupService:
                         pass
                     self._toolset_token_refresh_service = None
 
+                if self._mcp_token_refresh_service:
+                    try:
+                        await self._mcp_token_refresh_service.stop()
+                    except Exception:
+                        pass
+                    self._mcp_token_refresh_service = None
+
                 self._initialized = False
                 self.logger.error(f"Error initializing startup services: {e}")
                 raise
@@ -86,6 +103,11 @@ class StartupService:
                     self.logger.info("✅ Toolset token refresh service stopped")
                     self._toolset_token_refresh_service = None
 
+                if self._mcp_token_refresh_service:
+                    await self._mcp_token_refresh_service.stop()
+                    self.logger.info("✅ MCP token refresh service stopped")
+                    self._mcp_token_refresh_service = None
+
                 self._initialized = False
                 self.logger.info("Startup services shutdown successfully")
 
@@ -99,6 +121,10 @@ class StartupService:
     def get_toolset_token_refresh_service(self) -> Optional[ToolsetTokenRefreshService]:
         """Get the toolset token refresh service instance"""
         return self._toolset_token_refresh_service
+
+    def get_mcp_token_refresh_service(self) -> Optional[MCPTokenRefreshService]:
+        """Get the MCP token refresh service instance"""
+        return self._mcp_token_refresh_service
 
 
 # Global startup service instance

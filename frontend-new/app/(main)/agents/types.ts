@@ -121,6 +121,27 @@ export interface AgentToolset {
   type: string;
 }
 
+/** A single MCP tool attached to an agent's MCP server. */
+export interface AgentMcpTool {
+  _key: string;
+  name: string;
+  namespacedName: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+/** MCP server reference attached to an agent (from GET /api/v1/agent/:id). */
+export interface AgentMcpServer {
+  _key: string;
+  name: string;
+  displayName: string;
+  type: string;
+  instanceId?: string;
+  instanceName?: string;
+  selectedTools?: string[] | null;
+  tools: AgentMcpTool[];
+}
+
 /**
  * `agent` object from GET /api/v1/agents/:id (success payload).
  * Optional fields are omitted by some API versions or edge records.
@@ -145,6 +166,7 @@ export interface AgentDetail {
   _key: string;
   _id: string;
   toolsets: AgentToolset[];
+  mcpServers?: AgentMcpServer[];
   knowledge: unknown[];
   shareWithOrg: boolean;
   access_type: string;

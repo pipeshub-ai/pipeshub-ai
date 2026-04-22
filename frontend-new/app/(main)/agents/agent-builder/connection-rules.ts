@@ -33,6 +33,9 @@ export function connectionError(
   if (st.startsWith('tool-group-') && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
     return 'agentBuilder.connectionToolGroupToToolsets';
   }
+  if (st.startsWith('mcp-server-') && (tt !== 'agent-core' || connection.targetHandle !== 'mcpServers')) {
+    return 'agentBuilder.connectionMcpToMcpServersHandle';
+  }
   if (st.startsWith('toolset-') && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
     return 'agentBuilder.connectionToolsetToToolsets';
   }
@@ -141,6 +144,13 @@ export function applyAutoConnectToEdges(
       target: agent.id,
       sourceHandle: 'context',
       targetHandle: 'knowledge',
+    });
+  } else if (st.startsWith('mcp-server-')) {
+    proposals.push({
+      source: droppedNode.id,
+      target: agent.id,
+      sourceHandle: 'output',
+      targetHandle: 'mcpServers',
     });
   } else if (st.startsWith('toolset-')) {
     proposals.push({

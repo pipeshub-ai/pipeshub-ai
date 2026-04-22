@@ -68,6 +68,8 @@ import {
 } from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers_routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { SamlController } from './modules/auth/controller/saml.controller';
 
@@ -92,6 +94,7 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private mcpServersContainer!: Container;
   private port: number;
 
   constructor() {
@@ -176,6 +179,10 @@ export class Application {
         configurationManagerConfig,
       );
 
+      this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+
       await this.addOAuthServicesToAuthMiddleware();
 
 
@@ -231,6 +238,11 @@ export class Application {
         .inSingletonScope();
 
       this.toolsetsContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      this.mcpServersContainer
         .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
@@ -482,6 +494,12 @@ export class Application {
     this.app.use(
       '/api/v1/toolsets',
       createToolsetsRouter(this.toolsetsContainer)
+    );
+
+    // MCP servers routes
+    this.app.use(
+      '/api/v1/mcp-servers',
+      createMcpServersRouter(this.mcpServersContainer)
     );
 
     this.app.use(

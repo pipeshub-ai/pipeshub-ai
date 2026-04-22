@@ -21,6 +21,8 @@ const nextConfig = {
             // same behavior from the Node.js backend SPA fallback.
             { source: '/record/:recordId', destination: '/record/' },
             { source: '/record/:recordId/', destination: '/record/' },
+            { source: '/mcp-servers/oauth/callback/:serverType', destination: '/mcp-servers/oauth/callback/' },
+            { source: '/mcp-servers/oauth/callback/:serverType/', destination: '/mcp-servers/oauth/callback/' },
         ];
     },
     webpack: (config) => {

@@ -9,8 +9,9 @@ import {
   formattedProvider,
 } from '../display-utils';
 import { FLOW_EDGE } from '../flow-theme';
-import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition } from '../../types';
+import type { AgentConfiguredModel, AgentMcpServer, AgentToolset, AgentToolDefinition } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
+import { mcpNamespacedName } from '../mcp-naming';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
 interface ModelConfigObject {
@@ -132,11 +133,14 @@ export function useAgentBuilderReconstruction(): {
         });
         toolsetsCount = uniqueApps.size;
       }
+
+      const mcpServersCount = (agent as { mcpServers?: AgentMcpServer[] }).mcpServers?.length || 0;
       
       const counts = {
         llm: agent.models?.length || (modelCatalog.length > 0 ? 1 : 0),
         tools: 0,
         toolsets: toolsetsCount,
+        mcpServers: mcpServersCount,
         knowledge: agent.knowledge?.length || 0,
       };
 
@@ -658,6 +662,63 @@ export function useAgentBuilderReconstruction(): {
         });
       }
 
+      // 4b. Create MCP Server nodes
+      const mcpServerNodes: Node<FlowNodeData>[] = [];
+      const agentWithMcp = agent as { mcpServers?: AgentMcpServer[] };
+      if (agentWithMcp.mcpServers && agentWithMcp.mcpServers.length > 0) {
+        agentWithMcp.mcpServers.forEach((mcpServer: AgentMcpServer, index: number) => {
+          const mcpName = mcpServer.name || mcpServer.instanceName || '';
+          const mcpDisplayName = mcpServer.displayName || mcpName;
+          const normalizedName = mcpName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-');
+          const iconPath = `/assets/icons/connectors/${normalizedName}.svg`;
+
+          const mcpServerType = mcpServer.type || '';
+          const mcpTools = (mcpServer.tools || []).map((tool) => ({
+            name: tool.name,
+            namespacedName: mcpNamespacedName(mcpServerType || undefined, mcpName, tool.name, tool.namespacedName),
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          }));
+
+          nodeCounter += 1;
+          const nodeId = `mcp-server-${mcpName}-${nodeCounter}`;
+          const mcpNodeType = `mcp-server-${mcpServer.instanceId || mcpName}`;
+          const mcpNode: Node<FlowNodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('tools', toolsetsCount + index, counts.toolsets + counts.mcpServers),
+            data: {
+              id: nodeId,
+              type: mcpNodeType,
+              label: normalizeDisplayName(mcpDisplayName),
+              description: t('agentBuilder.mcpServerNodeDescriptionTools', {
+                name: mcpDisplayName,
+                count: mcpTools.length,
+              }),
+              icon: iconPath,
+              category: 'mcp-server',
+              config: {
+                mcpServerName: mcpName,
+                displayName: mcpDisplayName,
+                serverType: mcpServer.type || '',
+                instanceId: mcpServer.instanceId,
+                iconPath,
+                tools: mcpTools,
+                availableTools: mcpTools,
+                selectedTools: mcpTools.map((t) => t.name),
+                isConfigured: true,
+                isAuthenticated: true,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(mcpNode);
+          mcpServerNodes.push(mcpNode);
+        });
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<FlowNodeData> = {
@@ -677,7 +738,7 @@ export function useAgentBuilderReconstruction(): {
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+          inputs: ['input', 'toolsets', 'mcpServers', 'knowledge', 'llms'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -751,6 +812,19 @@ export function useAgentBuilderReconstruction(): {
           target: 'agent-core-1',
           sourceHandle: 'output',
           targetHandle: 'toolsets',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      mcpServerNodes.forEach((mcpNode) => {
+        edges.push({
+          id: `e-mcp-agent-${(edgeCounter += 1)}`,
+          source: mcpNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'mcpServers',
           type: 'smoothstep',
           style: edgeStyle,
           animated: false,
