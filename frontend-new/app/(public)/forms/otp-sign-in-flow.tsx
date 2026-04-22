@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { isValidEmail } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -38,6 +39,7 @@ export default function OtpSignInFlow({
   error,
   clearError,
 }: OtpSignInFlowProps) {
+  const { t } = useTranslation();
   const [otp, setOtp] = useState('');
   const [emailError, setEmailError] = useState('');
   const [otpValidationError, setOtpValidationError] = useState('');
@@ -48,12 +50,12 @@ export default function OtpSignInFlow({
 
   const ensureValidEmail = () => {
     if (!trimmedEmail) {
-      setEmailError('Email is required.');
+      setEmailError(t('auth.common.emailRequired'));
       emailRef.current?.focus();
       return false;
     }
     if (!isValidEmail(trimmedEmail)) {
-      setEmailError('Please enter a valid email address.');
+      setEmailError(t('auth.common.emailInvalid'));
       emailRef.current?.focus();
       return false;
     }
@@ -73,7 +75,7 @@ export default function OtpSignInFlow({
     setOtpValidationError('');
     if (!ensureValidEmail()) return;
     if (otp.length !== OTP_LENGTH) {
-      setOtpValidationError('Please enter the full 6-digit code.');
+      setOtpValidationError(t('auth.common.otpInvalidLength'));
       otpRef.current?.focus();
       return;
     }
@@ -140,10 +142,10 @@ export default function OtpSignInFlow({
                 {otpSendLoading ? (
                   <>
                     <Spinner size={12} />
-                    Sending…
+                    {t('auth.common.sending')}
                   </>
                 ) : (
-                  'Send OTP'
+                  t('auth.common.sendOtp')
                 )}
               </button>
             </Text>
@@ -153,7 +155,7 @@ export default function OtpSignInFlow({
             type="submit"
             size="3"
             loading={otpVerifyLoading}
-            loadingLabel="Signing in…"
+            loadingLabel={t('auth.common.signingIn')}
             style={{
               width: '100%',
               backgroundColor: 'var(--accent-9)',
@@ -161,7 +163,7 @@ export default function OtpSignInFlow({
               fontWeight: 500,
             }}
           >
-            Sign In
+            {t('auth.common.signIn')}
           </LoadingButton>
         </Flex>
       </form>

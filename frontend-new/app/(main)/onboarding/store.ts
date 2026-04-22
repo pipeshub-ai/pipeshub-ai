@@ -20,32 +20,32 @@ import type {
 export const DEFAULT_ONBOARDING_STEPS: OnboardingStep[] = [
   // {
   //   id: 'org-profile',
-  //   title: 'Setup your Organization*',
-  //   description: 'Name your workspace and add company details',
+  //   title: 'onboarding.steps.orgProfile.title',
+  //   description: 'onboarding.steps.orgProfile.description',
   //   required: true,
   // },
   {
     id: 'ai-model',
-    title: 'AI Model*',
-    description: 'Connect an LLM to power search answers and insights',
+    title: 'onboarding.steps.aiModel.title',
+    description: 'onboarding.steps.aiModel.description',
     required: true,
   },
   {
     id: 'embedding-model',
-    title: 'Embedding Model',
-    description: 'Enable semantic search across your documents',
+    title: 'onboarding.steps.embeddingModel.title',
+    description: 'onboarding.steps.embeddingModel.description',
     required: true,
   },
   {
     id: 'storage',
-    title: 'Storage',
-    description: 'Choose where your indexed data is stored',
+    title: 'onboarding.steps.storage.title',
+    description: 'onboarding.steps.storage.description',
     required: false,
   },
   {
     id: 'smtp',
-    title: 'SMTP',
-    description: 'Set up email for invites and password resets',
+    title: 'onboarding.steps.smtp.title',
+    description: 'onboarding.steps.smtp.description',
     required: false,
   },
 ];

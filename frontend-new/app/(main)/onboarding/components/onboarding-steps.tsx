@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import type { OnboardingStep, OnboardingStepId } from '../types';
 
 interface OnboardingStepsProps {
@@ -10,6 +11,7 @@ interface OnboardingStepsProps {
 }
 
 export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) {
+  const { t } = useTranslation();
   const activeIndex = steps.findIndex((s) => s.id === currentStepId);
 
   return (
@@ -57,7 +59,7 @@ export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) 
                 lineHeight: '1.4',
               }}
             >
-              {step.title}
+              {t(step.title)}
             </Text>
             <Text
               as="div"
@@ -71,7 +73,7 @@ export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) 
                 lineHeight: '1.4',
               }}
             >
-              {step.description}
+              {t(step.description)}
             </Text>
           </Box>
         );

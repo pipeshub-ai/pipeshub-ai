@@ -2,17 +2,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Flex, Box, Text, Button, TextField, Spinner } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getStorageConfig, saveStorageConfig } from '../api';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
 
-const STORAGE_PROVIDERS: { value: StorageProviderType; label: string }[] = [
-  { value: 'local', label: 'Local (System Default)' },
-  { value: 's3', label: 'Amazon S3' },
-  // Azure Blob temporarily hidden from onboarding UI — restore when ready:
-  // { value: 'azureBlob', label: 'Azure Blob Storage' },
-];
 
 const selectStyle: React.CSSProperties = {
   backgroundColor: 'var(--gray-2)',
@@ -38,6 +33,7 @@ export function StepStorage({
   systemStepIndex,
   totalSystemSteps,
 }: StepStorageProps) {
+  const { t } = useTranslation();
   const { storage, setStorage, markStepCompleted, unmarkStepCompleted, submitting, setSubmitting, setSubmitStatus } =
     useOnboardingStore();
 
@@ -180,7 +176,7 @@ export function StepStorage({
           size="1"
           style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
         >
-          System Configuration
+          {t('onboarding.systemConfig')}
         </Text>
         <Text
           as="div"
@@ -188,19 +184,19 @@ export function StepStorage({
           weight="bold"
           style={{ color: 'var(--gray-12)' }}
         >
-          Step {systemStepIndex}/{totalSystemSteps}: Configure Storage*
+          {t('onboarding.stepHeading', { current: systemStepIndex, total: totalSystemSteps, name: t('onboarding.stepStorage.stepName') })}
         </Text>
       </Box>
 
       {/* Scrollable fields */}
       <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
         <Flex direction="column" gap="6">
-        <InfoBanner message="Choose your preferred storage solution. Local storage is used by default if skipped." />
+        <InfoBanner message={t('onboarding.stepStorage.infoBanner')} />
 
         {/* Provider Type */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Provider Type*
+            {t('onboarding.stepStorage.providerTypeLabel')}
           </Text>
           <select
             value={form.providerType}
@@ -208,11 +204,9 @@ export function StepStorage({
             disabled={submitting}
             style={selectStyle}
           >
-            {STORAGE_PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
+            <option value="local">{t('onboarding.stepStorage.providerLocal')}</option>
+            <option value="s3">{t('onboarding.stepStorage.providerS3')}</option>
+            {/* Azure Blob temporarily hidden from onboarding UI — restore when ready */}
           </select>
         </Flex>
 
@@ -222,19 +216,19 @@ export function StepStorage({
             {/* Access Key + Secret Key side by side */}
             <Flex gap="3">
               <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Access Key*</Text>
+                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.accessKeyLabel')}</Text>
                 <TextField.Root
-                  placeholder="Enter Access Key"
+                  placeholder={t('onboarding.stepStorage.accessKeyPlaceholder')}
                   value={form.s3AccessKeyId ?? ''}
                   onChange={(e) => handleChange('s3AccessKeyId', e.target.value)}
                   disabled={submitting}
                 />
               </Flex>
               <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Secret Key*</Text>
+                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.secretKeyLabel')}</Text>
                 <TextField.Root
                   type={showSecret ? 'text' : 'password'}
-                  placeholder="Enter Secret Key"
+                  placeholder={t('onboarding.stepStorage.secretKeyPlaceholder')}
                   value={form.s3SecretAccessKey ?? ''}
                   onChange={(e) => handleChange('s3SecretAccessKey', e.target.value)}
                   disabled={submitting}
@@ -255,9 +249,9 @@ export function StepStorage({
             </Flex>
             {/* Bucket full width */}
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Bucket*</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.bucketLabel')}</Text>
               <TextField.Root
-                placeholder="Enter Bucket"
+                placeholder={t('onboarding.stepStorage.bucketPlaceholder')}
                 value={form.s3BucketName ?? ''}
                 onChange={(e) => handleChange('s3BucketName', e.target.value)}
                 disabled={submitting}
@@ -265,14 +259,14 @@ export function StepStorage({
             </Flex>
             {/* Region dropdown full width */}
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Region*</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.regionLabel')}</Text>
               <select
                 value={form.s3Region ?? ''}
                 onChange={(e) => handleChange('s3Region', e.target.value)}
                 disabled={submitting}
                 style={selectStyle}
               >
-                <option value="">Select Region</option>
+                <option value="">{t('onboarding.stepStorage.regionSelectPlaceholder')}</option>
                 <option value="us-east-1">US East (N. Virginia)</option>
                 <option value="us-east-2">US East (Ohio)</option>
                 <option value="us-west-1">US West (N. California)</option>
@@ -296,19 +290,19 @@ export function StepStorage({
         {isAzure && (
           <>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Account Name*</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.accountNameLabel')}</Text>
               <TextField.Root
-                placeholder="Enter Account Name"
+                placeholder={t('onboarding.stepStorage.accountNamePlaceholder')}
                 value={form.accountName ?? ''}
                 onChange={(e) => handleChange('accountName', e.target.value)}
                 disabled={submitting}
               />
             </Flex>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Account Key*</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.accountKeyLabel')}</Text>
               <TextField.Root
                 type={showAccountKey ? 'text' : 'password'}
-                placeholder="Enter Account Key"
+                placeholder={t('onboarding.stepStorage.accountKeyPlaceholder')}
                 value={form.accountKey ?? ''}
                 onChange={(e) => handleChange('accountKey', e.target.value)}
                 disabled={submitting}
@@ -327,9 +321,9 @@ export function StepStorage({
               </TextField.Root>
             </Flex>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Container*</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.containerLabel')}</Text>
               <TextField.Root
-                placeholder="Enter Container"
+                placeholder={t('onboarding.stepStorage.containerPlaceholder')}
                 value={form.containerName ?? ''}
                 onChange={(e) => handleChange('containerName', e.target.value)}
                 disabled={submitting}
@@ -342,18 +336,18 @@ export function StepStorage({
         {isLocal && (
           <>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Mount Name (optional)</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.mountNameLabel')}</Text>
               <TextField.Root
-                placeholder="eg: uploads"
+                placeholder={t('onboarding.stepStorage.mountNamePlaceholder')}
                 value={form.mountName ?? ''}
                 onChange={(e) => handleChange('mountName', e.target.value)}
                 disabled={submitting}
               />
             </Flex>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>Base URL (optional)</Text>
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.baseUrlLabel')}</Text>
               <TextField.Root
-                placeholder="eg: http://localhost:3000/files"
+                placeholder={t('onboarding.stepStorage.baseUrlPlaceholder')}
                 value={form.baseUrl ?? ''}
                 onChange={(e) => handleChange('baseUrl', e.target.value)}
                 disabled={submitting}
@@ -382,10 +376,10 @@ export function StepStorage({
           {submitting ? (
             <Flex align="center" gap="2">
               <Spinner size="1" />
-              Saving…
+              {t('onboarding.saving')}
             </Flex>
           ) : (
-            'Save'
+            t('onboarding.save')
           )}
         </Button>
       </Box>

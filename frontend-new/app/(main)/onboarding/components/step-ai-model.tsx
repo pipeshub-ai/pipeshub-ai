@@ -49,7 +49,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       const data = await AIModelsApi.getRegistry({ capability: 'text_generation' });
       setProviders(data.providers);
     } catch {
-      toast.error('Failed to load AI model providers');
+      toast.error(t('onboarding.stepAiModel.loadProvidersError'));
     } finally {
       setLoadingProviders(false);
     }
@@ -62,7 +62,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
       setModelsLoaded(true);
     } catch {
-      toast.error('Failed to load configured models');
+      toast.error(t('onboarding.stepAiModel.loadModelsError'));
       setModelsLoaded(true);
     } finally {
       setLoadingModels(false);
@@ -114,10 +114,10 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
     async (modelType: string, modelKey: string) => {
       try {
         await AIModelsApi.setDefault(modelType, modelKey);
-        toast.success('Default model updated');
+        toast.success(t('onboarding.stepAiModel.setDefaultSuccess'));
         loadModels();
       } catch {
-        toast.error('Failed to set default model');
+        toast.error(t('onboarding.stepAiModel.setDefaultError'));
       }
     },
     [loadModels]
@@ -184,10 +184,10 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
             size="1"
             style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
           >
-            System Configuration
+            {t('onboarding.systemConfig')}
           </Text>
           <Text as="div" size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
-            Step {systemStepIndex}/{totalSystemSteps}: Configure AI Model*
+            {t('onboarding.stepHeading', { current: systemStepIndex, total: totalSystemSteps, name: t('onboarding.stepAiModel.stepName') })}
           </Text>
         </Box>
 
@@ -195,7 +195,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
         <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 20px 20px' }}>
           {!isLoading && llmCount === 0 && (
             <Text size="2" style={{ color: 'var(--gray-11)', marginBottom: '12px', display: 'block' }}>
-              Add at least one text (LLM) provider to continue.
+              {t('onboarding.stepAiModel.addLlmHint')}
             </Text>
           )}
           <ProviderGrid

@@ -338,7 +338,7 @@ function OnboardingPageInner() {
               <span className="material-icons-outlined" style={{ fontSize: '16px' }}>
                 arrow_back
               </span>
-              Prev
+              {t('onboarding.nav.prev')}
             </Button>
           ) : (
             <Box />
@@ -356,16 +356,16 @@ function OnboardingPageInner() {
                     !isLlmCompleted || submitting ? 'var(--gray-4)' : 'var(--accent-9)',
                   color: !isLlmCompleted || submitting ? 'var(--gray-9)' : 'white',
                 }}
-                title={!isLlmCompleted ? 'Save the AI Model step first to continue' : undefined}
+                title={!isLlmCompleted ? t('onboarding.nav.saveLlmFirst') : undefined}
               >
                 {submitting ? (
                   <Flex align="center" gap="2">
                     <Spinner size="1" />
-                    Finishing…
+                    {t('onboarding.nav.finishing')}
                   </Flex>
                 ) : (
                   <>
-                    Enter Pipeshub
+                    {t('onboarding.nav.enterPipeshub')}
                     <span className="material-icons-outlined" style={{ fontSize: '16px' }}>
                       arrow_forward
                     </span>
@@ -403,7 +403,7 @@ function OnboardingPageInner() {
                     opacity: 1,
                   }}
                 >
-                  Next
+                  {t('onboarding.nav.next')}
                   <span className="material-icons-outlined" style={{ fontSize: '16px' }}>
                     arrow_forward
                   </span>
@@ -424,9 +424,9 @@ function OnboardingPageInner() {
           style={{ padding: '8px 0 24px', flexShrink: 0 }}
         >
           <Text size="1" style={{ color: 'var(--gray-9)', textAlign: 'center' }}>
-            © 2026 Pipeshub LLC &nbsp;·&nbsp;{' '}
+            {t('onboarding.footer.copyright')} &nbsp;·&nbsp;{' '}
             <a href="/privacy" style={{ color: 'var(--gray-9)', textDecoration: 'none' }}>
-              Privacy Policy
+              {t('onboarding.footer.privacyPolicy')}
             </a>{' '}
             &nbsp;·&nbsp;{' '}
             <a
@@ -435,18 +435,18 @@ function OnboardingPageInner() {
               rel="noreferrer"
               style={{ color: 'var(--gray-9)', textDecoration: 'none' }}
             >
-              Website
+              {t('onboarding.footer.website')}
             </a>{' '}
-            &nbsp;·&nbsp; Visit{' '}
+            &nbsp;·&nbsp; {t('onboarding.footer.visitDocs')}{' '}
             <a
               href="https://docs.pipeshub.com"
               target="_blank"
               rel="noreferrer"
               style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
             >
-              documentation
+              {t('onboarding.footer.docsLabel')}
             </a>{' '}
-            to learn more.
+            {t('onboarding.footer.toLearnMore')}
           </Text>
         </Flex>
       )}
