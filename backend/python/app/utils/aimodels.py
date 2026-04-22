@@ -27,6 +27,7 @@ class ModelType(str, Enum):
     SLM = "slm"
     REASONING = "reasoning"
     MULTIMODAL = "multiModal"
+    IMAGE_GENERATION = "imageGeneration"
 
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
@@ -65,6 +66,11 @@ class LLMProvider(Enum):
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     XAI = "xai"
+
+
+class ImageGenerationProvider(Enum):
+    OPENAI = "openAI"
+    GEMINI = "gemini"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -646,3 +652,238 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Image generation
+# ---------------------------------------------------------------------------
+
+
+# OpenAI Images API supports a restricted size vocabulary. Requests with any
+# other value return HTTP 400. We map commonly-requested sizes to the nearest
+# supported one.
+_OPENAI_SUPPORTED_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+
+# Map "WxH" → Imagen aspect_ratio enum values.
+_IMAGEN_ASPECT_RATIOS = {
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+    "1536x1024": "3:2",
+    "1024x1536": "2:3",
+}
+
+
+def _normalize_openai_size(size: str) -> str:
+    if size in _OPENAI_SUPPORTED_SIZES:
+        return size
+    # Map the common portrait/landscape aliases used by our tool schema onto
+    # the supported OpenAI sizes.
+    aliases = {
+        "1024x1792": "1024x1536",
+        "1792x1024": "1536x1024",
+    }
+    return aliases.get(size, "1024x1024")
+
+
+def _size_to_aspect_ratio(size: str) -> str:
+    return _IMAGEN_ASPECT_RATIOS.get(size, "1:1")
+
+
+class ImageGenerationAdapter:
+    """Thin wrapper around a provider SDK that returns raw PNG bytes.
+
+    Concrete subclasses implement :meth:`generate`. Callers should treat the
+    adapter as an opaque handle obtained from :func:`get_image_generation_model`.
+    """
+
+    provider: str
+    model: str
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        raise NotImplementedError
+
+
+class _OpenAIImageAdapter(ImageGenerationAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+    ) -> None:
+        self.provider = ImageGenerationProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        import base64
+
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+
+        # The ``response_format`` parameter is **only** accepted by DALL-E
+        # models; ``gpt-image-*`` rejects it with HTTP 400 ("Unknown parameter:
+        # 'response_format'"). DALL-E defaults to returning URLs, so we
+        # explicitly ask for base64 there. ``gpt-image-*`` always returns
+        # base64 so no hint is needed.
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "size": _normalize_openai_size(size),
+            "n": n,
+        }
+        if self.model.startswith("dall-e"):
+            request_kwargs["response_format"] = "b64_json"
+
+        try:
+            response = await client.images.generate(**request_kwargs)
+        finally:
+            await client.close()
+
+        images: list[bytes] = []
+        for item in response.data or []:
+            b64 = getattr(item, "b64_json", None)
+            if b64:
+                images.append(base64.b64decode(b64))
+                continue
+            # Fallback: if the provider returned a URL instead of base64
+            # (e.g. DALL-E without response_format, or a future model default),
+            # download it so the caller still gets raw bytes.
+            url = getattr(item, "url", None)
+            if url:
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient(timeout=60.0) as http_client:
+                        resp = await http_client.get(url)
+                        resp.raise_for_status()
+                        images.append(resp.content)
+                except Exception:
+                    logger.exception(
+                        "Failed to download OpenAI image URL fallback"
+                    )
+        return images
+
+
+class _GeminiImageAdapter(ImageGenerationAdapter):
+    def __init__(self, *, model: str, api_key: str) -> None:
+        self.provider = ImageGenerationProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=self._api_key)
+
+        if self.model.startswith("imagen-"):
+            response = await client.aio.models.generate_images(
+                model=self.model,
+                prompt=prompt,
+                config=genai_types.GenerateImagesConfig(
+                    number_of_images=n,
+                    aspect_ratio=_size_to_aspect_ratio(size),
+                ),
+            )
+            images: list[bytes] = []
+            for gi in getattr(response, "generated_images", None) or []:
+                img = getattr(gi, "image", None)
+                data = getattr(img, "image_bytes", None) if img is not None else None
+                if data:
+                    images.append(data)
+            return images
+
+        # gemini-*-image models: multimodal generate_content with IMAGE modality.
+        # The API returns one candidate per call, so we run n requests in
+        # parallel for multi-image generation.
+        import asyncio
+
+        async def _one_call() -> list[bytes]:
+            resp = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[prompt],
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
+            out: list[bytes] = []
+            for candidate in getattr(resp, "candidates", None) or []:
+                content = getattr(candidate, "content", None)
+                for part in getattr(content, "parts", None) or []:
+                    inline = getattr(part, "inline_data", None)
+                    data = getattr(inline, "data", None) if inline is not None else None
+                    if data:
+                        out.append(data)
+            return out
+
+        results = await asyncio.gather(*[_one_call() for _ in range(max(1, n))])
+        return [img for batch in results for img in batch]
+
+
+def get_image_generation_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> ImageGenerationAdapter:
+    """Return an adapter capable of producing image bytes from a prompt.
+
+    ``config`` follows the same shape used by :func:`get_generator_model` and
+    :func:`get_embedding_model`: a dict with a ``configuration`` sub-dict plus
+    optional ``isDefault`` flag. The ``configuration.model`` field may carry a
+    comma-separated list; we pick the first entry (or validate ``model_name``
+    against the list).
+    """
+
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No image-generation model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+    logger.info(
+        f"Getting image generation model: provider={provider}, model_name={model_name}"
+    )
+
+    if provider == ImageGenerationProvider.OPENAI.value:
+        return _OpenAIImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        )
+
+    if provider == ImageGenerationProvider.GEMINI.value:
+        return _GeminiImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+        )
+
+    raise ValueError(f"Unsupported image generation provider: {provider}")

@@ -36,6 +36,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    ArtifactRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -72,6 +73,7 @@ from app.schema.arango.documents import (
     ticket_record_schema,
     user_schema,
     webpage_record_schema,
+    artifact_record_schema,
     deal_record_schema,
     product_record_schema,
 )
@@ -141,6 +143,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
     (CollectionNames.PRODUCTS.value, product_record_schema),
     (CollectionNames.DEALS.value, deal_record_schema),
+    (CollectionNames.ARTIFACTS.value, artifact_record_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -495,7 +498,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 else:
                     self.logger.warning("No edge collections found for graph creation")
             else:
-                self.logger.info("Knowledge graph already exists, skipping creation")
+                self.logger.info("Knowledge graph already exists, ensuring edge definitions are up to date")
+                await self._ensure_edge_definitions_up_to_date(GraphNames.KNOWLEDGE_GRAPH.value)
 
             # 3. Ensure persistent indexes for frequent query patterns
             # await self._ensure_indexes()
@@ -509,6 +513,59 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
+
+    async def _ensure_edge_definitions_up_to_date(self, graph_name: str) -> None:
+        """Ensure existing graph edge definitions include all declared vertex collections.
+
+        For each edge definition in EDGE_DEFINITIONS, compare the declared
+        ``to_vertex_collections`` with those already registered in the graph.
+        If the declared set has new entries, replace the edge definition via
+        the ArangoDB Gharial API so that new vertex collections (e.g. artifacts)
+        can participate in existing edges.
+        """
+        try:
+            graph_info = await self.http_client.get_graph(graph_name)
+            if not graph_info:
+                return
+            existing_defs = graph_info.get("graph", {}).get("edgeDefinitions", [])
+            existing_by_collection = {
+                ed["collection"]: ed for ed in existing_defs
+            }
+
+            for desired in EDGE_DEFINITIONS:
+                edge_col = desired["edge_collection"]
+                existing = existing_by_collection.get(edge_col)
+                if not existing:
+                    continue
+                desired_to = set(desired.get("to_vertex_collections", []))
+                existing_to = set(existing.get("to", []))
+                if desired_to.issubset(existing_to):
+                    continue
+
+                merged_to = sorted(existing_to | desired_to)
+                merged_from = sorted(
+                    set(existing.get("from", []))
+                    | set(desired.get("from_vertex_collections", []))
+                )
+                url = (
+                    f"{self.http_client.base_url}/_db/{self.http_client.database}"
+                    f"/_api/gharial/{graph_name}/edge/{edge_col}"
+                )
+                payload = {"collection": edge_col, "from": merged_from, "to": merged_to}
+                session = await self.http_client._get_session()
+                async with session.put(url, json=payload) as resp:
+                    if resp.status in (200, 201, 202):
+                        self.logger.info(
+                            "Updated edge definition '%s': to=%s", edge_col, merged_to,
+                        )
+                    else:
+                        body = await resp.text()
+                        self.logger.warning(
+                            "Failed to update edge definition '%s' (%d): %s",
+                            edge_col, resp.status, body,
+                        )
+        except Exception as e:
+            self.logger.warning("Edge definition migration failed (non-fatal): %s", e)
 
     async def _ensure_indexes(self) -> None:
         """Create persistent indexes for frequent query patterns.
@@ -663,6 +720,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return ProductRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -3165,6 +3224,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return MeetingRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)

@@ -38,6 +38,7 @@ export const aiModelsTypes = {
   REASONING: 'reasoning',
   LLM: 'llm',
   MULTI_MODAL: 'multiModal',
+  IMAGE_GENERATION: 'imageGeneration',
 };
 
 export const dbTypes = {

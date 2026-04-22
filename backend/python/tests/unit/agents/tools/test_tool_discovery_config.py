@@ -34,12 +34,17 @@ class TestToolCategory:
         assert ToolCategory.CALENDAR.value == "calendar"
         assert ToolCategory.FILE_STORAGE.value == "file_storage"
         assert ToolCategory.CODE_MANAGEMENT.value == "code_management"
+        assert ToolCategory.CODE_EXECUTION.value == "code_execution"
         assert ToolCategory.UTILITY.value == "utility"
         assert ToolCategory.SEARCH.value == "search"
         assert ToolCategory.KNOWLEDGE.value == "knowledge"
 
     def test_member_count(self):
-        assert len(ToolCategory) == 9
+        # CODE_EXECUTION was added to host sandbox / coding tools
+        # (coding_sandbox, database_sandbox, image_generator). Keep this
+        # assertion pinned to the enum size so adding a new category
+        # without updating the tests fails loudly.
+        assert len(ToolCategory) == 10
 
 
 # ---------------------------------------------------------------------------

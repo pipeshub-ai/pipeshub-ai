@@ -72,6 +72,10 @@ class Connectors(Enum):
 
     RSS = "RSS"
 
+    CODING_SANDBOX = "CODING_SANDBOX"
+    DATABASE_SANDBOX = "DATABASE_SANDBOX"
+    IMAGE_GENERATION = "IMAGE_GENERATION"
+
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -150,6 +154,7 @@ class CollectionNames(Enum):
     MEETINGS = "meetings"
     PRODUCTS = "products"
     DEALS = "deals"
+    ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
 
     # Users and groups
@@ -322,6 +327,7 @@ class RecordTypes(Enum):
     MEETING = "MEETING"
     CASE = "CASE"
     TASK = "TASK"
+    ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
 
 
@@ -399,6 +405,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "DATASOURCE": CollectionNames.WEBPAGES.value,
     "PULL_REQUEST": CollectionNames.PULLREQUESTS.value,
     "MEETING": CollectionNames.MEETINGS.value,
+    "ARTIFACT": CollectionNames.ARTIFACTS.value,
     "CODE_FILE": CollectionNames.CODE_FILES.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

@@ -1262,17 +1262,74 @@ async def handle_simple_mode(
             yield event
 
 
+# Markers the frontend interprets as artifact / download cards. These are
+# authored ONLY by the backend (this function) — if an answer from the LLM
+# happens to contain the same syntax (directly or via prompt injection from
+# RAG content), the frontend would render attacker-controlled download cards
+# pointing at arbitrary URLs. Strip any pre-existing matches before we append
+# our own, trusted markers.
+_LLM_ARTIFACT_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
+)
+_LLM_DOWNLOAD_MARKER_RE = re.compile(
+    r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
+)
+
+
+def _strip_llm_authored_markers(answer: str) -> str:
+    """Remove any LLM-authored artifact / download markers from *answer*.
+
+    The frontend's marker parser runs against the full saved message, so a
+    marker anywhere in the stream is a URL-spoofing primitive. We drop them
+    before the backend appends its own known-good markers.
+    """
+    if not answer:
+        return answer
+    stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
+    stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
+    return stripped
+
+
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
-    """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
+    """Append ::download_conversation_task and ::artifact markers to the answer string.
+
+    Handles two task result shapes:
+    - Legacy: ``{"type": "csv_download", "fileName": ..., "signedUrl": ...}``
+    - Artifacts: ``{"type": "artifacts", "artifacts": [{"fileName": ..., "mimeType": ..., ...}]}``
+
+    Before appending, any LLM-authored marker strings already present in
+    ``answer`` are removed (see :func:`_strip_llm_authored_markers`) so the
+    frontend only ever sees backend-emitted markers.
+    """
+    answer = _strip_llm_authored_markers(answer)
+
     if not conversation_tasks:
         return answer
-    markers = "\n\n" + "  ".join(
-        f"::download_conversation_task[{t.get('fileName', 'Download')}]({t.get('signedUrl') or t.get('downloadUrl', '')})"
-        for t in conversation_tasks
-        if t.get("signedUrl") or t.get("downloadUrl")
-    )
 
-    return answer + markers
+    parts: list[str] = []
+    for t in conversation_tasks:
+        task_type = t.get("type", "")
+
+        if task_type == "artifacts":
+            for art in t.get("artifacts", []):
+                url = art.get("signedUrl") or art.get("downloadUrl", "")
+                if not url:
+                    continue
+                fname = art.get("fileName", "Download")
+                mime = art.get("mimeType", "application/octet-stream")
+                doc_id = art.get("documentId", "")
+                record_id = art.get("recordId", "")
+                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+        else:
+            url = t.get("signedUrl") or t.get("downloadUrl", "")
+            if url:
+                fname = t.get("fileName", "Download")
+                parts.append(f"::download_conversation_task[{fname}]({url})")
+
+    if not parts:
+        return answer
+
+    return answer + "\n\n" + "\n\n".join(parts)
 
 
 async def stream_llm_response_with_tools(
