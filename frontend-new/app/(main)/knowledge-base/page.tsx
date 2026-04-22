@@ -58,6 +58,7 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
@@ -1649,16 +1650,17 @@ function KnowledgeBasePageContent() {
     });
 
     try {
-      // Check if this is a folder inside an app (use record-group endpoint)
-      const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-      const breadcrumbs = currentTableData?.breadcrumbs ?? [];
-      const isFolderInsideApp =  (item as KnowledgeHubNode).nodeType === 'recordGroup'
-        && breadcrumbs.some(b => b.nodeType === 'app') && item.nodeType !== 'folder';
+      const nodeType = (item as KnowledgeHubNode).nodeType;
 
-      if (isFolderInsideApp) {
+      if (nodeType === 'recordGroup') {
+        // RecordGroups are connector-app folders — use record-group endpoint
         await KnowledgeBaseApi.reindexRecordGroup(item.id);
+      } else if (nodeType === 'folder') {
+        // KB folders — reindex all children
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       } else {
-        await KnowledgeBaseApi.reindexItem(item.id);
+        // Regular records — include children in reindex
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
       toast.update(toastId, {
@@ -1684,7 +1686,7 @@ function KnowledgeBasePageContent() {
         },
       });
     }
-  }, [refreshData, isAllRecordsMode, allRecordsTableData, tableData]);
+  }, [refreshData]);
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
@@ -1878,6 +1880,7 @@ function KnowledgeBasePageContent() {
     const items = selectedItemsArray.map(item => ({
       id: item.id,
       name: item.name,
+      nodeType: ('nodeType' in item) ? (item as KnowledgeHubNode).nodeType : undefined,
     }));
     await bulkReindexSelected(items, refreshData);
   }, [selectedItemsArray, bulkReindexSelected, refreshData]);

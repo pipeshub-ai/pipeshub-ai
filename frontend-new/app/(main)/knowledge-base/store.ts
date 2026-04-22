@@ -260,7 +260,7 @@ interface KnowledgeBaseActions {
 
   // Bulk actions
   bulkReindexSelected: (
-    items: Array<{ id: string; name: string }>,
+    items: Array<{ id: string; name: string; nodeType?: string }>,
     refreshData?: () => Promise<void>
   ) => Promise<void>;
   bulkDeleteSelected: (
@@ -950,7 +950,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         });
 
         try {
-          const results = await KnowledgeBaseApi.bulkReindex(items.map(i => i.id));
+          const results = await KnowledgeBaseApi.bulkReindex(items.map(i => ({ id: i.id, nodeType: i.nodeType })));
           const successCount = results.filter(r => r.status === 'fulfilled').length;
           const failCount = results.filter(r => r.status === 'rejected').length;
 
