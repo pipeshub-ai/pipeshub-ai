@@ -30,6 +30,9 @@ const PREFERRED_MIMES = [
   'audio/mp4',
   'audio/mpeg',
 ];
+// Matches OpenAI's hard 25 MB limit for audio.transcriptions.create and
+// keeps self-hosted faster-whisper within a sane single-request budget.
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 function pickRecorderMime(): string {
   if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
@@ -95,6 +98,10 @@ export function useServerSpeechRecognition(
   const uploadAndTranscribe = useCallback(
     async (blob: Blob) => {
       if (blob.size === 0) return;
+      if (blob.size > MAX_AUDIO_BYTES) {
+        onErrorRef.current?.('audio-too-large');
+        return;
+      }
       try {
         const form = new FormData();
         const ext = mimeRef.current.includes('mp4')
@@ -112,6 +119,18 @@ export function useServerSpeechRecognition(
         const { data } = await apiClient.post<{ text: string }>(
           '/api/v1/chat/transcribe',
           form,
+          {
+            // Setting Content-Type explicitly so axios doesn't inherit the
+            // client's default `application/json`; the browser will inject
+            // the multipart boundary for us.
+            headers: { 'Content-Type': 'multipart/form-data' },
+            // Mic->STT round-trips can exceed the 20s default (large whisper
+            // models, cold faster-whisper load, slow provider).
+            timeout: 120_000,
+            // Errors are surfaced via onError — don't fire a duplicate
+            // global toast from the axios interceptor.
+            suppressErrorToast: true,
+          },
         );
         const text = (data?.text ?? '').trim();
         if (text) {

@@ -9,17 +9,38 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.containers.query import QueryAppContainer
 from app.utils.aimodels import tts_format_mime
-from app.utils.llm import get_stt_model_instance, get_tts_model_instance
+from app.utils.llm import (
+    get_stt_config,
+    get_stt_model_instance,
+    get_tts_config,
+    get_tts_model_instance,
+)
 
 router = APIRouter()
+
+# Matches OpenAI's audio.transcriptions.create ceiling and keeps self-hosted
+# faster-whisper inside a sane single-request budget. Anything above this is
+# almost certainly abusive and should be rejected before we buffer it.
+MAX_STT_AUDIO_BYTES = 25 * 1024 * 1024
+
+# OpenAI tts-1 / gpt-4o-mini-tts cap input at 4096 characters. We reject at
+# the API boundary so a bad client can't run up the bill with huge prompts.
+MAX_TTS_TEXT_CHARS = 4096
+
+# Narrow allowlist of response formats we advertise in the UI. Anything else
+# falls back to mp3 to keep Content-Type / adapter behaviour predictable.
+_ALLOWED_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+
+_MAX_TTS_SPEED = 4.0
+_MIN_TTS_SPEED = 0.25
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -27,8 +48,12 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return container.config_service()
 
 
+async def get_logger(request: Request) -> Any:
+    return request.app.container.logger()
+
+
 class SpeakRequest(BaseModel):
-    text: str
+    text: str = Field(..., description="UTF-8 text to synthesize.")
     voice: str | None = None
     format: str | None = None
     speed: float | None = None
@@ -47,6 +72,7 @@ async def transcribe_audio(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     config_service: ConfigurationService = Depends(get_config_service),
+    logger: Any = Depends(get_logger),
 ) -> dict[str, Any]:
     """Transcribe an uploaded audio blob using the configured STT provider.
 
@@ -62,10 +88,27 @@ async def transcribe_audio(
     adapter, config = instance
 
     audio_bytes = await file.read()
-    if not audio_bytes:
+    size = len(audio_bytes)
+    if size == 0:
         raise HTTPException(status_code=400, detail="Empty audio payload")
+    if size > MAX_STT_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Audio payload too large ({size} bytes). "
+                f"Maximum is {MAX_STT_AUDIO_BYTES} bytes."
+            ),
+        )
 
     mime = file.content_type or "application/octet-stream"
+    logger.info(
+        "STT transcribe request: provider=%s model=%s size=%d mime=%s language=%s",
+        config.get("provider"),
+        adapter.model,
+        size,
+        mime,
+        language,
+    )
     try:
         text = await adapter.transcribe(
             audio_bytes,
@@ -75,11 +118,24 @@ async def transcribe_audio(
         )
     except RuntimeError as exc:
         # e.g. faster-whisper not installed for the 'whisper' provider.
+        logger.error("STT transcribe runtime error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:  # pragma: no cover - provider-specific errors
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Don't echo SDK error messages to the client — they often contain
+        # URLs, request-ids, or other internal context. Log the full
+        # details server-side and return a generic upstream failure.
+        logger.error(
+            "STT transcribe upstream failure: provider=%s model=%s: %s",
+            config.get("provider"),
+            adapter.model,
+            exc,
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"Transcription failed: {exc}",
+            detail="Transcription failed: upstream provider error",
         ) from exc
 
     return {
@@ -101,13 +157,22 @@ async def transcribe_audio(
 async def synthesize_speech(
     payload: SpeakRequest,
     config_service: ConfigurationService = Depends(get_config_service),
-) -> StreamingResponse:
+    logger: Any = Depends(get_logger),
+) -> Response:
     """Synthesize audio for ``payload.text`` using the configured TTS provider.
 
     Returns ``409`` if no TTS provider is configured.
     """
     if not payload.text or not payload.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
+    if len(payload.text) > MAX_TTS_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Text too long ({len(payload.text)} characters). "
+                f"Maximum is {MAX_TTS_TEXT_CHARS} characters."
+            ),
+        )
 
     instance = await get_tts_model_instance(config_service)
     if instance is None:
@@ -118,30 +183,56 @@ async def synthesize_speech(
     adapter, _config = instance
 
     requested_format = (payload.format or adapter.default_format or "mp3").lower()
+    if requested_format not in _ALLOWED_TTS_FORMATS:
+        requested_format = "mp3"
+
+    # Clamp speed to OpenAI's accepted range so a bad client can't trigger a
+    # 400 from the provider (and to defend against odd float values).
+    speed = payload.speed if payload.speed is not None else 1.0
+    if speed < _MIN_TTS_SPEED:
+        speed = _MIN_TTS_SPEED
+    elif speed > _MAX_TTS_SPEED:
+        speed = _MAX_TTS_SPEED
+
+    logger.info(
+        "TTS synthesize request: provider=%s model=%s chars=%d format=%s",
+        adapter.provider,
+        adapter.model,
+        len(payload.text),
+        requested_format,
+    )
 
     try:
         audio_bytes = await adapter.synthesize(
             payload.text,
             voice=payload.voice,
             response_format=requested_format,
-            speed=payload.speed or 1.0,
+            speed=speed,
         )
-    except Exception as exc:  # pragma: no cover - provider-specific errors
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "TTS synthesize upstream failure: provider=%s model=%s: %s",
+            adapter.provider,
+            adapter.model,
+            exc,
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"Speech synthesis failed: {exc}",
+            detail="Speech synthesis failed: upstream provider error",
         ) from exc
 
     mime = tts_format_mime(requested_format)
 
-    def _stream() -> Any:
-        yield audio_bytes
-
-    return StreamingResponse(
-        _stream(),
+    # We already have the full payload in memory; using Response (instead of
+    # StreamingResponse over a one-shot generator) gives us correct
+    # Content-Length handling and avoids a needless event-loop hop.
+    return Response(
+        content=audio_bytes,
         media_type=mime,
         headers={
-            "Content-Length": str(len(audio_bytes)),
             "Cache-Control": "no-store",
             "X-TTS-Provider": adapter.provider,
             "X-TTS-Model": adapter.model,
@@ -164,10 +255,9 @@ async def speech_capabilities(
     """Report whether the server has TTS/STT providers configured.
 
     The chat UI calls this once on mount to decide between server-side and
-    browser Web Speech APIs.
+    browser Web Speech APIs. Secrets (API keys, etc.) are never returned —
+    only the public provider/model summary.
     """
-    from app.utils.llm import get_stt_config, get_tts_config
-
     tts_cfg = await get_tts_config(config_service)
     stt_cfg = await get_stt_config(config_service)
 

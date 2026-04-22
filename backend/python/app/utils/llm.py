@@ -70,10 +70,17 @@ async def _get_speech_config(
     config_service: ConfigurationService,
     bucket: str,
 ) -> dict | None:
-    """Shared helper: return the default entry under ``ai_models[bucket]``."""
+    """Shared helper: return the default entry under ``ai_models[bucket]``.
+
+    Gracefully returns ``None`` when the whole ``aiModels`` blob is missing
+    (e.g. on a brand-new install) so callers — and the chat UI fallback —
+    can treat TTS/STT as simply unconfigured instead of erroring.
+    """
     ai_models = await config_service.get_config(
         config_node_constants.AI_MODELS.value, use_cache=False,
     )
+    if not ai_models:
+        return None
     configs = ai_models.get(bucket) or []
     if not configs:
         return None

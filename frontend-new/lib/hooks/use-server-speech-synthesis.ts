@@ -80,6 +80,11 @@ export function useServerSpeechSynthesis(
     (text: string) => {
       if (!isSupported || !text || !text.trim()) return;
 
+      // Most provider TTS APIs cap input around 4096 characters; trim here
+      // so the request never 400s after the user hits "Read aloud". Cost
+      // is also bounded — the user can still hear a partial read.
+      const trimmed = text.length > 4096 ? text.slice(0, 4096) : text;
+
       // Cancel any previous request / playback.
       if (abortRef.current) {
         abortRef.current.abort();
@@ -95,7 +100,7 @@ export function useServerSpeechSynthesis(
           const { data: blob } = await apiClient.post<Blob>(
             '/api/v1/chat/speak',
             {
-              text,
+              text: trimmed,
               ...(voice ? { voice } : {}),
               ...(format ? { format } : {}),
               ...(rate ? { speed: rate } : {}),
@@ -103,6 +108,11 @@ export function useServerSpeechSynthesis(
             {
               responseType: 'blob',
               signal: controller.signal,
+              // Some TTS providers take 10-30s for longer passages; 20s
+              // default is too tight.
+              timeout: 120_000,
+              // Hook already surfaces errors via onError; no global toast.
+              suppressErrorToast: true,
             }
           );
 
