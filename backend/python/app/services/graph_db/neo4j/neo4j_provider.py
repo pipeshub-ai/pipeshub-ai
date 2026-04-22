@@ -44,6 +44,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    ArtifactRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -1928,29 +1929,61 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
+        path: list[str],
+        external_record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """Get record by path"""
         try:
-            query = """
-            MATCH (f:File {path: $path})
-            RETURN f
-            LIMIT 1
-            """
+            head = """
+            WITH $rawParts as parts
 
+            // Anchor: RecordGroup
+            MATCH (rg:RecordGroup)-[:BELONGS_TO*1..]->(:App {id: $appId})
+            WHERE rg.externalGroupId = $recordGroupId
+
+            // Anchor: root node — uses index on recordName
+            MATCH (n0:Record)-[:BELONGS_TO]->(rg)
+            WHERE n0.recordName = parts[0]
+            AND n0.externalParentId IS NULL
+            AND n0.recordType = "FILE"
+            AND n0.mimeType = "text/directory"
+
+            // Walk step by step — each hop filtered BEFORE expanding next level
+
+            """.strip()
+            step_count = len(path) 
+            step_blocks:list[str] = []
+            for i in range(1,step_count):
+                prev_node = f"n{i-1}"
+                curr_node = f"n{i}"
+                rel_var = f"r{i}"
+                step_blocks.append(
+                        f"""MATCH ({prev_node})-[{rel_var}:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->({curr_node}:Record)
+                WHERE {curr_node}.recordName = parts[{i}]"""
+                    )
+
+            final_node = "n0" if step_count==0 else f"n{step_count - 1}"
+
+            return_case = f"return {final_node} as result"
+            parts_to_join = [head]
+            if step_blocks:
+                parts_to_join.append("\n\n".join(step_blocks))
+            parts_to_join.append(return_case)
+
+            query = "\n\n".join(parts_to_join).strip()
             results = await self.client.execute_query(
                 query,
-                parameters={"path": path},
-                txn_id=transaction
+                parameters={"appId":connector_id,
+                            "recordGroupId":external_record_group_id,
+                            "rawParts":path,
+                            },
+                txn_id=transaction,
             )
 
             if results:
-                file_dict = dict(results[0]["f"])
-                return self._neo4j_to_arango_node(file_dict, CollectionNames.FILES.value)
-
+                return results[0]["result"]
             return None
-
         except Exception as e:
             self.logger.error(f"❌ Get record by path failed: {str(e)}")
             return None
@@ -2051,6 +2084,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return ProductRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -2557,6 +2592,49 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by conversation index failed: {str(e)}")
             return None
 
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """ Get path of a record """
+        try:
+            query ="""
+            // PROFILE
+            MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
+
+            // 1. Edge Filter: Ensure the edge acts as a parent-child link
+            WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
+
+            // 2. Node Filter: Ensure it follows the strict canonical path
+            AND all(i IN range(0, length(path)-1) 
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId)
+
+            // 3. Grab the longest valid path up to the root as above query returns all path lengths incrementally from 0,1,2,3 .....
+            WITH nodes(path) AS path_nodes
+            ORDER BY size(path_nodes) DESC
+            LIMIT 1
+
+            // 4. Extract names (root first) and concatenate into a file path
+            WITH [node IN reverse(path_nodes) 
+                WHERE node.recordName IS NOT NULL AND node.recordName <> "" | node.recordName] AS clean_path
+            RETURN reduce(s = "", name IN clean_path | 
+                CASE WHEN s = "" THEN name ELSE s + '/' + name END
+            ) AS file_path
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            if results:
+                return results[0]["file_path"]
+
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Get record path failed: {str(e)}")
+            return None
     # ==================== Record Group Operations ====================
 
     async def get_record_group_by_external_id(
@@ -5431,6 +5509,7 @@ class Neo4jProvider(IGraphDBProvider):
                 Neo4jLabel.WEBPAGES.value,
                 Neo4jLabel.COMMENTS.value,
                 Neo4jLabel.TICKETS.value,
+                Neo4jLabel.ARTIFACTS.value,
             ]
 
             for label in type_labels:
@@ -8212,15 +8291,34 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         transaction: str | None = None
     ) -> str | None:
-        """Get user's permission role on a knowledge base"""
+        """Get user's effective role on a KB: max(direct user edge, team-derived), same idea as Arango."""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            # Check for direct user permission first
+            # Direct user->KB and user->team->KB both contribute; return highest-priority role (not direct-only).
             query = """
-            MATCH (u:User {id: $user_id})-[r:PERMISSION {type: "USER"}]->(kb:RecordGroup {id: $kb_id})
-            RETURN r.role AS role
+            MATCH (u:User {id: $user_id})
+            MATCH (kb:RecordGroup {id: $kb_id})
+            OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
+            WITH u, kb, d.role AS direct_role
+            OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
+            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
+            WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
+                 [x IN team_roles WHERE x IS NOT NULL] AS candidates
+            UNWIND candidates AS cand
+            WITH DISTINCT cand AS role
+            WHERE role IS NOT NULL
+            WITH role,
+                 CASE role
+                   WHEN 'OWNER' THEN 4
+                   WHEN 'WRITER' THEN 3
+                   WHEN 'READER' THEN 2
+                   WHEN 'COMMENTER' THEN 1
+                   ELSE 0
+                 END AS priority
+            ORDER BY priority DESC
             LIMIT 1
+            RETURN role AS role
             """
 
             results = await self.client.execute_query(
@@ -8231,36 +8329,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 role = results[0].get("role")
-                self.logger.info(f"✅ Found direct permission: user {user_id} has role '{role}' on KB {kb_id}")
+                self.logger.info(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
-
-            # If no direct permission, check via teams (Neo4j label is "Teams")
-            team_query = """
-            MATCH (u:User {id: $user_id})-[r1:PERMISSION {type: "USER"}]->(team:Teams)
-            MATCH (team)-[r2:PERMISSION {type: "TEAM"}]->(kb:RecordGroup {id: $kb_id})
-            WITH r1.role AS team_role,
-                 CASE r1.role
-                     WHEN "OWNER" THEN 4
-                     WHEN "WRITER" THEN 3
-                     WHEN "READER" THEN 2
-                     WHEN "COMMENTER" THEN 1
-                     ELSE 0
-                 END AS priority
-            ORDER BY priority DESC
-            RETURN team_role
-            LIMIT 1
-            """
-
-            team_results = await self.client.execute_query(
-                team_query,
-                parameters={"user_id": user_id, "kb_id": kb_id},
-                txn_id=transaction
-            )
-
-            if team_results:
-                team_role = team_results[0].get("team_role")
-                self.logger.info(f"✅ Found team-based permission: user {user_id} has role '{team_role}' on KB {kb_id} via teams")
-                return team_role
 
             self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
             return None
@@ -15280,6 +15350,9 @@ class Neo4jProvider(IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -15296,10 +15369,19 @@ class Neo4jProvider(IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(team.name) CONTAINS toLower($search) OR toLower(team.description) CONTAINS toLower($search))"
 
+            # Build extra filters
+            extra_where = ""
+            if created_by:
+                extra_where += " AND team.createdBy = $created_by"
+            if created_after is not None:
+                extra_where += " AND team.createdAtTimestamp >= $created_after"
+            if created_before is not None:
+                extra_where += " AND team.createdAtTimestamp <= $created_before"
+
             # Query to get all teams user is a member of with pagination
             user_teams_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where}
+            WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL
             WITH team, properties(p) AS current_user_permission,
@@ -15336,14 +15418,23 @@ class Neo4jProvider(IGraphDBProvider):
             # Count query for pagination
             count_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where}
+            WHERE 1=1 {search_where} {extra_where}
             RETURN count(DISTINCT team) AS total_count
             """
 
-            # Get total count
-            count_params = {"user_key": user_key}
+            # Shared filter params
+            filter_params: dict = {}
             if search:
-                count_params["search"] = search
+                filter_params["search"] = search
+            if created_by:
+                filter_params["created_by"] = created_by
+            if created_after is not None:
+                filter_params["created_after"] = created_after
+            if created_before is not None:
+                filter_params["created_before"] = created_before
+
+            # Get total count
+            count_params = {"user_key": user_key, **filter_params}
 
             count_results = await self.client.execute_query(
                 count_query,
@@ -15356,10 +15447,9 @@ class Neo4jProvider(IGraphDBProvider):
             teams_params = {
                 "user_key": user_key,
                 "offset": offset,
-                "limit": limit
+                "limit": limit,
+                **filter_params,
             }
-            if search:
-                teams_params["search"] = search
 
             result_list = await self.client.execute_query(
                 user_teams_query,
@@ -15524,21 +15614,29 @@ class Neo4jProvider(IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
         Get all users in a specific team.
         """
         try:
+            offset = (page - 1) * limit
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            search_where = ""
+            if search:
+                search_where = "AND (toLower(member_user.fullName) CONTAINS toLower($search) OR toLower(member_user.email) CONTAINS toLower($search))"
 
             team_users_query = f"""
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT {{
@@ -15549,7 +15647,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }}) AS all_members
             RETURN {{
                 id: team.id,
                 name: team.name,
@@ -15559,21 +15657,27 @@ class Neo4jProvider(IGraphDBProvider):
                 createdAtTimestamp: team.createdAtTimestamp,
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
-                members: team_members,
-                memberCount: size(team_members),
+                members: all_members[$offset..($offset + $limit)],
+                memberCount: size(all_members),
                 canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
                 canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
                 canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
             }} AS result
             """
 
+            params: dict = {
+                "teamId": team_id,
+                "orgId": org_id,
+                "user_key": user_key,
+                "offset": offset,
+                "limit": limit,
+            }
+            if search:
+                params["search"] = search
+
             results = await self.client.execute_query(
                 team_users_query,
-                parameters={
-                    "teamId": team_id,
-                    "orgId": org_id,
-                    "user_key": user_key
-                },
+                parameters=params,
                 txn_id=transaction
             )
 
@@ -16203,6 +16307,7 @@ class Neo4jProvider(IGraphDBProvider):
                 displayName: ts.displayName,
                 type: ts.type,
                 instanceId: ts.instanceId,
+                instanceName: ts.instanceName,
                 selectedTools: ts.selectedTools,
                 tools: tools
             }} AS toolset

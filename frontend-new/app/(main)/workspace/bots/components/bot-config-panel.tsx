@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { toast } from '@/lib/store/toast-store';
@@ -16,18 +18,12 @@ const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 // Bot type registry
 // ========================================
 
-const BOT_TYPES: BotTypeInfo[] = [
-  { type: 'slack', label: 'Slack Bot Setup', icon: '/icons/connectors/slack.svg', enabled: true },
-  { type: 'discord', label: 'Discord Bot Setup', icon: '/icons/connectors/discord.svg', enabled: false },
-  { type: 'telegram', label: 'Telegram Bot Setup', icon: '/icons/connectors/telegram.svg', enabled: false },
-  { type: 'github', label: 'GitHub Bot Setup', icon: '/icons/connectors/github.svg', enabled: false },
-];
-
 // ========================================
 // Component
 // ========================================
 
 export function BotConfigPanel() {
+  const { t } = useTranslation();
   const {
     panelOpen,
     panelView,
@@ -61,7 +57,7 @@ export function BotConfigPanel() {
       onClick={() => window.open('https://docs.pipeshub.com/integrations', '_blank')}
     >
       <MaterialIcon name="open_in_new" size={14} color="var(--slate-11)" />
-      Documentation
+      {t('workspace.bots.documentation')}
     </Button>
   );
 
@@ -69,7 +65,7 @@ export function BotConfigPanel() {
     <WorkspaceRightPanel
       open={panelOpen}
       onOpenChange={(open) => { if (!open) closePanel(); }}
-      title="Bot Configuration"
+      title={t('workspace.bots.configPanelTitle')}
       icon={headerIcon}
       headerActions={documentationAction}
       hideFooter
@@ -107,10 +103,19 @@ export function BotConfigPanel() {
 // ========================================
 
 function TypeSelectorView({ onSelectType }: { onSelectType: (type: BotType) => void }) {
+  const { t } = useTranslation();
+
+  const BOT_TYPES: BotTypeInfo[] = [
+    { type: 'slack', label: t('workspace.bots.typeLabels.slack'), icon: '/icons/connectors/slack.svg', enabled: true },
+    { type: 'discord', label: t('workspace.bots.typeLabels.discord'), icon: '/icons/connectors/discord.svg', enabled: false },
+    { type: 'telegram', label: t('workspace.bots.typeLabels.telegram'), icon: '/icons/connectors/telegram.svg', enabled: false },
+    { type: 'github', label: t('workspace.bots.typeLabels.github'), icon: '/icons/connectors/github.svg', enabled: false },
+  ];
+
   return (
     <Flex direction="column" gap="3">
       <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-        Select Bot Setup
+        {t('workspace.bots.selectBotSetup')}
       </Text>
 
       <Flex direction="column" gap="1">
@@ -127,6 +132,7 @@ function TypeSelectorView({ onSelectType }: { onSelectType: (type: BotType) => v
 }
 
 function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void }) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [iconError, setIconError] = useState(false);
 
@@ -175,7 +181,7 @@ function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void })
       {bot.enabled ? (
         <MaterialIcon name="chevron_right" size={18} color="var(--slate-9)" />
       ) : (
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>Coming soon</Text>
+        <Text size="1" style={{ color: 'var(--slate-9)' }}>{t('workspace.bots.comingSoon')}</Text>
       )}
     </Flex>
   );
@@ -193,6 +199,7 @@ interface SlackBotFormViewProps {
 }
 
 function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotFormViewProps) {
+  const { t } = useTranslation();
   const isEditMode = !!editingConfig;
 
   const [name, setName] = useState('');
@@ -237,20 +244,20 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
 
       if (isEditMode && editingConfig) {
         await BotsApi.updateSlackBotConfig(editingConfig.id, payload);
-        toast.success('Slack Bot updated', {
-          description: `Your slack bot ${name} has been updated.`,
+        toast.success(t('workspace.bots.toasts.updated'), {
+          description: t('workspace.bots.toasts.updatedDescription', { name }),
         });
       } else {
         await BotsApi.createSlackBotConfig(payload);
-        toast.success('Slack Bot created', {
-          description: `Your slack bot ${name} is ready!`,
+        toast.success(t('workspace.bots.toasts.created'), {
+          description: t('workspace.bots.toasts.createdDescription', { name }),
         });
       }
 
       onSaved();
     } catch {
-      toast.error(isEditMode ? 'Failed to update bot' : 'Failed to create bot', {
-        description: 'Please check your credentials and try again.',
+      toast.error(isEditMode ? t('workspace.bots.toasts.updateError') : t('workspace.bots.toasts.createError'), {
+        description: t('workspace.bots.toasts.credentialsError'),
       });
     } finally {
       setIsSaving(false);
@@ -263,12 +270,12 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
     setIsDeleting(true);
     try {
       await BotsApi.deleteSlackBotConfig(editingConfig.id);
-      toast.success('Slack Bot deleted', {
-        description: `${editingConfig.name} has been removed.`,
+      toast.success(t('workspace.bots.toasts.deleted'), {
+        description: t('workspace.bots.toasts.deletedDescription', { name: editingConfig.name }),
       });
       onSaved();
     } catch {
-      toast.error('Failed to delete bot');
+      toast.error(t('workspace.bots.toasts.deleteError'));
     } finally {
       setIsDeleting(false);
       setShowDeleteConfirm(false);
@@ -288,20 +295,20 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
             style={{ display: 'block' }}
           />
           <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {isEditMode ? 'Edit Slack Bot' : 'New Slack Bot'}
+            {isEditMode ? t('workspace.bots.form.editTitle') : t('workspace.bots.form.newTitle')}
           </Text>
         </Flex>
 
-        <FormField label="Name">
+        <FormField label={t('form.name')}>
           <TextField.Root
             size="2"
-            placeholder="e.g. My Slack Bot"
+            placeholder={t('workspace.bots.form.namePlaceholder')}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
         </FormField>
 
-        <FormField label="Bot Token">
+        <FormField label={t('workspace.bots.form.botToken')}>
           <TextField.Root
             size="2"
             type={showBotToken ? 'text' : 'password'}
@@ -327,11 +334,11 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
           </TextField.Root>
         </FormField>
 
-        <FormField label="Signing Secret">
+        <FormField label={t('workspace.bots.form.signingSecret')}>
           <TextField.Root
             size="2"
             type={showSigningSecret ? 'text' : 'password'}
-            placeholder="Enter signing secret"
+            placeholder={t('workspace.bots.form.signingSecretPlaceholder')}
             value={signingSecret}
             onChange={(e) => setSigningSecret(e.target.value)}
           >
@@ -353,15 +360,15 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
           </TextField.Root>
         </FormField>
 
-        <FormField label="Agent">
+        <FormField label={t('workspace.bots.form.agent')}>
           <Select.Root
             size="2"
             value={agentId}
             onValueChange={setAgentId}
           >
-            <Select.Trigger placeholder="Select an agent" />
+            <Select.Trigger placeholder={t('workspace.bots.form.agentPlaceholder')} />
             <Select.Content>
-              <Select.Item value={DEFAULT_ASSISTANT_ID}>Default Assistant</Select.Item>
+              <Select.Item value={DEFAULT_ASSISTANT_ID}>{t('workspace.bots.defaultAssistant')}</Select.Item>
               {agents.map((agent) => (
                 <Select.Item key={agent.id} value={agent.id}>
                   {agent.name}
@@ -385,19 +392,19 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
             {showDeleteConfirm ? (
               <Flex direction="column" gap="2">
                 <Text size="2" style={{ color: 'var(--red-a11)' }}>
-                  Are you sure? This action cannot be undone.
+                  {t('workspace.bots.deleteConfirm')}
                 </Text>
                 <Flex gap="2">
-                  <Button
+                  <LoadingButton
                     variant="solid"
                     color="red"
                     size="2"
                     onClick={handleDelete}
-                    disabled={isDeleting}
-                    style={{ cursor: isDeleting ? 'not-allowed' : 'pointer' }}
+                    loading={isDeleting}
+                    loadingLabel={t('workspace.bots.deleting')}
                   >
-                    {isDeleting ? 'Deleting…' : 'Confirm Delete'}
-                  </Button>
+                    {t('workspace.bots.confirmDelete')}
+                  </LoadingButton>
                   <Button
                     variant="outline"
                     color="gray"
@@ -406,7 +413,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
                     disabled={isDeleting}
                     style={{ cursor: isDeleting ? 'not-allowed' : 'pointer' }}
                   >
-                    Cancel
+                    {t('action.cancel')}
                   </Button>
                 </Flex>
               </Flex>
@@ -419,7 +426,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
                 style={{ cursor: 'pointer', alignSelf: 'flex-start' }}
               >
                 <MaterialIcon name="delete" size={16} color="var(--red-a11)" />
-                Delete Bot
+                {t('workspace.bots.deleteBot')}
               </Button>
             )}
           </Flex>
@@ -445,20 +452,21 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
           disabled={isSaving}
           style={{ cursor: isSaving ? 'not-allowed' : 'pointer' }}
         >
-          Cancel
+          {t('action.cancel')}
         </Button>
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={handleSubmit}
-          disabled={!isValid || isSaving}
+          disabled={!isValid}
+          loading={isSaving}
+          loadingLabel={t('workspace.bots.saving')}
           style={{
-            cursor: !isValid || isSaving ? 'not-allowed' : 'pointer',
-            backgroundColor: !isValid || isSaving ? 'var(--slate-6)' : 'var(--emerald-9)',
+            backgroundColor: !isValid ? 'var(--slate-6)' : 'var(--emerald-9)',
           }}
         >
-          {isSaving ? 'Saving…' : isEditMode ? 'Save' : 'Create'}
-        </Button>
+          {isEditMode ? t('action.save') : t('action.create')}
+        </LoadingButton>
       </Flex>
     </Flex>
   );

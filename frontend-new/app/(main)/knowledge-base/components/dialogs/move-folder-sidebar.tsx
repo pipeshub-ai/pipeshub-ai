@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Flex, Box, Text, Button, IconButton, TextField, Dialog, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import { renderTreeLines } from '@/app/(main)/knowledge-base/sidebar/section-element';
@@ -80,7 +81,7 @@ function FolderTreeItem({
             width: '100%',
             height: '32px',
             paddingLeft: `${TREE_BASE_PADDING + indent}px`,
-            paddingRight: '12px',
+            paddingRight: 'var(--space-3)',
             cursor: isCurrent || isDisabled ? 'default' : 'pointer',
             borderRadius: 'var(--radius-2)',
             backgroundColor: isSelected ? 'var(--olive-3)' : isHovered && !isCurrent && !isDisabled ? 'var(--slate-3)' : 'transparent',
@@ -382,7 +383,7 @@ export function MoveFolderSidebar({
         <Box
           className="no-scrollbar"
           style={{
-            padding: '16px',
+            padding: 'var(--space-4)',
             flex: 1,
             overflowY: 'auto',
             background: 'var(--effects-translucent)',
@@ -405,7 +406,7 @@ export function MoveFolderSidebar({
                     width: '100%',
                     height: '32px',
                     paddingLeft: `${TREE_BASE_PADDING}px`,
-                    paddingRight: '12px',
+                    paddingRight: 'var(--space-3)',
                     cursor: isRootCurrent ? 'default' : 'pointer',
                     borderRadius: 'var(--radius-2)',
                     backgroundColor: isRootSelected ? 'var(--olive-3)' : isRootHovered && !isRootCurrent ? 'var(--slate-3)' : 'transparent',
@@ -484,7 +485,7 @@ export function MoveFolderSidebar({
               ))}
             </Flex>
           ) : (
-            <Flex align="center" justify="center" style={{ padding: '32px' }}>
+              <Flex align="center" justify="center" style={{ padding: 'var(--space-8)' }}>
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
                 {searchQuery ? 'No folders found' : 'No collection selected'}
               </Text>
@@ -504,10 +505,12 @@ export function MoveFolderSidebar({
             backdropFilter: 'blur(8px)',
           }}
         >
-          <Button
+          <LoadingButton
             variant="solid"
             size="2"
-            disabled={!selectedFolderId || isMoving}
+            disabled={!selectedFolderId}
+            loading={isMoving}
+            loadingLabel="Moving..."
             onClick={handleMove}
             style={{
               background: 'var(--emerald-9)',
@@ -519,8 +522,8 @@ export function MoveFolderSidebar({
               size={16}
               color="white"
             />
-            {isMoving ? 'Moving...' : 'Move'}
-          </Button>
+            Move
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

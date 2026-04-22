@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -9,9 +10,11 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
+import { startConnectorSync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
+  ConnectorConfig,
   ConnectorStatsResponse,
   RecordsStatus,
 } from '../../types';
@@ -24,6 +27,8 @@ interface OverviewTabProps {
   instance: ConnectorInstance;
   /** Stats data from GET /knowledgeBase/stats/{connectorId} */
   stats?: ConnectorStatsResponse['data'] | null;
+  /** GET …/config — used to resolve auth type for OAuth-only UI rules */
+  connectorConfig?: ConnectorConfig;
 }
 
 // ========================================
@@ -63,18 +68,22 @@ function deriveRecordsStatus(
 // OverviewTab
 // ========================================
 
-export function OverviewTab({ instance, stats }: OverviewTabProps) {
+export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabProps) {
+  const { t } = useTranslation();
   const router = useRouter();
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
   const addToast = useToastStore((s) => s.addToast);
+  const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
   const [isStartingSync, setIsStartingSync] = useState(false);
+  const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
+  const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
 
   // Derive indexed records from byRecordType data
   const byRecordType = stats?.byRecordType ?? [];
 
-  const syncStatus = deriveSyncStatus(instance, stats ?? undefined);
+  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, connectorConfig);
   const isReadyToSync  = syncStatus === 'ready_to_sync';
   const isSyncing      = syncStatus === 'syncing';
   const isSyncFailed   = syncStatus === 'sync_failed';
@@ -103,14 +112,48 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
     if (!connectorId || isStartingSync) return;
     try {
       setIsStartingSync(true);
-      await ConnectorsApi.startSync(connectorId);
+      await startConnectorSync({
+        _key: connectorId,
+        type: instance.type,
+      });
       addToast({ variant: 'success', title: 'Sync started successfully' });
+      bumpCatalogRefresh();
     } catch {
       addToast({ variant: 'error', title: 'Failed to start sync' });
     } finally {
       setIsStartingSync(false);
     }
-  }, [instance._key, isStartingSync, addToast]);
+  }, [instance._key, instance.type, isStartingSync, addToast, bumpCatalogRefresh]);
+
+  const handleOverviewResync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
+    try {
+      setIsHeaderSyncBusy(true);
+      await ConnectorsApi.resyncConnector(connectorId, instance.type);
+      addToast({ variant: 'success', title: 'Sync started' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start sync' });
+    } finally {
+      setIsHeaderSyncBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
+
+  const handleReindexFailed = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isReindexBusy) return;
+    try {
+      setIsReindexBusy(true);
+      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type);
+      addToast({ variant: 'success', title: 'Reindexing failed records…' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to reindex' });
+    } finally {
+      setIsReindexBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isReindexBusy, addToast, bumpCatalogRefresh]);
 
   // Status banner for ready_to_sync
   const showReadyBanner = isReadyToSync;
@@ -125,7 +168,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           align="center"
           justify="between"
           style={{
-            padding: '12px 16px',
+            padding: 'var(--space-3) var(--space-4)',
             backgroundColor: 'var(--jade-a2)',
             border: '1px solid var(--jade-a4)',
             borderRadius: 'var(--radius-2)',
@@ -133,10 +176,10 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Instance configured and ready to sync!
+              {t('workspace.connectors.overview.readyBanner')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              Records are ready to be synced.
+              {t('workspace.connectors.overview.readyBannerSub')}
             </Text>
           </Flex>
           <button
@@ -165,7 +208,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
             }}
           >
             <MaterialIcon name="sync" size={14} color="white" />
-            {isStartingSync ? 'Starting...' : 'Start Syncing Now'}
+            {isStartingSync ? t('workspace.connectors.overview.startSyncLoading') : t('workspace.connectors.overview.startSync')}
           </button>
         </Flex>
       )}
@@ -175,7 +218,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
         <Flex direction="column" gap="2">
           <Flex align="center" justify="between">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {instance.syncProgress.percentage ?? 0}% Complete
+              {t('workspace.connectors.overview.progressPercent', { n: instance.syncProgress.percentage ?? 0 })}
             </Text>
           </Flex>
           <Box
@@ -213,14 +256,28 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       >
         <Flex align="center" justify="between">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Records Status
+            {t('workspace.connectors.overview.recordsStatus')}
           </Text>
-          <Flex align="center" gap="1">
-            {isSyncFailed && (
-              <StatusActionButton label="Reindex Failed" icon="replay" />
-            )}
-            <StatusActionButton label="Sync" icon="sync" />
-          </Flex>
+          {instance.isActive && (
+            <Flex align="center" gap="1">
+              {isSyncFailed && (
+                <StatusActionButton
+                  label="Reindex Failed"
+                  icon="replay"
+                  onClick={handleReindexFailed}
+                  disabled={isReindexBusy}
+                  loading={isReindexBusy}
+                />
+              )}
+              <StatusActionButton
+                label="Sync"
+                icon="sync"
+                onClick={handleOverviewResync}
+                disabled={isHeaderSyncBusy}
+                loading={isHeaderSyncBusy}
+              />
+            </Flex>
+          )}
         </Flex>
 
         {/* Stats grid */}
@@ -228,15 +285,15 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           {/* Top row: Total + Failed */}
           <Flex gap="2" style={{ width: '100%' }}>
             <StatCard
-              label="Total"
+              label={t('workspace.connectors.overview.statTotal')}
               value={recordsStatus.total}
-              subtitle="Total records"
+              subtitle={t('workspace.connectors.overview.statTotalSub')}
               onClick={() => navigateToRecords()}
             />
             <StatCard
-              label="Failed"
+              label={t('status.failed')}
               value={recordsStatus.failed}
-              subtitle="Errors (API / permission issues)"
+              subtitle={t('workspace.connectors.overview.statFailedSub')}
               valueColor={recordsStatus.failed > 0 ? 'var(--red-11)' : undefined}
               onClick={() => navigateToRecords(['FAILED'])}
             />
@@ -244,21 +301,21 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           {/* Bottom row: Unsupported + In Progress + Not Started */}
           <Flex gap="2" style={{ width: '100%' }}>
             <StatCard
-              label="Unsupported"
+              label={t('workspace.connectors.overview.statUnsupported')}
               value={recordsStatus.unsupported}
-              subtitle="Can't be processed"
+              subtitle={t('workspace.connectors.overview.statUnsupportedSub')}
               onClick={() => navigateToRecords(['FILE_TYPE_NOT_SUPPORTED'])}
             />
             <StatCard
-              label="In Progress"
+              label={t('status.processing')}
               value={recordsStatus.inProgress}
-              subtitle="Still being indexed"
+              subtitle={t('workspace.connectors.overview.statInProgressSub')}
               onClick={() => navigateToRecords(['IN_PROGRESS'])}
             />
             <StatCard
-              label="Not Started"
+              label={t('workspace.connectors.overview.statNotStarted')}
               value={recordsStatus.notStarted}
-              subtitle="Queued for sync"
+              subtitle={t('workspace.connectors.overview.statNotStartedSub')}
               onClick={() => navigateToRecords(['NOT_STARTED'])}
             />
           </Flex>
@@ -269,7 +326,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       <Flex direction="column" gap="3">
         <Flex align="center" justify="between">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Records by Type
+            {t('workspace.connectors.overview.recordsByType')}
           </Text>
           <Badge variant="soft" color="gray" size="1">
             {byRecordType.length} Types
@@ -278,7 +335,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
 
         {byRecordType.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            No record types available
+            {t('workspace.connectors.overview.noRecordTypes')}
           </Text>
         ) : (
           <Flex direction="column" gap="1">
@@ -288,7 +345,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
                 align="center"
                 justify="between"
                 style={{
-                  padding: '8px 0',
+                  padding: 'var(--space-2) 0',
                   borderBottom: '1px solid var(--gray-a3)',
                 }}
               >
@@ -317,7 +374,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
       >
         <Flex align="center" gap="2">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Personal Records Indexed
+            {t('workspace.connectors.overview.personalRecordsIndexed')}
           </Text>
           <MaterialIcon name="lock" size={14} color="var(--gray-9)" />
         </Flex>
@@ -330,12 +387,27 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
 // Sub-components
 // ========================================
 
-function StatusActionButton({ label, icon }: { label: string; icon: string }) {
+function StatusActionButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+  loading,
+}: {
+  label: string;
+  icon: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
   const [isHovered, setIsHovered] = useState(false);
+  const isDisabled = disabled || loading;
 
   return (
     <button
       type="button"
+      onClick={onClick}
+      disabled={isDisabled}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -350,17 +422,18 @@ function StatusActionButton({ label, icon }: { label: string; icon: string }) {
         padding: '0 8px',
         borderRadius: 'var(--radius-2)',
         border: '1px solid var(--gray-a4)',
-        backgroundColor: isHovered ? 'var(--gray-a3)' : 'transparent',
+        backgroundColor: isHovered && !isDisabled ? 'var(--gray-a3)' : 'transparent',
         color: 'var(--gray-11)',
         fontSize: 12,
         fontWeight: 500,
-        cursor: 'pointer',
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.6 : 1,
         transition: 'background-color 150ms ease',
         whiteSpace: 'nowrap',
       }}
     >
       <MaterialIcon name={icon} size={12} color="var(--gray-11)" />
-      {label}
+      {loading ? '…' : label}
     </button>
   );
 }
@@ -392,7 +465,7 @@ function StatCard({
       onMouseLeave={() => setIsHovered(false)}
       style={{
         flex: 1,
-        padding: '24px 16px',
+        padding: 'var(--space-6) var(--space-4)',
         backgroundColor: isHovered && isClickable ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',

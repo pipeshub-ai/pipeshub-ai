@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getConnectorIconPath } from '@/lib/utils/connector-icon-utils';
@@ -17,16 +18,17 @@ export function DocumentationSection({
   links: DocumentationLink[];
   connectorIconPath: string;
 }) {
+  const { t } = useTranslation();
   const iconSrc = getConnectorIconPath(connectorIconPath);
 
   return (
     <Flex direction="column" gap="3">
       <Flex direction="column" gap="1">
         <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          Setup Documentation
+          {t('workspace.connectors.docSection.title')}
         </Text>
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          Follow the guide to set up your connector
+          {t('workspace.connectors.docSection.description')}
         </Text>
       </Flex>
 
@@ -35,7 +37,7 @@ export function DocumentationSection({
           <DocumentationLinkRow
             key={idx}
             link={link}
-            iconSrc={iconSrc}
+            connectorIconSrc={iconSrc}
           />
         ))}
       </Flex>
@@ -47,15 +49,19 @@ export function DocumentationSection({
 // DocumentationLinkRow
 // ========================================
 
+const PIPESHUB_ICON_PATH = '/logo/pipes-hub.svg';
+
 function DocumentationLinkRow({
   link,
-  iconSrc,
+  connectorIconSrc,
 }: {
   link: DocumentationLink;
-  iconSrc: string;
+  connectorIconSrc: string;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [iconError, setIconError] = useState(false);
+
+  const iconSrc = link.type?.toLowerCase() === 'pipeshub' ? PIPESHUB_ICON_PATH : connectorIconSrc;
 
   const handleClick = useCallback(() => {
     window.open(link.url, '_blank', 'noopener,noreferrer');
@@ -72,7 +78,7 @@ function DocumentationLinkRow({
         backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '8px 8px 8px 12px',
+        padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
         cursor: 'pointer',
         transition: 'background-color 150ms ease',
       }}

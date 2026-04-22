@@ -15,10 +15,10 @@ import {
   SSEAnswerChunkEvent,
   SSECompleteEvent,
   SSEErrorEvent,
+  SSEArtifactEvent,
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
-  buildStreamRequestModeFields,
   streamChatModeToAgentApiChatMode,
 } from './types';
 
@@ -27,6 +27,7 @@ export interface StreamMessageCallbacks {
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
   onComplete?: (data: SSECompleteEvent) => void;
+  onArtifact?: (data: SSEArtifactEvent) => void;
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onError?: (error: Error) => void;
@@ -51,20 +52,33 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
 
 const transformConversation = mapApiConversationToConversation;
 
+export interface FetchConversationsOptions {
+  /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
+  search?: string;
+  signal?: AbortSignal;
+}
+
 // Chat API endpoints
 export const ChatApi = {
   // Fetch all conversations (user's own and shared with them)
   async fetchConversations(
     page: number = 1,
-    limit: number = 20
+    limit: number = 20,
+    options?: FetchConversationsOptions
   ): Promise<{
     conversations: Conversation[];
     sharedConversations: Conversation[];
     pagination: ConversationsListResponse['pagination'];
   }> {
+    const search = options?.search?.trim();
+    const params: Record<string, string | number> = { page, limit };
+    if (search) {
+      params.search = search;
+    }
+
     const { data } = await apiClient.get<ConversationsListResponse>(
       `/api/v1/conversations`,
-      { params: { page, limit } }
+      { params, signal: options?.signal }
     );
 
     return {
@@ -168,6 +182,13 @@ export const ChatApi = {
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
+      const f = request.filters;
+      const apps = (f?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const kb = (f?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
       payload = {
         query: request.query,
         modelKey: request.modelKey,
@@ -176,8 +197,9 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone,
         currentTime: new Date().toISOString(),
-        tools: request.agentStreamTools ?? [],
-        filters: request.filters,
+        tools: [...(request.agentStreamTools ?? [])],
+        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
+        filters: { apps, kb },
       };
     } else {
       endpoint = request.conversationId
@@ -222,6 +244,9 @@ export const ChatApi = {
             case 'metadata':
               // Citations / enrichment hints — UI uses answer_chunk + complete; ignore payload
               break;
+            case 'artifact':
+              callbacks.onArtifact?.(event.data as SSEArtifactEvent);
+              break;
             case 'error':
               // SSE error events may be non-fatal — the backend might still
               // continue streaming after this. Save the error and check after
@@ -253,19 +278,25 @@ export const ChatApi = {
    * Regenerate the last bot response SSE stream.
    * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/regenerate
    * Response: SSE stream with the same events as streamMessage.
+   *
+   * Pure transport: the caller is responsible for resolving the model and
+   * mode/filters (typically from the slot being regenerated, not global UI
+   * state) and passing them in, matching the pattern used by streamMessage
+   * and streamAgentRegenerate.
    */
   async streamRegenerate(
     conversationId: string,
     messageId: string,
     callbacks: StreamMessageCallbacks,
-    modelOverride?: { modelKey: string; modelName: string; modelFriendlyName: string }
+    request: {
+      modelKey: string;
+      modelName: string;
+      modelFriendlyName: string;
+      chatMode: StreamChatRequest['chatMode'];
+      filters: StreamChatRequest['filters'];
+    }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
-
-    const store = (await import('./store')).useChatStore.getState();
-    const { settings } = store;
-
-    const model = modelOverride ?? settings.selectedModel ?? settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
 
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
@@ -273,11 +304,11 @@ export const ChatApi = {
     await streamSSERequest(
       endpoint,
       {
-        modelKey: model.modelKey,
-        modelName: model.modelName,
-        modelFriendlyName: model.modelFriendlyName,
-        ...buildStreamRequestModeFields(settings),
-        filters: settings.filters,
+        modelKey: request.modelKey,
+        modelName: request.modelName,
+        modelFriendlyName: request.modelFriendlyName,
+        chatMode: request.chatMode,
+        filters: request.filters,
       } as unknown as Record<string, unknown>,
       {
         onEvent: (event: SSEEvent) => {

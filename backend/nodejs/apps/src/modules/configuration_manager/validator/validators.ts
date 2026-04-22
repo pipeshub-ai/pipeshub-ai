@@ -426,56 +426,15 @@ export const modelType = z.enum([
   'ocr',
   'slm',
   'reasoning',
-  'multiModal'
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
 ]);
 
-export const embeddingProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI',
-  'cohere',
-  'default',
-  'fireworks',
-  'gemini',
-  'huggingFace',
-  'jinaAI',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'sentenceTransformers',
-  'together',
-  'vertexAI',
-  'voyage'
-]);
-
-export const llmProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI',
-  'cohere',
-  'fireworks',
-  'gemini',
-  'groq',
-  'minimax',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'together',
-  'vertexAI',
-  'xai'
-]);
-
-export const ocrProvider = z.enum([
-  'azureDI',
-  'ocrmypdf'
-]);
-
-// Combined provider type that accepts embedding, LLM, and OCR providers
-export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider]);
+// Provider validation is now dynamic — the Python backend registry is the
+// source of truth.  We only enforce that a non-empty string is provided.
+export const providerType = z.string().min(1, 'Provider is required');
 
 // Model Configuration schema
 export const configurationSchema = z.object({
@@ -555,10 +514,13 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
-      custom_system_prompt: z.string().optional().nullable(),
+      imageGeneration: z.array(modelConfigurationSchema).optional(),
+      tts: z.array(modelConfigurationSchema).optional(),
+      stt: z.array(modelConfigurationSchema).optional(),
+      customSystemPrompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, and customSystemPrompt',
     })
     .refine(
       (data) => {
@@ -584,6 +546,9 @@ export const modelTypeSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
   }),
 });
@@ -597,6 +562,9 @@ export const updateDefaultModelSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
@@ -611,6 +579,9 @@ export const deleteProviderSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),

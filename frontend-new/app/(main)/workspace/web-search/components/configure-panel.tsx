@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Button, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
@@ -36,6 +37,7 @@ export function ConfigurePanel({
   onClose,
   onSaveSuccess,
 }: ConfigurePanelProps) {
+  const { t } = useTranslation();
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -57,7 +59,7 @@ export function ConfigurePanel({
     if (!provider || !providerMeta || !apiKey.trim()) return;
 
     setIsSaving(true);
-    setSavingStatusText('Verifying connection...');
+    setSavingStatusText(t('workspace.webSearch.verifying'));
 
     try {
       const providerData = {
@@ -92,12 +94,12 @@ export function ConfigurePanel({
       color="gray"
       size="1"
       onClick={() => window.open(providerMeta.docUrl, '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>
         open_in_new
       </span>
-      <Text size="1">Documentation</Text>
+      <Text size="1">{t('workspace.bots.documentation')}</Text>
     </Button>
   );
 
@@ -119,8 +121,8 @@ export function ConfigurePanel({
       title={providerMeta.label}
       icon={headerIcon}
       headerActions={docButton}
-      primaryLabel="Save"
-      secondaryLabel="Cancel"
+      primaryLabel={t('action.save')}
+      secondaryLabel={t('action.cancel')}
       primaryDisabled={!apiKey.trim()}
       primaryLoading={isSaving}
       onPrimaryClick={handleSave}
@@ -174,7 +176,7 @@ export function ConfigurePanel({
             backgroundColor: 'var(--slate-2)',
             border: '1px solid var(--slate-5)',
             borderRadius: 'var(--radius-2)',
-            padding: '8px 16px',
+            padding: 'var(--space-2) var(--space-4)',
             boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
           }}
         >

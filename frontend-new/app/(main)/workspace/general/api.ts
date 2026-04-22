@@ -60,13 +60,16 @@ export const OrgApi = {
     return data;
   },
 
-  /** GET /api/v1/org/logo — download logo and return a local blob URL */
+  /** GET /api/v1/org/logo — download logo and return a local blob URL (null when the org has no logo, i.e. 204). */
   async getLogoUrl(): Promise<string | null> {
     try {
       const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
         responseType: 'blob',
       });
-      return URL.createObjectURL(response.data);
+      if (response.status === 204) {
+        return null;
+      }
+      return response.data instanceof Blob ? URL.createObjectURL(response.data) : null;
     } catch {
       return null;
     }
@@ -85,6 +88,11 @@ export const OrgApi = {
     await apiClient.put(`${BASE_URL}/logo`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+  },
+
+  /** DELETE /api/v1/org/logo — remove org logo */
+  async deleteLogo(): Promise<void> {
+    await apiClient.delete(`${BASE_URL}/logo`);
   },
 };
 

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Text, Button } from '@radix-ui/themes';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import type { ConfigurableMethod } from '../types';
@@ -20,30 +21,18 @@ interface ConfigurePanelProps {
 
 // ── Per-method display info ────────────────────────────────
 
-const METHOD_META: Record<
-  ConfigurableMethod,
-  { title: string; icon?: string; docUrl: string }
-> = {
-  google: {
-    title: 'Configure Google Authentication',
-    icon: 'google',
-    docUrl: 'https://support.google.com/cloud/answer/6158849',
-  },
-  microsoft: {
-    title: 'Configure Microsoft Authentication',
-    icon: 'window',
-    docUrl: 'https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app',
-  },
-  samlSso: {
-    title: 'Configure SAML SSO',
-    icon: 'security',
-    docUrl: 'https://en.wikipedia.org/wiki/Security_Assertion_Markup_Language',
-  },
-  oauth: {
-    title: 'Configure OAuth 2.0',
-    icon: 'vpn_key',
-    docUrl: 'https://oauth.net/2/',
-  },
+const METHOD_DOC_URLS: Record<ConfigurableMethod, string> = {
+  google: 'https://support.google.com/cloud/answer/6158849',
+  microsoft: 'https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app',
+  samlSso: 'https://en.wikipedia.org/wiki/Security_Assertion_Markup_Language',
+  oauth: 'https://oauth.net/2/',
+};
+
+const METHOD_ICONS: Record<ConfigurableMethod, string> = {
+  google: 'google',
+  microsoft: 'window',
+  samlSso: 'security',
+  oauth: 'vpn_key',
 };
 
 // ========================================
@@ -51,6 +40,7 @@ const METHOD_META: Record<
 // ========================================
 
 export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: ConfigurePanelProps) {
+  const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
   const [isFormValid, setIsFormValid] = useState(false);
 
@@ -76,18 +66,18 @@ export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: Configu
 
   if (!method) return null;
 
-  const meta = METHOD_META[method];
+  const panelTitleKey = `workspace.authentication.panels.${method}` as const;
 
   const docButton = (
     <Button
       variant="outline"
       color="gray"
       size="1"
-      onClick={() => window.open(meta.docUrl, '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      onClick={() => window.open(METHOD_DOC_URLS[method], '_blank')}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
-      <Text size="1">Documentation</Text>
+      <Text size="1">{t('workspaceMenu.documentation')}</Text>
     </Button>
   );
 
@@ -95,11 +85,11 @@ export function ConfigurePanel({ open, method, onClose, onSaveSuccess }: Configu
     <WorkspaceRightPanel
       open={open}
       onOpenChange={(o) => { if (!o) onClose(); }}
-      title={meta.title}
-      icon={meta.icon}
+      title={t(panelTitleKey)}
+      icon={METHOD_ICONS[method]}
       headerActions={docButton}
-      primaryLabel="Save"
-      secondaryLabel="Cancel"
+      primaryLabel={t('action.save')}
+      secondaryLabel={t('action.cancel')}
       primaryDisabled={!isFormValid}
       primaryLoading={isSaving}
       onPrimaryClick={handleSave}

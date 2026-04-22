@@ -4,10 +4,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import KnowledgeBaseSidebar from '../../knowledge-base/sidebar';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
-import { MORE_CONNECTORS } from '../../knowledge-base/mock-data';
+import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/constants';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { categorizeNode, mergeChildrenIntoTree } from '../../knowledge-base/utils/tree-builder';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
+import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense, useEffect, useRef, useState } from 'react';
 import { toast } from '@/lib/store/toast-store';
 import type { NodeType, EnhancedFolderTreeNode } from '../../knowledge-base/types';
@@ -16,6 +18,8 @@ function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
+
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const {
     categorizedNodes,
@@ -341,23 +345,10 @@ function KnowledgeBaseSidebarSlotContent() {
 
   /** Reindex: set pending action → page.tsx picks it up and opens dialog */
   const handleSidebarReindex = useCallback((nodeId: string) => {
-    // Find the node info from categorized trees or app cache
     const findNodeInfo = (): { name: string; nodeType?: NodeType } => {
       const state = useKnowledgeBaseStore.getState();
-      const searchTree = (nodes: EnhancedFolderTreeNode[]): EnhancedFolderTreeNode | null => {
-        for (const n of nodes) {
-          if (n.id === nodeId) return n;
-          if (n.children?.length) {
-            const found = searchTree(n.children as EnhancedFolderTreeNode[]);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      if (state.categorizedNodes) {
-        const node = searchTree(state.categorizedNodes.shared) || searchTree(state.categorizedNodes.private);
-        if (node) return { name: node.name, nodeType: node.nodeType };
-      }
+      const { node } = findNodeInCategorized(state.categorizedNodes, nodeId);
+      if (node) return { name: node.name, nodeType: node.nodeType };
       // Check app nodes / app children cache
       const appNode = state.appNodes.find((n) => n.id === nodeId);
       if (appNode) return { name: appNode.name, nodeType: appNode.nodeType };
@@ -375,45 +366,52 @@ function KnowledgeBaseSidebarSlotContent() {
   /** Rename: call API directly (no confirmation dialog needed) */
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     try {
-      await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-      toast.success('Collection renamed successfully');
+      const state = useKnowledgeBaseStore.getState();
+      const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
 
-      // Clear stale cache for breadcrumb path
+      await KnowledgeBaseApi.renameNode({
+        nodeId,
+        newName,
+        nodeType: node?.nodeType,
+        rootKbId: rootKbId ?? undefined,
+      });
+      toast.success(
+        node?.nodeType === 'folder' ? 'Folder renamed successfully' : 'Collection renamed successfully'
+      );
+
+      // Clear stale cache: breadcrumb path + parent of renamed node (so re-expand shows new name)
       const currentState = useKnowledgeBaseStore.getState();
+      const cacheIdsToClear: string[] = [];
       if (currentState.tableData?.breadcrumbs) {
-        clearNodeCacheEntries(currentState.tableData.breadcrumbs.map(bc => bc.id));
+        cacheIdsToClear.push(...currentState.tableData.breadcrumbs.map(bc => bc.id));
+      }
+      if (rootKbId) {
+        cacheIdsToClear.push(rootKbId);
+      }
+      if (cacheIdsToClear.length > 0) {
+        clearNodeCacheEntries(cacheIdsToClear);
       }
 
       // Refresh Collections via the KB app children (unified API call)
       await refreshKbTree(reMergeCachedChildrenIntoTree);
     } catch (error: unknown) {
       const httpError = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(httpError?.response?.data?.message || 'Failed to rename collection');
+      toast.error(httpError?.response?.data?.message || 'Failed to rename');
       throw error;
     }
   }, [clearNodeCacheEntries, reMergeCachedChildrenIntoTree]);
 
   /** Delete: set pending action → page.tsx picks it up and opens dialog */
   const handleSidebarDelete = useCallback((nodeId: string) => {
-    const findNodeName = (): string => {
-      const state = useKnowledgeBaseStore.getState();
-      const searchTree = (nodes: EnhancedFolderTreeNode[]): string | null => {
-        for (const n of nodes) {
-          if (n.id === nodeId) return n.name;
-          if (n.children?.length) {
-            const found = searchTree(n.children as EnhancedFolderTreeNode[]);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      if (state.categorizedNodes) {
-        const name = searchTree(state.categorizedNodes.shared) || searchTree(state.categorizedNodes.private);
-        if (name) return name;
-      }
-      return nodeId;
-    };
-    setPendingSidebarAction({ type: 'delete', nodeId, nodeName: findNodeName() });
+    const state = useKnowledgeBaseStore.getState();
+    const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
+    setPendingSidebarAction({
+      type: 'delete',
+      nodeId,
+      nodeName: node?.name ?? nodeId,
+      nodeType: node?.nodeType,
+      rootKbId: rootKbId ?? undefined,
+    });
   }, [setPendingSidebarAction]);
 
   /** Add private collection: set pending action → page.tsx picks it up and opens dialog */
@@ -448,10 +446,10 @@ function KnowledgeBaseSidebarSlotContent() {
       appChildrenCache={appChildrenCache}
       loadingAppIds={loadingAppIds}
       connectors={storeConnectors}
-      moreConnectors={MORE_CONNECTORS}
+      moreConnectors={isAdmin === true ? ADMIN_MORE_CONNECTORS : PERSONAL_MORE_CONNECTORS}
       // Sidebar item actions
       onSidebarReindex={handleSidebarReindex}
-      onSidebarRename={handleSidebarRename}
+      onSidebarRename={isAllRecordsMode ? undefined : handleSidebarRename}
       onSidebarDelete={handleSidebarDelete}
       // All Records navigation
       onAllRecordsSelectAll={handleAllRecordsSelectAll}

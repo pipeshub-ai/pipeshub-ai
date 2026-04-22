@@ -40,6 +40,7 @@ import { ConfigService } from '../services/updateConfig.service';
 import {
   AiConfigEventProducer,
   ConnectorPublicUrlChangedEvent,
+  EmbeddingModelConfiguredEvent,
   EntitiesEventProducer,
   Event,
   EventType,
@@ -712,7 +713,11 @@ export const getAvailablePlatformFeatureFlags =
     res: Response,
     _next: NextFunction,
   ) => {
-    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+    // Only expose user-toggleable flags. Hidden flags are still seeded with
+    // their defaults by getPlatformSettingsFromStore but never surface in the
+    // Labs UI.
+    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    res.status(200).json({ flags }).end();
   };
 
 export const getAzureAdAuthConfig =
@@ -2450,16 +2455,31 @@ export const createAIModelsConfig =
         encryptedAIConfig,
       );
 
-      // Send event to notify other services about the new AI config
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      // Notify other services about the new AI config. The initial config
+      // may include LLM and/or embedding models; fire a separate event per
+      // model type so downstream caches (e.g. the Python retrieval service's
+      // embedding instance) get invalidated appropriately.
+      if (aiConfig.llm.length > 0) {
+        const llmEvent: Event = {
+          eventType: EventType.LLMConfiguredEvent,
+          timestamp: Date.now(),
+          payload: {
+            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+          } as LLMConfiguredEvent,
+        };
+        await sendEvent(eventService, llmEvent);
+      }
 
-      await sendEvent(eventService, event);
+      if (aiConfig.embedding.length > 0) {
+        const embeddingEvent: Event = {
+          eventType: EventType.EmbeddingModelConfiguredEvent,
+          timestamp: Date.now(),
+          payload: {
+            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+          } as EmbeddingModelConfiguredEvent,
+        };
+        await sendEvent(eventService, embeddingEvent);
+      }
 
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
@@ -2515,6 +2535,9 @@ export const getAIModelsProviders =
             llm: [],
             reasoning: [],
             multiModal: [],
+            imageGeneration: [],
+            tts: [],
+            stt: [],
           },
           message: 'No AI models found',
         });
@@ -2536,6 +2559,9 @@ export const getAIModelsProviders =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
+        tts: [],
+        stt: [],
       };
 
       for (const key of Object.keys(defaultStructure)) {
@@ -2574,6 +2600,9 @@ export const getModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2643,6 +2672,9 @@ export const getAvailableModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2769,6 +2801,9 @@ export const addAIModelProvider =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2841,6 +2876,9 @@ export const addAIModelProvider =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
+        tts: [],
+        stt: [],
       };
       for (const key of Object.keys(defaultStructure)) {
         if (!(key in aiModels)) {
@@ -2894,13 +2932,26 @@ export const addAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      // Emit an event specific to the model type so downstream services
+      // refresh the right cache. Embedding changes MUST NOT use the LLM
+      // event because the Python retrieval service only invalidates its
+      // embedding instance on `embeddingModelConfigured`.
+      const event: Event =
+        modelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3084,13 +3135,22 @@ export const updateAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
       res.status(200).json({
         status: 'success',
@@ -3204,13 +3264,22 @@ export const deleteAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3293,6 +3362,87 @@ export const updateDefaultAIModel =
         return;
       }
 
+      // If the model is already the default, no-op: nothing to check or update.
+      if (targetModel.isDefault) {
+        res.status(200).json({
+          status: 'success',
+          message: `Default ${targetModelType} model unchanged`,
+          details: {
+            modelKey,
+            modelType: targetModelType,
+            provider: targetModel.provider,
+            model: targetModel.configuration?.model,
+            contextLength: targetModel.contextLength,
+          },
+        });
+        return;
+      }
+
+      // Run a health check on the target model BEFORE promoting it to default.
+      // This is critical for `embedding`: switching the default to a model with a
+      // different vector dimension or model identity while the collection already
+      // contains points would corrupt retrieval. The Python
+      // `/api/v1/health-check/embedding` endpoint enforces that policy.
+      // For other model types (llm, ocr, slm, reasoning, multiModal) we also
+      // verify the model is reachable/credentials work before flipping the flag.
+      const healthCheckSupportedTypes = [
+        'llm',
+        'embedding',
+        'ocr',
+        'slm',
+        'reasoning',
+        'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
+      ];
+      if (healthCheckSupportedTypes.includes(targetModelType)) {
+        const healthCheckPayload = {
+          provider: targetModel.provider,
+          configuration: targetModel.configuration,
+          modelType: targetModelType,
+          isMultimodal: targetModel.isMultimodal ?? false,
+          isReasoning: targetModel.isReasoning ?? false,
+          isDefault: true,
+          contextLength: targetModel.contextLength ?? null,
+          ...(targetModel.modelFriendlyName && {
+            modelFriendlyName: targetModel.modelFriendlyName,
+          }),
+        };
+
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: healthCheckPayload,
+        };
+
+        logger.debug(
+          `Health Check for AI ${targetModelType} default-update API calling`,
+        );
+
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
+          const errData: any = aiResponseData?.data ?? {};
+          const reasonMessage =
+            (errData && (errData.message ?? errData.error?.message)) ??
+            `Failed health check while setting default ${targetModelType} model. ` +
+              `Refusing to change default to prevent breaking the system.`;
+
+          res.status(aiResponseData?.statusCode ?? 500).json({
+            error: {
+              status: 'error',
+              message: reasonMessage,
+              details: errData,
+            },
+          });
+          return;
+        }
+      }
+
       // Remove default flag from all models in this type
       for (const config of aiModels[targetModelType]) {
         config.isDefault = false;
@@ -3312,13 +3462,22 @@ export const updateDefaultAIModel =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3482,4 +3641,94 @@ export const setCustomSystemPrompt =
       logger.error('Error setting custom system prompt', { error });
       next(error);
     }
+  };
+
+// ---------------------------------------------------------------------------
+// AI Model Registry proxy (forwards to Python backend)
+// ---------------------------------------------------------------------------
+
+async function proxyAiBackendGet(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  path: string,
+  options: { query?: URLSearchParams; logMessage: string },
+): Promise<void> {
+  try {
+    const qs = options.query?.toString();
+    const url = `${appConfig.aiBackend}${path}${qs ? `?${qs}` : ''}`;
+
+    const headers: Record<string, string> = {};
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios.get(url, { timeout: 10000, headers });
+    res.status(response.status).json(response.data);
+  } catch (error: any) {
+    logger.error(options.logMessage, { error });
+    if (error?.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      next(new ServiceUnavailableError('AI model registry service is unavailable'));
+    }
+  }
+}
+
+export const getAIModelRegistry =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const { search, capability } = req.query;
+    const params = new URLSearchParams();
+    if (search) params.set('search', String(search));
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(appConfig, req, res, next, '/api/v1/ai-models/registry', {
+      query: params,
+      logMessage: 'Error proxying AI model registry request',
+    });
+  };
+
+export const getAIModelRegistryCapabilities =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      '/api/v1/ai-models/registry/capabilities',
+      { logMessage: 'Error proxying AI model capabilities request' },
+    );
+  };
+
+export const getAIModelProviderSchema =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const providerId = req.params.providerId ?? '';
+    const { capability } = req.query;
+    const params = new URLSearchParams();
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
+      { query: params, logMessage: 'Error proxying AI model provider schema request' },
+    );
   };

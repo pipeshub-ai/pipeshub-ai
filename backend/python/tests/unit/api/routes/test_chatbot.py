@@ -505,7 +505,9 @@ class TestBuildLlmUserContextString:
         assert "BizCo" in result
 
     @pytest.mark.asyncio
-    async def test_non_enterprise_org_excludes_org_name(self):
+    async def test_non_enterprise_org_still_includes_org_name(self):
+        # accountType must not influence the LLM context; when an org name is
+        # available we always include it regardless of accountType.
         from app.api.routes.chatbot import _build_llm_user_context_string
         user_info = {"fullName": "Alice", "designation": "Dev"}
         org_info = {"name": "SmallCo", "accountType": "Free"}
@@ -515,7 +517,24 @@ class TestBuildLlmUserContextString:
                 AsyncMock(), "user1", "org1", True
             )
         assert "Alice" in result
-        assert "SmallCo" not in result
+        assert "SmallCo" in result
+        assert "Free" not in result
+        assert "accountType" not in result
+
+    @pytest.mark.asyncio
+    async def test_org_without_name_excludes_org_name(self):
+        from app.api.routes.chatbot import _build_llm_user_context_string
+        user_info = {"fullName": "Alice", "designation": "Dev"}
+        org_info = {"accountType": "Free"}
+        with patch("app.api.routes.chatbot.get_cached_user_info",
+                   new_callable=AsyncMock, return_value=(user_info, org_info)):
+            result = await _build_llm_user_context_string(
+                AsyncMock(), "user1", "org1", True
+            )
+        assert "Alice" in result
+        assert "organization" not in result
+        assert "Free" not in result
+        assert "accountType" not in result
 
     @pytest.mark.asyncio
     async def test_org_info_none(self):

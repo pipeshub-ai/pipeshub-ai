@@ -24,6 +24,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
+from app.connectors.sources.microsoft.common.outlook_constants import OutlookDocs
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
@@ -466,29 +467,31 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/outlook.svg",
             app_group="Microsoft 365",
             app_description="Microsoft Outlook OAuth application for agent integration",
-            documentation_links=[
-                DocumentationLink(
-                    title="Create an Azure App Registration",
-                    url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
-                    doc_type="setup",
-                ),
-                DocumentationLink(
-                    title="Microsoft Graph Mail & Calendar permissions",
-                    url="https://learn.microsoft.com/en-us/graph/permissions-reference",
-                    doc_type="reference",
-                ),
-                DocumentationLink(
-                    title="Configure OAuth 2.0 redirect URIs",
-                    url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
-                    doc_type="setup",
-                ),
-            ],
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg")
+        .add_documentation_link(DocumentationLink(
+            title="Create an Azure App Registration",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Microsoft Graph Mail & Calendar permissions",
+            url="https://learn.microsoft.com/en-us/graph/permissions-reference",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Configure OAuth 2.0 redirect URIs",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/microsoft-365/outlook",
+            doc_type="pipeshub",
+        )))\
     .build_decorator()
 class Outlook:
     """Microsoft Outlook toolset for email and calendar operations.

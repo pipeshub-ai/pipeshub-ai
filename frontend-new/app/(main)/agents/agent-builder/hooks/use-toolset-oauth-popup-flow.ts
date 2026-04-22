@@ -61,10 +61,16 @@ export function useToolsetOauthPopupFlow({
   }, []);
 
   useEffect(
-    () => () => {
-      aliveRef.current = false;
-      oauthVerifyAbortRef.current = true;
-      clearOAuthPoll();
+    () => {
+      // Reset alive flag on every mount/remount (React Strict Mode fires cleanup → remount;
+      // without this reset, aliveRef stays false after the first cleanup, permanently blocking
+      // the queueMicrotask guard in completeOAuthFlowIfNeeded from ever calling onVerified).
+      aliveRef.current = true;
+      return () => {
+        aliveRef.current = false;
+        oauthVerifyAbortRef.current = true;
+        clearOAuthPoll();
+      };
     },
     [clearOAuthPoll]
   );
@@ -120,7 +126,12 @@ export function useToolsetOauthPopupFlow({
             return;
           }
           setAuthenticating(false);
-          onVerified();
+          // Run after this tick so `onVerified` → dialog `onClose` is not stuck inside the
+          // `message` / interval stack (Radix dialog + focus trap behave more reliably).
+          queueMicrotask(() => {
+            if (oauthVerifyAbortRef.current || !aliveRef.current) return;
+            onVerified();
+          });
           return;
         }
       } catch {

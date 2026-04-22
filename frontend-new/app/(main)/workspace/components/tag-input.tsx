@@ -255,7 +255,7 @@ export function TagInput({
               color: 'var(--slate-12)',
               flex: 1,
               minWidth: 120,
-              padding: '4px',
+              padding: 'var(--space-1)',
             }}
           />
           )}
@@ -325,7 +325,7 @@ function TagPill({
         backgroundColor: bgColor,
         border,
         borderRadius: 'var(--radius-2)',
-        padding: '4px 8px',
+        padding: 'var(--space-1) var(--space-2)',
         flexShrink: 0,
         whiteSpace: 'nowrap',
         maxWidth: 280,

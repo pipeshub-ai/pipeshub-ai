@@ -8,7 +8,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { DateRangePicker } from '@/app/components/ui';
-import type { DateFilterType } from '@/app/components/ui/date-range-picker';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   EntityPageHeader,
   EntityFilterBar,
@@ -23,6 +23,7 @@ import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { useGroupsStore } from './store';
 import { GroupsApi } from './api';
+import { isSystemGroup } from './types';
 import type { Group } from './types';
 import { CreateGroupSidebar } from './components/create-group-sidebar';
 import { GroupDetailSidebar } from './components/group-detail-sidebar';
@@ -36,49 +37,6 @@ const GROUPS_FILTER_CHIPS: FilterChipConfig[] = [
 ];
 
 // ========================================
-// Helpers
-// ========================================
-
-/** Check if an ISO date string falls within a date range */
-function isInDateRange(
-  isoDate: string | undefined,
-  afterDate?: string,
-  beforeDate?: string,
-  dateType?: DateFilterType
-): boolean {
-  if (!isoDate) return false;
-  if (!afterDate && !beforeDate) return true;
-
-  const itemDate = new Date(isoDate);
-  itemDate.setHours(0, 0, 0, 0);
-
-  if (dateType === 'on' && afterDate) {
-    const target = new Date(afterDate);
-    target.setHours(0, 0, 0, 0);
-    return itemDate.getTime() === target.getTime();
-  }
-  if (dateType === 'before' && beforeDate) {
-    const before = new Date(beforeDate);
-    before.setHours(0, 0, 0, 0);
-    return itemDate < before;
-  }
-  if (dateType === 'after' && afterDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    return itemDate > after;
-  }
-  // between
-  if (afterDate && beforeDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    const before = new Date(beforeDate);
-    before.setHours(23, 59, 59, 999);
-    return itemDate >= after && itemDate <= before;
-  }
-  return true;
-}
-
-// ========================================
 // Page Component
 // ========================================
 
@@ -90,23 +48,12 @@ function GroupsPageContent() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
   const {
     groups,
     selectedGroups,
     page,
     limit,
+    totalCount,
     searchQuery,
     filters,
     isLoading,
@@ -131,24 +78,38 @@ function GroupsPageContent() {
     detailGroup,
   } = useGroupsStore();
 
-  // ── Fetch groups on mount ──────────────────
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  // ── Fetch groups (server-paginated + server-filtered) ──────────────────
   const fetchGroups = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await GroupsApi.listGroups();
-      setGroups(result);
+      const result = await GroupsApi.listGroups({
+        page,
+        limit,
+        search: searchQuery || undefined,
+        createdAfter: filters.createdAfter || undefined,
+        createdBefore: filters.createdBefore || undefined,
+      });
+      setGroups(result.groups, result.totalCount);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load groups';
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [setGroups, setLoading, setError]);
+  }, [page, limit, searchQuery, filters, setGroups, setLoading, setError]);
 
   useEffect(() => {
-    fetchGroups();
-  }, [fetchGroups]);
+    if (isProfileInitialized && isAdmin) {
+      fetchGroups();
+    }
+  }, [fetchGroups, isProfileInitialized, isAdmin]);
 
   // URL ↔ Store panel sync — see docs/url-driven-panel-state.md
   const pendingUrlRef = useRef<string | null>(null);
@@ -356,40 +317,8 @@ function GroupsPageContent() {
     [filters, setFilters]
   );
 
-  // ── Client-side search + filter ──
-  const filteredGroups = useMemo(() => {
-    let result = groups;
-
-    // Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (g) =>
-          g.name?.toLowerCase().includes(q) ||
-          g.type?.toLowerCase().includes(q)
-      );
-    }
-
-    // Created On date filter
-    if (filters.createdAfter || filters.createdBefore) {
-      result = result.filter((g) =>
-        isInDateRange(
-          g.createdAt,
-          filters.createdAfter,
-          filters.createdBefore,
-          filters.createdDateType
-        )
-      );
-    }
-
-    return result;
-  }, [groups, searchQuery, filters]);
-
-  // ── Client-side pagination ──
-  const paginatedGroups = useMemo(() => {
-    const start = (page - 1) * limit;
-    return filteredGroups.slice(start, start + limit);
-  }, [filteredGroups, page, limit]);
+  // Date filter is now server-side; use groups directly
+  const filteredGroups = groups;
 
   // ── Column definitions ──────────────────
 
@@ -420,7 +349,7 @@ function GroupsPageContent() {
         width: '80px',
         render: (group) => (
           <Badge variant="soft" color="gray" size="1">
-            {group.users?.length ?? 0}
+            {group.userCount ?? 0}
           </Badge>
         ),
       },
@@ -452,6 +381,7 @@ function GroupsPageContent() {
   // ── Row actions ────────────
   const renderRowActions = useCallback(
     (group: Group) => {
+      const systemGroup = isSystemGroup(group);
       const actions: RowAction[] = [
         {
           icon: 'group',
@@ -465,6 +395,10 @@ function GroupsPageContent() {
           label: t('workspace.groups.actions.delete'),
           variant: 'danger',
           separatorBefore: true,
+          disabled: systemGroup,
+          tooltip: systemGroup
+            ? t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')
+            : undefined,
           onClick: async () => {
             try {
               await GroupsApi.deleteGroup(group._id);
@@ -490,7 +424,18 @@ function GroupsPageContent() {
   );
 
   // ── Empty state ──
-  const isEmpty = !isLoading && groups.length === 0;
+  const hasActiveFilters = !!(
+    searchQuery.trim() ||
+    filters.createdAfter ||
+    filters.createdBefore
+  );
+  const isEmpty = !isLoading && groups.length === 0 && !hasActiveFilters;
+  const isEmptyFiltered = !isLoading && groups.length === 0 && hasActiveFilters;
+
+  // Guard: don't render until profile is resolved / redirect non-admin users
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ──────────────────────────────
 
@@ -546,26 +491,46 @@ function GroupsPageContent() {
             {/* Filter bar */}
             <EntityFilterBar filters={filterChips} renderFilter={renderFilter} />
 
-            {/* Data table */}
-            <EntityDataTable<Group>
-              columns={columns}
-              data={paginatedGroups}
-              getItemId={(g) => g._id}
-              selectedIds={selectedGroups}
-              onSelectionChange={setSelectedGroups}
-              renderRowActions={renderRowActions}
-              isLoading={isLoading}
-              onRowClick={(group) => navigateToDetailPanel(group)}
-            />
+            {isEmptyFiltered ? (
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                gap="2"
+                style={{ flex: 1, padding: 'var(--space-6)' }}
+              >
+                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+                  {t('workspace.groups.noFilterResults', 'No groups match the applied filters')}
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('workspace.groups.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
+                </Text>
+              </Flex>
+            ) : (
+              <>
+                {/* Data table */}
+                <EntityDataTable<Group>
+                  columns={columns}
+                  data={filteredGroups}
+                  getItemId={(g) => g._id}
+                  selectedIds={selectedGroups}
+                  onSelectionChange={setSelectedGroups}
+                  renderRowActions={renderRowActions}
+                  isLoading={isLoading}
+                  onRowClick={(group) => navigateToDetailPanel(group)}
+                />
 
-            {/* Pagination */}
-            <EntityPagination
-              page={page}
-              limit={limit}
-              totalCount={filteredGroups.length}
-              onPageChange={setPage}
-              onLimitChange={setLimit}
-            />
+                {/* Pagination */}
+                <EntityPagination
+                  page={page}
+                  limit={limit}
+                  totalCount={totalCount}
+                  onPageChange={setPage}
+                  onLimitChange={setLimit}
+                />
+              </>
+            )}
           </Flex>
         )}
       </Flex>

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -18,15 +19,16 @@ interface SendImagesRowProps {
 // ========================================
 
 export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
+  const { t } = useTranslation();
   return (
     <Flex
       align="center"
       gap="3"
       style={{
         padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        background: 'var(--olive-2)',
       }}
     >
       {/* Icon */}
@@ -34,8 +36,8 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
+          width: 'var(--space-9)',
+          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--slate-3)',
           flexShrink: 0,
@@ -47,7 +49,7 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
       {/* Label + description */}
       <Box style={{ flex: 1, minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-          Send images to LLM
+          {t('workspace.webSearch.sendImages')}
         </Text>
         <Text
           size="1"
@@ -61,7 +63,7 @@ export function SendImagesRow({ enabled, onToggle }: SendImagesRowProps) {
             whiteSpace: 'nowrap',
           }}
         >
-          Control whether images are sent to the LLM during web search
+          {t('workspace.webSearch.sendImagesDescription')}
         </Text>
       </Box>
 

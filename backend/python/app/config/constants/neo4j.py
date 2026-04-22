@@ -73,6 +73,9 @@ class Neo4jLabel(Enum):
     DEALS = "Deals"
     PRODUCTS = "Products"
 
+    # Artifacts
+    ARTIFACTS = "Artifact"
+
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
@@ -129,6 +132,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.BLOCKS.value: Neo4jLabel.BLOCKS.value,
     CollectionNames.DEALS.value: Neo4jLabel.DEALS.value,
     CollectionNames.PRODUCTS.value: Neo4jLabel.PRODUCTS.value,
+    CollectionNames.ARTIFACTS.value: Neo4jLabel.ARTIFACTS.value,
 
     # Tools collections (not in CollectionNames enum, using string names)
     "tools": Neo4jLabel.TOOLS.value,

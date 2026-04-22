@@ -72,6 +72,7 @@ from app.schema.arango.documents import (
     toolset_schema,
     user_schema,
     webpage_record_schema,
+    code_file_record_schema,
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
@@ -127,10 +128,11 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_TOOLS.value, tool_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
-    (CollectionNames.PULLREQUESTS.value,pull_request_record_schema),
+    (CollectionNames.PULLREQUESTS.value, pull_request_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
-    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
+    (CollectionNames.CODE_FILES.value, code_file_record_schema),
 
 ]
 
@@ -16434,6 +16436,8 @@ class BaseArangoService:
                         name: toolset.name,
                         displayName: toolset.displayName,
                         type: toolset.type,
+                        instanceId: toolset.instanceId,
+                        instanceName: toolset.instanceName,
                         userId: toolset.userId,
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools

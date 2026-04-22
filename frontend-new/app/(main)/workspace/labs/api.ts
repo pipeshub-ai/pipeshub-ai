@@ -51,9 +51,9 @@ export const LabsApi = {
     await apiClient.post(SETTINGS_URL, payload, { suppressErrorToast: true });
   },
 
-  /** GET /platform/feature-flags/available — descriptor list */
-  async getAvailableFlags(): Promise<AvailableFlagsResponse> {
+  /** GET /platform/feature-flags/available — list of toggleable flags */
+  async getAvailableFlags(): Promise<AvailableFlag[]> {
     const { data } = await apiClient.get<AvailableFlagsResponse>(AVAILABLE_FLAGS_URL);
-    return data;
+    return Array.isArray(data?.flags) ? data.flags : [];
   },
 };

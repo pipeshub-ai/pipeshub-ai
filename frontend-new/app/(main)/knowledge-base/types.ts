@@ -423,14 +423,12 @@ export interface AllRecordsPagination {
   hasPrev: boolean;
 }
 
-// More Connectors link item (for external connector links)
+// More Connectors link item (navigates to connectors page with the connector panel open)
 export interface MoreConnectorLink {
   id: string;
   name: string;
   type: ConnectorType;
-  icon: string;
-  url: string;
-  isExternal: boolean;
+  connectorTypeParam: string;
 }
 
 // ============================================================================
@@ -439,9 +437,8 @@ export interface MoreConnectorLink {
 
 export interface RecordDetailsResponse {
   record: {
-    _key: string;
     _id: string;
-    _rev: string;
+    id: string;
     orgId: string;
     recordName: string;
     externalRecordId: string;
@@ -453,12 +450,16 @@ export interface RecordDetailsResponse {
     sourceLastModifiedTimestamp: number;
     isDeleted: boolean;
     isArchived: boolean;
-    indexingStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
+    indexingStatus: IndexingStatus;
+    reason?: string;
+    connectorName?: string;
+    hideWeburl?: boolean;
+    previewRenderable?: boolean;
     version: number;
     webUrl: string;
     mimeType: string;
     connectorId: string;
-    sizeInBytes: number;
+    sizeInBytes?: number | null;
     md5Checksum: string;
     extractionStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
     isDirty: boolean;

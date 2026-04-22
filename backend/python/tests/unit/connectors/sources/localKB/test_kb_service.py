@@ -635,6 +635,10 @@ class TestDeleteRecordsInFolder:
 class TestCreateKbPermissions:
     @pytest.mark.asyncio
     async def test_success(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1"}
+        )
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.create_kb_permissions = AsyncMock(return_value={
             "success": True, "grantedCount": 2
         })
@@ -856,6 +860,10 @@ class TestDeleteRecordsInFolderException:
 class TestCreateKbPermissionsException:
     @pytest.mark.asyncio
     async def test_exception(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1"}
+        )
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.create_kb_permissions = AsyncMock(side_effect=Exception("db error"))
         result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False

@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useToastStore } from '@/lib/store/toast-store';
 import { WebSearchApi } from './api';
 import { WebSearchProviderRow, ConfigurePanel, SendImagesRow } from './components';
@@ -24,6 +27,7 @@ import {
 // ============================================================
 
 export default function WebSearchPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -149,8 +153,8 @@ export default function WebSearchPage() {
 
       addToast({
         variant: 'success',
-        title: `${label} is added`,
-        description: `Web search configured successfully. To use ${label.toLowerCase()}, toggle off any other web search methods`,
+        title: t('workspace.webSearch.toasts.providerAdded', { label }),
+        description: t('workspace.webSearch.toasts.providerAddedDescription', { label: label.toLowerCase() }),
         duration: 5000,
       });
 
@@ -167,7 +171,7 @@ export default function WebSearchPage() {
       if (enabledProviders.length > 1) {
         addToast({
           variant: 'error',
-          title: 'Only one web search provider can be active at a time',
+          title: t('workspace.webSearch.toasts.oneProviderOnly'),
           duration: 5000,
         });
         setIsSaving(false);
@@ -198,15 +202,15 @@ export default function WebSearchPage() {
 
       addToast({
         variant: 'success',
-        title: 'Web search settings saved',
-        description: 'Your changes have been applied successfully.',
+        title: t('workspace.webSearch.toasts.saved'),
+        description: t('workspace.webSearch.toasts.savedDescription'),
         duration: 4000,
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save web search settings',
-        description: 'Please try again.',
+        title: t('workspace.webSearch.toasts.saveError'),
+        description: t('workspace.webSearch.toasts.saveErrorDescription'),
         duration: 5000,
       });
     } finally {
@@ -227,14 +231,14 @@ export default function WebSearchPage() {
         await WebSearchApi.updateSettings(newSettings);
         addToast({
           variant: 'success',
-          title: enabled ? 'Images will be sent to LLM' : 'Images will not be sent to LLM',
+          title: enabled ? t('workspace.webSearch.toasts.imagesEnabled') : t('workspace.webSearch.toasts.imagesDisabled'),
           duration: 3000,
         });
       } catch {
         setSettings(settings);
         addToast({
           variant: 'error',
-          title: 'Failed to update setting',
+          title: t('workspace.webSearch.toasts.settingError'),
           duration: 4000,
         });
       }
@@ -250,18 +254,28 @@ export default function WebSearchPage() {
     ? configuredProviders.find((p) => p.provider === panelProvider) ?? null
     : null;
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} showLabel label={t('workspace.webSearch.loading')} />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
+    <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Web Search Configuration
+              {t('workspace.webSearch.heading')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Configure web search providers for the chatbot to use when searching the web
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+             {t('workspace.webSearch.subtitle')}
             </Text>
           </Box>
 
@@ -277,7 +291,7 @@ export default function WebSearchPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -285,27 +299,27 @@ export default function WebSearchPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-            marginBottom: 20,
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
           }}
         >
           {/* Section header */}
           <Flex
             align="center"
             justify="between"
-            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
+            style={{ padding: '14px 16px' }}
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-                Different Web Search Methods
+                {t('workspace.webSearch.methodsSection')}
               </Text>
               <Text
                 size="1"
                 style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
               >
-                Select the method users will use for web search
+                {t('workspace.webSearch.methodsSectionDescription')}
               </Text>
             </Box>
 
@@ -321,20 +335,16 @@ export default function WebSearchPage() {
                 <span className="material-icons-outlined" style={{ fontSize: 15 }}>
                   edit
                 </span>
-                Edit
+                {t('action.edit')}
               </Button>
             )}
           </Flex>
+           <Box px="4">
+                      <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+                    </Box>
 
           {/* Provider rows */}
-          {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                Loading web search settings…
-              </Text>
-            </Flex>
-          ) : (
-            <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
+          <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
               {WEB_SEARCH_PROVIDER_META.map((meta) => {
                 const state = providers.find((p) => p.type === meta.type) ?? {
                   type: meta.type,
@@ -364,30 +374,26 @@ export default function WebSearchPage() {
                 onToggle={handleSendImagesToggle}
               />
             </Flex>
-          )}
         </Flex>
 
         {/* ── Web Search Provider Policy info box ── */}
         <Flex
-          align="start"
+          align="center"
           gap="3"
           style={{
-            backgroundColor: 'var(--accent-2)',
-            border: '1px solid var(--accent-6)',
-            borderRadius: 'var(--radius-1)',
+            backgroundColor: 'var(--accent-a2)',
             padding: '12px 16px',
           }}
         >
-          <Box style={{ flexShrink: 0, marginTop: 2 }}>
-            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-          </Box>
+          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+            <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+          </IconButton>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Web Search Provider Policy
+              {t('workspace.webSearch.policyTitle')}
             </Text>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-              Only one web search provider can be active at a time. To change it, please
-              disable the current one and enable a different method.
+              {t('workspace.webSearch.policyDescription')}
             </Text>
           </Flex>
         </Flex>
@@ -399,7 +405,7 @@ export default function WebSearchPage() {
         isSaving={isSaving}
         onDiscard={handleDiscard}
         onSave={handleSave}
-        saveLabel="Save"
+        saveLabel={t('action.save')}
       />
 
       {/* ── Configure side panel ── */}
@@ -412,5 +418,6 @@ export default function WebSearchPage() {
         onSaveSuccess={handleConfigureSaveSuccess}
       />
     </Box>
+    </ServiceGate>
   );
 }

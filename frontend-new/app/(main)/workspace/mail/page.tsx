@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -12,6 +13,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SmtpApi } from './api';
@@ -23,6 +25,7 @@ import type { SmtpConfig } from './types';
 // ============================================================
 
 export default function MailPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -74,8 +77,8 @@ export default function MailPage() {
     setIsConfigured(!!config?.host && !!config?.fromEmail);
     addToast({
       variant: 'success',
-      title: 'SMTP configuration saved',
-      description: 'Your email server settings have been updated',
+      title: t('workspace.mail.toasts.saved'),
+      description: t('workspace.mail.toasts.savedDescription'),
     });
   }, [addToast]);
 
@@ -84,18 +87,27 @@ export default function MailPage() {
     return null;
   }
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} showLabel />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Mail Settings
+              {t('workspace.mail.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Email server configuration for OTP and notifications
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+              {t('workspace.mail.subtitle')}
             </Text>
           </Box>
 
@@ -109,7 +121,7 @@ export default function MailPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspace.bots.documentation')}
           </Button>
         </Flex>
 
@@ -117,42 +129,39 @@ export default function MailPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-            marginBottom: 20,
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
           }}
         >
           {/* Section header */}
-          <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
+          <Box style={{ padding: '14px 16px' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-              Server Configuration
+              {t('workspace.mail.serverConfig')}
             </Text>
             <Text
               size="1"
               style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
-              Configure email and other server settings for authentication
+              {t('workspace.mail.serverConfigDescription')}
             </Text>
+          </Box>
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
           </Box>
 
           {/* SMTP row */}
           <Box style={{ padding: '12px 14px' }}>
-            {isLoading ? (
-              <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-                <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                  Loading…
-                </Text>
-              </Flex>
-            ) : (
               <Flex
                 align="center"
                 gap="3"
                 style={{
                   padding: '12px 14px',
-                  border: '1px solid var(--slate-4)',
-                  borderRadius: 'var(--radius-2)',
-                  backgroundColor: 'var(--slate-1)',
+                  border: '1px solid var(--slate-3)',
+                  borderRadius: 'var(--radius-1)',
+                  background: 'var(--olive-2)',
+                  backdropFilter: 'blur(25px)',
                 }}
               >
                 {/* Mail icon box */}
@@ -160,8 +169,8 @@ export default function MailPage() {
                   align="center"
                   justify="center"
                   style={{
-                    width: 36,
-                    height: 36,
+                    width: 'var(--space-9)',
+                    height: 'var(--space-9)',
                     borderRadius: 'var(--radius-2)',
                     backgroundColor: 'var(--slate-3)',
                     flexShrink: 0,
@@ -177,7 +186,7 @@ export default function MailPage() {
                     weight="medium"
                     style={{ color: 'var(--slate-12)', display: 'block' }}
                   >
-                    SMTP
+                    {t('workspace.mail.smtp')}
                   </Text>
                   <Text
                     size="1"
@@ -191,7 +200,7 @@ export default function MailPage() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Email server configuration for OTP and notifications
+                    {t('workspace.mail.subtitle')}
                   </Text>
                 </Box>
 
@@ -202,7 +211,7 @@ export default function MailPage() {
                   size="1"
                   style={{ flexShrink: 0 }}
                 >
-                  {isConfigured ? 'Configured' : 'Not Configured'}
+                  {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
                 </Badge>
 
                 {/* Settings / configure button */}
@@ -216,7 +225,6 @@ export default function MailPage() {
                   <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
                 </IconButton>
               </Flex>
-            )}
           </Box>
         </Flex>
       </Box>

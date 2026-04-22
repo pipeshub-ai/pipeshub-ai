@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
@@ -95,7 +97,7 @@ function KBSidebarFromStore() {
 
   return (
     <SidebarBase header={<SidebarBackHeader title={title} onBack={handleBack} />}>
-      <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px' }}>
+      <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2)' }}>
         {t('action.loading')}
       </Text>
     </SidebarBase>
@@ -140,6 +142,7 @@ function KBSidebarContent({
 }: KBSidebarProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const isAdmin = useUserStore(selectIsAdmin);
   const {
     currentFolderId,
     expandedFolders,
@@ -290,7 +293,7 @@ function KBSidebarContent({
                   />
                 ))
               ) : (
-                <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+                <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                   No items
                 </Text>
               )
@@ -325,7 +328,7 @@ function KBSidebarContent({
                 />
               ))
             ) : (
-              <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+              <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                 No items
               </Text>
             )}
@@ -470,7 +473,10 @@ function KBSidebarContent({
           onNodeExpand={onNodeExpand}
           kbSharedTree={sharedTree}
           kbPrivateTree={privateTree}
-          onNavigateToConnectors={() => router.push('/connectors')}
+          onNavigateToConnectors={() => router.push(buildConnectorsUrl(isAdmin))}
+          onNavigateToConnector={(connectorTypeParam) =>
+            router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
+          }
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}

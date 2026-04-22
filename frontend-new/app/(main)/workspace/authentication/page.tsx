@@ -2,14 +2,17 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import {
   Box,
   Flex,
   Text,
   Heading,
   Button,
+  IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { AuthMethodRow } from './components/auth-method-row';
@@ -33,6 +36,7 @@ import {
 // ============================================================
 
 export default function AuthenticationPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
@@ -158,8 +162,8 @@ export default function AuthenticationPage() {
 
       addToast({
         variant: 'success',
-        title: `${label} Auth successfully configured!`,
-        description: `Your users can sign in with their ${label} accounts`,
+        title: t('workspace.authentication.toasts.configureSuccess', { label }),
+        description: t('workspace.authentication.toasts.configureSuccessDescription', { label }),
         duration: 5000,
       });
     },
@@ -175,7 +179,7 @@ export default function AuthenticationPage() {
       if (enabledMethods.length > 1) {
         addToast({
           variant: 'error',
-          title: 'Only one authentication method can be active at a time',
+          title: t('workspace.authentication.toasts.onlyOneActive'),
           duration: 5000,
         });
         setIsSaving(false);
@@ -196,15 +200,15 @@ export default function AuthenticationPage() {
 
       addToast({
         variant: 'success',
-        title: 'Authentication settings saved',
-        description: 'Your changes have been applied successfully.',
+        title: t('workspace.authentication.toasts.saveSuccess'),
+        description: t('workspace.authentication.toasts.saveSuccessDescription'),
         duration: 4000,
       });
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed to save authentication settings',
-        description: 'Please try again.',
+        title: t('workspace.authentication.toasts.saveError'),
+        description: t('message.tryAgain'),
         duration: 5000,
       });
     } finally {
@@ -223,18 +227,27 @@ export default function AuthenticationPage() {
     return null;
   }
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} showLabel label={t('workspace.authentication.loading')} />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Authentication Settings
+            <Heading size="5" style={{ color: 'var(--slate-12)' }}>
+              {t('workspace.authentication.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Configure how users sign in to your application
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
+              {t('workspace.authentication.subtitle')}
             </Text>
           </Box>
 
@@ -253,7 +266,7 @@ export default function AuthenticationPage() {
             <span className="material-icons-outlined" style={{ fontSize: 15 }}>
               open_in_new
             </span>
-            Documentation
+            {t('workspaceMenu.documentation')}
           </Button>
         </Flex>
 
@@ -261,27 +274,29 @@ export default function AuthenticationPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-            marginBottom: 20,
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            backgroundColor: 'var(--olive-2)',
+            backdropFilter: 'blur(6px)',
+            marginBottom: 'var(--space-5)',
+            gap: 'var(--space-4)',
           }}
         >
           {/* Section header */}
           <Flex
             align="center"
             justify="between"
-            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
+            style={{ padding: '14px 16px'}}
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-                Authentication Methods
+                {t('workspace.authentication.methodsHeading')}
               </Text>
               <Text
                 size="1"
                 style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
               >
-                Select the authentication method users will use to sign in
+                {t('workspace.authentication.methodsSubtitle')}
               </Text>
             </Box>
 
@@ -297,20 +312,17 @@ export default function AuthenticationPage() {
                 <span className="material-icons-outlined" style={{ fontSize: 15 }}>
                   edit
                 </span>
-                Edit
+                {t('workspace.aiModels.actionEdit')}
               </Button>
             )}
           </Flex>
 
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+          </Box>
+
           {/* Method rows */}
-          {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                Loading authentication settings…
-              </Text>
-            </Flex>
-          ) : (
-            <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
+          <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
               {AUTH_METHOD_META.map((meta) => {
                 const state = methods.find((m) => m.type === meta.type) ?? {
                   type: meta.type,
@@ -334,38 +346,34 @@ export default function AuthenticationPage() {
                 );
               })}
             </Flex>
-          )}
         </Flex>
 
         {/* ── Authentication Method Policy info box ── */}
         <Flex
-          align="start"
+          align="center"
           gap="3"
+          py="3"
+          px="4"
           style={{
-            backgroundColor: 'var(--accent-2)',
-            border: '1px solid var(--accent-6)',
-            borderRadius: 'var(--radius-1)',
-            padding: '12px 16px',
+            background: 'var(--accent-a2)',
           }}
         >
-          <Box style={{ flexShrink: 0, marginTop: 2 }}>
-            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-          </Box>
+          <IconButton variant="soft" size="2" style={{ background: 'var(--slate-a2)', borderRadius: 'var(--radius-1)', padding: 'var(--space-2)' }}>
+            <MaterialIcon name="info" size={16} />
+          </IconButton>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Authentication Method Policy
+              {t('workspace.authentication.policyHeading')}
             </Text>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-              Only one authentication method can be active at a time. To change the method, please
-              disable the current one and enable a different method.
+              {t('workspace.authentication.policyDescription')}
             </Text>
             {!smtpConfigured && (
               <Text
                 size="1"
-                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 4 }}
+                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 'var(--space-1)' }}
               >
-                ⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure
-                it under <strong>Workspace → Mail</strong>.
+                {t('workspace.authentication.smtpWarning')}
               </Text>
             )}
           </Flex>

@@ -25,17 +25,22 @@ import { AgentBuilderCanvas } from './components/agent-builder-canvas';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
-import type { BuilderSidebarToolset } from '../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { FlowNodeData } from './types';
 import { normalizeDisplayName, formattedProvider } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
 import { connectionError } from './connection-rules';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
+import { toast } from '@/lib/store/toast-store';
+import { normalizeToolsetTypeKey } from './sidebar-toolset-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
-const AGENT_BUILDER_SIDEBAR_WIDTH = 300;
+const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
+
+const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
 
 /** Extract a human-readable message from an unknown API error. */
 function extractErrorMessage(e: unknown, fallback: string): string {
@@ -61,9 +66,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     loadedAgent,
     error,
     setError,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
     refreshToolsets,
     refreshAgent,
   } = useAgentBuilderData(editingKey);
@@ -101,6 +103,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   } | null>(null);
   const [agentDeleteDialogOpen, setAgentDeleteDialogOpen] = useState(false);
   const [isDeletingAgent, setIsDeletingAgent] = useState(false);
+  const [agentNameError, setAgentNameError] = useState<string | null>(null);
+  const agentNameInputRef = useRef<HTMLInputElement>(null);
 
   const effectiveAgentKey = loadedAgent?._key ?? editingKey ?? null;
 
@@ -134,6 +138,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   useEffect(() => {
     if (loadedAgent?.name) setAgentName(loadedAgent.name);
   }, [loadedAgent?.name, setAgentName]);
+
+  useEffect(() => {
+    if (agentName.trim()) setAgentNameError(null);
+  }, [agentName]);
 
   // Auto-dismiss connection error banner after 3.5 s
   useEffect(() => {
@@ -368,31 +376,80 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     void router.replace(rest ? `${path}?${rest}` : path);
   }, [editingKey, router, setSuccess]);
 
-  const activeToolsetTypes = useMemo(
+  /** Configured toolset instances already on the canvas (same type, different instance = allowed). */
+  const activeToolsetInstanceIds = useMemo(
     () =>
-      Array.from(
-        new Set(
-          nodes
-            .filter((n) => n.data?.type?.startsWith('toolset-'))
-            .map((n) => {
-              const cfg = n.data.config || {};
-              const name =
-                (cfg.toolsetName as string) ||
-                String(n.data.type || '').replace(/^toolset-/, '');
-              return name.toLowerCase().replace(/[^a-z0-9]/g, '');
-            })
-            .filter(Boolean)
-        )
-      ),
+      nodes
+        .filter((n) => String(n.data?.type ?? '').startsWith('toolset-'))
+        .map((n) => String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim())
+        .filter(Boolean),
+    [nodes]
+  );
+
+  /** Legacy / non-instance nodes: block a second palette row that has no instanceId when this type is already placed. */
+  const activeToolsetTypeKeysWithoutInstance = useMemo(
+    () =>
+      nodes
+        .filter((n) => {
+          if (!String(n.data?.type ?? '').startsWith('toolset-')) return false;
+          const id = String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim();
+          return !id;
+        })
+        .map((n) => {
+          const cfg = (n.data?.config || {}) as Record<string, unknown>;
+          const name =
+            (cfg.toolsetName as string) || String(n.data?.type || '').replace(/^toolset-/, '');
+          return normalizeToolsetTypeKey(String(name));
+        })
+        .filter(Boolean),
     [nodes]
   );
 
   const saveRef = useRef(false);
+
+  const focusAgentNameInput = useCallback(() => {
+    queueMicrotask(() => {
+      agentNameInputRef.current?.focus();
+    });
+  }, []);
+
+  /** Inline error + focus — shared by save, service-account entry, and confirm edge cases. */
+  const showInlineAgentNameRequired = useCallback(() => {
+    setAgentNameError(t('agentBuilder.nameRequired'));
+    focusAgentNameInput();
+  }, [focusAgentNameInput, t]);
+
+  const notifyServiceAccountToolsetBlocked = useCallback(() => {
+    const converting = Boolean(loadedAgent);
+    toast.error(t('agentBuilder.svcAcctRemoveToolsetsTitle'), {
+      description: t('agentBuilder.svcAcctRemoveToolsetsDesc', {
+        action: converting ? t('agentBuilder.svcAcctConvertAction') : t('agentBuilder.svcAcctCreateAction'),
+      }),
+      duration: SVC_ACCT_TOOLSET_BLOCK_TOAST_MS,
+    });
+  }, [loadedAgent, t]);
+
+  const handleRequestServiceAccount = useCallback(() => {
+    if (!agentName.trim()) {
+      toast.error(t('agentBuilder.nameRequired'), {
+        description: t('agentBuilder.svcAcctNameRequired'),
+      });
+      showInlineAgentNameRequired();
+      return;
+    }
+    if (hasToolsets) {
+      notifyServiceAccountToolsetBlocked();
+      return;
+    }
+    setServiceAccountConfirmOpen(true);
+  }, [agentName, hasToolsets, notifyServiceAccountToolsetBlocked, showInlineAgentNameRequired, t]);
+
   const handleSave = useCallback(async () => {
     if (!canPersist) return;
     if (saveRef.current) return;
     if (!agentName.trim()) {
-      setBanner(t('agentBuilder.nameRequired'));
+      showInlineAgentNameRequired();
+      setBanner(null);
       return;
     }
     saveRef.current = true;
@@ -415,10 +472,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (loadedAgent) {
         const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
+        // Agent's model list may have changed — drop the chat-side cache so
+        // the next chat view for this agent refetches fresh models.
+        invalidateModelsForContext(loadedAgent._key);
         await refreshAgent(loadedAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.agentUpdated'));
       } else {
         const created = await AgentsApi.createAgent(payload);
+        invalidateModelsForContext(created._key);
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
@@ -432,6 +493,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     agentName,
     edges,
     canPersist,
+    showInlineAgentNameRequired,
     isServiceAccount,
     loadedAgent,
     nodes,
@@ -447,7 +509,18 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const handleConfirmServiceAccount = useCallback(async () => {
     if (loadedAgent && !canPersist) return;
     if (!agentName.trim()) {
-      setServiceAccountError(t('agentBuilder.svcAcctNameRequired'));
+      setServiceAccountConfirmOpen(false);
+      setServiceAccountError(null);
+      toast.error(t('agentBuilder.nameRequired'), {
+        description: t('agentBuilder.svcAcctNameRequired'),
+      });
+      showInlineAgentNameRequired();
+      return;
+    }
+    if (hasToolsets) {
+      setServiceAccountConfirmOpen(false);
+      setServiceAccountError(null);
+      notifyServiceAccountToolsetBlocked();
       return;
     }
     setServiceAccountCreating(true);
@@ -468,11 +541,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (currentAgent) {
         const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig);
+        invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.serviceAccountConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
+        invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
@@ -481,7 +556,20 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     } finally {
       setServiceAccountCreating(false);
     }
-  }, [agentName, canPersist, edges, loadedAgent, nodes, refreshAgent, router, setSuccess, t]);
+  }, [
+    agentName,
+    canPersist,
+    edges,
+    hasToolsets,
+    loadedAgent,
+    nodes,
+    notifyServiceAccountToolsetBlocked,
+    refreshAgent,
+    router,
+    setSuccess,
+    showInlineAgentNameRequired,
+    t,
+  ]);
 
   const confirmDelete = useCallback(async () => {
     if (!nodeToDelete || isAgentStructureLocked) return;
@@ -528,6 +616,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         <AgentBuilderHeader
           agentName={agentName}
           onAgentNameChange={setAgentName}
+          agentNameError={agentNameError}
+          agentNameInputRef={agentNameInputRef}
           saving={saving}
           onSave={handleSave}
           shareWithOrg={shareWithOrg}
@@ -536,9 +626,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           canPersist={canPersist}
           isServiceAccount={isServiceAccount}
           editing={Boolean(loadedAgent)}
-          onEnableServiceAccount={
-            canPersist ? () => setServiceAccountConfirmOpen(true) : undefined
-          }
+          onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
         />
@@ -605,10 +693,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             nodeTemplates={nodeTemplates}
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
-            activeToolsetTypes={activeToolsetTypes}
-            toolsetsHasMore={toolsetsHasMore}
-            toolsetsLoadingMore={toolsetsLoadingMore}
-            onLoadMoreToolsets={loadMoreToolsets}
+            activeToolsetInstanceIds={activeToolsetInstanceIds}
+            activeToolsetTypeKeysWithoutInstance={activeToolsetTypeKeysWithoutInstance}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
@@ -749,7 +835,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         agentName={agentName}
         creating={serviceAccountCreating}
         error={serviceAccountError}
-        hasUserToolsets={hasToolsets}
         isConverting={Boolean(loadedAgent)}
         onClose={() => {
           setServiceAccountConfirmOpen(false);

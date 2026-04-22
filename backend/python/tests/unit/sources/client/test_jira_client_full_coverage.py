@@ -60,6 +60,7 @@ class TestBuildFromServicesBearerTokenEmptyBaseUrl:
                 "auth": {
                     "authType": "BEARER_TOKEN",
                     "bearerToken": "valid_token",
+                    "baseUrl": "https://acme.atlassian.net",
                 }
             }
         )
@@ -83,6 +84,7 @@ class TestBuildFromServicesBearerTokenEmptyBaseUrl:
                 "auth": {
                     "authType": "BEARER_TOKEN",
                     "bearerToken": "valid_token",
+                    "baseUrl": "https://acme.atlassian.net",
                 }
             }
         )
@@ -110,7 +112,7 @@ class TestBuildFromServicesOAuthEmptyBaseUrl:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "OAUTH"},
+                "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
                 "credentials": {"access_token": "oauth_tok"},
             }
         )
@@ -131,7 +133,7 @@ class TestBuildFromServicesOAuthEmptyBaseUrl:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "OAUTH"},
+                "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
                 "credentials": {"access_token": "oauth_tok"},
             }
         )
@@ -159,6 +161,7 @@ class TestBuildFromToolsetOAuthEmptyBaseUrl:
         toolset_config = {
             "authType": "OAUTH",
             "isAuthenticated": True,
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         }
         with patch.object(
@@ -176,6 +179,7 @@ class TestBuildFromToolsetOAuthEmptyBaseUrl:
         toolset_config = {
             "authType": "OAUTH",
             "isAuthenticated": True,
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "oauth_tok"},
         }
         with patch.object(
@@ -268,6 +272,7 @@ class TestBuildFromToolsetAuthTypeCaseInsensitive:
         toolset_config = {
             "authType": "oauth",
             "isAuthenticated": True,
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "tok"},
         }
         with patch.object(

@@ -211,7 +211,7 @@ export function ArchivedChatSearch({
                     <Flex
                       align="center"
                       style={{
-                        height: 32,
+                        height: 'var(--space-8)',
                         padding: '0 var(--space-2)',
                       }}
                     >

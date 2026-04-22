@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
+import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
 import { useTranslation } from 'react-i18next';
@@ -55,6 +55,7 @@ interface AllRecordsModeProps {
 
   // Navigation
   onNavigateToConnectors: () => void;
+  onNavigateToConnector: (connectorTypeParam: string) => void;
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -96,6 +97,7 @@ export function AllRecordsMode({
   kbSharedTree,
   kbPrivateTree,
   onNavigateToConnectors,
+  onNavigateToConnector,
   onReindex,
   onRename,
   onDelete,
@@ -215,9 +217,9 @@ export function AllRecordsMode({
               letterSpacing: '0.04px',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: 'var(--space-2)',
               padding: '4px 4px',
-              marginBottom: '8px',
+              marginBottom: 'var(--space-2)',
               fontWeight: 400,
               fontStyle: 'normal',
             }}
@@ -225,9 +227,9 @@ export function AllRecordsMode({
             <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
             {t('nav.moreConnectors')}
           </Text>
-          <Flex direction="column" gap="2" style={{ marginTop: '4px' }}>
+          <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} />
+              <MoreConnectorItem key={connector.id} connector={connector} onNavigate={onNavigateToConnector} />
             ))}
             <Button
               variant="ghost"
@@ -237,7 +239,7 @@ export function AllRecordsMode({
               style={{
                 width: '100%',
                 justifyContent: 'space-between',
-                paddingLeft: '12px',
+                paddingLeft: 'var(--space-3)',
                 display: 'flex',
                 alignItems: 'center',
               }}
@@ -248,16 +250,13 @@ export function AllRecordsMode({
                   {t('sidebar.seeMoreConnectors')}
                 </Text>
               </div>
-               <IconButton
-                variant="soft"
-                size="1"
-                style={{ cursor: 'pointer', padding: '0px' }}
-                onClick={(e) => {
-                e.stopPropagation();
-                }}
+              <Flex
+                align="center"
+                justify="center"
+                style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
               >
                 <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-               </IconButton>
+              </Flex>
             </Button>
           </Flex>
         </Box>

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ========================================
 // Types
@@ -129,16 +130,16 @@ export function ConfirmationDialog({
             >
               {cancelLabel}
             </Button>
-            <Button
+            <LoadingButton
               variant="solid"
               color={confirmVariant === 'danger' ? 'red' : undefined}
               size="2"
               onClick={onConfirm}
-              disabled={isLoading}
-              style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
+              loading={isLoading}
+              loadingLabel={confirmLoadingLabel}
             >
-              {isLoading ? confirmLoadingLabel : confirmLabel}
-            </Button>
+              {confirmLabel}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api';
 import type {
   Team,
+  TeamMember,
   TeamsListResponse,
   CreateTeamPayload,
   UpdateTeamPayload,
@@ -18,6 +19,9 @@ export const TeamsApi = {
     page?: number;
     limit?: number;
     search?: string;
+    created_by?: string;
+    created_after?: number;
+    created_before?: number;
   }): Promise<{ teams: Team[]; totalCount: number }> {
     const { data } = await apiClient.get<TeamsListResponse>(
       `${BASE_URL}/user/teams`,
@@ -66,6 +70,26 @@ export const TeamsApi = {
       return (data as { team: Team }).team;
     }
     return data as Team;
+  },
+
+  /**
+   * Get team members with profile pictures (paginated).
+   * GET /api/v1/teams/:teamId/users?page=&limit=&search=
+   */
+  async getTeamUsers(
+    teamId: string,
+    params?: { page?: number; limit?: number; search?: string }
+  ): Promise<{ members: TeamMember[]; totalCount: number }> {
+    const { data } = await apiClient.get<{
+      team?: { members?: TeamMember[]; memberCount?: number };
+      pagination?: { totalCount?: number };
+    }>(
+      `${BASE_URL}/${teamId}/users`,
+      { params }
+    );
+    const members = data?.team?.members ?? [];
+    const totalCount = data?.pagination?.totalCount ?? data?.team?.memberCount ?? members.length;
+    return { members, totalCount };
   },
 
   /**

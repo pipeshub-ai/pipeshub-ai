@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 interface DeleteAgentDialogProps {
   open: boolean;
@@ -101,9 +102,15 @@ export function DeleteAgentDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button color="red" onClick={handleConfirm} disabled={!isConfirmed || isDeleting}>
-              {isDeleting ? t('action.deleting') : t('action.delete')}
-            </Button>
+            <LoadingButton
+              color="red"
+              onClick={handleConfirm}
+              disabled={!isConfirmed}
+              loading={isDeleting}
+              loadingLabel={t('action.deleting')}
+            >
+              {t('action.delete')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

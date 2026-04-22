@@ -187,6 +187,7 @@ export class UserAccountController {
         await userCredentials.save();
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
+        const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
 
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
@@ -196,8 +197,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user?.fullName,
           },
         });
         throw new UnauthorizedError(
@@ -979,9 +980,12 @@ export class UserAccountController {
     });
 
     if (!userCredentials?.hashedPassword) {
-      throw new NotFoundError(
-        'You have not created a password yet. Please create a new password by using forgot password',
-      );
+      // Do not reveal that no password has been set for this account —
+      // that would let an attacker enumerate valid email addresses by
+      // comparing the response to a wrong-password attempt. Return the
+      // same BadRequestError as an incorrect password so the client sees
+      // an identical response in both cases.
+      throw new BadRequestError('Incorrect password, please try again.');
     }
     if (userCredentials.isBlocked) {
       throw new BadRequestError(
@@ -1017,8 +1021,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user.fullName,
           },
         });
       }

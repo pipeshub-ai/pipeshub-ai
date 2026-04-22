@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { FolderIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
 
@@ -67,7 +68,7 @@ export function CreateFolderDialog({
         style={{
           maxWidth: '432px',
           width: '100%',
-          padding: '24px',
+          padding: 'var(--space-6)',
           zIndex: 1000,
         }}
       >
@@ -133,16 +134,18 @@ export function CreateFolderDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button
+            <LoadingButton
               variant={isCreateDisabled ? 'soft' : 'solid'}
+              // @ts-expect-error - Radix color prop doesn't accept CSS variable strings
               color="--accent-9"
               size="2"
               onClick={handleSubmit}
-              disabled={isCreateDisabled}
-              style={{cursor: 'pointer'}}
+              disabled={!title.trim()}
+              loading={isCreating}
+              loadingLabel={t('action.creating')}
             >
-              {isCreating ? t('action.creating') : t('action.create')}
-            </Button>
+              {t('action.create')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

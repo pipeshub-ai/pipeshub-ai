@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Button, Checkbox, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useConnectorsStore } from '../store';
 
 // ========================================
@@ -19,6 +21,7 @@ export function SelectRecordsPage() {
     setPanelView,
   } = useConnectorsStore();
 
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
 
   const connectorName = panelConnector?.name ?? 'Connector';
@@ -101,7 +104,7 @@ export function SelectRecordsPage() {
           </Text>
           <MaterialIcon name="chevron_right" size={16} color="var(--gray-9)" />
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Select Records
+            {t('workspace.connectors.selectRecords.title')}
           </Text>
         </Flex>
       </Flex>
@@ -110,7 +113,7 @@ export function SelectRecordsPage() {
       <Box style={{ flexShrink: 0, paddingBottom: 12 }}>
         <TextField.Root
           size="2"
-          placeholder="Search"
+          placeholder={t('form.search')}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{ width: '100%' }}
@@ -131,14 +134,12 @@ export function SelectRecordsPage() {
       >
         {isLoadingRecords ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
-              Loading records...
-            </Text>
+            <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.selectRecords.loading')} />
           </Flex>
         ) : filteredRecords.length === 0 ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>
             <Text size="2" style={{ color: 'var(--gray-10)' }}>
-              {searchQuery ? 'No records match your search' : 'No records available'}
+              {searchQuery ? t('message.noResults') : t('workspace.connectors.selectRecords.emptyState')}
             </Text>
           </Flex>
         ) : (
@@ -172,7 +173,7 @@ export function SelectRecordsPage() {
             onCheckedChange={toggleSelectAll}
           />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            {selectedRecords.length} Selected
+            {t('table.selected', { count: selectedRecords.length })}
           </Text>
         </Flex>
 
@@ -185,7 +186,7 @@ export function SelectRecordsPage() {
             style={{ cursor: 'pointer' }}
           >
             <MaterialIcon name="arrow_back" size={14} color="var(--gray-11)" />
-            Back
+            {t('common.back')}
           </Button>
           <Button
             variant="solid"
@@ -196,7 +197,7 @@ export function SelectRecordsPage() {
               cursor: selectedRecords.length === 0 ? 'not-allowed' : 'pointer',
             }}
           >
-            Add Records
+            {t('workspace.connectors.selectRecords.addRecords')}
           </Button>
         </Flex>
       </Flex>

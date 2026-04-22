@@ -68,7 +68,10 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
-        width: '340px',
+        width: '100%',
+        maxWidth: 'min(340px, calc(100vw - 32px))',
+        maxHeight: 'min(72dvh, calc(100dvh - 96px))',
+        boxSizing: 'border-box',
         background: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
@@ -77,10 +80,14 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
         opacity: toast.isExiting ? 0 : 1,
         transform: toast.isExiting ? 'translateX(100%)' : 'translateX(0)',
         transition: 'opacity 0.3s ease, transform 0.3s ease',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
         ...style,
       }}
     >
-      <Flex align="start" gap="2">
+      <Flex align="start" gap="2" style={{ minHeight: 0, flex: 1, overflow: 'hidden' }}>
         {/* Icon */}
         <Box
           style={{
@@ -108,33 +115,46 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
         </Box>
 
         {/* Content */}
-        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
           <Text
             size="2"
             weight="medium"
             style={{
               color: 'var(--slate-12)',
-              lineHeight: '20px',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              whiteSpace: 'normal',
+              lineHeight: 1.35,
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
             }}
           >
             {toast.title}
           </Text>
 
           {toast.description && (
-            <Text
-              size="1"
+            <Box
               style={{
-                color: 'var(--slate-11)',
-                lineHeight: '16px',
-                fontWeight: 300,
-                letterSpacing: '0.04px',
+                maxHeight: 'min(36dvh, 220px)',
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                minHeight: 0,
+                scrollbarWidth: 'thin',
+                paddingRight: 2,
               }}
             >
-              {toast.description}
-            </Text>
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-11)',
+                  lineHeight: 1.45,
+                  fontWeight: 300,
+                  letterSpacing: '0.04px',
+                  overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {toast.description}
+              </Text>
+            </Box>
           )}
 
           {/* Action Button */}

@@ -1,5 +1,6 @@
 import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
+import multer from 'multer';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   addMessage,
@@ -54,6 +55,11 @@ import {
   streamChatInternal,
   addMessageStreamInternal,
 } from '../controller/es_controller';
+import {
+  getSpeechCapabilities,
+  synthesizeSpeech,
+  transcribeAudio,
+} from '../controller/speech.controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   conversationIdParamsSchema,
@@ -702,5 +708,59 @@ export function createAgentConversationalRouter(container: Container): Router {
   );
 
   return router;
-} 
+}
 
+// Matches the Python backend's MAX_STT_AUDIO_BYTES (25 MB) so we reject
+// oversized uploads at the node proxy instead of buffering 100 MB into memory
+// before the AI backend refuses it.
+const MAX_STT_AUDIO_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Routes mounted at `/api/v1/chat` that proxy the chat UI's speech endpoints
+ * to the Python AI backend:
+ *
+ *   - GET  /speech/capabilities  → discover configured TTS/STT providers
+ *   - POST /speak                → text-to-speech (binary audio response)
+ *   - POST /transcribe           → speech-to-text (multipart audio upload)
+ *
+ * Without this router the frontend's capability probe 404s and the UI falls
+ * back to the browser's Web Speech API, which is why a configured TTS model
+ * on the admin page would otherwise appear to have no effect.
+ */
+export function createChatSpeechRouter(container: Container): Router {
+  const router = Router();
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const appConfig = container.get<AppConfig>('AppConfig');
+
+  const audioUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_STT_AUDIO_BYTES, files: 1 },
+  });
+
+  router.get(
+    '/speech/capabilities',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    getSpeechCapabilities(appConfig),
+  );
+
+  router.post(
+    '/speak',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    synthesizeSpeech(appConfig),
+  );
+
+  router.post(
+    '/transcribe',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    audioUpload.single('file'),
+    transcribeAudio(appConfig),
+  );
+
+  return router;
+}

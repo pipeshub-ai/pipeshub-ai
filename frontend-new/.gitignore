@@ -14,7 +14,12 @@
 !lib/
 
 # testing
-/coverage
+/coverage/
+/test-results/
+/playwright-report/
+/blob-report/
+/.auth/
+/.nyc_output/
 
 # next.js
 /.next/
@@ -38,6 +43,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.test.example
+.env.test
+.claude/settings.local.json
 
 # vercel
 .vercel

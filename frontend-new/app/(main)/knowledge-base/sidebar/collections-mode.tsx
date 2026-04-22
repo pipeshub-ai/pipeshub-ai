@@ -12,6 +12,7 @@ import type {
   EnhancedFolderTreeNode,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // ========================================
 // Types
@@ -137,7 +138,7 @@ function CollectionTreeSection({
 
       {/* Tree items or empty state */}
       {nodes.length > 0 ? (
-        <Box className="no-scrollbar" style={{ overflowX: 'auto' }}>
+        <Box className="no-scrollbar" style={{ overflow: 'hidden' }}>
           <Flex direction="column" gap="0">
             {nodes.map((node) => (
               <FolderTreeItem
@@ -166,7 +167,7 @@ function CollectionTreeSection({
           style={{
             color: 'var(--slate-11)',
             display: 'block',
-            padding: '0 8px',
+            padding: '0 var(--space-2)',
             lineHeight: '16px',
           }}
         >
@@ -195,7 +196,7 @@ export function CollectionsMode({
   expandedFolders,
   onToggle,
   loadingNodeIds,
-  isLoading: _isLoading = false,
+  isLoading = false,
   onNodeExpand,
   onNodeSelect,
   onReindex,
@@ -204,14 +205,6 @@ export function CollectionsMode({
 }: CollectionsModeProps) {
   const { t } = useTranslation();
 
-  // if (isLoading) {
-  //   return (
-  //     <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-  //       <LottieLoader variant="loader" size={24} />
-  //     </Flex>
-  //   );
-  // }
-
   // Filter out app nodes (only show folders/collections)
   const filteredSharedTree = sharedTree.filter(
     (node) => !('nodeType' in node) || node.nodeType !== 'app'
@@ -219,6 +212,18 @@ export function CollectionsMode({
   const filteredPrivateTree = privateTree.filter(
     (node) => !('nodeType' in node) || node.nodeType !== 'app'
   );
+
+  // Show a full-sidebar spinner only on the initial fetch (before any tree
+  // data exists). Once trees are populated, subsequent loads (e.g. auto-expand)
+  // should not blank out the sidebar.
+  const hasAnyData = filteredSharedTree.length > 0 || filteredPrivateTree.length > 0;
+  if (isLoading && !hasAnyData) {
+    return (
+      <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
+        <LottieLoader variant="loader" size={24} />
+      </Flex>
+    );
+  }
 
   // Shared tree props passed to both sections
   const treeProps = {

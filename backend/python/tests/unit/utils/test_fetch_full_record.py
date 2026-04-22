@@ -1,5 +1,7 @@
 """Tests for app.utils.fetch_full_record — record fetching tools."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from pydantic import ValidationError
 
@@ -112,6 +114,174 @@ class TestFetchMultipleRecordsImpl:
         result = await _fetch_multiple_records_impl(["r2"], records_map)
         assert result["ok"] is True
         assert len(result["records"]) == 1
+
+
+class TestFetchMultipleRecordsImplGraphFallback:
+    """Covers the org_id + graph_provider fallback branch (lines 97-125 in source)."""
+
+    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None):
+        gp = MagicMock()
+        gp.config_service = MagicMock()
+        if raises is not None:
+            gp.get_document = AsyncMock(side_effect=raises)
+        else:
+            gp.get_document = AsyncMock(return_value=document)
+        gp.config_service.get_config = AsyncMock(
+            return_value=endpoints if endpoints is not None else {},
+        )
+        return gp
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_returns_blob_record(self):
+        """graphDb lookup hits, indexing COMPLETED, BlobStorage populates the map."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+            endpoints={"frontend": {"publicEndpoint": "https://app.example"}},
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "r1", "content": "blob-content"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ) as mock_get_record:
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            )
+
+        assert result["ok"] is True
+        assert len(result["records"]) == 1
+        assert result["records"][0]["virtual_record_id"] == "vrid-1"
+        assert result["records"][0]["content"] == "blob-content"
+        mock_get_record.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_endpoint_config_exception(self):
+        """If fetching endpoints config raises, we still proceed with frontend_url=None."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+        )
+        graph_provider.config_service.get_config = AsyncMock(
+            side_effect=RuntimeError("etcd down"),
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "r1", "content": "blob-content"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            )
+
+        assert result["ok"] is True
+        assert len(result["records"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_indexing_not_completed(self):
+        """If indexingStatus is not COMPLETED, record is marked not available."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "IN_PROGRESS", "virtualRecordId": "vrid-1"},
+        )
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+        )
+
+        assert result["ok"] is False
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_document_not_found(self):
+        """graph_provider.get_document returns None → record not available."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(document=None)
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+        )
+
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_exception_swallowed(self):
+        """Exceptions inside the fallback block are swallowed; record marked not available."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(raises=RuntimeError("arango down"))
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+        )
+
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_blob_record_missing(self):
+        """get_record does not populate the map → record marked not available."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            pass
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            )
+
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_endpoints_not_dict(self):
+        """If endpoints_config is not a dict, we skip it cleanly and continue."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+            endpoints="not-a-dict",  # pyright: ignore [reportArgumentType]
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "r1"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            )
+
+        assert result["ok"] is True
 
 
 class TestCreateFetchFullRecordTool:

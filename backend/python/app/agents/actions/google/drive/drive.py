@@ -17,6 +17,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
@@ -128,7 +129,17 @@ class GetSharedDrivesInput(BaseModel):
             app_description="Drive OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/drive.svg"))\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/drive.svg")
+        .add_documentation_link(DocumentationLink(
+            "Google Drive API Setup",
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/google-workspace/drive",
+            "pipeshub",
+        )))\
     .build_decorator()
 class GoogleDrive:
     """Drive tool exposed to the agents using DriveDataSource"""

@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { Box, Flex, Button } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { validatePassword, PASSWORD_RULES } from '@/lib/utils/validators';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import AuthTitleSection from '../components/auth-title-section';
@@ -19,6 +21,12 @@ export interface ChangePasswordProps {
   user?: JwtUser;
   /** Called after a successful password change. */
   onSuccess: () => void;
+  /**
+   * Called when the backend rejects the token because the user no longer
+   * exists (e.g. the invite was cancelled or the account was deleted).
+   * The parent should swap to the invite-expired / reset-expired failure screen.
+   */
+  onInvalidToken?: () => void;
   /** Disable all inputs (e.g. when token is missing/invalid). */
   disabled?: boolean;
 }
@@ -37,8 +45,10 @@ export default function ChangePassword({
   token,
   user,
   onSuccess,
+  onInvalidToken,
   disabled = false,
 }: ChangePasswordProps) {
+  const { t } = useTranslation();
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -68,7 +78,10 @@ export default function ChangePassword({
       await AuthApi.resetPasswordViaEmailLink(token, newPassword);
       onSuccess();
     } catch (error: unknown) {
-      type HttpErr = { response?: { data?: { error?: { message?: string }; message?: string } }; message?: string };
+      type HttpErr = {
+        response?: { data?: { error?: { message?: string }; message?: string } };
+        message?: string;
+      };
       const msg = (
         (error as HttpErr)?.response?.data?.error?.message ||
         (error as HttpErr)?.response?.data?.message ||
@@ -78,16 +91,17 @@ export default function ChangePassword({
 
       if (msg.includes('blocked') || msg.includes('multiple incorrect')) {
         toast.error('Your account has been disabled.', {
-          description:
-            'You have entered incorrect credentials too many times',
+          description: 'You have entered incorrect credentials too many times',
           duration: null,
         });
+      } else if (onInvalidToken) {
+        // Any other error from the reset/invite endpoint means the link is no
+        // longer usable — cancelled invite, deleted account, stale token, or
+        // backend hiccup. Lift it to the parent for the invite-expired screen
+        // rather than trying to distinguish failure modes inline.
+        onInvalidToken();
       } else {
-        setServerError(
-          msg.includes('expired') || msg.includes('invalid token')
-            ? 'This reset link has expired. Please request a new one from the sign-in page.'
-            : msg || 'Failed to reset password. Please try again.',
-        );
+        setServerError(msg || t('resetPassword.failure.genericLinkInvalidMessage'));
       }
     } finally {
       setLoading(false);
@@ -164,10 +178,12 @@ export default function ChangePassword({
 
           {serverError && <ErrorBanner message={serverError} />}
 
-          <Button
+          <LoadingButton
             type="submit"
             size="3"
-            disabled={disabled || loading || !newPassword || !confirmPassword}
+            disabled={disabled || !newPassword || !confirmPassword}
+            loading={loading}
+            loadingLabel="Saving…"
             style={{
               width: '100%',
               backgroundColor:
@@ -177,11 +193,10 @@ export default function ChangePassword({
               color:
                 !disabled && newPassword && confirmPassword ? 'white' : undefined,
               fontWeight: 500,
-              cursor: disabled || loading ? 'not-allowed' : 'pointer',
             }}
           >
-            {loading ? 'Saving…' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </form>
     </Box>

@@ -1396,6 +1396,7 @@ describe('UserAccountController', () => {
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -1547,7 +1548,7 @@ describe('UserAccountController', () => {
   });
 
   describe('authenticateWithPassword', () => {
-    it('should throw NotFoundError when no password is set', async () => {
+    it('should throw BadRequestError with a generic "incorrect password" message when no password is set (to prevent account enumeration)', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
@@ -1560,8 +1561,8 @@ describe('UserAccountController', () => {
         await controller.authenticateWithPassword(user, 'password', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(NotFoundError);
-        expect((error as NotFoundError).message).to.include('not created a password yet');
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as BadRequestError).message).to.include('Incorrect password');
       }
     });
 

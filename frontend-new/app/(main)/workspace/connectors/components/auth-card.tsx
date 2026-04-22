@@ -1,7 +1,9 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Button, Badge, IconButton } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthCardState } from '../types';
 
@@ -15,6 +17,8 @@ interface AuthCardProps {
   onAuthenticate: () => void;
   onRetry?: () => void;
   loading?: boolean;
+  /** When true, omit outer shell (use inside a parent olive card). */
+  embedded?: boolean;
 }
 
 // ========================================
@@ -52,7 +56,9 @@ export function AuthCard({
   onAuthenticate,
   onRetry,
   loading = false,
+  embedded = false,
 }: AuthCardProps) {
+  const { t } = useTranslation();
   const config = stateConfig[state];
 
   return (
@@ -60,11 +66,19 @@ export function AuthCard({
       direction="column"
       gap="4"
       style={{
-        backgroundColor: 'var(--olive-2)',
-        border: '1px solid var(--olive-5)',
-        borderRadius: 'var(--radius-2)',
-        padding: 16,
         width: '100%',
+        ...(embedded
+          ? {
+              padding: 0,
+              backgroundColor: 'transparent',
+              border: 'none',
+            }
+          : {
+              padding: 16,
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-2)',
+            }),
       }}
     >
       {/* Icon + text */}
@@ -87,25 +101,26 @@ export function AuthCard({
         {/* Title + subtitle */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Authenticate {connectorName} to Proceed
+            {t('workspace.connectors.authCard.title', { name: connectorName })}
           </Text>
           <Text size="1" style={{ color: 'var(--gray-10)' }}>
-            Connect your {connectorName} account to proceed with configuration
+            {t('workspace.connectors.authCard.description', { name: connectorName })}
           </Text>
         </Flex>
       </Flex>
 
       {/* Action area — varies by state */}
       {state === 'empty' && (
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={onAuthenticate}
-          disabled={loading}
-          style={{ width: '100%', cursor: loading ? 'not-allowed' : 'pointer' }}
+          loading={loading}
+          loadingLabel={t('workspace.connectors.authCard.loading')}
+          style={{ width: '100%' }}
         >
-          {loading ? 'Authenticating...' : `Authenticate ${connectorName} to Proceed`}
-        </Button>
+          {t('workspace.connectors.authCard.title', { name: connectorName })}
+        </LoadingButton>
       )}
 
       {state === 'success' && (
@@ -115,10 +130,10 @@ export function AuthCard({
             backgroundColor: 'var(--green-a3)',
             color: 'var(--green-a11)',
             width: 'fit-content',
-            padding: '4px 8px',
+            padding: 'var(--space-1) var(--space-2)',
           }}
         >
-          {connectorName} has been Authenticated
+          {t('workspace.connectors.authCard.successBadge', { name: connectorName })}
         </Badge>
       )}
 
@@ -129,10 +144,10 @@ export function AuthCard({
             style={{
               backgroundColor: 'var(--red-a3)',
               color: 'var(--red-a11)',
-              padding: '4px 8px',
+              padding: 'var(--space-1) var(--space-2)',
             }}
           >
-            Failed to Authenticate your {connectorName}
+            {t('workspace.connectors.authCard.failureBadge', { name: connectorName })}
           </Badge>
           {onRetry && (
             <IconButton

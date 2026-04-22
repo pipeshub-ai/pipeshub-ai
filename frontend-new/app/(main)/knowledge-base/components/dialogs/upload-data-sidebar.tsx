@@ -1,26 +1,44 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // Supported file types
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'PNG', 'JPEG', 'JPG', 'XLS', 'XLSX', 'HTML', 'PPT', 'PPTX'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX', 'MD', 'MDX'];
 const SUPPORTED_MIME_TYPES = [
   'text/plain',
   'application/pdf',
+  'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'image/png',
   'image/jpeg',
+  'image/svg+xml',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/csv',
   'text/html',
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/markdown',
+  'text/x-markdown',
+  'application/x-markdown',
+  'text/mdx',
 ];
-const MAX_FILE_SIZE_MB = 30;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+// Extensions used as a fallback when the browser doesn't report a MIME type
+// (e.g. some OSes send CSV/SVG/Markdown files with an empty or generic `type`).
+const SUPPORTED_EXTENSIONS = [
+  'txt', 'pdf', 'doc', 'docx', 'png', 'jpeg', 'jpg', 'svg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx', 'md', 'markdown', 'mdx',
+];
+function isSupportedFile(file: File): boolean {
+  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return SUPPORTED_EXTENSIONS.includes(ext);
+}
 
 // File with relative path for folder uploads
 export interface FileWithPath {
@@ -43,9 +61,10 @@ interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
   isEmpty: boolean;
+  maxFileSizeBytes: number;
 }
 
-function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
+function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -68,7 +87,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
 
       if (type === 'file') {
         fileArray.forEach((file) => {
-          if (file.size <= MAX_FILE_SIZE_BYTES && SUPPORTED_MIME_TYPES.includes(file.type)) {
+          if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
             items.push({
               id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
               name: file.name,
@@ -140,7 +159,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
 
             await readDirectory(entry as FileSystemDirectoryEntry);
 
-            if (totalSize <= MAX_FILE_SIZE_BYTES) {
+            if (totalSize <= maxFileSizeBytes) {
               folderItems.push({
                 id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 name: entry.name,
@@ -188,7 +207,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
           const items: UploadFileItem[] = [];
           folderMap.forEach((folderFiles, folderName) => {
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
-            if (totalSize <= MAX_FILE_SIZE_BYTES) {
+            if (totalSize <= maxFileSizeBytes) {
               items.push({
                 id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 name: folderName,
@@ -214,7 +233,15 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
   const inputProps =
     type === 'folder'
       ? { webkitdirectory: '', directory: '', multiple: true }
-      : { multiple: true, accept: SUPPORTED_MIME_TYPES.join(',') };
+      : {
+          multiple: true,
+          // Include both MIME types and extensions so browsers that can't
+          // resolve a CSV MIME still allow the file via extension match.
+          accept: [
+            ...SUPPORTED_MIME_TYPES,
+            ...SUPPORTED_EXTENSIONS.map((e) => `.${e}`),
+          ].join(','),
+        };
 
   return (
      <Flex
@@ -237,7 +264,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
         border: `1px dashed ${isDragOver ? 'var(--accent-9)' : 'var(--slate-9)'}`,
         borderRadius: 'var(--radius-4)',
         background: isDragOver ? 'var(--accent-a2)' : 'rgba(255, 255, 255, 0.00)',
-        padding: isEmpty ? '32px' : '16px',
+        padding: isEmpty ? 'var(--space-8)' : 'var(--space-4)',
         cursor: 'pointer',
         transition: 'all 0.15s ease',
         height: '100%',
@@ -276,6 +303,130 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
       </Flex>
     </Box>
     </Flex>
+  );
+}
+
+// Scrollable list that surfaces clear affordances (visible scrollbar, edge
+// shadows, and a "more below" chip) so users can tell when there is content
+// above/below the visible area. File/folder items share the same background
+// as the container, so a plain fade-to-bg gradient is invisible - we use a
+// dark inset shadow plus an explicit chip instead.
+interface ScrollableListProps {
+  children: React.ReactNode;
+}
+
+function ScrollableList({ children }: ScrollableListProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [showTopFade, setShowTopFade] = useState(false);
+  const [showBottomFade, setShowBottomFade] = useState(false);
+
+  const updateFades = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    const overflows = scrollHeight - clientHeight > 1;
+    setShowTopFade(overflows && scrollTop > 1);
+    setShowBottomFade(overflows && scrollTop + clientHeight < scrollHeight - 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    updateFades();
+  });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => updateFades();
+    el.addEventListener('scroll', handleScroll, { passive: true });
+
+    const ro = new ResizeObserver(() => updateFades());
+    ro.observe(el);
+    Array.from(el.children).forEach((child) => ro.observe(child));
+
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      ro.disconnect();
+    };
+  }, [updateFades]);
+
+  return (
+    <Box style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+      <Box
+        ref={scrollRef}
+        className="upload-scroll-area"
+        style={{
+          height: '100%',
+          // `scroll` (not `auto`) keeps the scrollbar track reserved so the
+          // styled scrollbar is always visible on browsers/OSes (e.g. macOS)
+          // that otherwise hide overlay scrollbars when idle.
+          overflowY: 'scroll',
+          paddingRight: '4px',
+        }}
+      >
+        {children}
+      </Box>
+      {/* Top shadow - hints at content above when scrolled */}
+      <Box
+        aria-hidden
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '12px',
+          pointerEvents: 'none',
+          boxShadow: 'inset 0 8px 8px -8px rgba(0, 0, 0, 0.35)',
+          opacity: showTopFade ? 1 : 0,
+          transition: 'opacity 0.15s ease',
+        }}
+      />
+      {/* Bottom shadow - hints at more content below */}
+      <Box
+        aria-hidden
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: '14px',
+          pointerEvents: 'none',
+          boxShadow: 'inset 0 -10px 10px -8px rgba(0, 0, 0, 0.35)',
+          opacity: showBottomFade ? 1 : 0,
+          transition: 'opacity 0.15s ease',
+        }}
+      />
+      {/* Floating chip - the most obvious "more below" cue */}
+      <Flex
+        align="center"
+        justify="center"
+        gap="1"
+        onClick={() => {
+          const el = scrollRef.current;
+          if (!el) return;
+          el.scrollBy({ top: el.clientHeight * 0.8, behavior: 'smooth' });
+        }}
+        style={{
+          position: 'absolute',
+          bottom: 6,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          padding: '2px 8px',
+          borderRadius: '999px',
+          backgroundColor: 'var(--slate-12)',
+          color: 'var(--slate-1)',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+          cursor: 'pointer',
+          opacity: showBottomFade ? 0.95 : 0,
+          pointerEvents: showBottomFade ? 'auto' : 'none',
+          transition: 'opacity 0.15s ease',
+        }}
+      >
+        <MaterialIcon name="keyboard_arrow_down" size={14} color="var(--slate-1)" />
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-1)' }}>
+          More
+        </Text>
+      </Flex>
+    </Box>
   );
 }
 
@@ -370,6 +521,7 @@ export function UploadDataSidebar({
 }: UploadDataSidebarProps) {
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   const handleAddFiles = useCallback((items: UploadFileItem[]) => {
     setFileItems((prev) => [...prev, ...items]);
@@ -446,7 +598,7 @@ export function UploadDataSidebar({
           align="center"
           justify="between"
           style={{
-            padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             backdropFilter: 'blur(8px)',
             backgroundColor: 'var(--effects-translucent)',
@@ -487,7 +639,7 @@ export function UploadDataSidebar({
             gridTemplateRows: '1fr auto 1fr',
             gap: '16px',
             overflowY: 'hidden',
-            padding: '16px',
+            padding: 'var(--space-4)',
             backgroundColor: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
           }}
@@ -499,44 +651,54 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
-              padding: '16px',
+              padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--olive-2)',
             }}
           >
             {/* Header */}
-            <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Upload Files
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload files up to the limit of {MAX_FILE_SIZE_MB} MB
-              </Text>
+            <Flex align="start" justify="between" gap="2">
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  Upload Files
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  You can upload files up to the limit of {maxFileSizeMB} MB
+                </Text>
+              </Flex>
+              {fileItems.length > 0 && (
+                <Text
+                  size="1"
+                  weight="medium"
+                  style={{
+                    color: 'var(--slate-12)',
+                    backgroundColor: 'var(--olive-4)',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {fileItems.length} {fileItems.length === 1 ? 'file' : 'files'}
+                </Text>
+              )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* File list - scrollable */}
+            {/* File list - scrollable with overflow affordances */}
             {fileItems.length > 0 && (
-              <Box
-                className="no-scrollbar"
-                style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  minHeight: 0,
-                }}
-              >
-                <Flex direction="column" gap="2">
+              <ScrollableList>
+                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
                   {fileItems.map((item) => (
                     <UploadedItem key={item.id} item={item} onRemove={handleRemoveFile} />
                   ))}
                 </Flex>
-              </Box>
+              </ScrollableList>
             )}
 
-            {/* File drop zone - expands when empty, fixed when has items */}
-            <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '120px' } : {}) }}>
-              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} />
+            {/* File drop zone - expands when empty, compact when has items */}
+            <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '88px' } : {}) }}>
+              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
 
@@ -556,44 +718,54 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
-              padding: '16px',
+              padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--olive-2)',
             }}
           >
             {/* Header */}
-            <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Upload Folders
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload folders up to the limit of {MAX_FILE_SIZE_MB} MB
-              </Text>
+            <Flex align="start" justify="between" gap="2">
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  Upload Folders
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  You can upload folders up to the limit of {maxFileSizeMB} MB
+                </Text>
+              </Flex>
+              {folderItems.length > 0 && (
+                <Text
+                  size="1"
+                  weight="medium"
+                  style={{
+                    color: 'var(--slate-12)',
+                    backgroundColor: 'var(--olive-4)',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {folderItems.length} {folderItems.length === 1 ? 'folder' : 'folders'}
+                </Text>
+              )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* Folder list - scrollable */}
+            {/* Folder list - scrollable with overflow affordances */}
             {folderItems.length > 0 && (
-              <Box
-                className="no-scrollbar"
-                style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  minHeight: 0,
-                }}
-              >
-                <Flex direction="column" gap="2">
+              <ScrollableList>
+                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
                   {folderItems.map((item) => (
                     <UploadedItem key={item.id} item={item} onRemove={handleRemoveFolder} />
                   ))}
                 </Flex>
-              </Box>
+              </ScrollableList>
             )}
 
-            {/* Folder drop zone - expands when empty, fixed when has items */}
-            <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '120px' } : {}) }}>
-              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} />
+            {/* Folder drop zone - expands when empty, compact when has items */}
+            <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '88px' } : {}) }}>
+              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
         </Box>
@@ -620,18 +792,19 @@ export function UploadDataSidebar({
           >
             Cancel
           </Button>
-          <Button
-            variant="solid" 
+          <LoadingButton
+            variant="solid"
             size="2"
             style={{
-              cursor: 'pointer', 
               backgroundColor: (!hasItems || isSaving) ? 'var(--slate-a3)' : 'var(--emerald-10)'
-            }} 
-            disabled={!hasItems || isSaving}
+            }}
+            disabled={!hasItems}
+            loading={isSaving}
+            loadingLabel="Saving..."
             onClick={handleSave}
           >
-            {isSaving ? 'Saving...' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

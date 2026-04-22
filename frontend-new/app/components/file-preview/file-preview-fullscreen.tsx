@@ -18,12 +18,15 @@ export function FilePreviewFullscreen({
   defaultTab: _defaultTab = 'preview',
   onClose,
   isLoading = false,
+  error,
   recordDetails: _recordDetails,
   initialPage,
   highlightBox,
   citations,
+  initialCitationId,
 }: FilePreviewProps) {
   const hasCitations = citations && citations.length > 0;
+  const hasError = !isLoading && !!error;
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
 
@@ -73,6 +76,7 @@ export function FilePreviewFullscreen({
     onPageChange: handlePageChange,
     initialHighlightBox: highlightBox,
     initialPage,
+    initialCitationId,
   });
 
   // Create pagination controls object
@@ -82,6 +86,14 @@ export function FilePreviewFullscreen({
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
   };
+
+  const handleHighlightClick = useCallback(
+    (id: string) => {
+      const citation = citations?.find((c) => c.id === id);
+      if (citation) handleCitationClick(citation);
+    },
+    [citations, handleCitationClick]
+  );
 
   return (
     <Box
@@ -158,14 +170,31 @@ export function FilePreviewFullscreen({
             <Flex align="center" justify="center">
               <div className="loading-spinner" />
             </Flex>
+          ) : hasError ? (
+            <Flex
+              direction="column"
+              align="center"
+              justify="center"
+              gap="3"
+              style={{ padding: 'var(--space-6)' }}
+            >
+              <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+              <Text size="3" weight="medium" color="red">
+                {error}
+              </Text>
+            </Flex>
           ) : (
             <FilePreviewRenderer
               fileUrl={file.url}
               fileName={file.name}
               fileType={file.type}
+              fileBlob={file.blob}
               pagination={paginationControls}
               highlightBox={hasCitations ? syncHighlightBox : highlightBox}
               highlightPage={hasCitations ? syncHighlightPage : undefined}
+              citations={hasCitations ? citations : undefined}
+              activeCitationId={hasCitations ? activeCitationId : undefined}
+              onHighlightClick={hasCitations ? handleHighlightClick : undefined}
             />
           )}
 

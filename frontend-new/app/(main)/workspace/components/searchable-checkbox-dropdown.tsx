@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Flex, Box, Text, Avatar } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 // ========================================
 // Types
@@ -13,6 +14,8 @@ export interface CheckboxOption {
   label: string;
   /** Optional subtitle (e.g. email) shown below the label */
   subtitle?: string;
+  /** Data URI for profile picture */
+  profilePicture?: string;
 }
 
 interface SearchableCheckboxDropdownProps {
@@ -30,6 +33,14 @@ interface SearchableCheckboxDropdownProps {
   disabled?: boolean;
   /** Show avatar + subtitle for each option (user-style rows) */
   showAvatar?: boolean;
+  /** Server-side search callback. When provided, search is handled externally. */
+  onSearch?: (query: string) => void;
+  /** Called when user scrolls to bottom of the options list (infinite scroll). */
+  onLoadMore?: () => void;
+  /** Whether more options are being loaded */
+  isLoadingMore?: boolean;
+  /** Whether there are more options to load */
+  hasMore?: boolean;
 }
 
 // ========================================
@@ -53,6 +64,10 @@ export function SearchableCheckboxDropdown({
   emptyText = 'No options available',
   disabled = false,
   showAvatar = false,
+  onSearch,
+  onLoadMore,
+  isLoadingMore = false,
+  hasMore = false,
 }: SearchableCheckboxDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +75,9 @@ export function SearchableCheckboxDropdown({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const chipsContainerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isServerSearch = !!onSearch;
 
   // Close on click outside
   useEffect(() => {
@@ -85,7 +103,9 @@ export function SearchableCheckboxDropdown({
     }
   }, [selectedIds]);
 
+  // Filter options locally only when NOT using server search
   const filteredOptions = useMemo(() => {
+    if (isServerSearch) return options;
     if (!searchQuery.trim()) return options;
     const q = searchQuery.toLowerCase();
     return options.filter(
@@ -93,7 +113,37 @@ export function SearchableCheckboxDropdown({
         o.label.toLowerCase().includes(q) ||
         (o.subtitle && o.subtitle.toLowerCase().includes(q))
     );
-  }, [options, searchQuery]);
+  }, [options, searchQuery, isServerSearch]);
+
+  // Debounced server search
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (isServerSearch) {
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = setTimeout(() => onSearch!(value), 300);
+      }
+    },
+    [isServerSearch, onSearch]
+  );
+
+  // Infinite scroll
+  const handleScroll = useCallback(() => {
+    if (!onLoadMore || !hasMore || isLoadingMore) return;
+    const el = listRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      onLoadMore();
+    }
+  }, [onLoadMore, hasMore, isLoadingMore]);
+
+  // Reset search when dropdown closes
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchQuery('');
+      if (isServerSearch) onSearch!('');
+    }
+  }, [isOpen, isServerSearch, onSearch]);
 
   const toggleOption = useCallback(
     (id: string) => {
@@ -161,9 +211,9 @@ export function SearchableCheckboxDropdown({
         style={{
           display: 'flex',
           alignItems: 'flex-start',
-          gap: 4,
+          gap: 'var(--space-1)',
           width: '100%',
-          minHeight: 32,
+          minHeight: 'var(--space-8)',
           padding: isOpen ? 3 : 4,
           backgroundColor: 'var(--color-surface)',
           border: `${isOpen ? 2 : 1}px solid ${isOpen ? 'var(--accent-8)' : 'var(--slate-a5)'}`,
@@ -232,7 +282,7 @@ export function SearchableCheckboxDropdown({
               ref={inputRef}
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               onKeyDown={handleSearchKeyDown}
               placeholder={selectedIds.length === 0 ? placeholder : ''}
               style={{
@@ -269,7 +319,7 @@ export function SearchableCheckboxDropdown({
             display: 'flex',
             alignItems: 'center',
             flexShrink: 0,
-            height: 24,
+            height: 'var(--space-6)',
             marginTop: 2,
           }}
         >
@@ -284,12 +334,14 @@ export function SearchableCheckboxDropdown({
       {/* Dropdown list */}
       {isOpen && (
         <Box
+          ref={listRef}
           className="no-scrollbar"
+          onScroll={handleScroll}
           style={{
             position: 'absolute',
             ...(openDirection === 'down'
-              ? { top: '100%', marginTop: 4 }
-              : { bottom: '100%', marginBottom: 4 }),
+              ? { top: '100%', marginTop: 'var(--space-1)' }
+              : { bottom: '100%', marginBottom: 'var(--space-1)' }),
             left: 0,
             right: 0,
             maxHeight: 216,
@@ -301,11 +353,11 @@ export function SearchableCheckboxDropdown({
             zIndex: 100,
           }}
         >
-          {filteredOptions.length === 0 ? (
+          {filteredOptions.length === 0 && !isLoadingMore ? (
             <Flex
               align="center"
               justify="center"
-              style={{ padding: '16px' }}
+              style={{ padding: 'var(--space-4)' }}
             >
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
                 {emptyText}
@@ -330,15 +382,15 @@ export function SearchableCheckboxDropdown({
                       'transparent';
                   }}
                   style={{
-                    padding: '8px 16px',
+                    padding: 'var(--space-2) var(--space-4)',
                     cursor: 'pointer',
                   }}
                 >
                   {/* Custom checkbox */}
                   <Box
                     style={{
-                      width: 16,
-                      height: 16,
+                      width: 'var(--space-4)',
+                      height: 'var(--space-4)',
                       borderRadius: 'var(--radius-1)',
                       border: isChecked
                         ? 'none'
@@ -366,10 +418,11 @@ export function SearchableCheckboxDropdown({
                       <Avatar
                         size="2"
                         variant="soft"
+                        src={option.profilePicture}
                         fallback={getInitials(option.label)}
                         style={{
-                          width: 28,
-                          height: 28,
+                          width: 'var(--space-7)',
+                          height: 'var(--space-7)',
                           flexShrink: 0,
                         }}
                       />
@@ -412,6 +465,12 @@ export function SearchableCheckboxDropdown({
                 </Flex>
               );
             })
+          )}
+          {isLoadingMore && (
+            <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
+              <Spinner size={12} />
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>Loading...</Text>
+            </Flex>
           )}
         </Box>
       )}

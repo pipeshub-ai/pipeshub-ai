@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
   ConnectorListResponse,
@@ -8,8 +9,57 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
 } from './types';
+import { CONNECTOR_INSTANCE_STATUS } from './constants';
 
 const BASE_URL = '/api/v1/connectors';
+
+/** Normalized DELETE /connectors/:id body for optimistic UI merge. */
+export type DeleteConnectorInstanceMerge = {
+  _key: string;
+  type: string;
+  status: string | null;
+};
+
+/** Fields read from DELETE /connectors/:id JSON (may be partial or empty). */
+interface DeleteConnectorInstanceResponseBody {
+  _key?: string;
+  type?: string;
+  status?: string | null;
+}
+
+function resolveDeleteInstanceResponseStatus(
+  body: DeleteConnectorInstanceResponseBody
+): string | null {
+  if (!('status' in body)) {
+    return CONNECTOR_INSTANCE_STATUS.DELETING;
+  }
+  const s = body.status;
+  if (typeof s === 'string' && s.length > 0) {
+    return s;
+  }
+  if (s === null) {
+    return CONNECTOR_INSTANCE_STATUS.DELETING;
+  }
+  return CONNECTOR_INSTANCE_STATUS.DELETING;
+}
+
+function parseDeleteConnectorInstanceBody(
+  data: DeleteConnectorInstanceResponseBody | null | undefined,
+  fallbackConnectorId: string
+): DeleteConnectorInstanceMerge {
+  if (data && typeof data === 'object' && typeof data._key === 'string') {
+    return {
+      _key: data._key,
+      type: typeof data.type === 'string' ? data.type : '',
+      status: resolveDeleteInstanceResponseStatus(data),
+    };
+  }
+  return {
+    _key: fallbackConnectorId,
+    type: '',
+    status: CONNECTOR_INSTANCE_STATUS.DELETING,
+  };
+}
 
 export const ConnectorsApi = {
   // ── List & Registry ──
@@ -20,7 +70,7 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 20
+    limit = 100
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
@@ -34,7 +84,7 @@ export const ConnectorsApi = {
   async getRegistryConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 20
+    limit = 100
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(
       `${BASE_URL}/registry`,
@@ -70,10 +120,12 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Delete a connector instance */
-  async deleteConnectorInstance(connectorId: string) {
-    const { data } = await apiClient.delete(`${BASE_URL}/${connectorId}`);
-    return data;
+  /** Delete a connector instance; response is normalized for optimistic store merge. */
+  async deleteConnectorInstance(connectorId: string): Promise<DeleteConnectorInstanceMerge> {
+    const { data } = await apiClient.delete<DeleteConnectorInstanceResponseBody | null>(
+      `${BASE_URL}/${connectorId}`
+    );
+    return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
 
   /** Update connector instance name */
@@ -134,6 +186,33 @@ export const ConnectorsApi = {
 
   // ── OAuth ──
 
+  /** List saved OAuth app registrations for a connector type (same contract as legacy UI). */
+  async listOAuthConfigs(
+    connectorType: string,
+    page = 1,
+    limit = 100,
+    search?: string
+  ): Promise<{ oauthConfigs: unknown[]; pagination?: unknown }> {
+    const params: Record<string, string | number> = { page, limit };
+    if (search) params.search = search;
+    const { data } = await apiClient.get<{
+      oauthConfigs?: unknown[];
+      pagination?: unknown;
+    }>(`/api/v1/oauth/${encodeURIComponent(connectorType)}`, { params });
+    return {
+      oauthConfigs: data.oauthConfigs ?? [],
+      pagination: data.pagination,
+    };
+  },
+
+  /** Fetch one OAuth config by id (admin fallback when list entry has no embedded config). */
+  async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<Record<string, unknown>> {
+    const { data } = await apiClient.get<{ oauthConfig?: Record<string, unknown> }>(
+      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`
+    );
+    return (data.oauthConfig ?? {}) as Record<string, unknown>;
+  },
+
   /** Get OAuth authorization URL (opens in popup for user consent) */
   async getOAuthAuthorizationUrl(
     connectorId: string
@@ -182,35 +261,78 @@ export const ConnectorsApi = {
 
   // ── Instance Details ──
 
-  /** Fetch a specific connector instance */
+  /** Fetch a specific connector instance. Backend returns `{ success, connector }`. */
   async getConnectorInstance(connectorId: string): Promise<Connector> {
-    const { data } = await apiClient.get<Connector>(
+    const { data } = await apiClient.get<{ success: boolean; connector: Connector }>(
       `${BASE_URL}/${connectorId}`
     );
-    return data;
-  },
-
-  /** Start sync for a connector instance */
-  async startSync(connectorId: string) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/toggle`,
-      { type: 'sync' }
-    );
-    return data;
+    if (!data?.connector) {
+      throw new Error(`getConnectorInstance: empty response for ${connectorId}`);
+    }
+    return data.connector;
   },
 
   // ── Reindex Failed ──
 
-  /** Resync records for a connector */
-  async resyncConnector(connectorId: string, connectorName: string) {
+  /**
+   * Resync records for a connector instance.
+   * `connectorType` must be the connector **type** (e.g. "Google Drive"), matching the legacy UI.
+   */
+  async resyncConnector(connectorId: string, connectorType: string, fullSync?: boolean) {
+    if (!connectorType) {
+      throw new Error('resyncConnector: connectorType is required');
+    }
     const { data } = await apiClient.post(
       '/api/v1/knowledgeBase/resync/connector',
       {
-        connectorName,
+        connectorName: connectorType,
         connectorId,
+        ...(fullSync !== undefined ? { fullSync } : {}),
       }
     );
     return data;
+  },
+
+  /** Reindex failed (and optionally filtered) records for a connector */
+  async reindexFailedConnector(
+    connectorId: string,
+    app: string,
+    statusFilters?: string[]
+  ) {
+    const { data } = await apiClient.post(
+      '/api/v1/knowledgeBase/reindex-failed/connector',
+      {
+        app,
+        connectorId,
+        ...(statusFilters?.length ? { statusFilters } : {}),
+      }
+    );
+    return data;
+  },
+
+  /**
+   * Complete connector OAuth in a popup: forwards to Node, which proxies the connector service.
+   * Same contract as the legacy SPA `/connectors/oauth/callback/...` page.
+   */
+  async completeConnectorOAuthCallback(params: {
+    code: string;
+    state: string;
+    oauthError: string | null;
+    baseUrl: string;
+  }): Promise<ConnectorOAuthCallbackRaw> {
+    const query: Record<string, string> = {
+      code: params.code,
+      state: params.state,
+      baseUrl: params.baseUrl,
+    };
+    if (params.oauthError) {
+      query.error = params.oauthError;
+    }
+    const { data } = await apiClient.get<ConnectorOAuthCallbackRaw>('/api/v1/connectors/oauth/callback', {
+      params: query,
+      suppressErrorToast: true,
+    });
+    return data ?? {};
   },
 
   // ── Stats ──

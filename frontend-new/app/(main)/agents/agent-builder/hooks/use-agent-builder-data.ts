@@ -11,7 +11,7 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import { ChatApi } from '@/chat/api';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { AgentDetail } from '../../types';
-import { ToolsetsApi, type BuilderSidebarToolset } from '../../toolsets-api';
+import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentToolsListRow, KnowledgeBaseForBuilder } from '../../types';
 
 const TOOLSETS_PAGE = 20;
@@ -47,12 +47,17 @@ async function loadToolsetsForAgentContext(
 ): Promise<BuilderSidebarToolset[]> {
   const isSvc = agentDetails?.isServiceAccount === true;
   const keyForToolsets = agentDetails?._key || editingAgentKey || undefined;
-  return isSvc && keyForToolsets
-    ? ToolsetsApi.getAllAgentToolsets(keyForToolsets, {
-        includeRegistry: true,
-        limitPerPage: TOOLSETS_PAGE,
-      })
-    : ToolsetsApi.getAllMyToolsets({ includeRegistry: true, limitPerPage: TOOLSETS_PAGE });
+  if (isSvc && keyForToolsets) {
+    return ToolsetsApi.getAllAgentToolsets(keyForToolsets, {
+      includeRegistry: true,
+      limitPerPage: TOOLSETS_PAGE,
+    });
+  }
+  const { toolsets } = await ToolsetsApi.getAllMyToolsets({
+    includeRegistry: true,
+    limitPerPage: TOOLSETS_PAGE,
+  });
+  return toolsets;
 }
 
 async function fetchAgentAndToolsets(editingAgentKey: string | null) {
@@ -72,19 +77,15 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [connectorRegistry, setConnectorRegistry] = useState<Connector[]>([]);
   const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
-  const [toolsetsHasMore, setToolsetsHasMore] = useState(false);
-  const [toolsetsLoadingMore, setToolsetsLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const toolsetsPageRef = useRef(1);
   const toolsetsSearchRef = useRef('');
   const staticResourcesLoadedRef = useRef(false);
 
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
-      toolsetsPageRef.current = 1;
       toolsetsSearchRef.current = search ?? '';
       const svc = Boolean(isServiceAccount) && Boolean(agentKey);
       const all = svc
@@ -93,46 +94,17 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
             includeRegistry: true,
             limitPerPage: TOOLSETS_PAGE,
           })
-        : await ToolsetsApi.getAllMyToolsets({
-            search: toolsetsSearchRef.current || undefined,
-            includeRegistry: true,
-            limitPerPage: TOOLSETS_PAGE,
-          });
+        : (
+            await ToolsetsApi.getAllMyToolsets({
+              search: toolsetsSearchRef.current || undefined,
+              includeRegistry: true,
+              limitPerPage: TOOLSETS_PAGE,
+            })
+          ).toolsets;
       setToolsets(all);
-      setToolsetsHasMore(false);
     },
     []
   );
-
-  const loadMoreToolsets = useCallback(async () => {
-    if (toolsetsLoadingMore || !toolsetsHasMore) return;
-    const agentKey = loadedAgent?._key || editingAgentKey || undefined;
-    const svc = Boolean(loadedAgent?.isServiceAccount) && Boolean(agentKey);
-    setToolsetsLoadingMore(true);
-    try {
-      const next = toolsetsPageRef.current + 1;
-      const res = svc
-        ? await ToolsetsApi.getAgentToolsets(agentKey!, {
-            page: next,
-            limit: TOOLSETS_PAGE,
-            search: toolsetsSearchRef.current || undefined,
-            includeRegistry: true,
-          })
-        : await ToolsetsApi.getMyToolsets({
-            page: next,
-            limit: TOOLSETS_PAGE,
-            search: toolsetsSearchRef.current || undefined,
-            includeRegistry: true,
-          });
-      toolsetsPageRef.current = next;
-      setToolsets((prev) => [...prev, ...res.toolsets]);
-      setToolsetsHasMore(res.hasNext);
-    } catch (err) {
-      console.error('[AgentBuilder] Failed to load more toolsets:', err);
-    } finally {
-      setToolsetsLoadingMore(false);
-    }
-  }, [toolsetsHasMore, toolsetsLoadingMore, loadedAgent, editingAgentKey]);
 
   const refreshAgent = useCallback(
     async (agentKey: string, opts?: { knownAgent?: AgentDetail }) => {
@@ -166,7 +138,6 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
           setConfiguredConnectors(staticRes.configuredConnectors);
           setConnectorRegistry(staticRes.connectorRegistry);
 
-          toolsetsPageRef.current = 1;
           toolsetsSearchRef.current = '';
 
           const allToolsets = await loadToolsetsForAgentContext(agentPromise, editingAgentKey);
@@ -175,10 +146,8 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           setLoadedAgent(agentPromise ?? null);
           setToolsets(allToolsets);
-          setToolsetsHasMore(false);
           staticResourcesLoadedRef.current = true;
         } else {
-          toolsetsPageRef.current = 1;
           toolsetsSearchRef.current = '';
 
           const { agentDetails, allToolsets } = await fetchAgentAndToolsets(editingAgentKey);
@@ -187,7 +156,6 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           setLoadedAgent(agentDetails);
           setToolsets(allToolsets);
-          setToolsetsHasMore(false);
         }
       } catch (e) {
         if (!cancelled) {
@@ -226,8 +194,5 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     setError,
     refreshToolsets,
     refreshAgent,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
   };
 }

@@ -43,6 +43,8 @@ function transformToCollectionItems(
 interface CollectionsTabProps {
   selectedKbIds: string[];
   onToggleKb: (kbId: string) => void;
+  /** When set, only these KB ids are listed (e.g. agent-scoped collections). */
+  restrictToKbIds?: string[] | null;
 }
 
 /**
@@ -52,8 +54,10 @@ interface CollectionsTabProps {
 export function CollectionsTab({
   selectedKbIds,
   onToggleKb,
+  restrictToKbIds = null,
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -66,12 +70,19 @@ export function CollectionsTab({
       setIsLoading(true);
       setHasError(false);
       const response = await ChatApi.listCollectionsForChat();
-      const items = transformToCollectionItems(response.knowledgeBases);
+      let items = transformToCollectionItems(response.knowledgeBases);
+      if (restrictToKbIds && restrictToKbIds.length > 0) {
+        const allow = new Set(restrictToKbIds);
+        items = items.filter((c) => allow.has(c.id));
+      }
+
       setCollections(items);
 
       // Populate collection name cache for display in ChatInput cards
       const nameMap: Record<string, string> = {};
-      items.forEach((item) => { nameMap[item.id] = item.name; });
+      items.forEach((item) => {
+        nameMap[item.id] = item.name;
+      });
       setCollectionNamesCache(nameMap);
     } catch (err) {
       setHasError(true);
@@ -79,7 +90,7 @@ export function CollectionsTab({
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [restrictToKbIds, setCollectionNamesCache]);
 
   useEffect(() => {
     fetchCollections();
@@ -99,14 +110,14 @@ export function CollectionsTab({
   return (
     <Flex direction="column" gap="2" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Search bar */}
-      <Flex align="center" gap="1" style={{ width: '98%' }}>
+      <Flex align="center" gap="1" style={{ width: '100%' }}>
         <Flex
           align="center"
           gap="2"
           style={{
             flex: 1,
-            height: '36px',
-            border: '1px solid var(--slate-a5)',
+            height: 'var(--space-6)',
+            border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
             borderRadius: 'var(--radius-2)',
             paddingLeft: 'var(--space-2)',
             paddingRight: 'var(--space-2)',
@@ -120,8 +131,11 @@ export function CollectionsTab({
           />
           <input
             type="text"
+            className="collections-search-input"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
             placeholder={t('chat.searchCollections')}
             style={{
               flex: 1,
@@ -129,19 +143,11 @@ export function CollectionsTab({
               outline: 'none',
               backgroundColor: 'transparent',
               color: 'var(--slate-12)',
-              fontSize: '13px',
+              fontSize: 'var(--font-size-2)', /* was: 13px, delta: +1px */
               fontFamily: 'inherit',
             }}
           />
         </Flex>
-        {/* Filter button — no-op for v0 */}
-        <IconButton variant="ghost" color="gray" size="2" style={{width: 'var(--spacing-6)', marginLeft: 'var(--space-1)'}}>
-          <MaterialIcon
-            name="filter_list"
-            size={ICON_SIZES.SECONDARY}
-            color="var(--slate-11)"
-          />
-        </IconButton>
       </Flex>
 
       {/* Scrollable list */}
@@ -159,7 +165,7 @@ export function CollectionsTab({
           <Flex
             align="center"
             justify="center"
-            style={{ padding: 'var(--space-4)' }}
+            style={{ flex: 1, minHeight: 0 }}
           >
            <LottieLoader variant="loader" size={48} />
           </Flex>
@@ -205,7 +211,7 @@ export function CollectionsTab({
                   style={{
                     fontSize: 12,
                     fontWeight: 400,
-                    lineHeight: '16px',
+                    lineHeight: 'var(--line-height-1)',
                     letterSpacing: '0.04px',
                     color: 'var(--olive-9)',
                   }}

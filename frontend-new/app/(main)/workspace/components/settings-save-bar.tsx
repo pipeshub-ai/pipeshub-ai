@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Button } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ========================================
 // Types
@@ -66,7 +67,7 @@ export function SettingsSaveBar({
       gap="2"
       style={{
         position: 'fixed',
-        bottom: '16px',
+        bottom: 'var(--space-4)',
         left: '50%',
         transform: visible ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(100%)',
         opacity: visible ? 1 : 0,
@@ -93,15 +94,15 @@ export function SettingsSaveBar({
       >
         Discard changes
       </Button>
-      <Button
+      <LoadingButton
         size="2"
         variant="solid"
         onClick={handleSave}
-        disabled={isActuallySaving}
-        style={{ cursor: isActuallySaving ? 'wait' : 'pointer' }}
+        loading={isActuallySaving}
+        loadingLabel="Saving..."
       >
-        {isActuallySaving ? 'Saving...' : saveLabel}
-      </Button>
+        {saveLabel}
+      </LoadingButton>
     </Flex>
   );
 }

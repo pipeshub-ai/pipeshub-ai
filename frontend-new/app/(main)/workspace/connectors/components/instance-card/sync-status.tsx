@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PillDivider, StartSyncButton } from './primitives';
@@ -25,7 +26,7 @@ interface SyncStatusPillProps {
 
 const pillStyle: React.CSSProperties = {
   height: 32,
-  padding: '0 12px 0 8px',
+  padding: '0 var(--space-3) 0 var(--space-2)',
   borderRadius: 'var(--radius-2)',
   backgroundColor: 'var(--gray-a2)',
   flexShrink: 0,
@@ -47,14 +48,16 @@ export function SyncStatusPill({
   unsupportedRecords,
   onStartSync,
 }: SyncStatusPillProps) {
+  const { t } = useTranslation();
+
   if (status === 'auth_incomplete') return null;
 
   if (status === 'sync_disabled') {
     return (
-      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 12px', backgroundColor: 'var(--gray-a3)' }}>
+      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 var(--space-3)', backgroundColor: 'var(--gray-a3)' }}>
         <MaterialIcon name="pause_circle" size={14} color="var(--gray-a10)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a10)', whiteSpace: 'nowrap' }}>
-          Sync Paused
+          {t('workspace.connectors.syncStatus.paused')}
         </Text>
       </Flex>
     );
@@ -66,10 +69,10 @@ export function SyncStatusPill({
 
   if (status === 'detecting_records') {
     return (
-      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 12px' }}>
+      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 var(--space-3)' }}>
         <MaterialIcon name="sync" size={20} color="var(--gray-a11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a11)', whiteSpace: 'nowrap' }}>
-          Preparing to Sync...
+          {t('workspace.connectors.syncStatus.preparing')}
         </Text>
       </Flex>
     );
@@ -86,7 +89,7 @@ export function SyncStatusPill({
         </Flex>
         <PillDivider />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a11)', whiteSpace: 'nowrap' }}>
-          Syncing Records...
+          {t('workspace.connectors.syncStatus.syncing')}
         </Text>
       </Flex>
     );
@@ -115,7 +118,7 @@ export function SyncStatusPill({
           </>
         )}
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a11)', whiteSpace: 'nowrap' }}>
-          Records Synced
+          {t('workspace.connectors.syncStatus.synced')}
         </Text>
       </Flex>
     );
@@ -136,7 +139,7 @@ export function SyncStatusPill({
           </>
         )}
         <Text size="2" weight="medium" style={{ color: 'var(--gray-a11)', whiteSpace: 'nowrap' }}>
-          Sync Failed
+          {t('workspace.connectors.syncStatus.failed')}
         </Text>
       </Flex>
     );

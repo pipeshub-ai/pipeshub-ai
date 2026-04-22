@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthMethodMeta, AuthMethodState, ConfigurableMethod, ConfigStatus } from '../types';
@@ -35,6 +36,7 @@ export function AuthMethodRow({
   onToggle,
   onConfigure,
 }: AuthMethodRowProps) {
+  const { t } = useTranslation();
   const isConfigurable = meta.configurable;
   const isConfigured = isConfigurable
     ? configStatus[state.type as keyof ConfigStatus] ?? false
@@ -47,31 +49,39 @@ export function AuthMethodRow({
   if (isEditing) {
     if (meta.requiresSmtp && !smtpConfigured) {
       toggleDisabled = true;
-      disabledReason = 'Requires SMTP configuration. Configure SMTP in the Mail settings first.';
+      disabledReason = t('workspace.authentication.disabledReasons.requiresSmtp');
     } else if (isConfigurable && !isConfigured) {
       toggleDisabled = true;
-      disabledReason = 'Configure this method first before enabling it.';
+      disabledReason = t('workspace.authentication.disabledReasons.notConfigured');
     } else if (!state.enabled && anotherMethodEnabled) {
       toggleDisabled = true;
-      disabledReason = 'Disable the currently active method before enabling this one.';
+      disabledReason = t('workspace.authentication.disabledReasons.anotherActive');
     }
   }
 
   const showConfigureButton = isConfigurable;
 
+  const switchStyle = {
+    '--accent-9': 'rgba(0, 0, 51, 0.25)',
+    '--accent-indicator': 'white',
+  } as React.CSSProperties;
+
   // ── Badge colour ─────────────────────────────────────────
   const badgeColor = isConfigured ? 'green' : 'orange';
-  const badgeLabel = isConfigured ? 'Configured' : 'Not Configured';
+  const badgeLabel = isConfigured ? t('workspace.authentication.badges.configured') : t('workspace.authentication.badges.notConfigured');
 
   return (
     <Flex
       align="center"
       gap="3"
+      py="3"
+      px="4"
       style={{
-        padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        backgroundColor: 'var(--olive-2)',
+        backdropFilter: 'blur(25px)',
+        opacity: toggleDisabled ? 0.7 : 1,
       }}
     >
       {/* Icon */}
@@ -79,8 +89,8 @@ export function AuthMethodRow({
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
+          width: 'var(--space-9)',
+          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--slate-3)',
           flexShrink: 0,
@@ -129,7 +139,7 @@ export function AuthMethodRow({
 
         {/* Gear / configure button */}
         {showConfigureButton && (
-          <Tooltip content="Configure">
+          <Tooltip content={t('workspace.authentication.configure')}>
             <IconButton
               variant="ghost"
               color="gray"
@@ -147,21 +157,23 @@ export function AuthMethodRow({
           <Tooltip content={disabledReason}>
             <span style={{ display: 'inline-flex', alignItems: 'center' }}>
               <Switch
-                color="jade"
+                color="gray"
                 size="2"
                 checked={state.enabled}
                 disabled={toggleDisabled}
                 onCheckedChange={() => onToggle(state.type)}
+                style={switchStyle}
               />
             </span>
           </Tooltip>
         ) : (
           <Switch
-            color="jade"
+            color="gray"
             size="2"
             checked={state.enabled}
             disabled={toggleDisabled}
             onCheckedChange={() => onToggle(state.type)}
+            style={switchStyle}
           />
         )}
       </Flex>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { Box, Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -9,11 +9,9 @@ import {
   FormField,
   SearchableCheckboxDropdown,
 } from '../../components';
-import type { CheckboxOption } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
 // Component
@@ -41,12 +39,6 @@ export function CreateGroupSidebar({
     resetCreateForm,
   } = useGroupsStore();
 
-  // Shared users cache from the users store
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   // Reset form when panel closes
   useEffect(() => {
     if (!isCreatePanelOpen) {
@@ -54,42 +46,17 @@ export function CreateGroupSidebar({
     }
   }, [isCreatePanelOpen, resetCreateForm]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
-  useEffect(() => {
-    if (!isCreatePanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
-
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isCreatePanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // User options for the dropdown
-  const userOptions: CheckboxOption[] = useMemo(
-    () =>
-      allUsers.map((u) => ({
-        id: u.userId,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      })),
-    [allUsers]
-  );
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isCreatePanelOpen,
+    idField: 'userId',
+  });
 
   // Form validation
   const isFormValid = createGroupName.trim().length > 0;
@@ -168,10 +135,10 @@ export function CreateGroupSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 16,
+          padding: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 20,
+          gap: 'var(--space-5)',
         }}
       >
         {/* Group Name */}
@@ -188,7 +155,7 @@ export function CreateGroupSidebar({
             )}
             style={{
               width: '100%',
-              height: 32,
+              height: 'var(--space-8)',
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -229,7 +196,7 @@ export function CreateGroupSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: '8px',
+              padding: 'var(--space-2)',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',
@@ -274,12 +241,12 @@ export function CreateGroupSidebar({
               'workspace.groups.create.addUsersPlaceholder',
               'Search or select user(s) to add to this group'
             )}
-            emptyText={
-              isLoadingAllUsers
-                ? t('workspace.common.loadingUsers', 'Loading users...')
-                : t('workspace.common.noUsersAvailable', 'No users available')
-            }
+            emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
             showAvatar
+            onSearch={handleUserSearch}
+            onLoadMore={handleUserLoadMore}
+            isLoadingMore={userFilterLoading}
+            hasMore={userFilterHasMore}
           />
         </Flex>
 

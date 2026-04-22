@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { Box, Flex, Text, Badge, Tooltip } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -10,12 +11,14 @@ import {
   FormField,
   SearchableCheckboxDropdown,
   AvatarCell,
+  PaginatedMembersList,
 } from '../../components';
-import type { CheckboxOption } from '../../components';
+import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
+import { isSystemGroup } from '../types';
+import type { GroupUser } from '../types';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
 // Component
@@ -48,13 +51,19 @@ export function GroupDetailSidebar({
     setDetailGroup,
   } = useGroupsStore();
 
-  // Shared users cache from the users store
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   const [isDeleting, setIsDeleting] = useState(false);
+  // Group members list (paginated via PaginatedMembersList component)
+  const membersListRef = useRef<PaginatedMembersListHandle>(null);
+  const [groupMembers, setGroupMembers] = useState<GroupUser[]>([]);
+
+  const fetchGroupMembersFn = useCallback(
+    async (search: string | undefined, page: number, limit: number) => {
+      if (!detailGroup) return { items: [] as GroupUser[], totalCount: 0 };
+      const { users, totalCount } = await GroupsApi.getGroupUsers(detailGroup._id, { page, limit, search });
+      return { items: users, totalCount };
+    },
+    [detailGroup]
+  );
 
   // Track user IDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -68,51 +77,24 @@ export function GroupDetailSidebar({
     }
   }, [isEditMode, isDetailPanelOpen]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
-  useEffect(() => {
-    if (!isDetailPanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isDetailPanelOpen && isEditMode,
+    idField: 'userId',
+  });
 
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // Resolve group member user IDs to user objects
-  const groupMembers = useMemo(() => {
-    if (!detailGroup) return [];
-    return allUsers.filter((u) => detailGroup.users.includes(u.userId));
-  }, [allUsers, detailGroup]);
-
-  // User options for add-users dropdown (exclude already-added users)
+  // Exclude already-added members from the options
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailGroup) return [];
-    const memberIds = new Set(detailGroup.users);
-
-    return allUsers
-      .filter((u) => !memberIds.has(u.userId))
-      .map((u) => ({
-        id: u.userId,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      }));
-  }, [allUsers, detailGroup]);
+    const memberIds = new Set(groupMembers.map((u) => u._id));
+    return userOptions.filter((o) => !memberIds.has(o.id));
+  }, [userOptions, groupMembers, detailGroup]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -186,9 +168,10 @@ export function GroupDetailSidebar({
         await GroupsApi.addUsersToGroups(editAddUserIds, [detailGroup._id]);
       }
 
-      // Refresh the group data
+      // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
       setDetailGroup(updatedGroup);
+      membersListRef.current?.refresh();
 
       addToast({
         variant: 'success',
@@ -247,6 +230,22 @@ export function GroupDetailSidebar({
   }, [isEditMode, exitEditMode, closeDetailPanel]);
 
   const panelTitle = detailGroup?.name || 'Group';
+  const systemGroup = detailGroup ? isSystemGroup(detailGroup) : false;
+
+  const deleteButton = (
+    <LoadingButton
+      variant="outline"
+      color="red"
+      size="1"
+      onClick={handleDeleteGroup}
+      loading={isDeleting}
+      disabled={systemGroup}
+      loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
+      style={{ flexShrink: 0 }}
+    >
+      {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+    </LoadingButton>
+  );
 
   return (
     <WorkspaceRightPanel
@@ -273,10 +272,10 @@ export function GroupDetailSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 16,
+          padding: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 'var(--space-4)',
         }}
       >
         {/* Group Name */}
@@ -292,7 +291,7 @@ export function GroupDetailSidebar({
             readOnly={!isEditMode}
             style={{
               width: '100%',
-              height: 32,
+              height: 'var(--space-8)',
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -345,7 +344,7 @@ export function GroupDetailSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: '8px',
+              padding: 'var(--space-2)',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',
@@ -366,7 +365,7 @@ export function GroupDetailSidebar({
             }}
             onBlur={(e) => {
               e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '8px';
+              e.currentTarget.style.padding = 'var(--space-2)';
             }}
           />
         </FormField>
@@ -377,10 +376,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -401,10 +400,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -415,53 +414,54 @@ export function GroupDetailSidebar({
             {t('workspace.groups.detail.users', 'Users')}
           </Text>
 
-          {groupMembers.length === 0 ? (
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('workspace.groups.detail.noUsers', 'No users in this group')}
-            </Text>
-          ) : (
-            <Flex direction="column" gap="3">
-              {groupMembers.map((user) => {
-                const isPendingRemove = pendingRemoveUserIds.has(user.userId);
-                return (
-                  <Flex
-                    key={user.userId}
-                    align="center"
-                    justify="between"
-                    style={{
-                      opacity: isPendingRemove ? 0.5 : 1,
-                      transition: 'opacity 0.15s ease',
-                    }}
-                  >
-                    <AvatarCell
-                      name={user.name || user.email || 'Unknown'}
-                      email={user.email}
-                      avatarSize={32}
-                      isSelf={user.userId === currentUser?.id}
-                    />
-                    {isEditMode && (
-                      <Text
-                        size="1"
-                        onClick={() => handleRemoveUser(user.userId)}
-                        style={{
-                          color: isPendingRemove
-                            ? 'var(--accent-11)'
-                            : 'var(--red-11)',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                          fontWeight: 500,
-                        }}
-                      >
-                        {isPendingRemove
-                          ? t('workspace.groups.edit.undo', 'Undo')
-                          : t('workspace.groups.edit.remove', 'Remove')}
-                      </Text>
-                    )}
-                  </Flex>
-                );
-              })}
-            </Flex>
-          )}
+          <PaginatedMembersList<GroupUser>
+            key={detailGroup?._id}
+            ref={membersListRef}
+            fetcher={fetchGroupMembersFn}
+            keyExtractor={(u) => u._id}
+            searchPlaceholder={t('workspace.groups.detail.searchUsers', 'Search users...')}
+            emptyText={t('workspace.groups.detail.noUsers', 'No users in this group')}
+            onFetched={(items) => setGroupMembers(items)}
+            renderItem={(user) => {
+              const isPendingRemove = pendingRemoveUserIds.has(user._id);
+              return (
+                <Flex
+                  align="center"
+                  justify="between"
+                  style={{
+                    opacity: isPendingRemove ? 0.5 : 1,
+                    transition: 'opacity 0.15s ease',
+                  }}
+                >
+                  <AvatarCell
+                    name={user.fullName || user.email || 'Unknown'}
+                    email={user.email ?? undefined}
+                    avatarSize={32}
+                    isSelf={user._id === currentUser?.id}
+                    profilePicture={user.profilePicture ?? undefined}
+                  />
+                  {isEditMode && (
+                    <Text
+                      size="1"
+                      onClick={() => handleRemoveUser(user._id)}
+                      style={{
+                        color: isPendingRemove
+                          ? 'var(--accent-11)'
+                          : 'var(--red-11)',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {isPendingRemove
+                        ? t('workspace.groups.edit.undo', 'Undo')
+                        : t('workspace.groups.edit.remove', 'Remove')}
+                    </Text>
+                  )}
+                </Flex>
+              );
+            }}
+          />
         </Box>
 
         {/* Access Permissions section box */}
@@ -470,10 +470,10 @@ export function GroupDetailSidebar({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: 16,
+            padding: 'var(--space-4)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
+            gap: 'var(--space-4)',
           }}
         >
           <Text
@@ -498,10 +498,10 @@ export function GroupDetailSidebar({
               backgroundColor: 'var(--olive-2)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
-              padding: 16,
+              padding: 'var(--space-4)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 'var(--space-2)',
             }}
           >
             <Flex align="center" justify="between">
@@ -524,12 +524,12 @@ export function GroupDetailSidebar({
                 'workspace.groups.edit.addUsersPlaceholder',
                 'Search or select user(s) to add to this group'
               )}
-              emptyText={
-                isLoadingAllUsers
-                  ? t('workspace.common.loadingUsers', 'Loading users...')
-                  : t('workspace.common.noUsersAvailable', 'No users available')
-              }
+              emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
               showAvatar
+              onSearch={handleUserSearch}
+              onLoadMore={handleUserLoadMore}
+              isLoadingMore={userFilterLoading}
+              hasMore={userFilterHasMore}
             />
           </Box>
         )}
@@ -539,8 +539,8 @@ export function GroupDetailSidebar({
       {isEditMode && (
         <Box
           style={{
-            marginTop: 16,
-            padding: 16,
+            marginTop: 'var(--space-4)',
+            padding: 'var(--space-4)',
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
@@ -561,21 +561,13 @@ export function GroupDetailSidebar({
                 )}
               </Text>
             </Flex>
-            <Button
-              variant="outline"
-              color="red"
-              size="1"
-              onClick={handleDeleteGroup}
-              disabled={isDeleting}
-              style={{
-                cursor: isDeleting ? 'not-allowed' : 'pointer',
-                flexShrink: 0,
-              }}
-            >
-              {isDeleting
-                ? t('workspace.groups.edit.deleting', 'Deleting...')
-                : t('workspace.groups.edit.deleteButton', 'Delete Group')}
-            </Button>
+            {systemGroup ? (
+              <Tooltip content={t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')}>
+                <span style={{ display: 'inline-flex' }}>{deleteButton}</span>
+              </Tooltip>
+            ) : (
+              deleteButton
+            )}
           </Flex>
         </Box>
       )}

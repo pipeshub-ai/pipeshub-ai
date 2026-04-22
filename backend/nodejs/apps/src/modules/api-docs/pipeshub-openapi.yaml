@@ -140,6 +140,15 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Conversational Speech
+    description: |
+      Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
+
+      These endpoints are used by the chat frontend when an admin has configured a
+      TTS/STT provider under the AI Models configuration. When no provider is
+      configured the client falls back to the browser's native Web Speech API, so
+      callers should treat a `409` response as "unconfigured, use browser APIs"
+      rather than as a fatal error.
 
   # Connector Manager
   - name: Connector Registry
@@ -176,6 +185,8 @@ tags:
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
     description: Manage individual AI model providers - add, update, delete, and set defaults.
+  - name: Configuration Manager
+    description: Manage organization-level configuration including Slack bot integration, AI models, and metrics collection.
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Metrics Collection
@@ -1581,6 +1592,10 @@ components:
         deletedBy:
           type: string
           description: ID of user who deleted this user
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture. Present in list responses when the user has uploaded a picture.
         __v:
           type: integer
           description: Document version (MongoDB)
@@ -1711,6 +1726,10 @@ components:
           type: string
           enum: [OWNER, READER]
           description: User's role in the team
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture, or null if not set
       required:
         - userId
         - role
@@ -1746,9 +1765,18 @@ components:
         users:
           type: array
           items:
-            type: string
-            format: ObjectId
-          description: Array of user IDs in this group
+            type: object
+            properties:
+              _id:
+                type: string
+                format: ObjectId
+                description: MongoDB user ID
+              profilePicture:
+                type: string
+                nullable: true
+                description: Base64-encoded data URI of the user's display picture, or null if not set
+                example: "data:image/jpeg;base64,/9j/4AAQ..."
+          description: Array of user objects with profile pictures
         isDeleted:
           type: boolean
           description: Soft delete flag
@@ -2208,12 +2236,32 @@ components:
           type: object
           nullable: true
           description: Ticket-specific metadata (present when recordType is TICKET)
-          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          additionalProperties: true
       required:
         - recordName
         - recordType
         - origin
         - orgId
+
+    UpdateRecordEnrichment:
+      type: object
+      description: |
+        Fields merged into successful record-update responses (Node gateway and Local KB connector).
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch milliseconds when the response was generated
+        fileUpdated:
+          type: boolean
+        location:
+          type: string
+          enum: [kb_root, folder]
+        kb:
+          type: object
+          additionalProperties: true
+        userPermission:
+          type: string
 
     RecordsResponse:
       type: object
@@ -2601,6 +2649,13 @@ components:
 
     Filters:
       type: object
+      description: |
+        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
+        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
+        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
+        to let the service use the agent’s stored knowledge and tool configuration. Sending
+        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
+        turn (it is not “full org default”).
       properties:
         apps:
           type: array
@@ -3211,6 +3266,83 @@ components:
         updatedAt:
           type: string
           format: date-time
+        startMessage:
+          type: string
+          description: Initial greeting shown when a conversation with this agent starts
+        instructions:
+          type: string
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          description: |
+            Configured model entries for this agent (may be strings or objects with
+            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                properties:
+                  modelKey:
+                    type: string
+                  modelName:
+                    type: string
+                  provider:
+                    type: string
+                  isReasoning:
+                    type: boolean
+        toolsets:
+          type: array
+          description: |
+            Toolset instances linked to the agent (GET /agents/{agentKey} graph projection).
+            Multiple instances of the same integration type are distinguished by `instanceId`
+            and optional `instanceName`.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Integration / toolset type key
+              displayName:
+                type: string
+              type:
+                type: string
+              instanceId:
+                type: string
+                description: Admin-created toolset instance id
+              instanceName:
+                type: string
+                description: Human-readable instance label (e.g. sidebar instance name)
+              iconPath:
+                type: string
+                description: Optional branded icon URL or path
+              tools:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    fullName:
+                      type: string
+                    description:
+                      type: string
+        knowledge:
+          type: array
+          description: Knowledge connectors and indexed scopes linked to the agent
+          items:
+            type: object
+            properties:
+              connectorId:
+                type: string
+              filters:
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - type: string
+        shareWithOrg:
+          type: boolean
+          description: Whether the agent is shared with the whole organization
 
     AgentTemplate:
       type: object
@@ -3342,6 +3474,161 @@ components:
         data:
           type: string
           description: JSON-encoded event payload
+
+    # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
+    SpeakRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: |
+            UTF-8 text to synthesize. Capped at 4096 characters to match the
+            underlying provider limit (OpenAI TTS) and avoid unbounded cost.
+          example: "Hello, this is a PipesHub voice test."
+        voice:
+          type: string
+          nullable: true
+          description: |
+            Provider voice override. If omitted, the voice configured by the
+            admin for the active TTS provider is used. For OpenAI: one of
+            `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+          example: "alloy"
+        format:
+          type: string
+          nullable: true
+          enum: [mp3, opus, aac, flac, wav, pcm]
+          description: |
+            Audio response format. Unknown values are silently coerced to
+            `mp3` server-side.
+          example: "mp3"
+        speed:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0.25
+          maximum: 4.0
+          description: |
+            Playback speed multiplier. Values outside the documented range
+            are clamped server-side.
+          example: 1.0
+
+    TranscriptionResponse:
+      type: object
+      description: |
+        Result of a successful call to `/chat/transcribe`. The server
+        always includes the provider and model that handled the request
+        so the client can display / log which backend produced the
+        transcript.
+      required:
+        - text
+        - provider
+        - model
+      properties:
+        text:
+          type: string
+          description: |
+            Transcribed text. May be an empty string for silence,
+            unintelligible audio, or when the provider returned no
+            content.
+          example: "Turn on the office lights."
+        provider:
+          type: string
+          description: |
+            Provider id that handled the transcription. One of
+            `openAI`, `whisper` (self-hosted `faster-whisper`),
+            `wispr` (Wispr Flow), or `gemini`.
+          enum: [openAI, whisper, wispr, gemini]
+          example: "openAI"
+        model:
+          type: string
+          description: |
+            Model id that handled the transcription. Examples:
+            `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`,
+            `base`/`small`/`medium`/`large-v3` for self-hosted
+            `faster-whisper`, `flow` for Wispr, or `gemini-2.5-flash` /
+            `gemini-2.5-pro` for Gemini multimodal.
+          example: "gpt-4o-mini-transcribe"
+
+    SpeechCapabilitySummary:
+      type: object
+      description: |
+        Public summary of an active speech provider. Secrets (api keys,
+        organization ids, etc.) are never included. The server always picks
+        the config flagged `isDefault` in `aiModels`; when no entry is
+        flagged, the first configured entry is used and `isDefault` is
+        reported as `false` so the chat UI can surface the fallback.
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          description: Provider id (e.g. `openAI`, `gemini`, `whisper`, `wispr`).
+          example: "openAI"
+        model:
+          type: string
+          nullable: true
+          description: |
+            Active (default) model id the server will dispatch to. Same
+            value as `defaultModel`; retained for backwards compatibility
+            with older chat clients.
+          example: "gpt-4o-mini-tts"
+        defaultModel:
+          type: string
+          nullable: true
+          description: |
+            Model id the server will use when no explicit `model` is passed
+            to `/chat/speak` or `/chat/transcribe`. Chosen as the first
+            entry from the configured comma-separated `configuration.model`
+            list.
+          example: "gpt-4o-mini-tts"
+        models:
+          type: array
+          items:
+            type: string
+          description: |
+            All model ids the active provider config exposes. Order matches
+            the admin's comma-separated `configuration.model` value; the
+            first entry is the default.
+          example: ["gpt-4o-mini-tts", "tts-1"]
+        isDefault:
+          type: boolean
+          description: |
+            `true` when the returned config was picked because it is
+            flagged `isDefault` in `aiModels`; `false` when no entry was
+            flagged and the server fell back to the first configured one.
+          example: true
+        modelKey:
+          type: string
+          nullable: true
+          description: |
+            Stable identifier assigned to the config entry by the admin
+            UI. Useful for tying the capability summary back to a specific
+            row under `/services/aiModels`.
+        friendlyName:
+          type: string
+          nullable: true
+          description: Optional display name configured by the admin.
+          example: "Production TTS"
+
+    SpeechCapabilitiesResponse:
+      type: object
+      description: |
+        Reports whether the server has a TTS/STT provider configured. When a
+        bucket is `null` the chat UI falls back to the browser's Web Speech
+        API for that capability.
+      properties:
+        tts:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
+        stt:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -3959,7 +4246,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4032,7 +4319,84 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
+        imageGeneration:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        tts:
+          type: array
+          description: Text-to-Speech providers used to generate chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        stt:
+          type: array
+          description: Speech-to-Text providers used to transcribe chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
+
+    # AI Model Registry Schemas (Python backend)
+    AIModelRegistryProvider:
+      type: object
+      properties:
+        providerId:
+          type: string
+          description: Unique identifier (e.g. openAI, anthropic)
+        name:
+          type: string
+          description: Human-readable provider name
+        description:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        icon:
+          type: string
+          description: Path to the provider icon asset
+        color:
+          type: string
+          description: Brand hex colour
+        isPopular:
+          type: boolean
+
+    AIModelFieldSchema:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Field key used in configuration payloads
+        displayName:
+          type: string
+          description: Human-readable label
+        fieldType:
+          type: string
+          description: Input type hint (TEXT, SECRET, URL, NUMBER, SELECT, TOGGLE)
+        required:
+          type: boolean
+        defaultValue:
+          type: string
+          nullable: true
+        placeholder:
+          type: string
+        description:
+          type: string
+        isSecret:
+          type: boolean
+        options:
+          type: array
+          description: Available options when fieldType is SELECT
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              value:
+                type: string
+        validation:
+          type: object
+          description: Validation constraints (e.g. min, max, pattern)
+          additionalProperties: true
 
     # Authentication Configuration Schemas
     AzureAdAuthConfig:
@@ -8581,7 +8945,31 @@ paths:
             type: integer
             minimum: 1
             maximum: 100
-            default: 20
+            default: 100
+        - name: search
+          in: query
+          required: false
+          description: Search teams by name
+          schema:
+            type: string
+        - name: created_by
+          in: query
+          required: false
+          description: Filter by creator user key
+          schema:
+            type: string
+        - name: created_after
+          in: query
+          required: false
+          description: Filter teams created after this timestamp (ms)
+          schema:
+            type: integer
+        - name: created_before
+          in: query
+          required: false
+          description: Filter teams created before this timestamp (ms)
+          schema:
+            type: integer
       responses:
         '200':
           description: User's teams retrieved successfully
@@ -8627,7 +9015,8 @@ paths:
         - Teams
       summary: Get users in team
       description: |
-        Retrieve all users that belong to a specific team.
+        Retrieve all members of a specific team with their profile pictures.<br><br>
+        Members include profile picture data URIs when available.
       operationId: getTeamUsers
       security:
         - bearerAuth: []
@@ -8638,20 +9027,61 @@ paths:
           required: true
           schema:
             type: string
+        - name: search
+          in: query
+          required: false
+          description: Search members by name or email
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of members per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
       responses:
         '200':
-          description: Team users retrieved successfully
+          description: Team members with profile pictures retrieved successfully
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  members:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                          description: User UUID
+                        userId:
+                          type: string
+                          description: MongoDB user ID
+                        userName:
+                          type: string
+                        userEmail:
+                          type: string
+                        role:
+                          type: string
+                          enum: [OWNER, READER, WRITER]
+                        isOwner:
+                          type: boolean
+                        profilePicture:
+                          type: string
+                          nullable: true
+                          description: Base64 data URI or absent if no picture
         '401':
           description: Unauthorized
         '404':
@@ -8791,6 +9221,30 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [team:read]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          description: Search teams by name
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of teams per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
       responses:
         '200':
           description: User created teams retrieved successfully
@@ -8799,12 +9253,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  teams:
                     type: array
                     items:
                       $ref: '#/components/schemas/Team'
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      pages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
         '401':
           description: Unauthorized
 
@@ -9498,31 +9965,91 @@ paths:
         <li>Returns all groups including admin, standard, everyone, and custom types</li>
         <li>Groups are returned with their member counts</li>
         <li>Soft-deleted groups are excluded by default</li>
+        <li>Each user in the <code>users</code> array is returned as an object with <code>_id</code> and <code>profilePicture</code> (base64 data URI or null)</li>
         </ul>
         <b>Use Cases:</b><br>
         <ul>
         <li>Populating group selection dropdowns</li>
         <li>Managing group memberships</li>
         <li>Access control configuration</li>
+        <li>Rendering user avatars in group member lists</li>
         </ul>
       operationId: getAllUserGroups
       security:
         - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of groups per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: search
+          in: query
+          required: false
+          description: Search groups by name (case-insensitive)
+          schema:
+            type: string
       responses:
         '200':
-          description: List of user groups retrieved successfully
+          description: Paginated list of user groups with user counts
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
+                  groups:
                     type: array
                     items:
-                      $ref: '#/components/schemas/UserGroup'
+                      type: object
+                      properties:
+                        _id:
+                          type: string
+                          format: ObjectId
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          enum: [admin, standard, everyone, custom]
+                        orgId:
+                          type: string
+                        userCount:
+                          type: integer
+                          description: Number of users in this group
+                        slug:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                        updatedAt:
+                          type: string
+                          format: date-time
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
         '401':
           description: Unauthorized - Valid authentication required
         '403':
@@ -9895,7 +10422,12 @@ paths:
         - User Groups
       summary: Get users in group
       description: |
-        Retrieve all users that belong to a specific user group.
+        Retrieve paginated users that belong to a specific user group, with profile pictures.<br><br>
+        <b>Response Details:</b><br>
+        <ul>
+        <li>Returns user details (fullName, email) with profile picture data URIs</li>
+        <li>Supports pagination and search by name or email</li>
+        </ul>
       operationId: getUsersInGroup
       security:
         - bearerAuth: []
@@ -9907,20 +10439,68 @@ paths:
           description: Unique identifier of the user group
           schema:
             type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: search
+          in: query
+          required: false
+          description: Search users by name or email
+          schema:
+            type: string
       responses:
         '200':
-          description: Users in group retrieved successfully
+          description: Paginated users in group with profile pictures
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  users:
                     type: array
                     items:
                       type: object
+                      properties:
+                        _id:
+                          type: string
+                          format: ObjectId
+                        fullName:
+                          type: string
+                          nullable: true
+                        email:
+                          type: string
+                          nullable: true
+                        profilePicture:
+                          type: string
+                          nullable: true
+                          description: Base64 data URI or null
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
         '401':
           description: Unauthorized
         '404':
@@ -11339,14 +11919,16 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  record:
-                    $ref: '#/components/schemas/Record'
+                allOf:
+                  - type: object
+                    properties:
+                      success:
+                        type: boolean
+                      message:
+                        type: string
+                      record:
+                        $ref: '#/components/schemas/Record'
+                  - $ref: '#/components/schemas/UpdateRecordEnrichment'
         '400':
           description: Invalid request
         '401':
@@ -11947,6 +12529,87 @@ paths:
                     description: Maximum file size in bytes (default 30MB)
         '401':
           description: Unauthorized
+
+  # Same contract as GET /knowledgeBase/limits (clients may use lowercase path under /api/v1)
+  /knowledgebase/limits:
+    get:
+      tags:
+        - Upload
+      summary: Get upload limits
+      description: Alias path for <code>GET /knowledgeBase/limits</code>.
+      operationId: getUploadLimitsKnowledgebaseAlias
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: Upload limits retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maxFilesPerRequest:
+                    type: integer
+                    example: 1000
+                  maxFileSizeBytes:
+                    type: integer
+                    example: 31457280
+        '401':
+          description: Unauthorized
+
+  # Local KB connector — router prefix /api/v1/kb (PUT response includes UpdateRecordEnrichment)
+  /kb/record/{recordId}:
+    put:
+      tags:
+        - Records
+      summary: Update record (Local KB connector)
+      description: |
+        Python connector route <code>PUT /api/v1/kb/record/{record_id}</code>. Successful JSON body includes
+        <code>UpdateRecordEnrichment</code> (<code>timestamp</code>, <code>fileUpdated</code>, etc.).
+      operationId: updateRecordKbConnector
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: Updated record metadata and content
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                updates:
+                  type: object
+                  additionalProperties: true
+                fileMetadata:
+                  type: object
+                  nullable: true
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Record updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      success:
+                        type: boolean
+                  - $ref: '#/components/schemas/UpdateRecordEnrichment'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Record not found
 
   # -------------------- Reindex/Sync Endpoints --------------------
   /knowledgeBase/reindex/record/{recordId}:
@@ -13494,6 +14157,229 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+
+  # -------------------- Conversational Speech --------------------
+  /chat/transcribe:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Transcribe an audio clip (Speech-to-Text)
+      description: |
+        Upload a short audio recording and receive its transcript from the
+        configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
+        a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
+        models such as `gemini-2.5-flash`).<br><br>
+        <b>Overview:</b><br>
+        The chat UI captures audio via the browser's `MediaRecorder` and
+        POSTs it here as `multipart/form-data`. If no STT provider is
+        configured the endpoint returns <code>409</code> and the client falls
+        back to the browser's native Web Speech Recognition.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Audio payload is capped at 25 MB (matches OpenAI's
+              <code>audio.transcriptions.create</code> limit).</li>
+          <li>Supported MIME types include <code>audio/webm</code>,
+              <code>audio/ogg</code>, <code>audio/mp4</code>,
+              <code>audio/mpeg</code>, <code>audio/wav</code>, and
+              <code>audio/flac</code>.</li>
+        </ul>
+      operationId: transcribeChatAudio
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Audio clip (multipart/form-data) to transcribe, with an optional language hint.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: |
+                    Recorded audio clip. Must be ≤ 25 MB. Supported MIME
+                    types include `audio/webm`, `audio/ogg`, `audio/mp4`,
+                    `audio/m4a`, `audio/mpeg`, `audio/wav`, and
+                    `audio/flac`. The browser's `MediaRecorder` default
+                    (`audio/webm;codecs=opus`) is recommended.
+                language:
+                  type: string
+                  nullable: true
+                  description: |
+                    Optional ISO-639-1 language hint forwarded to the
+                    provider (e.g. `en`, `fr`). When omitted the provider
+                    auto-detects. The `wispr` provider treats this as a
+                    property hint; Gemini appends it to the transcription
+                    prompt.
+                  example: "en"
+      responses:
+        '200':
+          description: Transcription succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+              examples:
+                openai:
+                  summary: OpenAI `gpt-4o-mini-transcribe`
+                  value:
+                    text: "Turn on the office lights."
+                    provider: "openAI"
+                    model: "gpt-4o-mini-transcribe"
+                wispr:
+                  summary: Wispr Flow
+                  value:
+                    text: "Summarize today's standup notes."
+                    provider: "wispr"
+                    model: "flow"
+                gemini:
+                  summary: Gemini multimodal
+                  value:
+                    text: "Create a ticket to fix the login bug."
+                    provider: "gemini"
+                    model: "gemini-2.5-flash"
+        '400':
+          description: Empty audio payload (`file` read returned 0 bytes).
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Speech-to-Text provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: |
+            Audio payload exceeds the 25 MB limit. This matches OpenAI's
+            `audio.transcriptions.create` ceiling and the soft cap enforced
+            by the node proxy (`multer` `fileSize`).
+        '500':
+          description: |
+            Runtime error — for example the optional `faster-whisper`
+            package is not installed for the `whisper` provider, or
+            `ffmpeg` is missing on the host for the `wispr` provider
+            (required to transcode audio to 16 kHz WAV).
+        '502':
+          description: Upstream provider failure (message is intentionally
+            generic; see server logs for details).
+
+  /chat/speak:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Synthesize audio for a message (Text-to-Speech)
+      description: |
+        Generate audio for the supplied text using the configured Text-to-Speech
+        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
+        `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
+        The response body is
+        the raw audio bytes in the requested format.<br><br>
+        <b>Overview:</b><br>
+        The chat UI calls this when the user clicks "Read aloud" on an
+        assistant message. If no TTS provider is configured the endpoint
+        returns <code>409</code> and the client falls back to the browser's
+        <code>speechSynthesis</code> API.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Input text is capped at 4096 characters.</li>
+          <li><code>speed</code> is clamped to the range
+              [<code>0.25</code>, <code>4.0</code>].</li>
+          <li>Unknown <code>format</code> values silently fall back to
+              <code>mp3</code>.</li>
+        </ul>
+      operationId: synthesizeChatSpeech
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Text to synthesize and optional voice, format, and speed parameters.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeakRequest'
+      responses:
+        '200':
+          description: |
+            Raw audio bytes in the negotiated format. Response headers
+            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            the provider/model that produced the audio.
+          headers:
+            X-TTS-Provider:
+              schema:
+                type: string
+              description: Provider id that produced the audio.
+            X-TTS-Model:
+              schema:
+                type: string
+              description: Model id that produced the audio.
+            Cache-Control:
+              schema:
+                type: string
+              description: Always <code>no-store</code>.
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/pcm:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Request body missing or `text` is empty / whitespace.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Text-to-Speech provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: Text exceeds the 4096-character limit.
+        '502':
+          description: Upstream provider failure.
+
+  /chat/speech/capabilities:
+    get:
+      tags:
+        - Conversational Speech
+      summary: Report configured TTS/STT providers
+      description: |
+        Lightweight probe that tells the chat UI whether to use the server
+        speech routes or the browser Web Speech API. Only public provider
+        metadata is returned; API keys and organization ids are never
+        exposed.
+      operationId: getChatSpeechCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      responses:
+        '200':
+          description: Current TTS/STT capability summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechCapabilitiesResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
   /search:
@@ -16111,6 +16997,7 @@ paths:
         - oauth2: [connector:write]
       requestBody:
         required: true
+        description: Google OAuth authorization code received from the consent flow.
         content:
           application/json:
             schema:
@@ -16283,6 +17170,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -16415,6 +17303,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -16450,6 +17339,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -16615,16 +17505,46 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
         - name: includeRegistry
           in: query
           required: false
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
+        - name: authStatus
+          in: query
+          required: false
+          description: Filter by user auth state — authenticated or not-authenticated. Omit for all. filterCounts reflect counts before this filter.
+          schema:
+            type: string
+            enum: [authenticated, not-authenticated]
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16638,6 +17558,30 @@ paths:
                   status:
                     type: string
                     example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
                   toolsets:
                     type: array
                     items:
@@ -16699,7 +17643,9 @@ paths:
       tags:
         - Toolset Instances
       summary: List toolsets for an agent with auth status
-      description: Returns organization toolset instances merged with the specified agent's authentication status.
+      description: |
+        Returns organization toolset instances merged with the specified agent's authentication status.
+        Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except there is no `authStatus` query filter.
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
@@ -16715,10 +17661,33 @@ paths:
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16728,7 +17697,87 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
         '403':
@@ -16741,6 +17790,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate agent toolset instance
+      description: Authenticate an agent-bound toolset instance using the provided credentials.
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
@@ -16757,6 +17807,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -16779,6 +17830,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update agent toolset credentials
+      description: Update the stored credentials for an agent-bound toolset instance.
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -16795,6 +17847,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -16826,6 +17879,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove agent toolset credentials
+      description: Delete the stored credentials for an agent-bound toolset instance.
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -16855,6 +17909,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark agent instance for reauthentication
+      description: Flag an agent-bound toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
@@ -16884,6 +17939,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for agent instance
+      description: Build the OAuth authorization URL to start the consent flow for an agent-bound toolset instance.
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
@@ -16948,6 +18004,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -16987,6 +18044,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get toolset instance
+      description: Retrieve a single toolset instance by its identifier.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -17007,6 +18065,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
+      description: Update an existing toolset instance's configuration (admin only).
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -17018,6 +18077,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated fields for the toolset instance.
         content:
           application/json:
             schema:
@@ -17036,6 +18096,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
+      description: Delete a toolset instance and its associated configuration (admin only).
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -17060,6 +18121,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate toolset instance
+      description: Authenticate a toolset instance using the provided credentials.
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17071,6 +18133,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the toolset instance.
         content:
           application/json:
             schema:
@@ -17091,6 +18154,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset credentials
+      description: Update the stored credentials for a toolset instance.
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
@@ -17102,6 +18166,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the toolset instance.
         content:
           application/json:
             schema:
@@ -17131,6 +18196,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove toolset credentials
+      description: Delete the stored credentials for a toolset instance.
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
@@ -17153,6 +18219,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark instance for reauthentication
+      description: Flag the toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17175,6 +18242,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for instance
+      description: Build the OAuth authorization URL to start the consent flow for a toolset instance.
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
@@ -17204,6 +18272,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get instance authentication status
+      description: Report whether the toolset instance is configured and authenticated.
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
@@ -17226,6 +18295,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: List OAuth configs by toolset type
+      description: List OAuth client configurations registered for a specific toolset type.
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
@@ -17248,6 +18318,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Update OAuth config
+      description: Update an OAuth client configuration for a specific toolset type.
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -17264,6 +18335,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated OAuth client configuration fields.
         content:
           application/json:
             schema:
@@ -17282,6 +18354,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Delete OAuth config
+      description: Delete an OAuth client configuration for a specific toolset type.
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -19249,6 +20322,166 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
+  # -------------------- AI Model Registry (Python backend proxy) --------------------
+  /configurationManager/ai-models/registry:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List registered AI model providers
+      description: |
+        Returns all registered AI model providers from the Python backend registry.
+        Supports optional search and capability filtering.
+      operationId: getAIModelRegistry
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search providers by name or description
+        - name: capability
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - text_generation
+              - embedding
+              - image_generation
+              - tts
+              - stt
+              - video
+              - ocr
+              - reasoning
+          description: Filter providers by capability
+      responses:
+        '200':
+          description: Providers retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AIModelRegistryProvider'
+                  total:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '503':
+          description: AI model registry service is unavailable
+
+  /configurationManager/ai-models/registry/capabilities:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List available model capabilities
+      description: Returns the list of all model capabilities understood by the registry.
+      operationId: getAIModelRegistryCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Capabilities retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  capabilities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Machine-readable capability identifier
+                          example: text_generation
+                        name:
+                          type: string
+                          description: Human-readable capability name
+                          example: Text Generation
+                        modelType:
+                          type: string
+                          description: Corresponding model type key used in CRUD APIs
+                          example: llm
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '503':
+          description: AI model registry service is unavailable
+
+  /configurationManager/ai-models/registry/{providerId}/schema:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Get provider field schema
+      description: |
+        Returns the configuration field schema for a specific provider.
+        Optionally filtered by capability (e.g. only embedding fields).
+      operationId: getAIModelProviderSchema
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Provider identifier (e.g. openAI, anthropic, gemini)
+        - name: capability
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter fields by capability
+      responses:
+        '200':
+          description: Provider schema retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  provider:
+                    type: object
+                    properties:
+                      providerId:
+                        type: string
+                      name:
+                        type: string
+                  schema:
+                    type: object
+                    description: Map of capability to array of field descriptors
+                    additionalProperties:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/AIModelFieldSchema'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: Provider not found
+        '503':
+          description: AI model registry service is unavailable
+
   /crawlingManager/{connector}/{connectorId}/schedule:
     post:
       tags:
@@ -19758,6 +20991,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
+        description: MCP JSON-RPC 2.0 request object with method, params, and id.
         content:
           application/json:
             schema:

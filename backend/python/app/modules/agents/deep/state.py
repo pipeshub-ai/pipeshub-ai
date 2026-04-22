@@ -138,6 +138,8 @@ def build_deep_agent_state(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] | None = None,
+    model_name: str = None,
+    model_key: str = None,
 ) -> DeepAgentState:
     """
     Build a DeepAgentState by extending the standard ChatState.
@@ -154,6 +156,8 @@ def build_deep_agent_state(
         graph_provider,
         reranker_service,
         config_service,
+        model_name,
+        model_key,
         org_info,
         graph_type="deep",
     )

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -26,6 +27,9 @@ class ModelType(str, Enum):
     SLM = "slm"
     REASONING = "reasoning"
     MULTIMODAL = "multiModal"
+    IMAGE_GENERATION = "imageGeneration"
+    TTS = "tts"
+    STT = "stt"
 
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
@@ -64,6 +68,23 @@ class LLMProvider(Enum):
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     XAI = "xai"
+
+
+class ImageGenerationProvider(Enum):
+    OPENAI = "openAI"
+    GEMINI = "gemini"
+
+
+class TTSProvider(Enum):
+    OPENAI = "openAI"
+    GEMINI = "gemini"
+
+
+class STTProvider(Enum):
+    OPENAI = "openAI"
+    WHISPER = "whisper"
+    WISPR = "wispr"
+    GEMINI = "gemini"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -129,6 +150,17 @@ def is_multimodal_llm(config: Dict[str, Any]) -> bool:
         config.get("configuration", {}).get("isMultimodal", False)
     )
 
+
+def _set_embedding_dimensions_kwarg(
+    kwargs: Dict[str, Any],
+    dimensions: int | None,
+    *,
+    key: str = "dimensions",
+) -> None:
+    if dimensions is not None:
+        kwargs[key] = dimensions
+
+
 def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -145,28 +177,40 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
+    raw_dims = configuration.get("dimensions")
+    dimensions: int | None = None
+    if raw_dims not in (None, "", 0):
+        try:
+            dimensions = int(raw_dims)
+        except (ValueError, TypeError):
+            logger.warning(f"Non-numeric dimensions value ignored: {raw_dims!r}")
+
     if provider == EmbeddingProvider.AZURE_AI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
-        if "cohere" or "embed-v" in model_name.lower():
+        if model_name and ("cohere" in model_name.lower() or "embed-v" in model_name.lower()):
             check_embedding_ctx_length = False
         else:
             check_embedding_ctx_length = True
-        return OpenAIEmbeddings(
+        kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
+        _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
-        return AzureOpenAIEmbeddings(
+        kwargs = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
         )
+        _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
         from langchain_cohere import CohereEmbeddings
@@ -191,13 +235,16 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.GEMINI.value:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-        # Add "models/" prefix if it's missing
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
-        return GoogleGenerativeAIEmbeddings(
-            model=model_name,  # Now properly formatted as models/text-embedding-004
+        gemini_kwargs: Dict[str, Any] = dict(
+            model=model_name,
             google_api_key=configuration['apiKey'],
         )
+        _set_embedding_dimensions_kwarg(
+            gemini_kwargs, dimensions, key="output_dimensionality"
+        )
+        return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
         from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -229,10 +276,12 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.MISTRAL.value:
         from langchain_mistralai import MistralAIEmbeddings
 
-        return MistralAIEmbeddings(
+        mistral_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
         )
+        _set_embedding_dimensions_kwarg(mistral_kwargs, dimensions)
+        return MistralAIEmbeddings(**mistral_kwargs)
 
 
     elif provider == EmbeddingProvider.OLLAMA.value:
@@ -246,11 +295,13 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
-        return OpenAIEmbeddings(
+        openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
+        _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
+        return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
         from langchain_aws import BedrockEmbeddings
@@ -276,26 +327,29 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
-        check_embedding_ctx_length = True
         base_url = configuration['endpoint']
         providers_to_skip_check = ("google", "cohere", "voyage")
         check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
 
-        return OpenAIEmbeddings(
+        compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=base_url,
-            check_embedding_ctx_length=check_embedding_ctx_length
+            check_embedding_ctx_length=check_embedding_ctx_length,
         )
+        _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
+        return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
         from app.utils.custom_embeddings import TogetherEmbeddings
 
-        return TogetherEmbeddings(
+        together_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
+        _set_embedding_dimensions_kwarg(together_kwargs, dimensions)
+        return TogetherEmbeddings(**together_kwargs)
 
     elif provider == EmbeddingProvider.VOYAGE.value:
         from app.utils.custom_embeddings import VoyageEmbeddings
@@ -312,6 +366,41 @@ def _get_anthropic_max_tokens(model_name: str) -> int:
     if '4.5' in model_name:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
+
+
+def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
+    """Whether the given Claude model accepts ``temperature``/``top_p``/``top_k``.
+
+    Anthropic removed sampling parameters starting with Claude Opus 4.7:
+    any non-default value returns a 400 "deprecated for this model" error.
+    The same direction is expected for future Claude families, so we also
+    disable sampling params for any Claude major version >= 5.
+
+    Matches model IDs like ``claude-opus-4-7``, ``claude-opus-4.7``, and
+    Bedrock/Vertex variants that embed the same version suffix.
+    """
+    if not model_name:
+        return True
+
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return True
+
+    match = re.search(r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-_.](\d+)", lowered)
+    if not match:
+        return True
+
+    tier = match.group(1)
+    major = int(match.group(2))
+    minor = int(match.group(3))
+
+    if tier == "opus" and (major > 4 or (major == 4 and minor >= 7)):
+        return False
+
+    if major >= 5:
+        return False
+
+    return True
 
 def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
@@ -332,14 +421,16 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         from langchain_anthropic import ChatAnthropic
 
         max_tokens = _get_anthropic_max_tokens(model_name)
-        return ChatAnthropic(
-                model=model_name,
-                temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                max_retries=2,
-                api_key=configuration["apiKey"],
-                max_tokens=max_tokens,
-            )
+        anthropic_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            max_retries=2,
+            api_key=configuration["apiKey"],
+            max_tokens=max_tokens,
+        )
+        if _anthropic_supports_sampling_params(model_name):
+            anthropic_kwargs["temperature"] = 0.2
+        return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
@@ -392,15 +483,20 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
         bedrock_client = _create_bedrock_client(configuration)
 
-        return ChatBedrock(
+        bedrock_kwargs: Dict[str, Any] = dict(
             model_id=model_name,
             client=bedrock_client,
-            temperature=0.2,
             region_name=configuration.get("region"),
             provider=provider_in_bedrock,
             model_kwargs=model_kwargs,
             beta_use_converse_api=True,
         )
+        if (
+            provider_in_bedrock != LLMProvider.ANTHROPIC.value
+            or _anthropic_supports_sampling_params(model_name)
+        ):
+            bedrock_kwargs["temperature"] = 0.2
+        return ChatBedrock(**bedrock_kwargs)
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
@@ -411,14 +507,16 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         is_claude_model = "claude" in model_name
         if is_claude_model:
             max_tokens = _get_anthropic_max_tokens(model_name)
-            return ChatAnthropic(
+            azure_claude_kwargs: Dict[str, Any] = dict(
                 model=model_name,
                 base_url=configuration.get("endpoint"),
-                temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration.get("apiKey"),
                 max_tokens=configuration.get("maxTokens", max_tokens),
             )
+            if _anthropic_supports_sampling_params(model_name):
+                azure_claude_kwargs["temperature"] = temperature
+            return ChatAnthropic(**azure_claude_kwargs)
         else:
             return ChatOpenAI(
                     model=model_name,
@@ -568,3 +666,1091 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Image generation
+# ---------------------------------------------------------------------------
+
+
+# OpenAI Images API supports a restricted size vocabulary. Requests with any
+# other value return HTTP 400. We map commonly-requested sizes to the nearest
+# supported one.
+_OPENAI_SUPPORTED_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+
+# Map "WxH" → Imagen aspect_ratio enum values.
+_IMAGEN_ASPECT_RATIOS = {
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+    "1536x1024": "3:2",
+    "1024x1536": "2:3",
+}
+
+
+def _normalize_openai_size(size: str) -> str:
+    if size in _OPENAI_SUPPORTED_SIZES:
+        return size
+    # Map the common portrait/landscape aliases used by our tool schema onto
+    # the supported OpenAI sizes.
+    aliases = {
+        "1024x1792": "1024x1536",
+        "1792x1024": "1536x1024",
+    }
+    return aliases.get(size, "1024x1024")
+
+
+def _size_to_aspect_ratio(size: str) -> str:
+    return _IMAGEN_ASPECT_RATIOS.get(size, "1:1")
+
+
+class ImageGenerationAdapter:
+    """Thin wrapper around a provider SDK that returns raw PNG bytes.
+
+    Concrete subclasses implement :meth:`generate`. Callers should treat the
+    adapter as an opaque handle obtained from :func:`get_image_generation_model`.
+    """
+
+    provider: str
+    model: str
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        raise NotImplementedError
+
+
+class _OpenAIImageAdapter(ImageGenerationAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+    ) -> None:
+        self.provider = ImageGenerationProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        import base64
+
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+
+        # The ``response_format`` parameter is **only** accepted by DALL-E
+        # models; ``gpt-image-*`` rejects it with HTTP 400 ("Unknown parameter:
+        # 'response_format'"). DALL-E defaults to returning URLs, so we
+        # explicitly ask for base64 there. ``gpt-image-*`` always returns
+        # base64 so no hint is needed.
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "size": _normalize_openai_size(size),
+            "n": n,
+        }
+        if self.model.startswith("dall-e"):
+            request_kwargs["response_format"] = "b64_json"
+
+        try:
+            response = await client.images.generate(**request_kwargs)
+        finally:
+            await client.close()
+
+        images: list[bytes] = []
+        for item in response.data or []:
+            b64 = getattr(item, "b64_json", None)
+            if b64:
+                images.append(base64.b64decode(b64))
+                continue
+            # Fallback: if the provider returned a URL instead of base64
+            # (e.g. DALL-E without response_format, or a future model default),
+            # download it so the caller still gets raw bytes.
+            url = getattr(item, "url", None)
+            if url:
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient(timeout=60.0) as http_client:
+                        resp = await http_client.get(url)
+                        resp.raise_for_status()
+                        images.append(resp.content)
+                except Exception:
+                    logger.exception(
+                        "Failed to download OpenAI image URL fallback"
+                    )
+        return images
+
+
+class _GeminiImageAdapter(ImageGenerationAdapter):
+    def __init__(self, *, model: str, api_key: str) -> None:
+        self.provider = ImageGenerationProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=self._api_key)
+
+        if self.model.startswith("imagen-"):
+            response = await client.aio.models.generate_images(
+                model=self.model,
+                prompt=prompt,
+                config=genai_types.GenerateImagesConfig(
+                    number_of_images=n,
+                    aspect_ratio=_size_to_aspect_ratio(size),
+                ),
+            )
+            images: list[bytes] = []
+            for gi in getattr(response, "generated_images", None) or []:
+                img = getattr(gi, "image", None)
+                data = getattr(img, "image_bytes", None) if img is not None else None
+                if data:
+                    images.append(data)
+            return images
+
+        # gemini-*-image models: multimodal generate_content with IMAGE modality.
+        # The API returns one candidate per call, so we run n requests in
+        # parallel for multi-image generation.
+        import asyncio
+
+        async def _one_call() -> list[bytes]:
+            resp = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[prompt],
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
+            out: list[bytes] = []
+            for candidate in getattr(resp, "candidates", None) or []:
+                content = getattr(candidate, "content", None)
+                for part in getattr(content, "parts", None) or []:
+                    inline = getattr(part, "inline_data", None)
+                    data = getattr(inline, "data", None) if inline is not None else None
+                    if data:
+                        out.append(data)
+            return out
+
+        results = await asyncio.gather(*[_one_call() for _ in range(max(1, n))])
+        return [img for batch in results for img in batch]
+
+
+def get_image_generation_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> ImageGenerationAdapter:
+    """Return an adapter capable of producing image bytes from a prompt.
+
+    ``config`` follows the same shape used by :func:`get_generator_model` and
+    :func:`get_embedding_model`: a dict with a ``configuration`` sub-dict plus
+    optional ``isDefault`` flag. The ``configuration.model`` field may carry a
+    comma-separated list; we pick the first entry (or validate ``model_name``
+    against the list).
+    """
+
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No image-generation model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+    logger.info(
+        f"Getting image generation model: provider={provider}, model_name={model_name}"
+    )
+
+    if provider == ImageGenerationProvider.OPENAI.value:
+        return _OpenAIImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        )
+
+    if provider == ImageGenerationProvider.GEMINI.value:
+        return _GeminiImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+        )
+
+    raise ValueError(f"Unsupported image generation provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Text-to-Speech (TTS)
+# ---------------------------------------------------------------------------
+
+
+_OPENAI_TTS_DEFAULT_VOICE = "alloy"
+_OPENAI_TTS_VALID_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+_TTS_FORMAT_TO_MIME = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
+
+
+def tts_format_mime(response_format: str) -> str:
+    """Return an HTTP ``Content-Type`` string for a given TTS format."""
+    return _TTS_FORMAT_TO_MIME.get(response_format, "application/octet-stream")
+
+
+class TTSAdapter:
+    """Thin wrapper around a TTS provider SDK that returns raw audio bytes."""
+
+    provider: str
+    model: str
+    default_voice: str = _OPENAI_TTS_DEFAULT_VOICE
+    default_format: str = "mp3"
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        raise NotImplementedError
+
+
+class _OpenAITTSAdapter(TTSAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+        default_voice: str | None = None,
+        default_format: str | None = None,
+    ) -> None:
+        self.provider = TTSProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+        self.default_voice = default_voice or _OPENAI_TTS_DEFAULT_VOICE
+        self.default_format = default_format or "mp3"
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        from openai import AsyncOpenAI
+
+        fmt = (response_format or self.default_format or "mp3").lower()
+        if fmt not in _OPENAI_TTS_VALID_FORMATS:
+            fmt = "mp3"
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+        try:
+            response = await client.audio.speech.create(
+                model=self.model,
+                voice=voice or self.default_voice,
+                input=text,
+                response_format=fmt,
+                speed=speed,
+            )
+            return await response.aread()
+        finally:
+            await client.close()
+
+
+# Gemini's generateContent TTS endpoint returns raw PCM: signed 16-bit, mono,
+# 24 kHz. We always receive those bytes and then (a) wrap in a WAV container
+# for the "wav" format, (b) return them untouched for "pcm", or (c) shell out
+# to ffmpeg for the other compressed formats.
+_GEMINI_TTS_DEFAULT_VOICE = "Kore"
+_GEMINI_TTS_VALID_FORMATS = {"wav", "pcm", "mp3", "opus", "aac", "flac"}
+_GEMINI_TTS_PCM_SAMPLE_RATE = 24000
+_GEMINI_TTS_PCM_SAMPLE_WIDTH = 2  # 16-bit
+_GEMINI_TTS_PCM_CHANNELS = 1
+
+
+def _wrap_pcm_as_wav(
+    pcm: bytes,
+    *,
+    sample_rate: int = _GEMINI_TTS_PCM_SAMPLE_RATE,
+    sample_width: int = _GEMINI_TTS_PCM_SAMPLE_WIDTH,
+    channels: int = _GEMINI_TTS_PCM_CHANNELS,
+) -> bytes:
+    """Wrap raw signed 16-bit mono PCM in a minimal WAV container."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sample_width)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm)
+    return buf.getvalue()
+
+
+async def _reencode_pcm_via_ffmpeg(
+    pcm: bytes,
+    *,
+    target_format: str,
+    sample_rate: int = _GEMINI_TTS_PCM_SAMPLE_RATE,
+    channels: int = _GEMINI_TTS_PCM_CHANNELS,
+) -> bytes:
+    """Use ffmpeg to transcode raw 16-bit PCM to mp3/opus/aac/flac/etc."""
+    import asyncio
+
+    # Map our public format name to the ffmpeg output muxer. Opus is wrapped
+    # in ogg so browsers / <audio> elements can play it back.
+    muxer = {
+        "mp3": "mp3",
+        "opus": "ogg",
+        "aac": "adts",
+        "flac": "flac",
+        "wav": "wav",
+    }.get(target_format, target_format)
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(channels),
+            "-i",
+            "pipe:0",
+            "-f",
+            muxer,
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Encoding Gemini TTS audio to "
+            f"{target_format!r} requires ffmpeg on the backend host. Install "
+            "ffmpeg or pick the 'wav' / 'pcm' output format instead."
+        ) from exc
+
+    stdout, stderr = await process.communicate(input=pcm)
+    if process.returncode != 0:
+        err_msg = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"ffmpeg failed to encode Gemini TTS output as {target_format} "
+            f"(exit {process.returncode}): {err_msg or 'no stderr output'}"
+        )
+    if not stdout:
+        raise RuntimeError(
+            f"ffmpeg produced no output while encoding Gemini TTS audio as {target_format}."
+        )
+    return stdout
+
+
+class _GeminiTTSAdapter(TTSAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        default_voice: str | None = None,
+        default_format: str | None = None,
+        endpoint: str | None = None,
+    ) -> None:
+        self.provider = TTSProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+        self.default_voice = default_voice or _GEMINI_TTS_DEFAULT_VOICE
+        self.default_format = (default_format or "wav").lower()
+        self._endpoint = (
+            endpoint or "https://generativelanguage.googleapis.com"
+        ).rstrip("/")
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        response_format: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        import base64
+
+        import httpx
+
+        fmt = (response_format or self.default_format or "wav").lower()
+        if fmt not in _GEMINI_TTS_VALID_FORMATS:
+            fmt = "wav"
+
+        chosen_voice = voice or self.default_voice or _GEMINI_TTS_DEFAULT_VOICE
+        url = f"{self._endpoint}/v1beta/models/{self.model}:generateContent"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": chosen_voice},
+                    }
+                },
+            },
+        }
+        # Gemini TTS ignores `speed` today; we accept it for parity with the
+        # OpenAI adapter but don't forward it.
+        _ = speed
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Gemini TTS synthesis failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Gemini TTS synthesis failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini TTS returned a non-JSON response."
+            ) from exc
+
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        inline_b64: str | None = None
+        if isinstance(candidates, list) and candidates:
+            parts = (
+                candidates[0].get("content", {}).get("parts", [])
+                if isinstance(candidates[0], dict)
+                else []
+            )
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                inline = part.get("inlineData") or part.get("inline_data")
+                if isinstance(inline, dict) and inline.get("data"):
+                    inline_b64 = str(inline["data"])
+                    break
+
+        if not inline_b64:
+            raise RuntimeError(
+                "Gemini TTS response did not contain inline audio data."
+            )
+
+        pcm = base64.b64decode(inline_b64)
+        if fmt == "pcm":
+            return pcm
+        if fmt == "wav":
+            return _wrap_pcm_as_wav(pcm)
+        return await _reencode_pcm_via_ffmpeg(pcm, target_format=fmt)
+
+
+def get_tts_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> TTSAdapter:
+    """Return a TTS adapter for the given provider/config.
+
+    Mirrors the ``get_image_generation_model`` signature.
+    """
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [
+        name.strip()
+        for name in str(configuration.get("model", "")).split(",")
+        if name.strip()
+    ]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No TTS model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+
+    logger.info(f"Getting TTS model: provider={provider}, model_name={model_name}")
+
+    if provider == TTSProvider.OPENAI.value:
+        return _OpenAITTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+        )
+
+    if provider == TTSProvider.GEMINI.value:
+        return _GeminiTTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+            endpoint=configuration.get("endpoint") or None,
+        )
+
+    raise ValueError(f"Unsupported TTS provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Speech-to-Text (STT)
+# ---------------------------------------------------------------------------
+
+
+class STTAdapter:
+    """Thin wrapper around an STT provider SDK that returns a transcript."""
+
+    provider: str
+    model: str
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        raise NotImplementedError
+
+
+def _stt_filename_for_mime(mime: str, fallback: str | None = None) -> str:
+    if fallback:
+        return fallback
+    ext_map = {
+        "audio/webm": "audio.webm",
+        "audio/ogg": "audio.ogg",
+        "audio/mp4": "audio.mp4",
+        "audio/m4a": "audio.m4a",
+        "audio/mpeg": "audio.mp3",
+        "audio/wav": "audio.wav",
+        "audio/x-wav": "audio.wav",
+        "audio/flac": "audio.flac",
+    }
+    return ext_map.get(mime.lower(), "audio.webm")
+
+
+class _OpenAISTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        organization: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.OPENAI.value
+        self.model = model
+        self._api_key = api_key
+        self._organization = organization
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=self._api_key,
+            organization=self._organization,
+        )
+        file_tuple = (
+            _stt_filename_for_mime(mime, filename),
+            audio,
+            mime or "application/octet-stream",
+        )
+        try:
+            kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "file": file_tuple,
+            }
+            if language:
+                kwargs["language"] = language
+            response = await client.audio.transcriptions.create(**kwargs)
+        finally:
+            await client.close()
+
+        text = getattr(response, "text", None)
+        if text is None and isinstance(response, dict):
+            text = response.get("text")
+        return text or ""
+
+
+# Process-level cache so we don't reload the Whisper weights on every request.
+# Keyed by (model_name, device, compute_type, download_root).
+_WHISPER_MODEL_CACHE: Dict[tuple, Any] = {}
+
+
+class _WhisperLocalSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        device: str = "auto",
+        compute_type: str = "int8",
+        download_root: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.WHISPER.value
+        self.model = model
+        self._device = device or "auto"
+        self._compute_type = compute_type or "int8"
+        self._download_root = download_root or None
+
+    def _get_whisper_model(self) -> Any:
+        key = (
+            self.model,
+            self._device,
+            self._compute_type,
+            self._download_root,
+        )
+        cached = _WHISPER_MODEL_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "The 'whisper' STT provider requires the 'faster-whisper' "
+                "package. Install the optional extra: "
+                "pip install 'pipeshub-ai[whisper]' or "
+                "pip install faster-whisper"
+            ) from exc
+
+        logger.info(
+            f"Loading faster-whisper model='{self.model}' device='{self._device}' "
+            f"compute_type='{self._compute_type}'"
+        )
+        whisper_kwargs: Dict[str, Any] = {
+            "device": self._device,
+            "compute_type": self._compute_type,
+        }
+        if self._download_root:
+            whisper_kwargs["download_root"] = self._download_root
+
+        model_instance = WhisperModel(self.model, **whisper_kwargs)
+        _WHISPER_MODEL_CACHE[key] = model_instance
+        return model_instance
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import asyncio
+        import io
+
+        def _run() -> str:
+            whisper_model = self._get_whisper_model()
+            segments, _info = whisper_model.transcribe(
+                io.BytesIO(audio),
+                language=language,
+            )
+            parts: list[str] = []
+            for seg in segments:
+                text = getattr(seg, "text", "") or ""
+                if text:
+                    parts.append(text)
+            return "".join(parts).strip()
+
+        return await asyncio.to_thread(_run)
+
+
+# Wispr Flow expects 16 kHz mono WAV, base64-encoded, <= 25 MB / 6 min.
+# We transcode server-side using ffmpeg so any format the browser produces
+# (webm/opus, mp4/aac, wav, mp3, etc.) is accepted.
+_WISPR_DEFAULT_ENDPOINT = "https://platform-api.wisprflow.ai"
+_WISPR_MAX_WAV_BYTES = 25 * 1024 * 1024
+
+
+async def _transcode_to_wispr_wav(audio: bytes) -> bytes:
+    """Run ffmpeg to convert arbitrary input audio to 16 kHz mono WAV.
+
+    Raises ``RuntimeError`` with an operator-friendly message if ffmpeg
+    isn't installed on PATH or the transcode fails.
+    """
+    import asyncio
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "wav",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "The 'wispr' STT provider requires ffmpeg to transcode audio to "
+            "16 kHz WAV. Install ffmpeg on the backend host (e.g. "
+            "'apt-get install ffmpeg' or 'brew install ffmpeg') and retry."
+        ) from exc
+
+    stdout, stderr = await process.communicate(input=audio)
+    if process.returncode != 0:
+        err_msg = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"ffmpeg failed to transcode audio for Wispr Flow (exit {process.returncode}): "
+            f"{err_msg or 'no stderr output'}"
+        )
+    if not stdout:
+        raise RuntimeError(
+            "ffmpeg produced no output while transcoding audio for Wispr Flow."
+        )
+    return stdout
+
+
+class _WisprFlowSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        endpoint: str | None = None,
+        default_language: str | None = None,
+        default_app_type: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.WISPR.value
+        self.model = model
+        self._api_key = api_key
+        self._endpoint = (endpoint or _WISPR_DEFAULT_ENDPOINT).rstrip("/")
+        self._default_language = (default_language or "").strip() or None
+        self._default_app_type = (default_app_type or "ai").strip() or "ai"
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import base64
+
+        import httpx
+
+        wav_bytes = await _transcode_to_wispr_wav(audio)
+        if len(wav_bytes) > _WISPR_MAX_WAV_BYTES:
+            raise RuntimeError(
+                f"Transcoded audio is {len(wav_bytes)} bytes which exceeds "
+                f"Wispr Flow's 25 MB ceiling. Shorten the recording."
+            )
+
+        payload_audio = base64.b64encode(wav_bytes).decode("ascii")
+        properties: Dict[str, Any] = {
+            "app_type": self._default_app_type,
+        }
+        lang = (language or self._default_language or "").strip()
+        if lang:
+            properties["language"] = lang
+
+        url = f"{self._endpoint}/api/v1/dash/api"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "audio": payload_audio,
+            "properties": properties,
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            # Avoid leaking the raw upstream body (may include request ids).
+            # Log details server-side via the module logger and surface a
+            # compact error to the caller.
+            snippet = ""
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    snippet = str(data.get("detail") or data.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Wispr Flow transcription failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Wispr Flow transcription failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Wispr Flow returned a non-JSON response."
+            ) from exc
+
+        if not isinstance(data, dict):
+            return ""
+        text = data.get("text")
+        return text if isinstance(text, str) else ""
+
+
+# Gemini STT piggybacks on the generic multimodal generateContent endpoint:
+# we pass inline audio bytes plus a short prompt asking for a verbatim
+# transcript. Request size (incl. audio) must stay under 20 MB.
+_GEMINI_STT_TRANSCRIBE_PROMPT = (
+    "Transcribe the following audio verbatim. Return only the raw transcript "
+    "text with no additional commentary, formatting, or quotation marks."
+)
+_GEMINI_STT_MIME_MAP = {
+    "audio/webm": "audio/webm",
+    "audio/ogg": "audio/ogg",
+    "audio/mp4": "audio/mp4",
+    "audio/m4a": "audio/mp4",
+    "audio/mpeg": "audio/mp3",
+    "audio/mp3": "audio/mp3",
+    "audio/wav": "audio/wav",
+    "audio/x-wav": "audio/wav",
+    "audio/flac": "audio/flac",
+    "audio/aac": "audio/aac",
+}
+
+
+def _gemini_stt_mime(mime: str) -> str:
+    """Normalize a browser-supplied mime to a Gemini-accepted value."""
+    if not mime:
+        return "audio/mp3"
+    normalized = mime.split(";")[0].strip().lower()
+    return _GEMINI_STT_MIME_MAP.get(normalized, normalized or "audio/mp3")
+
+
+class _GeminiSTTAdapter(STTAdapter):
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        endpoint: str | None = None,
+    ) -> None:
+        self.provider = STTProvider.GEMINI.value
+        self.model = model
+        self._api_key = api_key
+        self._endpoint = (
+            endpoint or "https://generativelanguage.googleapis.com"
+        ).rstrip("/")
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import base64
+
+        import httpx
+
+        effective_mime = _gemini_stt_mime(mime)
+        prompt = _GEMINI_STT_TRANSCRIBE_PROMPT
+        if language:
+            prompt = f"{prompt} The speaker is using language code '{language}'."
+
+        url = f"{self._endpoint}/v1beta/models/{self.model}:generateContent"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inlineData": {
+                                "mimeType": effective_mime,
+                                "data": base64.b64encode(audio).decode("ascii"),
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {"responseModalities": ["TEXT"]},
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    err = payload.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "Gemini STT transcription failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"Gemini STT transcription failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini STT returned a non-JSON response."
+            ) from exc
+
+        if not isinstance(payload, dict):
+            return ""
+
+        candidates = payload.get("candidates") or []
+        if not isinstance(candidates, list) or not candidates:
+            return ""
+
+        parts = (
+            candidates[0].get("content", {}).get("parts", [])
+            if isinstance(candidates[0], dict)
+            else []
+        )
+        pieces: list[str] = []
+        for part in parts:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    pieces.append(text)
+        return "".join(pieces).strip()
+
+
+def get_stt_model(
+    provider: str,
+    config: Dict[str, Any],
+    model_name: str | None = None,
+) -> STTAdapter:
+    """Return an STT adapter for the given provider/config."""
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    model_names = [
+        name.strip()
+        for name in str(configuration.get("model", "")).split(",")
+        if name.strip()
+    ]
+    if model_name is None:
+        if not model_names:
+            raise ValueError("No STT model configured")
+        model_name = model_names[0]
+    elif not is_default and model_name not in model_names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+
+    logger.info(f"Getting STT model: provider={provider}, model_name={model_name}")
+
+    if provider == STTProvider.OPENAI.value:
+        return _OpenAISTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        )
+
+    if provider == STTProvider.WHISPER.value:
+        return _WhisperLocalSTTAdapter(
+            model=model_name,
+            device=configuration.get("device", "auto"),
+            compute_type=configuration.get("computeType", "int8"),
+            download_root=configuration.get("modelDir") or None,
+        )
+
+    if provider == STTProvider.WISPR.value:
+        return _WisprFlowSTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            endpoint=configuration.get("endpoint") or None,
+            default_language=configuration.get("language") or None,
+            default_app_type=configuration.get("appType") or "ai",
+        )
+
+    if provider == STTProvider.GEMINI.value:
+        return _GeminiSTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            endpoint=configuration.get("endpoint") or None,
+        )
+
+    raise ValueError(f"Unsupported STT provider: {provider}")

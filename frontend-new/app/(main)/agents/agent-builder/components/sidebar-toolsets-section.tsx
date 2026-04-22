@@ -2,18 +2,18 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Text, TextField, Button } from '@radix-ui/themes';
+import { Box, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import type { BuilderSidebarToolset } from '../../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
-  formatToolsetTypeLabel,
   getToolsetSidebarStatus,
   groupToolsetsByType,
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
+import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
@@ -42,7 +42,8 @@ function getToolsetPaletteRowState(
     configureIconColor: string;
     configureTooltip: string;
   },
-  normalizedActive: string[],
+  activeInstanceIdSet: Set<string>,
+  activeTypeKeysNoInstanceSet: Set<string>,
   structureLocked: boolean,
   orgCredentialUiLocked: boolean,
   isServiceAccount: boolean,
@@ -52,7 +53,10 @@ function getToolsetPaletteRowState(
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
   const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const dup = normalizedActive.includes(normalizedType);
+  const instanceId = ts.instanceId?.trim();
+  const dup = instanceId
+    ? activeInstanceIdSet.has(instanceId)
+    : activeTypeKeysNoInstanceSet.has(normalizedType);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -106,6 +110,7 @@ function ToolDragRow(props: {
         display: 'flex',
         alignItems: 'center',
         width: '100%',
+        minWidth: 0,
         minHeight: CHAT_ITEM_HEIGHT,
         padding: '0 12px',
         boxSizing: 'border-box',
@@ -122,20 +127,20 @@ function ToolDragRow(props: {
           : 'agent-builder-draggable-row'
       }
     >
-      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
       <span
         style={{
           flex: 1,
+          minWidth: 0,
           fontSize: 14,
-          lineHeight: '20px',
           color: 'var(--slate-11)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          whiteSpace: 'normal',
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
           textAlign: 'left',
         }}
       >
-        {tool.name}
+        {normalizePaletteLabel(tool.name)}
       </span>
     </Box>
   );
@@ -149,17 +154,15 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  loadMoreToolsets: () => void | Promise<void>;
-  toolsetsHasMore: boolean;
-  toolsetsLoadingMore: boolean;
-  activeToolsetTypes: string[];
+  activeToolsetInstanceIds: string[];
+  activeToolsetTypeKeysWithoutInstance: string[];
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
   onNotify: (message: string) => void;
   /** Viewer without edit: block tool/toolset drags onto the canvas. */
   structureLocked?: boolean;
-  /** SA viewer without edit: block search, load-more, and org credential controls only. */
+  /** SA viewer without edit: block search and org credential controls only. */
   orgCredentialUiLocked?: boolean;
   /** Same toast as main palette when structure-only drag is blocked (from sidebar). */
   onPaletteStructureDragBlocked?: () => void;
@@ -168,10 +171,8 @@ export function AgentBuilderToolsetsSection(props: {
     toolsets,
     loading,
     refreshToolsets,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
-    activeToolsetTypes,
+    activeToolsetInstanceIds,
+    activeToolsetTypeKeysWithoutInstance,
     isServiceAccount,
     agentKey,
     onManageAgentToolsetCredentials,
@@ -187,13 +188,14 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const loadMoreRef = useRef(loadMoreToolsets);
-  useEffect(() => {
-    loadMoreRef.current = loadMoreToolsets;
-  }, [loadMoreToolsets]);
-
-  const normalizedActive = useMemo(() => activeToolsetTypes.map(normalizeToolsetTypeKey), [activeToolsetTypes]);
+  const activeInstanceIdSet = useMemo(
+    () => new Set(activeToolsetInstanceIds.filter(Boolean)),
+    [activeToolsetInstanceIds]
+  );
+  const activeTypeKeysNoInstanceSet = useMemo(
+    () => new Set(activeToolsetTypeKeysWithoutInstance.map(normalizeToolsetTypeKey).filter(Boolean)),
+    [activeToolsetTypeKeysWithoutInstance]
+  );
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
     setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
@@ -234,26 +236,6 @@ export function AgentBuilderToolsetsSection(props: {
     window.addEventListener('message', onOAuthMessage);
     return () => window.removeEventListener('message', onOAuthMessage);
   }, [agentKey, isServiceAccount, onNotify, refreshToolsets, searchInput, t]);
-
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (
-          entries[0]?.isIntersecting &&
-          !toolsetsLoadingMore &&
-          toolsetsHasMore &&
-          !orgCredentialUiLocked
-        ) {
-          void loadMoreRef.current();
-        }
-      },
-      { threshold: 0.1 }
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [orgCredentialUiLocked, toolsetsHasMore, toolsetsLoadingMore]);
 
   const buildUiState = useCallback(
     (ts: BuilderSidebarToolset) => {
@@ -306,7 +288,11 @@ export function AgentBuilderToolsetsSection(props: {
         return;
       }
       if (isFromRegistry) {
-        onNotify(t('agentBuilder.toolsetNotConfiguredNotify', { name: ts.displayName }));
+        onNotify(
+          t('agentBuilder.toolsetNotConfiguredNotify', {
+            name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          })
+        );
         return;
       }
 
@@ -320,13 +306,22 @@ export function AgentBuilderToolsetsSection(props: {
   const handleUnconfiguredDrag = useCallback(
     (ts: BuilderSidebarToolset, isFromRegistry: boolean) => {
       if (isFromRegistry) {
-        onNotify(t('agentBuilder.toolsetNotConfiguredNotify', { name: ts.displayName }));
+        onNotify(
+          t('agentBuilder.toolsetNotConfiguredNotify', {
+            name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          })
+        );
         return;
       }
       const reason = !ts.isConfigured
         ? t('agentBuilder.notConfiguredReason')
         : t('agentBuilder.notAuthenticatedReason');
-      onNotify(t('agentBuilder.toolsetNotReadyNotify', { name: ts.displayName, reason }));
+      onNotify(
+        t('agentBuilder.toolsetNotReadyNotify', {
+          name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+          reason,
+        })
+      );
     },
     [onNotify, t]
   );
@@ -335,7 +330,7 @@ export function AgentBuilderToolsetsSection(props: {
     (ts: BuilderSidebarToolset) => {
       onNotify(
         t('agentBuilder.toolsetDuplicateNotify', {
-          name: formatToolsetTypeLabel(ts.toolsetType || ts.name),
+          name: normalizePaletteLabel(ts.toolsetType || ts.name),
         })
       );
     },
@@ -391,7 +386,7 @@ export function AgentBuilderToolsetsSection(props: {
             return (
               <Box key={toolsetType} mb="2">
                 <SidebarCategoryRow
-                  groupLabel={formatToolsetTypeLabel((first.toolsetType || toolsetType) as string)}
+                  groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
                   isExpanded={isTypeExpanded}
@@ -414,7 +409,8 @@ export function AgentBuilderToolsetsSection(props: {
                     } = getToolsetPaletteRowState(
                       ts,
                       ui,
-                      normalizedActive,
+                      activeInstanceIdSet,
+                      activeTypeKeysNoInstanceSet,
                       structureLocked,
                       orgCredentialUiLocked,
                       isServiceAccount,
@@ -426,7 +422,7 @@ export function AgentBuilderToolsetsSection(props: {
                     return (
                       <SidebarCategoryRow
                         key={ts.instanceId || ts.displayName}
-                        groupLabel={ts.instanceName || ts.displayName}
+                        groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
                         isExpanded={isInstanceExpanded}
@@ -468,31 +464,12 @@ export function AgentBuilderToolsetsSection(props: {
           })
         : null}
 
-      {!loading ? <Box ref={sentinelRef} style={{ height: 1 }} aria-hidden /> : null}
-
-      {!loading && toolsetsHasMore ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="1"
-          color="gray"
-          disabled={toolsetsLoadingMore || orgCredentialUiLocked}
-          onClick={() => void loadMoreToolsets()}
-          style={{ marginTop: 8 }}
-        >
-          {toolsetsLoadingMore ? t('agentBuilder.loadingMore') : t('agentBuilder.loadMore')}
-        </Button>
-      ) : null}
-
       {userConfigToolset?.instanceId ? (
         <UserToolsetConfigDialog
           key={userConfigToolset.instanceId}
           toolset={userConfigToolset}
           instanceId={userConfigToolset.instanceId}
-          onClose={() => {
-            setUserConfigToolset(null);
-            void refreshToolsets(agentKey, isServiceAccount, searchInput);
-          }}
+          onClose={() => setUserConfigToolset(null)}
           onSuccess={async () => {
             await refreshToolsets(agentKey, isServiceAccount, searchInput);
           }}

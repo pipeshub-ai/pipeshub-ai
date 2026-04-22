@@ -41,11 +41,10 @@ export interface Connector {
   connectorInfo?: Record<string, unknown> | null;
   config?: Record<string, unknown>;
   /**
-   * Transient operational status set by the backend.
-   * DELETING: instance is being deleted (show as disabled).
-   * SYNCING: backend-initiated sync in progress.
+   * Transient operational status from the backend.
+   * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
-  status?: 'DELETING' | 'SYNCING' | null;
+  status?: string | null;
 }
 
 /** API list response shape. */
@@ -106,6 +105,12 @@ export interface AuthSchemaField {
   options?: string[];
   validation?: FieldValidation;
   isSecret?: boolean;
+  /**
+   * Optional labeled example values rendered below the input as a compact
+   * copyable note. Intended for fields where a single placeholder can't
+   * carry all the variants a user may need (e.g. Azure AI endpoints).
+   */
+  examples?: { label: string; value: string }[];
 }
 
 export interface SyncCustomField {
@@ -333,7 +338,7 @@ export interface PanelFormData {
 // Panel tab + view types
 // ========================================
 
-export type PanelTab = 'authenticate' | 'configure';
+export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
 

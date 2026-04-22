@@ -16,6 +16,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import {
   DestructiveTypedConfirmationDialog,
   FormField,
@@ -1348,13 +1349,14 @@ export function ManageOAuthApplicationPanel({
                   <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
                     {t('workspace.oauth2.manageApplication.advancedSectionTitle')}
                   </Text>
-                  <Button
+                  <LoadingButton
                     type="button"
                     variant="outline"
                     color={detail.status === 'suspended' ? 'jade' : 'amber'}
                     size="2"
-                    style={{ flexShrink: 0, cursor: 'pointer' }}
-                    disabled={statusActionLoading}
+                    style={{ flexShrink: 0 }}
+                    loading={statusActionLoading}
+                    loadingLabel={t('workspace.oauth2.manageApplication.statusActionPending')}
                     onClick={() => {
                       if (detail.status === 'suspended') {
                         void handleActivateApplication();
@@ -1363,12 +1365,10 @@ export function ManageOAuthApplicationPanel({
                       }
                     }}
                   >
-                    {statusActionLoading
-                      ? t('workspace.oauth2.manageApplication.statusActionPending')
-                      : detail.status === 'suspended'
-                        ? t('workspace.oauth2.manageApplication.activateApplicationButton')
-                        : t('workspace.oauth2.manageApplication.suspendApplicationButton')}
-                  </Button>
+                    {detail.status === 'suspended'
+                      ? t('workspace.oauth2.manageApplication.activateApplicationButton')
+                      : t('workspace.oauth2.manageApplication.suspendApplicationButton')}
+                  </LoadingButton>
                 </Flex>
 
                 <Flex align="center" gap="3" style={{ width: '100%' }}>

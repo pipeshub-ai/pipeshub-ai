@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { AvatarUploadWidget } from '../../components';
@@ -16,6 +17,7 @@ export interface GeneralSectionProps {
   avatarInitial: string;
   avatarUploading: boolean;
   onEditAvatarClick: () => void;
+  onDeleteAvatarClick: () => void;
   fullName: string;
   fullNameError?: string;
   onFullNameChange: (value: string) => void;
@@ -36,6 +38,7 @@ export function GeneralSection({
   avatarInitial,
   avatarUploading,
   onEditAvatarClick,
+  onDeleteAvatarClick,
   fullName,
   fullNameError,
   onFullNameChange,
@@ -45,27 +48,30 @@ export function GeneralSection({
   emailLoading,
   onEditEmailClick,
 }: GeneralSectionProps) {
+  const { t } = useTranslation();
   return (
-    <SettingsSection title="General">
+    <SettingsSection title={t('workspace.profile.general.title')}>
 
       {/* Your Display Picture */}
       <SettingsRow
-        label="Your Display Picture"
-        description="Recommended size is 256px by 256px"
+        label={t('workspace.profile.general.avatarLabel')}
+        description={t('workspace.profile.general.avatarDescription')}
       >
         <AvatarUploadWidget
           src={avatarUrl}
           initial={avatarInitial}
           uploading={avatarUploading}
           onEditClick={onEditAvatarClick}
+          onDeleteClick={onDeleteAvatarClick}
+          triggerAriaLabel={t('workspace.profile.general.editAvatarAria')}
         />
       </SettingsRow>
 
       {/* Full Name */}
-      <SettingsRow label="Full Name" description="Please write your full name">
+      <SettingsRow label={t('workspace.profile.general.fullName')} description={t('workspace.profile.general.fullNameDescription')}>
         <Flex direction="column" gap="1">
           <TextField.Root
-            placeholder="eg: John Doe"
+            placeholder={t('workspace.profile.general.fullNamePlaceholder')}
             value={fullName}
             onChange={(e) => onFullNameChange(e.target.value)}
             color={fullNameError ? 'red' : undefined}
@@ -79,9 +85,9 @@ export function GeneralSection({
       </SettingsRow>
 
       {/* Designation */}
-      <SettingsRow label="Designation" description="Your job role in the company">
+      <SettingsRow label={t('workspace.profile.general.designation')} description={t('workspace.profile.general.designationDescription')}>
         <TextField.Root
-          placeholder="eg: Co-Founder"
+          placeholder={t('workspace.profile.general.designationPlaceholder')}
           value={designation}
           onChange={(e) => onDesignationChange(e.target.value)}
         />
@@ -89,11 +95,11 @@ export function GeneralSection({
 
       {/* Company Email — read-only; Change Email logic ready but UI not implemented */}
       <SettingsRow
-        label="Company Email"
-        description="Primary work email from the company"
+        label={t('workspace.profile.general.companyEmail')}
+        description={t('workspace.profile.general.companyEmailDescription')}
       >
         <TextField.Root
-          value={emailLoading ? 'Loading…' : email}
+          value={emailLoading ? t('common.loading') : email}
           readOnly
           style={{ color: 'var(--gray-10)' }}
         >

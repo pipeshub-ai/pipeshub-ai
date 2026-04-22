@@ -80,9 +80,9 @@ export function StepOrgProfile({ onSuccess }: StepOrgProfileProps) {
         form.displayName.trim() !== '' &&
         form.streetAddress.trim() !== '' &&
         form.country !== '';
-      if (prefilled) {
-        markStepCompleted('org-profile');
-      }
+      // if (prefilled) {
+      //   markStepCompleted('org-profile');
+      // }
     }
   }, [form]);
 
@@ -108,7 +108,7 @@ export function StepOrgProfile({ onSuccess }: StepOrgProfileProps) {
 
   const handleChange = (field: keyof OrgProfileFormData, value: string) => {
     isDirtyRef.current = true;
-    unmarkStepCompleted('org-profile');
+    // unmarkStepCompleted('org-profile');
     setSavedSuccessfully(false);
     setForm((prev) => ({ ...prev, [field]: value }));
   };

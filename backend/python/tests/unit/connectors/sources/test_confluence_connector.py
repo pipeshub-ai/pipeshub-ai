@@ -196,7 +196,7 @@ class TestGetFreshDatasource:
         connector.external_client = mock_ext_client
 
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "new-token"},
         })
 
@@ -217,7 +217,7 @@ class TestGetFreshDatasource:
         connector.external_client = mock_ext_client
 
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "same-token"},
         })
 
@@ -231,7 +231,7 @@ class TestGetFreshDatasource:
         connector = _make_connector()
         connector.external_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {},
         })
 

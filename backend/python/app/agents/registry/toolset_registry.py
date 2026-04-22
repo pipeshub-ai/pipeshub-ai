@@ -378,6 +378,9 @@ class ToolsetRegistry:
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
             'app.agents.actions.knowledge_hub.knowledge_hub',
+            'app.agents.actions.coding_sandbox.coding_sandbox',
+            'app.agents.actions.database_sandbox.database_sandbox',
+            'app.agents.actions.image_generator.image_generator',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -398,7 +401,7 @@ class ToolsetRegistry:
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',
-            # 'app.agents.actions.microsoft.one_drive.one_drive',
+            'app.agents.actions.microsoft.one_drive.one_drive',
             # 'app.agents.actions.microsoft.sharepoint.sharepoint',
             'app.agents.actions.microsoft.teams.teams',
             'app.agents.actions.microsoft.outlook.outlook',
@@ -627,6 +630,7 @@ class ToolsetRegistry:
                     if isinstance(tool_def, dict)
                 )
 
+            serialized_cfg = serialized_metadata.get('config', {}) or {}
             toolset_info = {
                 'name': serialized_metadata['name'],
                 'normalized_name': normalized_name,
@@ -636,9 +640,10 @@ class ToolsetRegistry:
                 'appGroup': serialized_metadata['app_group'],
                 'supportedAuthTypes': serialized_metadata['supported_auth_types'],
                 'iconPath': serialized_metadata['icon_path'],
+                'documentationLinks': serialized_cfg.get('documentationLinks', []),
                 'toolCount': len(serialized_metadata.get('tools', [])),
                 'tools': tools,  # Include tools for drag-and-drop
-                'config': serialized_metadata.get('config', {}),  # Serialized config (OAuth as dicts)
+                'config': serialized_cfg,  # Serialized config (OAuth as dicts)
             }
             all_toolsets.append(toolset_info)
 

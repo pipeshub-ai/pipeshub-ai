@@ -28,6 +28,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
+from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -86,8 +87,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
+from app.sources.external.common.atlassian import match_atlassian_cloud_resource
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -686,7 +689,17 @@ async def adf_to_text_with_images(
                     description="The Client Secret from Atlassian Developer Console",
                     field_type="PASSWORD",
                     is_secret=True
-                )
+                ),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL to use. Must match the Jira site you want to sync.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
             icon_path="/assets/icons/connectors/jira.svg",
             app_group="Atlassian",
@@ -861,14 +874,34 @@ class JiraConnector(BaseConnector):
                 self.cloud_id = None
                 self.logger.info("✅ Jira client initialized with API Token authentication")
             else:
-                # For OAuth, get cloud ID and site URL from accessible resources
                 access_token = await self._get_access_token()
                 resources = await JiraClient.get_accessible_resources(access_token)
-                if not resources:
-                    raise Exception("No accessible Jira resources found")
-
-                self.cloud_id = resources[0].id
-                self.site_url = resources[0].url
+                site_url = (auth_config.get("baseUrl") or "").strip()
+                if not site_url:
+                    oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                    if oauth_config_id:
+                        shared = await fetch_oauth_config_by_id(
+                            oauth_config_id=oauth_config_id,
+                            connector_type="Jira",
+                            config_service=self.config_service,
+                            logger=self.logger,
+                        )
+                        if shared:
+                            site_url = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
+                if not site_url:
+                    if not resources:
+                        raise ValueError(
+                            "Atlassian site URL (baseUrl) missing and OAuth token has no accessible Jira sites"
+                        )
+                    self.logger.warning(
+                        "Jira connector %s: baseUrl missing; using accessible-resources[0] (%s)",
+                        self.connector_id, resources[0].url,
+                    )
+                    picked = resources[0]
+                else:
+                    picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
+                self.cloud_id = picked.id
+                self.site_url = picked.url
                 self.logger.info("✅ Jira client initialized with OAuth authentication")
 
             return True
@@ -2461,7 +2494,8 @@ class JiraConnector(BaseConnector):
             project_id,
             jira_users,
             project_last_sync_time,
-            resume_from_timestamp
+            resume_from_timestamp,
+            is_new_project=is_new_project,
         ):
             batch_number += 1
             batch_size = len(issues_batch)
@@ -2524,7 +2558,8 @@ class JiraConnector(BaseConnector):
         project_id: str,
         users: list[AppUser],
         last_sync_time: Optional[int] = None,
-        resume_from_timestamp: Optional[int] = None
+        resume_from_timestamp: Optional[int] = None,
+        is_new_project: bool = False,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission]]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -2639,7 +2674,10 @@ class JiraConnector(BaseConnector):
 
             # Build records for this batch
             async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(batch_issues, project_id, users, tx_store)
+                records_batch = await self._build_issue_records(
+                    batch_issues, project_id, users, tx_store,
+                    is_new_project=is_new_project,
+                )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -2888,10 +2926,16 @@ class JiraConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store
+        tx_store,
+        is_new_project: bool = False,
     ) -> list[tuple[Record, list[Permission]]]:
         """
-        Build issue records with permissions from raw issue data, respecting Jira hierarchy
+        Build issue records with permissions from raw issue data, respecting Jira hierarchy.
+
+        When is_new_project is True (full sync wiped sync points), the "skip unchanged
+        issues" short-circuit is bypassed so every issue flows through _process_record
+        and its BELONGS_TO / RECORD_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
+        recreated after full-sync edge deletion.
         """
         all_records: list[tuple[Record, list[Permission]]] = []
         skipped_unchanged_count = 0
@@ -2956,8 +3000,10 @@ class JiraConnector(BaseConnector):
                 version = existing_record.version if existing_record else 0
                 # Skip unchanged issues silently - no need to log every unchanged issue
 
-            # Skip processing if issue is unchanged
-            if not is_issue_changed:
+            # Skip processing if issue is unchanged, unless this is a full sync
+            # (is_new_project=True means sync points were wiped, so edges need to be
+            # recreated even for unchanged issues; _process_record is idempotent).
+            if not is_issue_changed and not is_new_project:
                 skipped_unchanged_count += 1
                 continue
 

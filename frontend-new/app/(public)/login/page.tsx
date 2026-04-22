@@ -11,21 +11,22 @@ import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
 import { SingleProvider, MultipleProviders } from '../forms';
 import { AuthApi, type AuthMethod } from '../api';
+import { getOrgExists } from '@/lib/api/org-exists-public';
 
 // --- Auth step state machine --------------------------------------------------
 
 type AuthStep =
   | { type: 'loading' }
   | {
-      type: 'single';
-      method: AuthMethod;
-      authProviders: Record<string, Record<string, string>>;
-    }
+    type: 'single';
+    method: AuthMethod;
+    authProviders: Record<string, Record<string, string>>;
+  }
   | {
-      type: 'multiple';
-      allowedMethods: AuthMethod[];
-      authProviders: Record<string, Record<string, string>>;
-    };
+    type: 'multiple';
+    allowedMethods: AuthMethod[];
+    authProviders: Record<string, Record<string, string>>;
+  };
 
 /** Backend SAML error codes → short user-facing descriptions. */
 const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
@@ -59,6 +60,30 @@ export default function LoginPage() {
   // (where mount effects are intentionally run twice in development).
   const initAuthCalledRef = useRef(false);
   const samlErrorHandledRef = useRef(false);
+  const emailVerifyHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (emailVerifyHandledRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const emailVerify = params.get('email_verify');
+    if (emailVerify === 'success' || emailVerify === 'error') {
+      emailVerifyHandledRef.current = true;
+      if (emailVerify === 'success') {
+        toast.success('Email verified', {
+          description: 'Your email address was updated. Sign in with your new email.',
+        });
+      } else {
+        const detail = params.get('email_verify_msg');
+        toast.error('Email verification failed', {
+          description: detail?.trim() || 'The link may be invalid or expired.',
+        });
+      }
+      router.replace('/login');
+      return;
+    }
+  }, [isHydrated, router]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -85,14 +110,24 @@ export default function LoginPage() {
     }
   }, [isHydrated, router]);
 
-  // Auto-call initAuth once on mount
   useEffect(() => {
     if (!isHydrated) return;
     if (initAuthCalledRef.current) return;
     initAuthCalledRef.current = true;
 
-    AuthApi.initAuth()
+    let cancelled = false;
+
+    void getOrgExists()
+      .then(({ exists }) => {
+        if (!exists) {
+          router.replace('/sign-up');
+          return;
+        }
+        // if (cancelled) return;
+        return AuthApi.initAuth();
+      })
       .then((response) => {
+        // if (cancelled || response === undefined) return;
         const methods = response.allowedMethods ?? [];
         const providers = response.authProviders ?? {};
         if (methods.length <= 1) {
@@ -110,13 +145,18 @@ export default function LoginPage() {
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setStep({
           type: 'single',
           method: 'password',
           authProviders: {},
         });
       });
-  }, [isHydrated]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isHydrated, router]);
 
   function renderForm() {
     switch (step.type) {

@@ -89,8 +89,15 @@ export function KbDataTable({
   onGoToCollection,
   refreshData,
 }: KbDataTableProps) {
-  const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection } =
+  const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
+
+  // Collections in the sidebar are still being fetched (initial load).
+  // Used to show a spinner in the center "No collection selected" empty state
+  // while the user is waiting for the sidebar to populate.
+  const kbApp = appNodes.find((n) => n.connector === 'KB');
+  const isLoadingCollections =
+    isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const isAllRecords = pageViewMode === 'all-records';
   const activeSelectedItems = isAllRecords ? selectedRecords : selectedItems;
@@ -129,12 +136,25 @@ export function KbDataTable({
   const handleDeleteConfirm = async () => {
     if (!itemToDelete) return;
 
+    // Get KB ID - we need it for folder deletion and root-collection detection
+    const storeBreadcrumbs = useKnowledgeBaseStore.getState().tableData?.breadcrumbs;
+    const kbId = storeBreadcrumbs && storeBreadcrumbs.length > 1
+      ? storeBreadcrumbs[1].id
+      : isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
+      ? itemToDelete.parentId
+      : undefined;
+
     const isFolder = isKnowledgeHubNode(itemToDelete)
       ? ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
       : itemToDelete.type === 'folder';
 
+    const isRootCollection =
+      isKnowledgeHubNode(itemToDelete) &&
+      itemToDelete.nodeType === 'recordGroup' &&
+      kbId === itemToDelete.id;
+
     const nodeType = isKnowledgeHubNode(itemToDelete)
-      ? itemToDelete.nodeType === 'kb'
+      ? itemToDelete.nodeType === 'kb' || isRootCollection
         ? 'kb'
         : isFolder
         ? 'folder'
@@ -143,35 +163,30 @@ export function KbDataTable({
       ? 'folder'
       : 'record';
 
-    // Get KB ID - we need it for folder deletion
-    const storeBreadcrumbs = useKnowledgeBaseStore.getState().tableData?.breadcrumbs;
-    const kbId = storeBreadcrumbs && storeBreadcrumbs.length > 1
-      ? storeBreadcrumbs[1].id
-      : isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
-      ? itemToDelete.parentId
-      : undefined;
-
     try {
       await deleteNode(itemToDelete.id, nodeType, kbId || undefined, refreshData);
       setDeleteDialogOpen(false);
       setItemToDelete(null);
-    } catch (error) {
-      // Error is handled in the store
-      console.error('Delete failed:', error);
+    } catch (error: unknown) {
+      // Error toast is already handled in the store action.
+      // Close the dialog on permission-denied responses so users aren't stuck
+      // with an action they cannot perform.
+      const err = error as {
+        statusCode?: number;
+        response?: { status?: number; data?: { message?: string } };
+        message?: string;
+      };
+      const status = err.statusCode ?? err.response?.status;
+      const message = (err.response?.data?.message ?? err.message ?? '').toLowerCase();
+      const isPermissionDenied = status === 403 || message.includes('permission');
+      if (isPermissionDenied) {
+        setDeleteDialogOpen(false);
+        setItemToDelete(null);
+      }
     }
   };
 
-  const getWarningMessage = (item: TableItem): string | undefined => {    
-    const isFolder = isKnowledgeHubNode(item)
-      ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
-      : item.type === 'folder';
-
-    if (isFolder && item.hasChildren) {
-      // TODO: Get actual counts from API or state
-      return 'You have 4 Collections, 35 Files inside this collection folder';
-    }
-    return undefined;
-  };
+  const getWarningMessage = (_item: TableItem): string | undefined => undefined;
 
   // Show refreshing state
   if (isRefreshing) {
@@ -210,6 +225,18 @@ export function KbDataTable({
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only
   const hasBreadcrumbs = !!storeTableData?.breadcrumbs?.length;
   if (items.length === 0 && !hasBreadcrumbs && pageViewMode === 'collections') {
+    // While the sidebar's collections list is still being fetched, show a
+    // loading spinner rather than the "No collection selected" empty state,
+    // so the user doesn't think they have no collections while the API is
+    // still responding.
+    if (isLoadingCollections) {
+      return (
+        <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
+          <LottieLoader variant="loader" size={32} showLabel />
+        </Flex>
+      );
+    }
+
     return (
       <Flex
         align="center"
@@ -355,7 +382,7 @@ export function KbDataTable({
           onReindex={onReindex}
           onReplace={onReplace}
           onMove={onMove}
-          onDelete={handleDeleteClick}
+          onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
         />
       ) : (
@@ -377,7 +404,7 @@ export function KbDataTable({
           onReindex={onReindex}
           onReplace={onReplace}
           onMove={onMove}
-          onDelete={handleDeleteClick}
+          onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
         />
       )}

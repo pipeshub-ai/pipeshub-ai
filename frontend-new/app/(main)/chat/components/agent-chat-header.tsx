@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, DropdownMenu } from '@radix-ui/themes';
+import { Box, DropdownMenu, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore } from '@/chat/store';
@@ -23,10 +23,18 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
   const { t } = useTranslation();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
+  const access = useChatStore((s) => s.agentContextAccess);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const openMobileSidebar = useMobileSidebarStore((s) => s.open);
 
   const title = displayName?.trim() || t('chat.agentNameLoading');
+  const canEdit = Boolean(access?.canEdit);
+  const showViewAgent = Boolean(access?.showViewAgent);
+  const viewTooltip = showViewAgent
+    ? access?.viewAgentTooltipVariant === 'service_account'
+      ? t('chat.viewAgentTooltipServiceAccount')
+      : t('chat.viewAgentTooltipIndividual')
+    : '';
 
   const handleNewAgentChat = () => {
     if (isMobile) closeMobileSidebar();
@@ -42,6 +50,12 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
   const handleBrowseAgents = () => {
     toggleAgentsSidebar();
     if (isMobile) openMobileSidebar();
+  };
+
+  const handleOpenBuilder = () => {
+    if (isMobile) closeMobileSidebar();
+    closeAgentsSidebar();
+    router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
   };
 
   return (
@@ -65,7 +79,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
               gap: 2,
               maxWidth: '100%',
               margin: 0,
-              padding: '6px 10px',
+              padding: 'var(--space-1) var(--space-2)',
               background: 'transparent',
               border: 'none',
               borderRadius: 'var(--radius-2)',
@@ -78,7 +92,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
               style={{
                 fontSize: 15,
                 fontWeight: 500,
-                lineHeight: '22px',
+                lineHeight: 'var(--line-height-3)',
                 color: 'var(--slate-12)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -101,6 +115,25 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
           <DropdownMenu.Item onSelect={handleBrowseAgents}>
             {t('chat.moreAgents')}
           </DropdownMenu.Item>
+          {(canEdit || showViewAgent) && <DropdownMenu.Separator />}
+          {canEdit && (
+            <DropdownMenu.Item onSelect={handleOpenBuilder}>
+              <Flex align="center" gap="2">
+                <MaterialIcon name="edit" size={16} color="var(--slate-11)" />
+                <Text size="2">{t('chat.editAgent')}</Text>
+              </Flex>
+            </DropdownMenu.Item>
+          )}
+          {showViewAgent && (
+            <DropdownMenu.Item onSelect={handleOpenBuilder}>
+              <Tooltip content={viewTooltip} delayDuration={400}>
+                <Flex align="center" gap="2" style={{ maxWidth: 280 }}>
+                  <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
+                  <Text size="2">{t('chat.viewAgent')}</Text>
+                </Flex>
+              </Tooltip>
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     </Box>

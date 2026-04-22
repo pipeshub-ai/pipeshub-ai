@@ -6,19 +6,23 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import type { ModelOverride } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
+import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { AgentStrategyModePanel } from '@/chat/components/chat-panel/expansion-panels/agent-strategy-mode-panel';
 import type { AgentStrategy, QueryMode } from '@/chat/types';
 
-type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy';
+type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy' | 'agent-resources';
 
 interface MobileQueryOptionsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Agent conversation — meatball menu only exposes model (no connectors row). */
   isAgentChat?: boolean;
+  /** Agent ID for filtering models to only those configured for the agent */
+  agentId?: string | null;
 }
 
 /**
@@ -33,6 +37,7 @@ export function MobileQueryOptionsSheet({
   open,
   onOpenChange,
   isAgentChat = false,
+  agentId,
 }: MobileQueryOptionsSheetProps) {
   const [activePanel, setActivePanel] = useState<ActivePanel>('root');
   const { t } = useTranslation();
@@ -40,7 +45,13 @@ export function MobileQueryOptionsSheet({
   const settings = useChatStore((s) => s.settings);
   const setAgentStrategy = useChatStore((s) => s.setAgentStrategy);
   const setFilters = useChatStore((s) => s.setFilters);
-  const setSelectedModel = useChatStore((s) => s.setSelectedModel);
+  const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
+
+  const modelCtxKey = ctxKeyFromAgent(agentId);
+  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
+  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
+  const handleModelSelect = (model: ModelOverride | null) =>
+    setSelectedModelForCtx(modelCtxKey, model);
 
   const handleClose = () => {
     onOpenChange(false);
@@ -56,6 +67,9 @@ export function MobileQueryOptionsSheet({
     models: t('chat.models', { defaultValue: 'Models' }),
     connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
     'agent-strategy': t('chat.agentStrategy.triggerTitle', { defaultValue: 'Agent mode' }),
+    'agent-resources': t('chat.agentResources.sheetTitle', {
+      defaultValue: 'Connectors, collections & actions',
+    }),
   };
 
   return (
@@ -75,9 +89,10 @@ export function MobileQueryOptionsSheet({
       )}
       {activePanel === 'models' && (
         <ModelSelectorPanel
-          selectedModel={settings.selectedModel}
-          onModelSelect={(model) => setSelectedModel(model)}
+          selectedModel={contextSelectedModel ?? contextDefaultModel}
+          onModelSelect={handleModelSelect}
           hideHeader
+          agentId={agentId}
         />
       )}
       {activePanel === 'connectors' && (
@@ -91,6 +106,14 @@ export function MobileQueryOptionsSheet({
             setFilters({ apps: settings.filters?.apps ?? [], kb: next });
           }}
         />
+      )}
+      {activePanel === 'agent-resources' && (
+        <Flex
+          direction="column"
+          style={{ flex: 1, minHeight: 0, maxHeight: 'min(70vh, 520px)', overflow: 'hidden' }}
+        >
+          <AgentScopedResourcesPanel />
+        </Flex>
       )}
       {activePanel === 'agent-strategy' && (
         <AgentStrategyModePanel
@@ -135,11 +158,19 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
             label={t('chat.models', { defaultValue: 'Models' })}
             onClick={() => onNavigate('models')}
           />
-          {!isAgentChat && (
+          {!isAgentChat ? (
             <ManageRow
               icon="hub"
               label={t('nav.connectors', { defaultValue: 'Connectors' })}
               onClick={() => onNavigate('connectors')}
+            />
+          ) : (
+            <ManageRow
+              icon="apps"
+              label={t('chat.agentResources.sheetTitle', {
+                defaultValue: 'Connectors, collections & actions',
+              })}
+              onClick={() => onNavigate('agent-resources')}
             />
           )}
           {!isAgentChat && queryMode === 'agent' && (

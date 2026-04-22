@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Box, Text, Button, IconButton } from '@radix-ui/themes';
+import { Box, Text, Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
@@ -54,7 +54,7 @@ export function CollectionItem({ collection, isSelected, onSelect, depth = 1 }: 
           variant="default"
           size={16}
           color="var(--emerald-11)"
-          style={{ marginRight: '4px' }}
+          style={{ marginRight: 'var(--space-1)' }}
         />
         <Text
           size="2"
@@ -91,7 +91,7 @@ interface ConnectorItemComponentProps {
 function getConnectorItemIcon(connectorType: string, isSelected: boolean) {
   const iconColor = isSelected ? 'var(--accent-9)' : 'var(--slate-11)';
   const iconSize = 16;
-  const iconStyle = { marginRight: '4px' };
+  const iconStyle = { marginRight: 'var(--space-1)' };
 
   switch (connectorType) {
     case 'slack':
@@ -155,14 +155,15 @@ export function ConnectorItemComponent({
 }
 
 // ========================================
-// MoreConnectorItem — link to external connector
+// MoreConnectorItem — navigates to connectors page with panel open
 // ========================================
 
 interface MoreConnectorItemProps {
   connector: MoreConnectorLink;
+  onNavigate: (connectorTypeParam: string) => void;
 }
 
-export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
+export function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -170,16 +171,16 @@ export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       variant="ghost"
       size="2"
       color="gray"
-      onClick={() => window.open(connector.url, connector.isExternal ? '_blank' : '_self')}
+      onClick={() => onNavigate(connector.connectorTypeParam)}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
         width: '100%',
         height: `${ELEMENT_HEIGHT}px`,
         justifyContent: 'flex-start',
-        paddingLeft: '12px',
+        paddingLeft: 'var(--space-3)',
         backgroundColor: isHovered ? 'var(--slate-3)' : 'transparent',
-        gap: '8px',
+        gap: 'var(--space-2)',
       }}
     >
       <ConnectorIcon type={connector.type} size={16} color="var(--slate-11)" />
@@ -198,16 +199,13 @@ export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
       >
         {connector.name}
       </Text>
-      {connector.isExternal && (
-        <IconButton
-          variant="soft"
-          size="1"
-          tabIndex={-1}
-          style={{ cursor: 'pointer', padding: '0px', pointerEvents: 'none' }}
-        >
-          <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-        </IconButton>
-      )}
+      <Flex
+        align="center"
+        justify="center"
+        style={{ width: '24px', height: '24px', pointerEvents: 'none', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+      >
+        <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+      </Flex>
     </Button>
   );
 }

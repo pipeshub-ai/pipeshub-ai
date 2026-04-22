@@ -24,13 +24,16 @@ export function FilePreviewSidebar({
   onOpenChange,
   onToggleFullscreen,
   isLoading = false,
+  error,
   recordDetails,
   initialPage,
   highlightBox,
   citations,
+  initialCitationId,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
+  const hasError = !isLoading && !!error;
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
@@ -91,6 +94,7 @@ export function FilePreviewSidebar({
     onPageChange: handlePageChange,
     initialHighlightBox: highlightBox,
     initialPage,
+    initialCitationId,
   });
 
   // Create pagination controls object
@@ -112,10 +116,12 @@ export function FilePreviewSidebar({
         onOpenChange={onOpenChange}
         onToggleFullscreen={onToggleFullscreen}
         isLoading={isLoading}
+        error={error}
         recordDetails={recordDetails}
         initialPage={initialPage}
         highlightBox={highlightBox}
         citations={citations}
+        initialCitationId={initialCitationId}
       />
     );
   }
@@ -133,21 +139,24 @@ export function FilePreviewSidebar({
           maxHeight: 'calc(100vh - 20px)',
           padding: 0,
           margin: 0,
-          backgroundColor: 'var(--slate-1)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
           transform: 'none',
           animation: 'slideInFromRight 0.2s ease-out',
           borderRadius: 'var(--Radius-2-max, 4px)',
-          border: '1px solid var(--Colors-Olive-3, #212220)',
-          background: 'var(--Variables-Effects-translucent, rgba(29, 29, 33, 0.70))',
+          border: '1px solid var(--olive-3)',
+          background: 'var(--effects-translucent)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           backdropFilter: 'blur(25px)',
         }}
       >
         <VisuallyHidden>
           <Dialog.Title>{file.name}</Dialog.Title>
+          <Dialog.Description>
+            Preview pane for {file.name}. Document content, file details and
+            related citations are shown here.
+          </Dialog.Description>
         </VisuallyHidden>
         {/* Header */}
         <Flex
@@ -155,7 +164,6 @@ export function FilePreviewSidebar({
           justify="between"
           style={{
             padding: '12px 12px 12px 16px',
-            backgroundColor: 'var(--slate-1)',
             flexShrink: 0,
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
@@ -254,11 +262,25 @@ export function FilePreviewSidebar({
                   >
                     <LottieLoader variant="loader" size={40} showLabel />
                   </Flex>
+                ) : hasError && activeTab === 'preview' ? (
+                  <Flex
+                    direction="column"
+                    align="center"
+                    justify="center"
+                    gap="3"
+                    style={{ height: '100%', padding: 'var(--space-6)' }}
+                  >
+                    <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+                    <Text size="3" weight="medium" color="red">
+                      {error}
+                    </Text>
+                  </Flex>
                 ) : activeTab === 'preview' ? (
                   <FilePreviewRenderer
                     fileUrl={file.url}
                     fileName={file.name}
                     fileType={file.type}
+                    fileBlob={file.blob}
                     pagination={paginationControls}
                     highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                     highlightPage={hasCitations ? syncHighlightPage : undefined}

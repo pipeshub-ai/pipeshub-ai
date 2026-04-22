@@ -36,6 +36,7 @@ import {
   markAgentConversationFailed,
   deleteAgentConversation,
   handleRegenerationSuccess,
+  attachPopulatedCitations,
 } from '../../../../src/modules/enterprise_search/utils/utils'
 import { InternalServerError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -1735,6 +1736,326 @@ describe('Enterprise Search Utils - coverage', () => {
       await replaceMessageWithError(conv, 0, 'Error', null, 'type1', 'stack', meta)
       expect(conv.conversationErrors[0].messageId).to.equal(msgId)
       expect(conv.conversationErrors[0].metadata).to.equal(meta)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // attachPopulatedCitations
+  //
+  // Covers both branches of the helper that stitches Citation documents back
+  // into IMessage.citations[]:
+  //   1) DB-connected path → Mongoose `findById().populate()` returns a fully
+  //      hydrated conversation. `citationData` on every message (including
+  //      previously-saved ones) comes from the populated Citation document.
+  //   2) DB-disconnected / buffering path (unit tests, offline) → the
+  //      populate query is short-circuited and `citationData` is filled in
+  //      from the `fallbackCitations` array for the newly-created citations
+  //      only. Previously-saved messages on other conversations are
+  //      unaffected because their `citationData` was already materialized
+  //      before this helper ran (on the GET path) or are not expected in
+  //      this environment.
+  // -----------------------------------------------------------------------
+  describe('attachPopulatedCitations', () => {
+    // `readyState` is defined as a non-configurable getter on the Mongoose
+    // Connection prototype, so sinon can't stub it directly. We shadow it by
+    // attaching an own-property to `mongoose.connection` for the duration of
+    // the test (and delete it in an afterEach).
+    const withMongooseConnected = (state: number) => {
+      Object.defineProperty(mongoose.connection, 'readyState', {
+        configurable: true,
+        get: () => state,
+      })
+    }
+    afterEach(() => {
+      try {
+        delete (mongoose.connection as any).readyState
+      } catch {
+        // ignore — property may not be set on this particular run
+      }
+    })
+
+    it('should populate citationData for ALL messages when DB is connected (follow-up fix)', async () => {
+      const oldCitationId = new mongoose.Types.ObjectId()
+      const newCitationId = new mongoose.Types.ObjectId()
+      const conversationId = new mongoose.Types.ObjectId()
+
+      // Simulate what Mongoose returns after `.populate('messages.citations.citationId')`:
+      // every citationId is replaced with the full Citation document.
+      const populatedConversation = {
+        _id: conversationId,
+        messages: [
+          {
+            messageType: 'bot_response',
+            content: 'Old answer',
+            citations: [
+              {
+                citationId: {
+                  _id: oldCitationId,
+                  content: 'Old chunk',
+                  chunkIndex: 0,
+                  citationType: 'document',
+                  metadata: { recordId: 'old-rec' },
+                },
+              },
+            ],
+          },
+          {
+            messageType: 'bot_response',
+            content: 'New answer',
+            citations: [
+              {
+                citationId: {
+                  _id: newCitationId,
+                  content: 'New chunk',
+                  chunkIndex: 0,
+                  citationType: 'document',
+                  metadata: { recordId: 'new-rec' },
+                },
+              },
+            ],
+          },
+        ],
+      }
+
+      const findByIdChain: any = {
+        populate: sinon.stub().returnsThis(),
+        session: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(populatedConversation),
+      }
+      sinon.stub(Conversation, 'findById').returns(findByIdChain)
+
+      // Force the helper to take the DB-connected branch without requiring
+      // an actual Mongo connection. `readyState` is a getter, so stub the
+      // property descriptor directly.
+      withMongooseConnected(1)
+
+      // The "fresh" conversation object the caller would pass in (pre-populate,
+      // citationId is still an ObjectId). This is the fallback that's used
+      // when the DB branch is not taken.
+      const freshConversationObject = {
+        _id: conversationId,
+        messages: [
+          {
+            messageType: 'bot_response',
+            content: 'Old answer',
+            citations: [{ citationId: oldCitationId }],
+          },
+          {
+            messageType: 'bot_response',
+            content: 'New answer',
+            citations: [{ citationId: newCitationId }],
+          },
+        ],
+      } as any
+
+      // Only the newly-created citation is in fallbackCitations — this is
+      // exactly the case that used to wipe `citationData` on the old message
+      // before the fix.
+      const newCitationDoc: any = {
+        _id: newCitationId,
+        content: 'New chunk',
+        chunkIndex: 0,
+        citationType: 'document',
+      }
+
+      const result: any = await attachPopulatedCitations(
+        conversationId,
+        freshConversationObject,
+        [newCitationDoc],
+        false,
+        null,
+      )
+
+      // The DB-connected branch should replace the pre-populate conversation
+      // with the populated one, so BOTH the old and new messages have their
+      // citationData filled in from the Citation documents.
+      expect(findByIdChain.populate.calledOnce).to.be.true
+      expect(result.messages).to.have.lengthOf(2)
+
+      expect(result.messages[0].citations[0].citationId.toString()).to.equal(
+        oldCitationId.toString(),
+      )
+      expect(result.messages[0].citations[0].citationData).to.exist
+      expect(result.messages[0].citations[0].citationData.content).to.equal(
+        'Old chunk',
+      )
+
+      expect(result.messages[1].citations[0].citationId.toString()).to.equal(
+        newCitationId.toString(),
+      )
+      expect(result.messages[1].citations[0].citationData).to.exist
+      expect(result.messages[1].citations[0].citationData.content).to.equal(
+        'New chunk',
+      )
+    })
+
+    it('should fall back to fallbackCitations when DB is not connected', async () => {
+      const newCitationId = new mongoose.Types.ObjectId()
+      const unknownCitationId = new mongoose.Types.ObjectId()
+      const conversationId = new mongoose.Types.ObjectId()
+
+      // Not connected — helper must NOT hit the DB.
+      withMongooseConnected(0)
+      const findByIdStub = sinon.stub(Conversation, 'findById')
+
+      const freshConversationObject = {
+        _id: conversationId,
+        messages: [
+          {
+            messageType: 'bot_response',
+            citations: [
+              { citationId: newCitationId },
+              { citationId: unknownCitationId },
+            ],
+          },
+        ],
+      } as any
+
+      const newCitationDoc: any = {
+        _id: newCitationId,
+        content: 'New chunk',
+      }
+
+      const result: any = await attachPopulatedCitations(
+        conversationId,
+        freshConversationObject,
+        [newCitationDoc],
+        false,
+        null,
+      )
+
+      expect(findByIdStub.called).to.be.false
+      // Known (newly-created) citation is populated from fallbackCitations.
+      expect(result.messages[0].citations[0].citationData).to.exist
+      expect(result.messages[0].citations[0].citationData.content).to.equal(
+        'New chunk',
+      )
+      // Unknown citation gets undefined citationData (fallback can't resolve it).
+      expect(result.messages[0].citations[1].citationData).to.be.undefined
+    })
+
+    it('should use AgentConversation model when isAgent is true', async () => {
+      const citationId = new mongoose.Types.ObjectId()
+      const conversationId = new mongoose.Types.ObjectId()
+
+      const findByIdChain: any = {
+        populate: sinon.stub().returnsThis(),
+        session: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves({
+          _id: conversationId,
+          messages: [
+            {
+              messageType: 'bot_response',
+              citations: [
+                {
+                  citationId: {
+                    _id: citationId,
+                    content: 'Agent chunk',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      }
+      const conversationFindById = sinon.stub(Conversation, 'findById')
+      const agentFindById = sinon
+        .stub(AgentConversation, 'findById')
+        .returns(findByIdChain)
+      withMongooseConnected(1)
+
+      const freshConversationObject = {
+        _id: conversationId,
+        messages: [
+          {
+            messageType: 'bot_response',
+            citations: [{ citationId }],
+          },
+        ],
+      } as any
+
+      const result: any = await attachPopulatedCitations(
+        conversationId,
+        freshConversationObject,
+        [{ _id: citationId, content: 'Agent chunk' } as any],
+        true,
+        null,
+      )
+
+      expect(agentFindById.calledOnce).to.be.true
+      expect(conversationFindById.called).to.be.false
+      expect(result.messages[0].citations[0].citationData.content).to.equal(
+        'Agent chunk',
+      )
+    })
+
+    it('should fall back gracefully when the populate query throws', async () => {
+      const citationId = new mongoose.Types.ObjectId()
+      const conversationId = new mongoose.Types.ObjectId()
+
+      const findByIdChain: any = {
+        populate: sinon.stub().returnsThis(),
+        session: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().rejects(new Error('DB buffering timed out')),
+      }
+      sinon.stub(Conversation, 'findById').returns(findByIdChain)
+      withMongooseConnected(1)
+
+      const freshConversationObject = {
+        _id: conversationId,
+        messages: [
+          {
+            messageType: 'bot_response',
+            citations: [{ citationId }],
+          },
+        ],
+      } as any
+
+      const result: any = await attachPopulatedCitations(
+        conversationId,
+        freshConversationObject,
+        [{ _id: citationId, content: 'Fallback chunk' } as any],
+        false,
+        null,
+      )
+
+      expect(result.messages[0].citations[0].citationData).to.exist
+      expect(result.messages[0].citations[0].citationData.content).to.equal(
+        'Fallback chunk',
+      )
+    })
+
+    it('should pass the session to the populate query when provided', async () => {
+      const citationId = new mongoose.Types.ObjectId()
+      const conversationId = new mongoose.Types.ObjectId()
+
+      const findByIdChain: any = {
+        populate: sinon.stub().returnsThis(),
+        session: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves({
+          _id: conversationId,
+          messages: [],
+        }),
+      }
+      sinon.stub(Conversation, 'findById').returns(findByIdChain)
+      withMongooseConnected(1)
+
+      const fakeSession: any = { id: 's1' }
+
+      await attachPopulatedCitations(
+        conversationId,
+        { _id: conversationId, messages: [] } as any,
+        [],
+        false,
+        fakeSession,
+      )
+
+      expect(findByIdChain.session.calledOnceWithExactly(fakeSession)).to.be
+        .true
     })
   })
 })

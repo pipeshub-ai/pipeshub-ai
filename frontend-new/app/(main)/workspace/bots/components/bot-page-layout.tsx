@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Grid, Heading, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceHeaderIconButton } from '../../components';
 import type { SlackBotConfig, AgentOption } from '../types';
 import { BotCard } from './bot-card';
@@ -34,6 +36,7 @@ export function BotPageLayout({
   onRefresh,
   onManage,
 }: BotPageLayoutProps) {
+  const { t } = useTranslation();
   const agentMap = new Map(agents.map((a) => [a.id, a.name]));
   return (
     <Flex
@@ -54,10 +57,10 @@ export function BotPageLayout({
       <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
         <Flex direction="column" gap="2" style={{ flex: 1 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Bots
+            {t('workspace.bots.title')}
           </Heading>
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            Configure bot credentials and optionally map each bot to an agent
+            {t('workspace.bots.subtitle')}
           </Text>
         </Flex>
 
@@ -73,10 +76,8 @@ export function BotPageLayout({
 
       {/* ── Content ── */}
       {isLoading ? (
-        <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            Loading bots…
-          </Text>
+        <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
+          <LottieLoader variant="loader" size={48} showLabel label={t('workspace.bots.loading')} />
         </Flex>
       ) : configs.length === 0 ? (
         <EmptyState onAdd={onCreateBot} />
@@ -89,7 +90,7 @@ export function BotPageLayout({
           {configs.map((config) => {
             const isDefault = !config.agentId || config.agentId === DEFAULT_ASSISTANT_ID;
             const agentName = isDefault
-              ? 'Default Assistant'
+              ? t('workspace.bots.defaultAssistant')
               : agentMap.get(config.agentId!) ?? config.agentId;
             return (
               <BotCard
@@ -112,6 +113,7 @@ export function BotPageLayout({
 // ========================================
 
 function CreateBotButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -129,7 +131,7 @@ function CreateBotButton({ onClick }: { onClick: () => void }) {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        height: 32,
+        height: 'var(--space-8)',
         padding: '0 12px',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-10)' : 'var(--accent-9)',
@@ -139,13 +141,45 @@ function CreateBotButton({ onClick }: { onClick: () => void }) {
     >
       <MaterialIcon name="add" size={16} color="white" />
       <span style={{ fontSize: 14, fontWeight: 500, color: 'white' }}>
-        Create Bot
+        {t('workspace.bots.createBot')}
       </span>
     </button>
   );
 }
 
+function IconButton({ icon, onClick }: { icon: string; onClick: () => void }) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        appearance: 'none',
+        margin: 0,
+        padding: 0,
+        border: '1px solid var(--gray-a4)',
+        outline: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 'var(--space-8)',
+        height: 'var(--space-8)',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: isHovered ? 'var(--gray-a3)' : 'transparent',
+        cursor: 'pointer',
+        transition: 'background-color 150ms ease',
+      }}
+    >
+      <MaterialIcon name={icon} size={16} color="var(--gray-11)" />
+    </button>
+  );
+}
+
 function EmptyState({ onAdd }: { onAdd: () => void }) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -158,10 +192,10 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
     >
       <MaterialIcon name="smart_toy" size={48} color="var(--gray-9)" />
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-        No Bots
+        {t('workspace.bots.noBots')}
       </Text>
       <Text size="2" style={{ color: 'var(--gray-11)' }}>
-        Setup your first Bot now
+        {t('workspace.bots.setupFirstBot')}
       </Text>
       <button
         type="button"
@@ -171,14 +205,14 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         style={{
           appearance: 'none',
           margin: 0,
-          marginTop: 8,
+          marginTop: 'var(--space-2)',
           font: 'inherit',
           outline: 'none',
           border: 'none',
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          height: 36,
+          height: 'var(--space-9)',
           padding: '0 16px',
           borderRadius: 'var(--radius-2)',
           backgroundColor: isHovered ? 'var(--accent-10)' : 'var(--accent-9)',
@@ -188,7 +222,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       >
         <MaterialIcon name="add" size={16} color="white" />
         <span style={{ fontSize: 14, fontWeight: 500, color: 'white' }}>
-          Add a Bot
+          {t('workspace.bots.addBot')}
         </span>
       </button>
     </Flex>

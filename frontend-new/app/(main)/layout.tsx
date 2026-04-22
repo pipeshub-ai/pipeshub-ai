@@ -28,6 +28,10 @@ import { useAuthStore } from "@/lib/store/auth-store"
 import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
+import { HealthGate } from '@/app/components/ui/health-gate'
+import { AuthHydrator } from '@/lib/store/auth-hydrator'
+import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
+import { FullNameDialog } from './components/full-name-dialog'
 
 export default function RootLayout({
   children,
@@ -51,7 +55,7 @@ export default function RootLayout({
   }, [language])
 
   useEffect(() => {
-    document.title = "PipesHub"
+    document.title = "Pipeshub AI"
   }, [])
 
   const currentLang = mounted ? language : 'en'
@@ -67,13 +71,14 @@ export default function RootLayout({
       <head>
         <ThemeScript />
         <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
+          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
           rel="stylesheet"
         />
       </head>
       <body>
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
+            <AuthHydrator />
             {/* Landscape block — pure CSS visibility, no JS */}
             <div className="landscape-block-overlay">
               <MaterialIcon name="screen_rotation" size={48} color="var(--gray-11)" />
@@ -82,10 +87,15 @@ export default function RootLayout({
               </Text>
             </div>
             <AuthGuard>
-              <AppLayout sidebar={sidebar}>
-                {children}
-              </AppLayout>
+              <HealthGate>
+                <AppLayout sidebar={sidebar}>
+                  {children}
+                </AppLayout>
+              </HealthGate>
             </AuthGuard>
+            {/* ToastContainer must live outside HealthGate so toasts render
+                during the blocking health-check loading screen too. */}
+            <ToastContainer />
           </ThemeProvider>
         </I18nextProvider>
       </body>
@@ -109,6 +119,19 @@ function AppLayout({
   const openMobileSidebar = useMobileSidebarStore((s) => s.open)
   const isMobile = useIsMobile()
 
+  // ── Full-name guard ────────────────────────────────────────────────────────
+  const profile = useUserStore((s) => s.profile)
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized)
+  const updateProfile = useUserStore((s) => s.updateProfile)
+
+  const showFullNameDialog =
+    isProfileInitialized && (!profile?.fullName || profile.fullName.trim() === '')
+
+  const handleFullNameSuccess = (savedFullName: string) => {
+    updateProfile({ fullName: savedFullName })
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   // ── Onboarding gate ────────────────────────────────────────────────────────
   useEffect(() => {
     // 0. Already on the onboarding page — bail out to prevent an infinite redirect loop
@@ -122,11 +145,9 @@ function AppLayout({
     }
 
     // 2. Call the API and decide
-    const forceActive = process.env.NEXT_PUBLIC_FORCE_ONBOARDING_ACTIVE === 'true'
-
     getOnboardingStatus()
       .then(({ status }) => {
-        if (status === 'notConfigured' || forceActive) {
+        if (status === 'notConfigured') {
           setOnboardingActive(true)
           router.replace('/onboarding')
         }
@@ -199,6 +220,7 @@ function AppLayout({
           )}
           <Box
             key="app-main-scroll"
+            data-app-main-scroll
             className="no-scrollbar"
             style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
           >
@@ -207,7 +229,12 @@ function AppLayout({
         </Flex>
 
         <UploadProgressTracker key="upload-progress-tracker" />
-        <ToastContainer key="toast-container" />
+        {/* Full-name guard — blocks access until the user sets their full name */}
+        <FullNameDialog
+          key="full-name-dialog"
+          open={showFullNameDialog}
+          onSuccess={handleFullNameSuccess}
+        />
         {/* User background survey — shown once after login/onboarding */}
         <UserBackgroundSurvey key="user-background-survey" />
         {/* Onboarding tour card — bottom-left corner, guides new users through first steps.

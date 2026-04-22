@@ -1,11 +1,16 @@
 import builtins
+import os
+import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
-
+from jinja2 import Template
+from app.modules.qna.prompt_templates import (
+    agent_block_group_prompt,
+)
 from pydantic import BaseModel, Field
-
+from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -23,6 +28,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+
+class LlmTextContent(BaseModel):
+    """A single LLM message-content item produced by ``to_llm_full_context``."""
+
+    type: Literal["text"]
+    text: str
+
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
@@ -79,6 +92,8 @@ class RecordType(str, Enum):
     DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
+    ARTIFACT = "ARTIFACT"
+    CODE_FILE = "CODE_FILE"
     OTHERS = "OTHERS"
 
 
@@ -372,6 +387,129 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def to_llm_full_context(self) -> list[LlmTextContent]:
+        """
+        Convert a record JSON object to message content format matching get_message_content.
+
+        Args:
+            record: The record JSON object containing block_containers and other metadata
+            ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
+
+        Returns:
+            Tuple of (content list, ref_mapper)
+        """
+
+        try:
+            from app.utils.chat_helpers import valid_group_labels, build_group_blocks
+
+            content: list[LlmTextContent] = []
+            context_metadata = f"record/{self.id}"
+            content.append(LlmTextContent(
+                type="text",
+                text=f"""<record>\n{context_metadata}
+    Record blocks (sorted):\n\n""",
+            ))
+            # Process blocks
+            block_containers = self.block_containers
+            blocks = block_containers.blocks
+            block_groups = block_containers.block_groups
+
+            # build_group_blocks (in chat_helpers) expects plain dicts, not Pydantic models
+            blocks_as_dicts = [b.model_dump() for b in blocks]
+            block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
+
+            seen_block_groups = set()
+            for block in blocks:
+                block_type = block.type.value if block.type else None
+
+                data = block.data or ""
+
+                if block_type == BlockType.IMAGE.value:
+                    continue
+                elif block_type == BlockType.TEXT.value and block.parent_index is None:
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
+                elif block_type == BlockType.TABLE_ROW.value:
+                    block_group_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    if block_group_index is not None:
+                        corresponding_block_group = block_groups[block_group_index]
+
+                        block_type = corresponding_block_group.type.value if corresponding_block_group.type else None
+                        data = corresponding_block_group.data or {}
+
+                        if block_type == GroupType.TABLE.value:
+                            children = corresponding_block_group.children
+                            rows_to_be_included_list = []
+                            if children:
+                                for range_obj in children.block_ranges:
+                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
+
+                            child_results = []
+                            for row_index in rows_to_be_included_list:
+                                if row_index < len(blocks):
+                                    row_block = blocks[row_index]
+                                    block_data = row_block.data
+                                    if isinstance(block_data, dict):
+                                        row_text = block_data.get("row_natural_language_text", "")
+                                    else:
+                                        row_text = str(block_data or "")
+
+                                    child_results.append({
+                                        "content": row_text
+                                    })
+
+                            if child_results:
+                                template = Template(agent_block_group_prompt)
+                                rendered_form = template.render(
+                                    block_group_index=block_group_index,
+                                    label=GroupType.TABLE.value,
+                                    blocks=child_results,
+                                )
+                                content.append(LlmTextContent(
+                                    type="text",
+                                    text=f"{rendered_form}\n\n",
+                                ))
+                elif block.parent_index is not None:
+                    parent_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    template = Template(agent_block_group_prompt)
+                    if parent_index >= len(block_groups):
+                        continue
+                    block_group = block_groups[parent_index]
+                    block_group_type = block_group.type.value if block_group.type else None
+                    if block_group_type not in valid_group_labels:
+                        continue
+
+                    virtual_record_id = self.virtual_record_id or ""
+                    group_blocks = build_group_blocks(block_groups_as_dicts, blocks_as_dicts, parent_index, virtual_record_id, self.to_kafka_record(), {})
+
+                    if not group_blocks:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    rendered_form = template.render(
+                        block_group_index=parent_index,
+                        label=block_group_type,
+                        blocks=group_blocks,
+                    )
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"{rendered_form}\n\n",
+                    ))
+                else:
+                    continue
+
+            return content
+        except Exception as e:
+            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {
@@ -1609,15 +1747,16 @@ class SharePointPageRecord(Record):
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
-    assignee: list[str] | None= Field(default_factory=list)
+    assignee: list[str] | None = Field(default_factory=list)
     assignee_email: list[str] | None = Field(default_factory=list)
     creator_email: str | None = None
-    creator_name: str | None =None
-    review_email:list[str] | None = Field(default_factory=list)
+    creator_name: str | None = None
+    review_email: list[str] | None = Field(default_factory=list)
     review_name: list[str] | None = Field(default_factory=list)
-    mergeable:str | None=None
-    merged_by:str | None=None
-    labels:list[str] | None = Field(default_factory=list)
+    mergeable: str | None = None
+    merged_by: str | None = None
+    labels: list[str] | None = Field(default_factory=list)
+    last_commit_sha: str | None = Field(default=None)
 
     def to_kafka_record(self) -> dict:
         return {
@@ -1634,6 +1773,7 @@ class PullRequestRecord(Record):
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "lastCommitSha": self.last_commit_sha,
         }
     def to_arango_record(self) -> dict:
         return {
@@ -1649,7 +1789,112 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "lastCommitSha": self.last_commit_sha,
         }
+
+class LifecycleStatus(str, Enum):
+    """Lifecycle status of the artifact"""
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    ARCHIVED = "ARCHIVED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ArtifactType(str, Enum):
+    """Type of artifact produced by sandbox code execution."""
+    CODE_OUTPUT = "CODE_OUTPUT"
+    CHART = "CHART"
+    DOCUMENT = "DOCUMENT"
+    IMAGE = "IMAGE"
+    SPREADSHEET = "SPREADSHEET"
+    PRESENTATION = "PRESENTATION"
+    DATA_FILE = "DATA_FILE"
+    OTHER = "OTHER"
+
+
+class ArtifactRecord(Record):
+    """Record class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
+    lifecycle_status: LifecycleStatus = Field(description="Lifecycle status of the artifact", default=LifecycleStatus.PUBLISHED)
+    artifact_type: ArtifactType = Field(default=ArtifactType.OTHER, description="Type of artifact")
+    source_tool: str | None = Field(default=None, description="Tool that generated this artifact (e.g. coding_sandbox.execute_python)")
+    conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
+    is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
+    expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+
+    def to_arango_artifact_record(self) -> dict:
+        """Return artifact sub-record for the ``artifacts`` collection."""
+        _, ext = os.path.splitext(self.record_name) if self.record_name else ("", "")
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "extension": ext.lstrip(".") if ext else None,
+            "mimeType": self.mime_type,
+            "sizeInBytes": self.size_in_bytes,
+            "description": self.description,
+            "lifecycleStatus": self.lifecycle_status.value,
+            "artifactType": self.artifact_type.value,
+            "sourceTool": self.source_tool,
+            "conversationId": self.conversation_id,
+            "isTemporary": self.is_temporary,
+            "expiresAt": self.expires_at,
+        }
+
+    @staticmethod
+    def from_arango_record(artifact_doc: dict, record_doc: dict) -> "ArtifactRecord":
+        """Create ArtifactRecord from ArangoDB documents (records + artifacts collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.CODING_SANDBOX
+        except ValueError:
+            connector_name = Connectors.CODING_SANDBOX
+
+        lifecycle_raw = artifact_doc.get("lifecycleStatus")
+        try:
+            lifecycle = LifecycleStatus(lifecycle_raw) if lifecycle_raw else LifecycleStatus.PUBLISHED
+        except ValueError:
+            lifecycle = LifecycleStatus.PUBLISHED
+
+        artifact_type_raw = artifact_doc.get("artifactType")
+        try:
+            artifact_type = ArtifactType(artifact_type_raw) if artifact_type_raw else ArtifactType.OTHER
+        except ValueError:
+            artifact_type = ArtifactType.OTHER
+
+        return ArtifactRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType"),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            size_in_bytes=record_doc.get("sizeInBytes"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            hide_weburl=record_doc.get("hideWeburl", False),
+            description=artifact_doc.get("description", ""),
+            lifecycle_status=lifecycle,
+            artifact_type=artifact_type,
+            source_tool=artifact_doc.get("sourceTool"),
+            conversation_id=artifact_doc.get("conversationId"),
+            is_temporary=artifact_doc.get("isTemporary", False),
+            expires_at=artifact_doc.get("expiresAt"),
+        )
 
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
@@ -1711,6 +1956,70 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
         )
+
+class ArtifactsRecordGroup(RecordGroup):
+    """Record group class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
+
+class CodeFileRecord(Record):
+    """Record class for Code Files"""
+
+    file_path: str | None = None
+    file_hash: str | None = None
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "filePath": self.file_path,
+            "fileHash": self.file_hash,
+        }
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "filePath": self.file_path,
+            "fileHash": self.file_hash,
+        }
+
+    @staticmethod
+    def from_arango_record(
+        arango_base_code_file_record: dict, arango_base_record: dict
+    ) -> "CodeFileRecord":
+        """Create CodeFileRecord from ArangoDB documents (records + codeFiles collections)"""
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+        return CodeFileRecord(
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
+            org_id=arango_base_record["orgId"],
+            record_name=arango_base_record["recordName"],
+            record_type=RecordType(arango_base_record["recordType"]),
+            external_record_id=arango_base_record["externalRecordId"],
+            file_path=arango_base_code_file_record.get("filePath"),
+            file_hash=arango_base_code_file_record.get("fileHash"),
+            origin=OriginTypes(arango_base_record["origin"]),
+            connector_name=connector_name,
+            connector_id=arango_base_record.get("connectorId"),
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=arango_base_record.get("webUrl"),
+        )
+
 
 class Anyone(BaseModel):
     id: str = Field(description="Unique identifier for the anyone", default_factory=lambda: str(uuid4()))

@@ -15,7 +15,7 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -26,6 +26,8 @@ import {
   type StatusMessage,
   type ModelOverride,
   type SSEConnectedEvent,
+  type ChatArtifact,
+  type SSEArtifactEvent,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -64,7 +66,9 @@ function statusMessageRestreaming(): StatusMessage {
  *
  * @param slotId  — stable slot key in the store dictionary
  * @param query   — user's plain-text question
- * @param request — full StreamChatRequest (model, chatMode, filters, etc.)
+ * @param request — full StreamChatRequest (model, chatMode, filters, etc.). For **agent**
+ *   streams, `ChatApi.streamMessage` always sends `filters: { apps, kb }` and `tools: [...]`
+ *   — empty arrays mean no knowledge / no tools (same explicit contract).
  */
 export async function streamMessageForSlot(
   slotId: string,
@@ -87,8 +91,8 @@ export async function streamMessageForSlot(
     streamingCitationMaps: null,
     abortController,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
-    ...(request.agentId && (request.agentStreamTools?.length ?? 0) > 0
-      ? { agentStreamTools: [...request.agentStreamTools!] }
+    ...(request.agentId
+      ? { agentStreamTools: [...(request.agentStreamTools ?? [])] }
       : {}),
     messages: [
       ...slot.messages,
@@ -222,6 +226,24 @@ export async function streamMessageForSlot(
         scheduleFlush();
       },
 
+      onArtifact: (data: SSEArtifactEvent) => {
+        const artifact: ChatArtifact = {
+          id: data.artifactId || `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          fileName: data.fileName,
+          mimeType: data.mimeType,
+          sizeBytes: data.sizeBytes ?? 0,
+          downloadUrl: data.downloadUrl,
+          artifactType: data.artifactType ?? 'OTHER',
+          recordId: data.recordId,
+        };
+        const currentSlot = useChatStore.getState().slots[slotId];
+        if (currentSlot) {
+          useChatStore.getState().updateSlot(slotId, {
+            artifacts: [...currentSlot.artifacts, artifact],
+          });
+        }
+      },
+
       onComplete: (data) => {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         const conv = data.conversation as { _id?: string; id?: string };
@@ -237,6 +259,7 @@ export async function streamMessageForSlot(
           currentStatusMessage: null,
           streamingCitationMaps: null,
           pendingCollections: [],
+          artifacts: [],
           messages: finalMessages,
           hasLoaded: true,
           abortController: null,
@@ -372,9 +395,14 @@ export async function streamRegenerateForSlot(
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
 
-  // Resolve model: explicit override → store's selectedModel → defaultModel (from API)
+  // Resolve model: explicit override → context-scoped selection/default.
+  // Context is the slot's own agent (so regenerate for an agent thread
+  // always picks from that agent's models, never leaks assistant choices).
+  const regenCtxKey = ctxKeyFromAgent(slot.threadAgentId ?? null);
   const resolvedModel: ModelOverride =
-    modelOverride ?? store.settings.selectedModel ?? store.settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
+    modelOverride
+      ?? getEffectiveModel(regenCtxKey)
+      ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
 
   const abortController = new AbortController();
 
@@ -562,7 +590,14 @@ export async function streamRegenerateForSlot(
         }
       );
     } else {
-      await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, resolvedModel);
+      const { chatMode } = buildStreamRequestModeFields(store.settings);
+      await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
+        modelKey: resolvedModel.modelKey,
+        modelName: resolvedModel.modelName,
+        modelFriendlyName: resolvedModel.modelFriendlyName,
+        chatMode,
+        filters: store.settings.filters,
+      });
     }
   } catch (error) {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }

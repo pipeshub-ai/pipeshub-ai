@@ -67,6 +67,7 @@ export const ShareCommonApi = {
     const users = Array.isArray(data) ? data : data.users ?? [];
     return users.map((u: Record<string, unknown>) => ({
       id: u.id as string,
+      uuid: u.id as string,
       name: (u.name as string) ?? '',
       email: (u.email as string) ?? undefined,
       avatarUrl: (u.avatarUrl as string) || undefined,
@@ -84,6 +85,7 @@ export const ShareCommonApi = {
     const users = Array.isArray(data) ? data : data.users ?? [];
     return users.map((u: Record<string, unknown>) => ({
       id: u.id as string,
+      uuid: u.id as string,
       name: (u.name as string) ?? (u.fullName as string) ?? '',
       email: (u.email as string) ?? undefined,
       avatarUrl: (u.avatarUrl as string) || undefined,

@@ -300,6 +300,30 @@ file_record_schema = {
     "message": "Document does not match the file record schema.",
 }
 
+artifact_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "extension": {"type": ["string", "null"]},
+            "mimeType": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
+            "description": {"type": ["string", "null"]},
+            "lifecycleStatus": {"type": ["string", "null"]},
+            "artifactType": {"type": ["string", "null"]},
+            "sourceTool": {"type": ["string", "null"]},
+            "conversationId": {"type": ["string", "null"]},
+            "isTemporary": {"type": ["boolean", "null"]},
+            "expiresAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "orgId"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the artifact record schema.",
+}
+
 drive_record_schema = {
     "rule": {
         "type": "object",
@@ -500,6 +524,20 @@ pull_request_record_schema = {
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
+            "lastCommitSha": {"type": ["string", "null"]},
+        },
+    },
+}
+
+code_file_record_schema={
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "filePath": {"type": "string", "minLength": 0},
+            "fileHash": {"type": "string", "minLength": 0},
         },
     },
 }

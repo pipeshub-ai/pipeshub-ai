@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type {
@@ -37,6 +38,7 @@ export function WebSearchProviderRow({
   onToggle,
   onConfigure,
 }: WebSearchProviderRowProps) {
+  const { t } = useTranslation();
   const isConfigurable = meta.configurable;
   const isConfigured = isConfigurable
     ? configStatus[state.type] ?? false
@@ -49,10 +51,10 @@ export function WebSearchProviderRow({
   if (isEditing) {
     if (isConfigurable && !isConfigured) {
       toggleDisabled = true;
-      disabledReason = 'Configure this provider first before enabling it.';
+      disabledReason = t('workspace.webSearch.disabledReasonConfigure');
     } else if (!state.enabled && anotherProviderEnabled) {
       toggleDisabled = true;
-      disabledReason = 'Disable the currently active provider before enabling this one.';
+      disabledReason = t('workspace.webSearch.disabledReasonActive');
     }
   }
 
@@ -61,21 +63,21 @@ export function WebSearchProviderRow({
     if (state.enabled && state.isDefault) {
       return (
         <Badge color="blue" variant="soft" size="1">
-          Default
+          {t('workspace.webSearch.badges.default')}
         </Badge>
       );
     }
     if (state.enabled) {
       return (
         <Badge color="green" variant="soft" size="1">
-          Active
+          {t('workspace.webSearch.badges.active')}
         </Badge>
       );
     }
     if (isConfigurable) {
       return (
         <Badge color={isConfigured ? 'green' : 'orange'} variant="soft" size="1">
-          {isConfigured ? 'Configured' : 'Not Configured'}
+          {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
         </Badge>
       );
     }
@@ -88,9 +90,9 @@ export function WebSearchProviderRow({
       gap="3"
       style={{
         padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        background: 'var(--olive-2)',
       }}
     >
       {/* Icon */}
@@ -98,8 +100,8 @@ export function WebSearchProviderRow({
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
+          width: 'var(--space-9)',
+          height: 'var(--space-9)',
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--slate-3)',
           flexShrink: 0,
@@ -142,7 +144,7 @@ export function WebSearchProviderRow({
         {renderBadges()}
 
         {isConfigurable && (
-          <Tooltip content="Configure">
+          <Tooltip content={t('workspace.webSearch.configureTip')}>
             <IconButton
               variant="ghost"
               color="gray"

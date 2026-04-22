@@ -2,9 +2,11 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // File type to MIME type mapping
 const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
@@ -21,11 +23,10 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   PPTX: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
   CSV: ['text/csv'],
   JSON: ['application/json'],
-  MD: ['text/markdown'],
+  MD: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
+  MARKDOWN: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
+  MDX: ['text/mdx', 'text/markdown', 'text/plain'],
 };
-
-const MAX_FILE_SIZE_MB = 30;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 interface ReplaceFileDialogProps {
   open: boolean;
@@ -53,12 +54,23 @@ export function ReplaceFileDialog({
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCurrentFileHovered, setIsCurrentFileHovered] = useState(false);
   const [isReplacementFileHovered, setIsReplacementFileHovered] = useState(false);
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Get accepted MIME types based on current file type
   const fileType = item?.extension?.toUpperCase() || 'PDF';
   const acceptedMimeTypes = FILE_TYPE_MIME_MAP[fileType] || FILE_TYPE_MIME_MAP['PDF'];
 
+  // Some browsers/OSes report an empty MIME for uncommon text formats (e.g. .md, .mdx),
+  // so fall back to matching the file extension against the item's extension when needed.
+  const isAcceptedFile = useCallback(
+    (file: File): boolean => {
+      if (acceptedMimeTypes.includes(file.type)) return true;
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      return ext === fileType.toLowerCase();
+    },
+    [acceptedMimeTypes, fileType]
+  );
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
@@ -88,12 +100,12 @@ export function ReplaceFileDialog({
       const files = e.dataTransfer.files;
       if (files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && acceptedMimeTypes.includes(file.type)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
     },
-    [acceptedMimeTypes]
+    [isAcceptedFile]
   );
 
   const handleClick = useCallback(() => {
@@ -105,13 +117,13 @@ export function ReplaceFileDialog({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && acceptedMimeTypes.includes(file.type)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
       e.target.value = '';
     },
-    [acceptedMimeTypes]
+    [isAcceptedFile]
   );
 
   const handleSave = useCallback(() => {
@@ -169,7 +181,7 @@ export function ReplaceFileDialog({
           align="center"
           justify="between"
           style={{
-            padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
@@ -198,7 +210,7 @@ export function ReplaceFileDialog({
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            padding: '16px',
+            padding: 'var(--space-4)',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(25px)',
           }}
@@ -211,7 +223,7 @@ export function ReplaceFileDialog({
               </Text>
               <Box
                 style={{
-                  padding: '4px 12px',
+                  padding: 'var(--space-1) var(--space-3)',
                   backgroundColor: 'var(--slate-1)',
                   borderRadius: 'var(--radius-2)',
                   border: '1px solid var(--olive-3)',
@@ -314,7 +326,7 @@ export function ReplaceFileDialog({
                   Replace File
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  You can upload files up to the limit of {MAX_FILE_SIZE_MB} MB
+                  You can upload files up to the limit of {maxFileSizeMB} MB
                 </Text>
               </Flex>
               <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
@@ -327,7 +339,7 @@ export function ReplaceFileDialog({
                   onMouseEnter={() => setIsReplacementFileHovered(true)}
                   onMouseLeave={() => setIsReplacementFileHovered(false)}
                   style={{
-                    padding: '12px',
+                    padding: 'var(--space-3)',
                     backgroundColor: isReplacementFileHovered ? 'var(--slate-3)' : 'var(--slate-2)',
                     borderRadius: 'var(--radius-2)',
                     border: '1px solid var(--slate-5)',
@@ -402,7 +414,7 @@ export function ReplaceFileDialog({
                     border: `1px dashed ${isDragOver ? 'var(--accent-9)' : 'var(--slate-7)'}`,
                     borderRadius: 'var(--radius-2)',
                     background: isDragOver ? 'var(--accent-a2)' : 'rgba(255, 255, 255, 0.00)',
-                    padding: '32px',
+                    padding: 'var(--space-8)',
                     cursor: 'pointer',
                     transition: 'all 0.15s ease',
                     flex: 1,
@@ -415,7 +427,7 @@ export function ReplaceFileDialog({
                     ref={inputRef}
                     type="file"
                     style={{ display: 'none' }}
-                    accept={acceptedMimeTypes.join(',')}
+                    accept={[...acceptedMimeTypes, `.${fileType.toLowerCase()}`].join(',')}
                     onChange={handleInputChange}
                   />
                   <Flex direction="column" align="center" gap="1">
@@ -463,15 +475,17 @@ export function ReplaceFileDialog({
           >
             Cancel
           </Button>
-          <Button
+          <LoadingButton
             variant={isSaveDisabled ? 'soft' : 'solid'}
             size="2"
             onClick={handleSave}
-            disabled={isSaveDisabled}
+            disabled={!replacementFile}
+            loading={isReplacing}
+            loadingLabel="Saving..."
             style={{backgroundColor: isSaveDisabled ? 'var(--slate-a3)' : 'var(--emerald-10)'}}
           >
-            {isReplacing ? 'Saving...' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

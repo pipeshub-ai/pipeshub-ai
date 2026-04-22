@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 // ========================================
 // Types
@@ -17,6 +18,8 @@ export interface BulkAction {
   icon: string;
   /** Visual variant — 'danger' renders red/destructive styling */
   variant?: 'default' | 'danger';
+  /** Whether this action is disabled */
+  disabled?: boolean;
   /** Async handler called when button is clicked */
   onClick: () => void | Promise<void>;
 }
@@ -72,7 +75,7 @@ export function EntityBulkActionBar({
       gap="3"
       style={{
         position: 'absolute',
-        bottom: '8px',
+        bottom: 'var(--space-2)',
         left: '50%',
         transform: 'translateX(-50%)',
         backgroundColor: 'var(--slate-2)',
@@ -95,28 +98,33 @@ export function EntityBulkActionBar({
       {actions.map((action) => {
         const isDanger = action.variant === 'danger';
         const isLoading = loadingKey === action.key;
+        const isDisabled = action.disabled || isLoading || (loadingKey !== null && loadingKey !== action.key);
 
-        return (
+        const iconColor = isDanger && !isDisabled ? 'white' : 'var(--slate-12)';
+        const button = (
           <Button
             key={action.key}
             size="1"
             variant={isDanger ? 'solid' : 'soft'}
             color={isDanger ? 'red' : 'gray'}
-            disabled={isLoading || (loadingKey !== null && loadingKey !== action.key)}
+            disabled={isDisabled}
             onClick={() => handleClick(action)}
             style={{
-              cursor: isLoading ? 'wait' : 'pointer',
+              cursor: isDisabled ? 'not-allowed' : isLoading ? 'wait' : 'pointer',
               whiteSpace: 'nowrap',
+              gap: 4,
             }}
           >
-            <MaterialIcon
-              name={action.icon}
-              size={14}
-              color={isDanger ? 'white' : 'var(--slate-12)'}
-            />
+            {isLoading ? (
+              <Spinner size={12} color={iconColor} />
+            ) : (
+              <MaterialIcon name={action.icon} size={14} color={iconColor} />
+            )}
             {action.label}
           </Button>
         );
+
+        return button;
       })}
     </Flex>
   );

@@ -1,19 +1,23 @@
 'use client';
 
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
   Box,
   Flex,
   Text,
   Heading,
-  Switch,
   TextField,
+  IconButton,
+  Switch,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   ConfirmationDialog,
   SettingsSaveBar,
+  SettingsSection,
+  SettingsRow,
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useLabsStore } from './store';
@@ -22,90 +26,25 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
-// Local Sub-components (mirror general/page.tsx patterns)
+// Local Sub-components
 // ========================================
 
-interface SettingsSectionProps {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsSection({ title, description, children }: SettingsSectionProps) {
-  return (
-    <Flex
-      direction="column"
-      gap="4"
-      style={{
-        border: '1px solid var(--slate-5)',
-        borderRadius: 'var(--radius-1)',
-        padding: 16,
-        backdropFilter: 'blur(25px)',
-        backgroundColor: 'var(--slate-2)',
-      }}
-    >
-      {/* Section header */}
-      <Flex direction="column" gap="1">
-        <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          {title}
-        </Text>
-        {description && (
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            {description}
-          </Text>
-        )}
-      </Flex>
-      {/* Divider */}
-      <Box style={{ height: 1, backgroundColor: 'var(--slate-5)', width: '100%' }} />
-      {/* Content */}
-      <Flex direction="column" gap="5">
-        {children}
-      </Flex>
-    </Flex>
-  );
-}
-
-interface SettingsRowProps {
-  label: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsRow({ label, description, children }: SettingsRowProps) {
-  return (
-    <Flex align="center" justify="between" style={{ width: '100%' }}>
-      <Box style={{ flex: 1 }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-          {label}
-        </Text>
-        {description && (
-          <Text
-            size="1"
-            style={{ color: 'var(--slate-9)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}
-          >
-            {description}
-          </Text>
-        )}
-      </Box>
-      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
-    </Flex>
-  );
-}
-
-/** Accent-tinted info callout used inside sections */
+/** Accent-tinted info callout used as a standalone banner */
 function InfoCallout({ children }: { children: React.ReactNode }) {
   return (
     <Flex
       align="center"
-      gap="2"
+      gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '10px 12px',
+        padding: '12px',
       }}
     >
-      <MaterialIcon name="info" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
         {children}
       </Text>
@@ -115,27 +54,27 @@ function InfoCallout({ children }: { children: React.ReactNode }) {
 
 /** Bottom info note (Platform Configuration) */
 function PlatformConfigNote() {
+  const { t } = useTranslation();
   return (
     <Flex
-      align="start"
+      align="center"
       gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '12px 16px',
+        padding: 'var(--space-4)',
       }}
     >
-      <Box style={{ flexShrink: 0, marginTop: 1 }}>
-        <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-      </Box>
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          Platform Configuration
+          {t('workspace.labs.title')}
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-          Changes to platform settings affect all users and take effect immediately. Feature flags
-          can be toggled to enable or disable specific functionality across the platform.
+          {t('workspace.labs.subtitle')}
         </Text>
       </Flex>
     </Flex>
@@ -147,24 +86,13 @@ function PlatformConfigNote() {
 // ========================================
 
 export default function LabsPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
-  // ── Store selectors ────────────────────────────────────────
+  // ── Store selectors (must run every render; see Rules of Hooks) ──
   const form = useLabsStore((s) => s.form);
   const savedForm = useLabsStore((s) => s.savedForm);
   const availableFlags = useLabsStore((s) => s.availableFlags);
@@ -182,8 +110,17 @@ export default function LabsPage() {
   const setLoading = useLabsStore((s) => s.setLoading);
   const isDirty = useLabsStore((s) => s.isDirty);
 
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Load config on mount ───────────────────────────────────
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin === false) {
+      return;
+    }
     const fetchConfig = async () => {
       try {
         const [settingsResult, flagsResult] = await Promise.allSettled([
@@ -192,52 +129,52 @@ export default function LabsPage() {
         ]);
 
         const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
-        const availFlags = flagsResult.status === 'fulfilled' ? flagsResult.value.flags : [];
+        const flags = flagsResult.status === 'fulfilled' ? flagsResult.value : [];
 
-        // Build featureFlags map from current settings, falling back to defaultEnabled
+        // Merge server-provided flag values with descriptor defaults so every
+        // available flag has an effective boolean value in the form.
+        const serverFlags = settings?.featureFlags ?? {};
         const featureFlags: Record<string, boolean> = {};
-        for (const flag of availFlags) {
-          featureFlags[flag.key] =
-            settings?.featureFlags[flag.key] ?? flag.defaultEnabled;
+        for (const def of flags) {
+          featureFlags[def.key] =
+            typeof serverFlags[def.key] === 'boolean'
+              ? serverFlags[def.key]
+              : !!def.defaultEnabled;
         }
 
-        setForm(
-          {
-            fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
-            featureFlags,
-          },
-          availFlags
-        );
+        setForm({
+          fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
+          featureFlags,
+        }, flags);
       } catch {
         setLoading(false);
       }
     };
     fetchConfig();
-  }, [setForm, setLoading]);
+  }, [isProfileInitialized, isAdmin, setForm, setLoading]);
 
   // ── Validation ─────────────────────────────────────────────
   const validate = useCallback((): boolean => {
     const newErrors: { fileSizeLimitMb?: string } = {};
     const limit = form.fileSizeLimitMb;
     if (limit === '' || limit === undefined) {
-      newErrors.fileSizeLimitMb = 'Please enter a file size limit';
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeRequired');
     } else if (Number(limit) > 1000) {
-      newErrors.fileSizeLimitMb = "File size can't be > 1000 MB";
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeMax');
     } else if (Number(limit) <= 0) {
-      newErrors.fileSizeLimitMb = 'File size limit must be greater than 0';
+      newErrors.fileSizeLimitMb = t('workspace.labs.errors.fileSizeMin');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }, [form.fileSizeLimitMb, setErrors]);
 
   // ── Save ───────────────────────────────────────────────────
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+
   const handleSave = useCallback(async () => {
     if (!validate()) return;
 
     const fileSizeDirty = form.fileSizeLimitMb !== savedForm.fileSizeLimitMb;
-    const changedFlags = availableFlags.filter(
-      (f) => form.featureFlags[f.key] !== savedForm.featureFlags[f.key]
-    );
 
     try {
       await LabsApi.saveSettings({
@@ -250,33 +187,25 @@ export default function LabsPage() {
       if (fileSizeDirty) {
         addToast({
           variant: 'success',
-          title: 'File upload limit saved',
-          description: 'You can change the limit in the future',
+          title: t('workspace.labs.toasts.saveSuccess'),
+          description: t('workspace.labs.toasts.saveSuccessDescription'),
         });
       }
 
-      for (const flag of changedFlags) {
-        const isNowEnabled = form.featureFlags[flag.key];
-        addToast({
-          variant: 'success',
-          title: isNowEnabled ? `${flag.label} enabled` : `${flag.label} disabled`,
-          description: isNowEnabled
-            ? `${flag.label} is now active`
-            : `${flag.label} has been turned off`,
-        });
-      }
     } catch {
       addToast({
         variant: 'error',
-        title: 'Failed updating labs settings',
-        description: 'Some issue has occurred',
+        title: t('workspace.labs.toasts.saveError'),
+        description: t('workspace.labs.toasts.saveErrorDescription'),
         action: {
-          label: 'Try Again',
-          onClick: handleSave,
+          label: t('message.tryAgain'),
+          onClick: () => handleSaveRef.current(),
         },
       });
     }
-  }, [form, savedForm, availableFlags, validate, markSaved, addToast]);
+  }, [form, savedForm, validate, markSaved, addToast]);
+
+  handleSaveRef.current = handleSave;
 
   // ── Discard ────────────────────────────────────────────────
   const handleDiscard = useCallback(() => {
@@ -287,10 +216,15 @@ export default function LabsPage() {
     discardChanges();
     addToast({
       variant: 'success',
-      title: 'Discarded edits',
-      description: 'Your changes have been reverted',
+      title: t('workspace.labs.toasts.discardSuccess'),
+      description: t('workspace.labs.toasts.discardSuccessDescription'),
     });
   }, [discardChanges, addToast]);
+
+  // No UI (and no fetch — see effect guard) until profile is known and user is not a confirmed non-admin.
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── File size limit input handler ──────────────────────────
   const handleFileSizeLimitChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -319,24 +253,34 @@ export default function LabsPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            Labs
+            {t('workspace.sidebar.nav.labs')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-            Manage platform settings
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
-        <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title="File Upload Limit">
-            <Flex direction="column" gap="2">
-              <SettingsRow label="File Upload Limit" description="Maximum file size for uploads">
-                <Flex direction="column" gap="1">
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
+          <Flex direction="column" gap="3">
+            <SettingsSection>
+              <Flex align="center" justify="between" style={{ width: '100%' }}>
+                {/* Label + description */}
+                <Box style={{ flex: 1 }}>
+                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+                    {t('workspace.labs.fileUploadLimit')}
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}>
+                    {t('workspace.labs.fileUploadLimitDescription')}
+                  </Text>
+                </Box>
+                {/* Input — fixed 158px, right-aligned */}
+                <Flex direction="column" gap="1" style={{ width: 158, flexShrink: 0 }}>
                   <TextField.Root
                     type="number"
-                    placeholder="max. 1000"
+                    placeholder={t('workspace.labs.fileUploadLimitPlaceholder')}
                     value={form.fileSizeLimitMb === '' ? '' : String(form.fileSizeLimitMb)}
                     onChange={handleFileSizeLimitChange}
                     color={errors.fileSizeLimitMb ? 'red' : undefined}
@@ -348,14 +292,14 @@ export default function LabsPage() {
                         align="center"
                         justify="center"
                         style={{
-                          backgroundColor: 'var(--accent-3)',
+                          backgroundColor: 'var(--accent-a3)',
                           borderRadius: 'var(--radius-1)',
                           padding: '2px 8px',
-                          height: 24,
+                          height: 18,
                         }}
                       >
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
-                          MB
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)' }}>
+                          {t('units.mb')}
                         </Text>
                       </Flex>
                     </TextField.Slot>
@@ -366,38 +310,64 @@ export default function LabsPage() {
                     </Text>
                   )}
                 </Flex>
-              </SettingsRow>
-
-              <InfoCallout>
-                Changes apply immediately to all file uploads including Knowledge Hub and other
-                backend-enforced uploads
-              </InfoCallout>
-            </Flex>
-          </SettingsSection>
+              </Flex>
+                <InfoCallout>
+              {t('workspace.labs.callout')}
+            </InfoCallout>
+            </SettingsSection>
+          </Flex>
         </Box>
 
         {/* ── Feature Flags Section ── */}
         {availableFlags.length > 0 && (
-          <Box style={{ marginBottom: 20 }}>
+          <Box style={{ marginBottom: 'var(--space-5)' }}>
             <SettingsSection
-              title="Feature Flags"
-              description="Toggle platform features on or off"
+              title={t('workspace.labs.featureFlags.title', 'Feature flags')}
+              description={t(
+                'workspace.labs.featureFlags.subtitle',
+                'Toggle experimental capabilities for every agent in this workspace.'
+              )}
             >
-              {availableFlags.map((flag) => (
-                <SettingsRow
-                  key={flag.key}
-                  label={flag.label}
-                  description={flag.description}
-                >
-                  <Flex justify="end">
+              {availableFlags.map((flag) => {
+                const checked = !!form.featureFlags[flag.key];
+                return (
+                  <Flex
+                    key={flag.key}
+                    align="center"
+                    justify="between"
+                    style={{ width: '100%', gap: 'var(--space-4)' }}
+                  >
+                    <Box style={{ flex: 1 }}>
+                      <Text
+                        size="2"
+                        weight="medium"
+                        style={{ color: 'var(--slate-12)', display: 'block' }}
+                      >
+                        {flag.label || flag.key}
+                      </Text>
+                      {flag.description && (
+                        <Text
+                          size="1"
+                          style={{
+                            color: 'var(--slate-11)',
+                            display: 'block',
+                            marginTop: 2,
+                            lineHeight: '16px',
+                            fontWeight: 300,
+                          }}
+                        >
+                          {flag.description}
+                        </Text>
+                      )}
+                    </Box>
                     <Switch
-                      checked={!!form.featureFlags[flag.key]}
-                      onCheckedChange={(checked) => setFlagValue(flag.key, checked)}
-                      size="2"
+                      checked={checked}
+                      onCheckedChange={(val) => setFlagValue(flag.key, val)}
+                      style={{ flexShrink: 0, cursor: 'pointer' }}
                     />
                   </Flex>
-                </SettingsRow>
-              ))}
+                );
+              })}
             </SettingsSection>
           </Box>
         )}
@@ -410,10 +380,10 @@ export default function LabsPage() {
       <ConfirmationDialog
         open={discardDialogOpen}
         onOpenChange={setDiscardDialogOpen}
-        title="Discard changes?"
-        message="If you discard, your edits won't be saved"
-        confirmLabel="Discard"
-        cancelLabel="Continue Editing"
+        title={t('workspace.labs.discardDialog.title')}
+        message={t('workspace.labs.discardDialog.message')}
+        confirmLabel={t('workspace.labs.discardDialog.confirm')}
+        cancelLabel={t('workspace.labs.discardDialog.cancel')}
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
       />

@@ -796,7 +796,7 @@ class VectorStore(Transformer):
             """Process a single batch of documents."""
             try:
                 await self.vector_store.aadd_documents(batch_documents)
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Processed document batch starting at {batch_start}: {len(batch_documents)} documents"
                 )
                 return len(batch_documents)

@@ -19,6 +19,7 @@ import {
   createConversationalRouter,
   createSemanticSearchRouter,
   createAgentConversationalRouter,
+  createChatSpeechRouter,
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
@@ -255,6 +256,43 @@ export class Application {
       this.app.use(express.static(path.join(__dirname, 'public')));
       // SPA fallback route\
       this.app.get('*', (_req, res) => {
+        // The Next.js static export emits a single index.html for the
+        // slug-less OAuth callback page, but IdPs redirect to per-slug URLs
+        // (e.g. /toolsets/oauth/callback/Gmail) for redirect-URI parity with
+        // the legacy SPA. Resolve those to the matching callback HTML before
+        // falling back to the root index.html; otherwise the wildcard would
+        // send the root page which hydrates as `/` and redirects the popup
+        // to /chat, so OAuth never completes.
+        const oauthCallbackMatch = _req.path.match(
+          /^\/(toolsets|connectors)\/oauth\/callback\/[^/]+\/?$/,
+        );
+        if (oauthCallbackMatch && oauthCallbackMatch[1]) {
+          res.sendFile(
+            path.join(
+              __dirname,
+              'public',
+              oauthCallbackMatch[1],
+              'oauth',
+              'callback',
+              'index.html',
+            ),
+          );
+          return;
+        }
+
+        // `/record/<recordId>` URLs (shared links, backend citation links,
+        // etc.) can't be pre-rendered per id under `output: 'export'` since
+        // `generateStaticParams()` would have to enumerate every record id.
+        // Serve the single `/record/` HTML shell directly — the client reads
+        // the id from `window.location.pathname` — so the URL stays intact
+        // (no redirect, no visible `?recordId=` query param) and matches the
+        // pattern used above for OAuth callback slugs.
+        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        if (recordMatch) {
+          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          return;
+        }
+
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 
@@ -402,6 +440,12 @@ export class Application {
     this.app.use(
       '/api/v1/agents',
       createAgentConversationalRouter(this.esAgentContainer),
+    );
+
+    // chat speech (TTS/STT) proxy routes to the Python AI backend
+    this.app.use(
+      '/api/v1/chat',
+      createChatSpeechRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes

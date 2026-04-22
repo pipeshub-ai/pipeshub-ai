@@ -41,6 +41,15 @@ const CATEGORY_ROW_ACTION_WRAP: React.CSSProperties = {
   lineHeight: 0,
 };
 
+const ellipsisLabel: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+  lineHeight: 1.35,
+};
+
 function StatusGlyphTooltip({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Tooltip content={label}>
@@ -142,10 +151,14 @@ export function SidebarCategoryRow(props: {
     applyDragPayload(e, dragType, dragData);
   };
 
-  const truncated = groupLabel.length > 22 ? `${groupLabel.slice(0, 22)}…` : groupLabel;
+  const needsAuthGlyphOnly =
+    toolsetStatus === 'needs_authentication' &&
+    !openInNewHandler &&
+    !showDisabledAuthControl &&
+    Boolean(statusTooltip);
 
   return (
-    <Box mb="1">
+    <Box mb="1" style={{ minWidth: 0 }}>
       <Flex
         align="center"
         gap="1"
@@ -155,6 +168,7 @@ export function SidebarCategoryRow(props: {
         style={{
           borderRadius: 'var(--radius-1)',
           userSelect: 'none',
+          minWidth: 0,
         }}
         className="agent-builder-sidebar-category-row"
       >
@@ -179,69 +193,131 @@ export function SidebarCategoryRow(props: {
           />
         </IconButton>
 
-        <Flex
-          align="center"
-          gap="2"
-          flexGrow="1"
-          flexShrink="1"
-          py="1"
-          px="1"
-          draggable={dragZoneActive}
-          onDragStart={dragZoneActive ? handleDragZoneStart : undefined}
-          onPointerDown={(e) => {
-            if (dragZoneActive) e.stopPropagation();
-          }}
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            cursor: dragType ? 'grab' : onDragAttempt && !dragType ? 'not-allowed' : 'default',
-            borderRadius: 'var(--radius-1)',
-          }}
-        >
-          {groupIcon ? (
-            <ThemeableAssetIcon
-              {...themeableAssetIconPresets.agentBuilderCategoryRow}
-              src={groupIcon}
-              size={18}
-              fallbackSrc={groupIconFallbackSrc}
-            />
-          ) : groupMaterialIcon ? (
-            <MaterialIcon name={groupMaterialIcon} size={18} color="var(--slate-11)" style={{ flexShrink: 0 }} />
-          ) : (
-            <MaterialIcon name="extension" size={18} color="var(--slate-11)" style={{ flexShrink: 0 }} />
-          )}
-          <Tooltip content={groupLabel}>
-            <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0, color: 'var(--slate-12)' }}>
-              {truncated}
-            </Text>
-          </Tooltip>
-          <Text
-            size="1"
+        <Flex align="center" gap="1" flexGrow="1" flexShrink="1" style={{ flex: 1, minWidth: 0 }}>
+          <Flex
+            align="center"
+            gap="2"
+            flexGrow="1"
+            flexShrink="1"
+            py="1"
+            px="1"
+            draggable={dragZoneActive}
+            onDragStart={dragZoneActive ? handleDragZoneStart : undefined}
+            onPointerDown={(e) => {
+              if (dragZoneActive) e.stopPropagation();
+            }}
+            onClick={(e) => e.stopPropagation()}
             style={{
-              flexShrink: 0,
-              color: 'var(--slate-11)',
-              background: 'var(--olive-3)',
-              padding: '2px 6px',
+              flex: 1,
+              minWidth: 0,
+              maxWidth: '100%',
+              overflowX: 'hidden',
+              cursor: dragType ? 'grab' : onDragAttempt && !dragType ? 'not-allowed' : 'default',
               borderRadius: 'var(--radius-1)',
-              fontWeight: 500,
             }}
           >
-            {itemCount}
-          </Text>
-          {toolsetStatus === 'authenticated' && statusTooltip ? (
-            <StatusGlyphTooltip label={statusTooltip}>
-              <MaterialIcon name="check_circle" size={18} color="var(--accent-11)" />
-            </StatusGlyphTooltip>
-          ) : null}
-          {toolsetStatus === 'needs_authentication' ? (
-            openInNewHandler ? (
+            {groupIcon ? (
+              <ThemeableAssetIcon
+                {...themeableAssetIconPresets.agentBuilderCategoryRow}
+                src={groupIcon}
+                size={18}
+                fallbackSrc={groupIconFallbackSrc}
+              />
+            ) : groupMaterialIcon ? (
+              <MaterialIcon name={groupMaterialIcon} size={18} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+            ) : (
+              <MaterialIcon name="extension" size={18} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+            )}
+            <Tooltip content={groupLabel}>
+              <Text size="2" weight="medium" style={{ ...ellipsisLabel, color: 'var(--slate-12)' }}>
+                {groupLabel}
+              </Text>
+            </Tooltip>
+            <Text
+              size="1"
+              style={{
+                flexShrink: 0,
+                color: 'var(--slate-11)',
+                background: 'var(--olive-3)',
+                padding: '2px 6px',
+                borderRadius: 'var(--radius-1)',
+                fontWeight: 500,
+              }}
+            >
+              {itemCount}
+            </Text>
+            {toolsetStatus === 'authenticated' && statusTooltip ? (
+              <StatusGlyphTooltip label={statusTooltip}>
+                <MaterialIcon name="check_circle" size={18} color="var(--accent-11)" />
+              </StatusGlyphTooltip>
+            ) : null}
+            {needsAuthGlyphOnly ? (
+              <StatusGlyphTooltip label={statusTooltip!}>
+                <MaterialIcon name="open_in_new" size={18} color="var(--amber-11)" />
+              </StatusGlyphTooltip>
+            ) : null}
+          </Flex>
+
+          <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+            {toolsetStatus === 'needs_authentication' ? (
+              openInNewHandler ? (
+                <Box
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  style={CATEGORY_ROW_ACTION_WRAP}
+                >
+                  <Tooltip content={configureTooltip || statusTooltip || t('agentBuilder.authenticateShort')}>
+                    <IconButton
+                      type="button"
+                      size="1"
+                      variant="ghost"
+                      color="gray"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openInNewHandler();
+                      }}
+                      aria-label={configureTooltip || statusTooltip || t('agentBuilder.authenticateShort')}
+                    >
+                      <MaterialIcon name="open_in_new" size={18} color="var(--amber-11)" />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              ) : showDisabledAuthControl ? (
+                <Box
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  style={CATEGORY_ROW_ACTION_WRAP}
+                >
+                  <Tooltip
+                    content={
+                      configureDisabledTooltip ||
+                      configureTooltip ||
+                      statusTooltip ||
+                      t('agentBuilder.authenticateShort')
+                    }
+                  >
+                    <IconButton
+                      type="button"
+                      size="1"
+                      variant="ghost"
+                      color="gray"
+                      disabled
+                      aria-label={configureDisabledTooltip || t('agentBuilder.authenticateShort')}
+                      style={{ cursor: 'not-allowed', opacity: 0.55 }}
+                    >
+                      <MaterialIcon name="open_in_new" size={18} color="var(--slate-11)" />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              ) : null
+            ) : null}
+            {gearHandler ? (
               <Box
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
                 style={CATEGORY_ROW_ACTION_WRAP}
               >
-                <Tooltip content={configureTooltip || statusTooltip || t('agentBuilder.authenticateShort')}>
+                <Tooltip content={configureTooltip || t('agentBuilder.configureShort')}>
                   <IconButton
                     type="button"
                     size="1"
@@ -249,27 +325,26 @@ export function SidebarCategoryRow(props: {
                     color="gray"
                     onClick={(e) => {
                       e.stopPropagation();
-                      openInNewHandler();
+                      gearHandler();
                     }}
-                    aria-label={configureTooltip || statusTooltip || t('agentBuilder.authenticateShort')}
+                    aria-label={configureTooltip || t('agentBuilder.configureShort')}
                   >
-                    <MaterialIcon name="open_in_new" size={18} color="var(--amber-11)" />
+                    <MaterialIcon
+                      name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
+                      size={18}
+                      color={configureGlyphColor}
+                    />
                   </IconButton>
                 </Tooltip>
               </Box>
-            ) : showDisabledAuthControl ? (
+            ) : showDisabledGear ? (
               <Box
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
                 style={CATEGORY_ROW_ACTION_WRAP}
               >
                 <Tooltip
-                  content={
-                    configureDisabledTooltip ||
-                    configureTooltip ||
-                    statusTooltip ||
-                    t('agentBuilder.authenticateShort')
-                  }
+                  content={configureDisabledTooltip || configureTooltip || t('agentBuilder.configureShort')}
                 >
                   <IconButton
                     type="button"
@@ -277,72 +352,19 @@ export function SidebarCategoryRow(props: {
                     variant="ghost"
                     color="gray"
                     disabled
-                    aria-label={configureDisabledTooltip || t('agentBuilder.authenticateShort')}
+                    aria-label={configureDisabledTooltip || t('agentBuilder.configureShort')}
                     style={{ cursor: 'not-allowed', opacity: 0.55 }}
                   >
-                    <MaterialIcon name="open_in_new" size={18} color="var(--slate-11)" />
+                    <MaterialIcon
+                      name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
+                      size={18}
+                      color="var(--slate-11)"
+                    />
                   </IconButton>
                 </Tooltip>
               </Box>
-            ) : statusTooltip ? (
-              <StatusGlyphTooltip label={statusTooltip}>
-                <MaterialIcon name="open_in_new" size={18} color="var(--amber-11)" />
-              </StatusGlyphTooltip>
-            ) : null
-          ) : null}
-          {gearHandler ? (
-            <Box
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              style={CATEGORY_ROW_ACTION_WRAP}
-            >
-              <Tooltip content={configureTooltip || t('agentBuilder.configureShort')}>
-                <IconButton
-                  type="button"
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    gearHandler();
-                  }}
-                  aria-label={configureTooltip || t('agentBuilder.configureShort')}
-                >
-                  <MaterialIcon
-                    name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
-                    size={18}
-                    color={configureGlyphColor}
-                  />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          ) : showDisabledGear ? (
-            <Box
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              style={CATEGORY_ROW_ACTION_WRAP}
-            >
-              <Tooltip
-                content={configureDisabledTooltip || configureTooltip || t('agentBuilder.configureShort')}
-              >
-                <IconButton
-                  type="button"
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  disabled
-                  aria-label={configureDisabledTooltip || t('agentBuilder.configureShort')}
-                  style={{ cursor: 'not-allowed', opacity: 0.55 }}
-                >
-                  <MaterialIcon
-                    name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
-                    size={18}
-                    color="var(--slate-11)"
-                  />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          ) : null}
+            ) : null}
+          </Flex>
         </Flex>
       </Flex>
       {isExpanded ? (

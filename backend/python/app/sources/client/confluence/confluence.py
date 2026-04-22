@@ -5,11 +5,20 @@ from typing import Any, Optional
 
 from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.constants import OAuthConfigKeys
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
-from app.sources.external.common.atlassian import AtlassianCloudResource
+from app.sources.external.common.atlassian import (
+    AtlassianCloudResource,
+    match_atlassian_cloud_resource,
+    resolve_preferred_site_with_fallback,
+)
+from app.utils.oauth_config import (
+    fetch_oauth_config_by_id,
+    fetch_toolset_oauth_config_by_id,
+)
 
 
 class ConfluenceRESTClientViaUsernamePassword(HTTPClient):
@@ -203,27 +212,15 @@ class ConfluenceClient(IClient):
             raise Exception(f"Failed to fetch accessible resources: {str(e)}") from e
 
     @staticmethod
-    async def get_cloud_id(token: str) -> str:
-        """Get the first available cloud ID from accessible resources
-        Args:
-            token: The authentication token
-        Returns:
-            Cloud ID string
-        """
+    async def get_cloud_id(token: str, site_url: str) -> str:
+        """Resolve cloud ID from accessible resources using ``site_url`` (``auth.baseUrl``)."""
         resources = await ConfluenceClient.get_accessible_resources(token)
-        if not resources:
-            raise Exception("No accessible resources found")
-        return resources[0].id
+        return match_atlassian_cloud_resource(resources, site_url, product="Confluence").id
 
     @staticmethod
-    async def get_confluence_base_url(token: str) -> str:
-        """Get the Confluence base URL using cloud ID
-        Args:
-            token: The authentication token
-        Returns:
-            Confluence base URL string
-        """
-        cloud_id = await ConfluenceClient.get_cloud_id(token)
+    async def get_confluence_base_url(token: str, site_url: str) -> str:
+        """Get the Confluence proxy API base URL for the site matching ``site_url``."""
+        cloud_id = await ConfluenceClient.get_cloud_id(token, site_url)
         # Confluence Cloud v2 endpoints live under /wiki/api/v2
         return f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2"
 
@@ -292,8 +289,10 @@ class ConfluenceClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
 
-                # Get base URL using the token
-                base_url = await cls.get_confluence_base_url(token)
+                preferred_site = (auth_config.get("baseUrl") or "").strip()
+                if not preferred_site:
+                    raise ValueError("Atlassian site URL (baseUrl) is required for BEARER_TOKEN auth")
+                base_url = await cls.get_confluence_base_url(token, preferred_site)
 
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
@@ -307,8 +306,22 @@ class ConfluenceClient(IClient):
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
 
-                # Get base URL using the token
-                base_url = await cls.get_confluence_base_url(access_token)
+                preferred_site = (auth_config.get("baseUrl") or "").strip()
+                if not preferred_site:
+                    oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                    if oauth_config_id:
+                        shared = await fetch_oauth_config_by_id(
+                            oauth_config_id=oauth_config_id,
+                            connector_type="Confluence",
+                            config_service=config_service,
+                            logger=logger,
+                        )
+                        if shared:
+                            preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
+                preferred_site = await resolve_preferred_site_with_fallback(
+                    preferred_site, access_token, cls.get_accessible_resources, logger, "Confluence",
+                )
+                base_url = await cls.get_confluence_base_url(access_token, preferred_site)
 
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
@@ -359,8 +372,11 @@ class ConfluenceClient(IClient):
                 if not token:
                     raise ValueError("Token required for bearer token auth type")
 
-                # Get base URL using the token
-                base_url = await cls.get_confluence_base_url(token)
+                user_auth = toolset_config.get("auth", {}) or {}
+                preferred_site = (user_auth.get("baseUrl") or toolset_config.get("baseUrl") or "").strip()
+                if not preferred_site:
+                    raise ValueError("Atlassian site URL (baseUrl) is required for BEARER_TOKEN toolsets")
+                base_url = await cls.get_confluence_base_url(token, preferred_site)
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 
@@ -371,8 +387,26 @@ class ConfluenceClient(IClient):
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
 
-                # Get base URL using the token
-                base_url = await cls.get_confluence_base_url(access_token)
+                user_auth = toolset_config.get("auth", {}) or {}
+                preferred_site = (user_auth.get("baseUrl") or toolset_config.get("baseUrl") or "").strip()
+                if not preferred_site and config_service is not None:
+                    oauth_config_id = (
+                        user_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                        or toolset_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                    )
+                    if oauth_config_id:
+                        shared = await fetch_toolset_oauth_config_by_id(
+                            oauth_config_id=oauth_config_id,
+                            toolset_type="Confluence",
+                            config_service=config_service,
+                            logger=logger,
+                        )
+                        if shared:
+                            preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
+                preferred_site = await resolve_preferred_site_with_fallback(
+                    preferred_site, access_token, cls.get_accessible_resources, logger, "Confluence",
+                )
+                base_url = await cls.get_confluence_base_url(access_token, preferred_site)
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 

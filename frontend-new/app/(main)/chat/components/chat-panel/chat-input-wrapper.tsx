@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
 import type { SearchRequest } from '@/chat/types';
 
@@ -17,13 +18,8 @@ let currentSearchAbort: AbortController | null = null;
  */
 export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
-  const searchParams = useSearchParams();
-  const rawAgentId = searchParams.get('agentId');
-  const slotAgentId = useChatStore((s) => {
-    const sid = s.activeSlotId;
-    return sid ? (s.slots[sid]?.threadAgentId?.trim() ?? '') : '';
-  });
-  const isAgentChat = Boolean(rawAgentId?.trim() || slotAgentId);
+  const effectiveAgentId = useEffectiveAgentId();
+  const isAgentChat = Boolean(effectiveAgentId);
 
   useEffect(() => {
     if (!isAgentChat) return;
@@ -34,6 +30,18 @@ export function ChatInputWrapper() {
       store.clearSearchResults();
     }
   }, [isAgentChat]);
+
+  // Make sure models for the EFFECTIVE context (URL or slot agent) are loaded
+  // and validated, regardless of which URL the page was opened on. This keeps
+  // the pill + submit in sync when the active slot carries an agent that the
+  // URL doesn't reflect (e.g. navigating into an existing agent conversation).
+  // The fetch util dedupes so this is cheap when page.tsx already ran.
+  useEffect(() => {
+    const ctxKey = ctxKeyFromAgent(effectiveAgentId);
+    fetchModelsForContext(ctxKey).catch((err) => {
+      console.error('Failed to fetch models for effective context', ctxKey, err);
+    });
+  }, [effectiveAgentId]);
 
   useEffect(() => {
     return () => {
@@ -111,21 +119,20 @@ export function ChatInputWrapper() {
       if (agentIdFromUrl) {
         store.updateSlot(activeSlotId, {
           threadAgentId: agentIdFromUrl,
-          agentStreamTools: [...store.agentStreamTools],
+          agentStreamTools:
+            store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
       }
     }
 
-    const { settings, setFilters, collectionNamesCache } = store;
+    const { settings, collectionNamesCache } = store;
 
-    // Snapshot the selected collections before clearing — these get attached
-    // to the user message metadata so ChatResponse can render collection cards.
+    // Collections for message metadata + slot UI; `settings.filters` is not cleared on send.
     const collectionsAtSendTime = settings.filters.kb.map((id) => ({
       id,
       name: collectionNamesCache[id] || 'Collection',
     }));
 
-    // Store collections in the slot for the streaming UI (temp message)
     if (collectionsAtSendTime.length > 0) {
       store.updateSlot(activeSlotId, {
         pendingCollections: collectionsAtSendTime,
@@ -144,12 +151,7 @@ export function ChatInputWrapper() {
       },
       startRun: true,
     });
-
-    // Clear KB filters after send so the cards disappear from the input area
-    if (collectionsAtSendTime.length > 0) {
-      setFilters({ ...settings.filters, kb: [] });
-    }
   };
 
-  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} />;
+  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} agentId={effectiveAgentId} />;
 }

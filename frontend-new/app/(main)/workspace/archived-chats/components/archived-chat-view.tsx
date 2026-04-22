@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse, emptyCitationMaps } from '@/chat/components';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
+import { Spinner } from '@/app/components/ui/spinner';
 import type { ConversationMessage } from '../types';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
 import { ArchivedChatsApi } from '../api';
@@ -65,7 +66,7 @@ function EmptyState() {
       direction="column"
       align="center"
       justify="center"
-      style={{ height: '100%', width: '100%', gap: 12 }}
+      style={{ height: '100%', width: '100%', gap: 'var(--space-3)' }}
     >
       <ChatPixelIcon
         size={72}
@@ -198,8 +199,8 @@ export function ArchivedChatView({
       <Box
         style={{
           position: 'absolute',
-          top: 12,
-          right: 12,
+          top: 'var(--space-3)',
+          right: 'var(--space-3)',
           zIndex: 10,
         }}
       >
@@ -222,10 +223,17 @@ export function ArchivedChatView({
           >
             <DropdownMenu.Item
               disabled={isRestoring}
-              onClick={handleRestore}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleRestore();
+              }}
             >
               <Flex align="center" gap="2">
-                <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
+                {isRestoring ? (
+                  <Spinner size={16} color="var(--slate-11)" />
+                ) : (
+                  <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
+                )}
                 <Text size="2">
                   {isRestoring
                     ? t('action.loading')
@@ -252,7 +260,7 @@ export function ArchivedChatView({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '40px 0 32px',
+          padding: '40px 0 var(--space-8)',
           maxWidth: 720,
           width: '100%',
           margin: '0 auto',
@@ -261,7 +269,7 @@ export function ArchivedChatView({
         {messagePairs.length === 0 ? (
           <EmptyState />
         ) : (
-          <Flex direction="column" gap="6" style={{ padding: '0 24px' }}>
+          <Flex direction="column" gap="6" style={{ padding: '0 var(--space-6)' }}>
             {/* Message pairs */}
             {messagePairs.map((pair) => (
               <ChatResponse

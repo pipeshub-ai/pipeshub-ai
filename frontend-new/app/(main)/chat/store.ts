@@ -9,10 +9,11 @@ import {
   ConversationsListResponse,
   ChatSlot,
   MAX_SLOTS,
-  SearchResultItem
+  SearchResultItem,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
+import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 
 /**
  * File preview state for citation preview in chat.
@@ -21,6 +22,13 @@ export interface ChatPreviewFile {
   id: string;
   name: string;
   url: string;
+  /**
+   * Raw Blob for the streamed file. Populated only for renderers that are
+   * better fed the binary data directly (DOCX via `docx-preview`) — avoids
+   * the extra `URL.createObjectURL` + re-`fetch` roundtrip that was causing
+   * the DOCX preview pane to stay blank.
+   */
+  blob?: Blob;
   type: string;
   size?: number;
   isLoading?: boolean;
@@ -32,6 +40,12 @@ export interface ChatPreviewFile {
   highlightBox?: Array<{ x: number; y: number }>;
   /** Citations for the previewed record (used by the CitationsPanel) */
   citations?: PreviewCitation[];
+  /**
+   * Citation id the user actually clicked (from citation.citationId).
+   * Used to seed the CitationsPanel so clicking `[2]` highlights citation [2],
+   * not the first citation on the target page.
+   */
+  initialCitationId?: string;
 }
 
 /**
@@ -84,6 +98,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     activeExpandedMessageId: null,
     regenerateMessageId: null,
     pendingCollections: [],
+    artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
   };
@@ -114,6 +129,8 @@ interface ChatState {
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
   pendingConversations: Record<string, PendingConversation>;
+  /** IDs of conversations that just resolved from pending — triggers typing animation */
+  newlyResolvedIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
   moreChatsSectionType: 'shared' | 'your' | null;
   /** Agents browser panel (same shell as More Chats) */
@@ -131,10 +148,41 @@ interface ChatState {
   agentConversationsError: string | null;
   isAgentMoreChatsPanelOpen: boolean;
   agentMoreChatsPagination: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null;
-  /** Tool fullNames for agent SSE payloads (from GET /agents/:id) */
-  agentStreamTools: string[];
+  /**
+   * Selected tool `fullName`s for the next agent stream. `null` = all tools (runtime expands
+   * to `agentToolCatalogFullNames` in JSON `tools`). `[]` = none. Non-empty = explicit subset.
+   */
+  agentStreamTools: string[] | null;
+  /** Every tool fullName from the loaded agent — drives the Actions tab and “select all”. */
+  agentToolCatalogFullNames: string[];
+  /** Connector rows scoped to the agent (for Connectors tab labels + icons). */
+  agentChatConnectors: Array<{ id: string; label: string; connectorKind: string }>;
+  /** Distinct KB / collection ids the agent can use (Collections tab). */
+  agentChatKbIds: string[];
+  /** Agent KB rows with labels from the knowledge graph (record groups). */
+  agentKnowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+  /** Toolsets for grouped Actions UI (`label` prefers per-instance `instanceName`, else `displayName` / `name`). */
+  agentChatToolGroups: Array<{
+    label: string;
+    fullNames: string[];
+    /** Maps tool `fullName` → API description (for search / optional UI). */
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>;
+  /** Default knowledge scope derived from the agent graph (used to reset UI). */
+  agentKnowledgeDefaults: { apps: string[]; kb: string[] };
+  /**
+   * Optional override of connector / collection ids for agent streams. `null` means “use
+   * `agentKnowledgeDefaults`” (same as the panel when nothing is narrowed); runtime still
+   * sends explicit `filters` built from defaults or this scope.
+   */
+  agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
+  /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
+  agentContextAccess: AgentSidebarRowMenuAccess | null;
 
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
@@ -206,10 +254,30 @@ interface ChatState {
   closeAgentMoreChatsPanel: () => void;
   setAgentMoreChatsPagination: (p: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null) => void;
   appendAgentConversations: (convs: Conversation[]) => void;
-  setAgentStreamTools: (tools: string[]) => void;
+  setAgentStreamTools: (tools: string[] | null) => void;
+  /** Reset catalog + knowledge UI when GET /agents/:id succeeds (or null to clear). */
+  hydrateAgentChatResources: (payload: {
+    toolCatalogFullNames: string[];
+    toolGroups: Array<{
+      /** Primary row title — instance label when present (matches agent builder). */
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId?: string;
+      iconPath?: string;
+    }>;
+    connectors: Array<{ id: string; label: string; connectorKind: string }>;
+    kbIds: string[];
+    knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+    knowledgeDefaults: { apps: string[]; kb: string[] };
+  } | null) => void;
+  setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
+  setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   addPendingConversation: (slotId: string) => void;
+  clearNewlyResolvedId: (conversationId: string) => void;
   resolvePendingConversation: (
     slotId: string,
     conversation: Conversation,
@@ -231,8 +299,9 @@ interface ChatState {
   setAgentStrategy: (agentStrategy: AgentStrategy) => void;
   setFilters: (filters: { apps: string[]; kb: string[] }) => void;
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
-  setSelectedModel: (model: import('./types').ModelOverride | null) => void;
-  setDefaultModel: (model: import('./types').ModelOverride | null) => void;
+  setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
+  setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
+  setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
 
   // ── Search actions ──
   setSearchResults: (results: SearchResultItem[], searchId: string, query: string) => void;
@@ -260,6 +329,7 @@ const initialState = {
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
+  newlyResolvedIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
   moreChatsSectionType: null as 'shared' | 'your' | null,
   isAgentsSidebarOpen: false,
@@ -273,8 +343,23 @@ const initialState = {
   agentConversationsError: null as string | null,
   isAgentMoreChatsPanelOpen: false,
   agentMoreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
-  agentStreamTools: [] as string[],
+  agentStreamTools: null as string[] | null,
+  agentToolCatalogFullNames: [] as string[],
+  agentChatConnectors: [] as Array<{ id: string; label: string; connectorKind: string }>,
+  agentChatKbIds: [] as string[],
+  agentKnowledgeCollectionRows: [] as Array<{ id: string; name: string; sourceType?: string }>,
+  agentChatToolGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>,
+  agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
+  agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
+  agentContextAccess: null as AgentSidebarRowMenuAccess | null,
 
   settings: {
     mode: 'chat' as ChatMode,
@@ -284,8 +369,9 @@ const initialState = {
       apps: [] as string[],
       kb: [] as string[],
     },
-    selectedModel: null as import('./types').ModelOverride | null,
-    defaultModel: null as import('./types').ModelOverride | null,
+    selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
+    defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
+    availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
   },
 
   previewFile: null as ChatPreviewFile | null,
@@ -482,8 +568,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentConversationsError: null,
           isAgentMoreChatsPanelOpen: false,
           agentMoreChatsPagination: null,
-          agentStreamTools: [],
+          agentStreamTools: null,
+          agentToolCatalogFullNames: [],
+          agentChatConnectors: [],
+          agentChatKbIds: [],
+          agentKnowledgeCollectionRows: [],
+          agentChatToolGroups: [],
+          agentKnowledgeDefaults: { apps: [], kb: [] },
+          agentKnowledgeScope: null,
           agentContextDisplayName: null,
+          agentContextAccess: null,
           isAgentsSidebarOpen: false,
         };
       }
@@ -497,8 +591,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentConversationsError: null,
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        agentStreamTools: [],
+        agentStreamTools: null,
+        agentToolCatalogFullNames: [],
+        agentChatConnectors: [],
+        agentChatKbIds: [],
+        agentKnowledgeCollectionRows: [],
+        agentChatToolGroups: [],
+        agentKnowledgeDefaults: { apps: [], kb: [] },
+        agentKnowledgeScope: null,
         agentContextDisplayName: null,
+        agentContextAccess: null,
         isAgentsSidebarOpen: false,
       };
     }),
@@ -556,7 +658,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentStreamTools: (tools) => set({ agentStreamTools: tools }),
 
+  hydrateAgentChatResources: (payload) =>
+    set((state) =>
+      payload
+        ? {
+            agentToolCatalogFullNames: payload.toolCatalogFullNames,
+            agentChatToolGroups: payload.toolGroups,
+            agentChatConnectors: payload.connectors,
+            agentChatKbIds: payload.kbIds,
+            agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
+            agentKnowledgeDefaults: payload.knowledgeDefaults,
+            agentKnowledgeScope: null,
+            agentStreamTools: null,
+            collectionNamesCache: (() => {
+              const patch: Record<string, string> = {};
+              for (const r of payload.knowledgeCollectionRows) {
+                patch[r.id] = r.name;
+              }
+              return { ...state.collectionNamesCache, ...patch };
+            })(),
+          }
+        : {
+            agentToolCatalogFullNames: [],
+            agentChatToolGroups: [],
+            agentChatConnectors: [],
+            agentChatKbIds: [],
+            agentKnowledgeCollectionRows: [],
+            agentKnowledgeDefaults: { apps: [], kb: [] },
+            agentKnowledgeScope: null,
+            agentStreamTools: null,
+          }
+    ),
+
+  setAgentKnowledgeScope: (scope) => set({ agentKnowledgeScope: scope }),
+
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
+
+  setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
   moveConversationToTop: (conversationId) =>
     set((state) => {
@@ -625,11 +763,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextAgent = isAgentStream
         ? [conversation, ...state.agentConversations.filter((c) => c.id !== conversation.id)]
         : state.agentConversations;
+      const nextNewlyResolved = new Set(state.newlyResolvedIds);
+      nextNewlyResolved.add(conversation.id);
       return {
         pendingConversations: remaining,
         conversations: nextMain,
         agentConversations: nextAgent,
+        newlyResolvedIds: nextNewlyResolved,
       };
+    }),
+
+  clearNewlyResolvedId: (conversationId) =>
+    set((state) => {
+      if (!state.newlyResolvedIds.has(conversationId)) return state;
+      const next = new Set(state.newlyResolvedIds);
+      next.delete(conversationId);
+      return { newlyResolvedIds: next };
     }),
 
   clearPendingConversation: (slotId) =>
@@ -677,12 +826,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
     settings: { ...state.settings, filters },
   })),
 
-  setSelectedModel: (model) => set((state) => ({
-    settings: { ...state.settings, selectedModel: model },
+  setSelectedModelForCtx: (ctxKey, model) => set((state) => ({
+    settings: {
+      ...state.settings,
+      selectedModels: { ...state.settings.selectedModels, [ctxKey]: model },
+    },
   })),
 
-  setDefaultModel: (model) => set((state) => ({
-    settings: { ...state.settings, defaultModel: model },
+  setDefaultModelForCtx: (ctxKey, model) => set((state) => ({
+    settings: {
+      ...state.settings,
+      defaultModels: { ...state.settings.defaultModels, [ctxKey]: model },
+    },
+  })),
+
+  setAvailableModelsForCtx: (ctxKey, models) => set((state) => ({
+    settings: {
+      ...state.settings,
+      availableModels: {
+        ...state.settings.availableModels,
+        [ctxKey]: { models, fetchedAt: Date.now() },
+      },
+    },
   })),
 
   // ── Search actions ──────────────────────────────────────────────
@@ -716,6 +881,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 }));
 
+/**
+ * Sentinel context key for the non-agent (Assistant) chat. Using a Unicode
+ * private-use sentinel avoids collision with any real agent id.
+ */
+export const ASSISTANT_CTX = '__assistant__';
+
+/** Build the context key from an (effective) agent id or null. */
+export const ctxKeyFromAgent = (agentId: string | null | undefined): string =>
+  agentId && agentId.trim() ? agentId : ASSISTANT_CTX;
+
+/**
+ * Resolve the model that should be used for `ctxKey`: the user's selection
+ * if present, else the context default. Reads the current store snapshot.
+ */
+export function getEffectiveModel(
+  ctxKey: string,
+): import('./types').ModelOverride | null {
+  const { selectedModels, defaultModels } = useChatStore.getState().settings;
+  return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+}
+
 // ── Store-write diff subscriber (debug only) ────────────────────
 // Logs which top-level fields changed per set() call. This lets us
 // correlate store writes with component re-renders in the debug output.
@@ -727,7 +913,16 @@ if (typeof window !== 'undefined') {
     'pendingConversations', 'isMoreChatsPanelOpen', 'moreChatsSectionType', 'isAgentsSidebarOpen', 'moreChatsPagination',
     'agentSidebarAgentId', 'agentConversations', 'agentConversationsPagination',
     'isAgentConversationsLoading', 'agentConversationsError', 'isAgentMoreChatsPanelOpen', 'agentMoreChatsPagination',
-    'agentStreamTools', 'agentContextDisplayName',
+    'agentStreamTools',
+    'agentToolCatalogFullNames',
+    'agentChatConnectors',
+    'agentChatKbIds',
+    'agentKnowledgeCollectionRows',
+    'agentChatToolGroups',
+    'agentKnowledgeDefaults',
+    'agentKnowledgeScope',
+    'agentContextDisplayName',
+    'agentContextAccess',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'collectionNamesCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',

@@ -36,6 +36,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    ArtifactRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -72,6 +73,7 @@ from app.schema.arango.documents import (
     ticket_record_schema,
     user_schema,
     webpage_record_schema,
+    artifact_record_schema,
     deal_record_schema,
     product_record_schema,
 )
@@ -141,6 +143,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
     (CollectionNames.PRODUCTS.value, product_record_schema),
     (CollectionNames.DEALS.value, deal_record_schema),
+    (CollectionNames.ARTIFACTS.value, artifact_record_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -495,7 +498,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 else:
                     self.logger.warning("No edge collections found for graph creation")
             else:
-                self.logger.info("Knowledge graph already exists, skipping creation")
+                self.logger.info("Knowledge graph already exists, ensuring edge definitions are up to date")
+                await self._ensure_edge_definitions_up_to_date(GraphNames.KNOWLEDGE_GRAPH.value)
 
             # 3. Ensure persistent indexes for frequent query patterns
             # await self._ensure_indexes()
@@ -509,6 +513,59 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
+
+    async def _ensure_edge_definitions_up_to_date(self, graph_name: str) -> None:
+        """Ensure existing graph edge definitions include all declared vertex collections.
+
+        For each edge definition in EDGE_DEFINITIONS, compare the declared
+        ``to_vertex_collections`` with those already registered in the graph.
+        If the declared set has new entries, replace the edge definition via
+        the ArangoDB Gharial API so that new vertex collections (e.g. artifacts)
+        can participate in existing edges.
+        """
+        try:
+            graph_info = await self.http_client.get_graph(graph_name)
+            if not graph_info:
+                return
+            existing_defs = graph_info.get("graph", {}).get("edgeDefinitions", [])
+            existing_by_collection = {
+                ed["collection"]: ed for ed in existing_defs
+            }
+
+            for desired in EDGE_DEFINITIONS:
+                edge_col = desired["edge_collection"]
+                existing = existing_by_collection.get(edge_col)
+                if not existing:
+                    continue
+                desired_to = set(desired.get("to_vertex_collections", []))
+                existing_to = set(existing.get("to", []))
+                if desired_to.issubset(existing_to):
+                    continue
+
+                merged_to = sorted(existing_to | desired_to)
+                merged_from = sorted(
+                    set(existing.get("from", []))
+                    | set(desired.get("from_vertex_collections", []))
+                )
+                url = (
+                    f"{self.http_client.base_url}/_db/{self.http_client.database}"
+                    f"/_api/gharial/{graph_name}/edge/{edge_col}"
+                )
+                payload = {"collection": edge_col, "from": merged_from, "to": merged_to}
+                session = await self.http_client._get_session()
+                async with session.put(url, json=payload) as resp:
+                    if resp.status in (200, 201, 202):
+                        self.logger.info(
+                            "Updated edge definition '%s': to=%s", edge_col, merged_to,
+                        )
+                    else:
+                        body = await resp.text()
+                        self.logger.warning(
+                            "Failed to update edge definition '%s' (%d): %s",
+                            edge_col, resp.status, body,
+                        )
+        except Exception as e:
+            self.logger.warning("Edge definition migration failed (non-fatal): %s", e)
 
     async def _ensure_indexes(self) -> None:
         """Create persistent indexes for frequent query patterns.
@@ -663,6 +720,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return ProductRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -2510,48 +2569,77 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
-        transaction: str | None = None
+        path: list[str],
+        external_record_group_id: str,
+        transaction: str | None = None,
     ) -> dict | None:
         """
         Get a record from the FILES collection using its path.
 
         Args:
             connector_id (str): The ID of the connector.
-            path (str): The path of the file to look up.
-            transaction (Optional[str]): Optional transaction ID.
+            path (list[str]): The path of the file to look up.
+            external_record_group_id (str): The external ID of the record group.
+            transaction (str): Optional transaction ID.
 
         Returns:
-            Optional[Dict]: The file record if found, otherwise None.
+            dict | None: The file record if found, otherwise None.
         """
         try:
-            self.logger.info(
-                f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
+            # based on external id
+            # assumed full path from record group next level is as list in param
+            query = """
+            LET appId = CONCAT("apps/", @connectorId)
+            LET rawParts = @rawParts
+            LET recordGroupId = @recordGroupId
+
+            LET parts = (
+                LENGTH(rawParts) == 1 AND rawParts[0] == ""
+                    ? []
+                    : rawParts
             )
 
-            query = f"""
-            FOR fileRecord IN {CollectionNames.FILES.value}
-                FILTER fileRecord.path == @path
-                RETURN fileRecord
-            """
+            LET rg = FIRST(
+                FOR g IN 1..100 INBOUND appId belongsTo
+                FILTER g.externalGroupId == recordGroupId
+                RETURN g
+            )
+            FILTER rg != null
+            LET rec0 = FIRST(
+                FOR r IN INBOUND rg._id belongsTo
+                FILTER r.recordName == parts[0]
+                FILTER r.externalParentId == null
+                RETURN r
+            )
+            FILTER rec0 != null
+            LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
 
-            results = await self.http_client.execute_aql(
+            LET result_1  = depth == 0 ? rec0 :
+                (FOR v, e, p IN 1..100 OUTBOUND rec0
+                    recordRelations
+
+                    FILTER e.relationshipType == "PARENT_CHILD"
+
+                    FILTER v.recordName == parts[LENGTH(p.vertices)-1]
+
+                    RETURN v
+                    )
+
+            LET result = depth == 0 ? rec0 : LAST(result_1)
+
+            return result
+            """
+            result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"path": path},
+                bind_vars={
+                    "rawParts":path,
+                    "connectorId":connector_id,
+                    "recordGroupId":external_record_group_id,
+                },
                 txn_id=transaction
             )
-
-            if results:
-                self.logger.info(
-                    f"✅ Successfully retrieved file record for path: {path}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No record found for path: {path}"
-                )
-                return None
-
+            if result:
+                return result[0]
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"
@@ -3136,6 +3224,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return MeetingRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.DEALS.value:
                 return DealRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -3590,10 +3680,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
-    async def get_user_apps(self, user_key: str) -> list[dict]:
-        """Get all apps (connectors) associated with a user by user document key (_key)."""
+    async def get_user_apps(self, user_id: str) -> list[dict]:
+        """Get all apps (connectors) associated with a user by user document key (_key).
+
+        Note: The parameter is named ``user_id`` for cross-provider consistency
+        (see Neo4j provider), but in ArangoDB this value is the user document's
+        ``_key``.
+        """
         try:
-            user_from = f"{CollectionNames.USERS.value}/{user_key}"
+            user_from = f"{CollectionNames.USERS.value}/{user_id}"
             query = f"""
             LET user_apps = (
                 FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
@@ -17511,6 +17606,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -17524,6 +17622,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if search:
                 search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
 
+            # Build created-by / date filters
+            extra_filters = ""
+            if created_by:
+                extra_filters += "\nFILTER team.createdBy == @createdBy"
+            if created_after is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp >= @createdAfter"
+            if created_before is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp <= @createdBefore"
+
             # Query to get all teams user is a member of with pagination
             user_teams_query = f"""
             FOR permission IN @@permission_collection
@@ -17531,6 +17638,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             SORT team.createdAtTimestamp DESC
             LIMIT @offset, @limit
             LET team_members = (
@@ -17573,18 +17681,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             COLLECT WITH COUNT INTO total_count
             RETURN total_count
             """
+
+            # Shared bind vars for filters
+            filter_vars: dict = {}
+            if search:
+                filter_vars["search"] = f"%{search.lower()}%"
+            if created_by:
+                filter_vars["createdBy"] = created_by
+            if created_after is not None:
+                filter_vars["createdAfter"] = created_after
+            if created_before is not None:
+                filter_vars["createdBefore"] = created_before
 
             # Get total count
             count_params = {
                 "userId": f"{CollectionNames.USERS.value}/{user_key}",
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                **filter_vars,
             }
-            if search:
-                count_params["search"] = f"%{search.lower()}%"
 
             count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
             total_count = count_list[0] if count_list else 0
@@ -17595,10 +17714,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission_collection": CollectionNames.PERMISSION.value,
                 "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
                 "offset": offset,
-                "limit": limit
+                "limit": limit,
+                **filter_vars,
             }
-            if search:
-                teams_params["search"] = f"%{search.lower()}%"
 
             result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
             return result_list if result_list else [], total_count
@@ -17749,12 +17867,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
         Get all users in a specific team.
         """
         try:
+            offset = (page - 1) * limit
+
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)"
+
             team_users_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
             FILTER team._key == @teamId AND team.orgId == @orgId
@@ -17763,10 +17890,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER permission._from == @currentUserId AND permission._to == team._id
                 RETURN permission
             )
-            LET team_members = (
+            LET all_members = (
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
+                FILTER user != null
+                {search_filter}
                 RETURN {{
                     "id": user._key,
                     "userId": user.userId,
@@ -17777,7 +17906,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "isOwner": permission.role == "OWNER"
                 }}
             )
-            LET user_count = LENGTH(team_members)
+            LET total_count = LENGTH(all_members)
+            LET paginated_members = (
+                FOR m IN all_members
+                LIMIT @offset, @limit
+                RETURN m
+            )
             RETURN {{
                 "id": team._key,
                 "name": team.name,
@@ -17787,21 +17921,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "createdAtTimestamp": team.createdAtTimestamp,
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-                "members": team_members,
-                "memberCount": user_count,
+                "members": paginated_members,
+                "memberCount": total_count,
                 "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
                 "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
                 "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
             }}
             """
 
+            bind_vars: dict = {
+                "teamId": team_id,
+                "orgId": org_id,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit,
+            }
+            if search:
+                bind_vars["search"] = f"%{search.lower()}%"
+
             result_list = await self.execute_query(
                 team_users_query,
-                bind_vars={
-                    "teamId": team_id,
-                    "orgId": org_id,
-                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
-                },
+                bind_vars=bind_vars,
                 transaction=transaction
             )
             return result_list[0] if result_list else None
@@ -18280,6 +18420,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         displayName: toolset.displayName,
                         type: toolset.type,
                         instanceId: toolset.instanceId,
+                        instanceName: toolset.instanceName,
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools
                     }}

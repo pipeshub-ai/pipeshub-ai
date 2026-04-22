@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, Text, Button, TextField } from '@radix-ui/themes';
+import { Box, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import {
@@ -71,7 +71,9 @@ export function FolderTreeItem({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const [isNameTruncated, setIsNameTruncated] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLSpanElement>(null);
 
   const isExpanded = !!expandedFolders[node.id];
   const enhancedNode = node as EnhancedFolderTreeNode;
@@ -91,6 +93,18 @@ export function FolderTreeItem({
       editInputRef.current.select();
     }
   }, [isEditing]);
+
+  // Detect whether the name is actually overflowing so we only show a tooltip
+  // when the text is truncated (avoids redundant tooltips for short names).
+  useEffect(() => {
+    const el = nameRef.current;
+    if (!el) return;
+    const check = () => setIsNameTruncated(el.scrollWidth > el.clientWidth + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [node.name, showMeatballMenu]);
 
   // ---- Rename handlers ----
 
@@ -158,7 +172,7 @@ export function FolderTreeItem({
   return (
     <>
       <Box
-        style={{ position: 'relative', width: '100%', paddingLeft: '10px', height: `${ELEMENT_HEIGHT}px`, boxSizing: 'border-box', flexShrink: 0, minWidth: 'fit-content' }}
+        style={{ position: 'relative', width: '100%', paddingLeft: 'var(--space-3)', height: `${ELEMENT_HEIGHT}px`, boxSizing: 'border-box', flexShrink: 0, minWidth: 'fit-content' }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
@@ -191,7 +205,7 @@ export function FolderTreeItem({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                marginRight: '4px',
+                marginRight: 'var(--space-1)',
                 cursor: 'pointer',
               }}
               onClick={(e) => {
@@ -257,22 +271,28 @@ export function FolderTreeItem({
               />
             </Box>
           ) : (
-            <Text
-              size="2"
-              title={node.name}
-              style={{
-                color: isSelected ? 'var(--accent-11)' : 'var(--slate-11)',
-                fontWeight: isSelected ? 500 : 400,
-                whiteSpace: 'nowrap',
-                textAlign: 'left',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                flex: 1,
-                minWidth: 0,
-              }}
+            <Tooltip
+              content={node.name}
+              delayDuration={200}
+              open={isNameTruncated ? undefined : false}
             >
-              {node.name}
-            </Text>
+              <Text
+                ref={nameRef}
+                size="2"
+                style={{
+                  color: isSelected ? 'var(--accent-11)' : 'var(--slate-11)',
+                  fontWeight: isSelected ? 500 : 400,
+                  whiteSpace: 'nowrap',
+                  textAlign: 'left',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                {node.name}
+              </Text>
+            </Tooltip>
           )}
         </Button>
 
