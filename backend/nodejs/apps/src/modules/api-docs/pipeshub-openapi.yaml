@@ -140,6 +140,15 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Conversational Speech
+    description: |
+      Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
+
+      These endpoints are used by the chat frontend when an admin has configured a
+      TTS/STT provider under the AI Models configuration. When no provider is
+      configured the client falls back to the browser's native Web Speech API, so
+      callers should treat a `409` response as "unconfigured, use browser APIs"
+      rather than as a fatal error.
 
   # Connector Manager
   - name: Connector Registry
@@ -3380,6 +3389,97 @@ components:
           type: string
           description: JSON-encoded event payload
 
+    # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
+    SpeakRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: |
+            UTF-8 text to synthesize. Capped at 4096 characters to match the
+            underlying provider limit (OpenAI TTS) and avoid unbounded cost.
+          example: "Hello, this is a PipesHub voice test."
+        voice:
+          type: string
+          nullable: true
+          description: |
+            Provider voice override. If omitted, the voice configured by the
+            admin for the active TTS provider is used. For OpenAI: one of
+            `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+          example: "alloy"
+        format:
+          type: string
+          nullable: true
+          enum: [mp3, opus, aac, flac, wav, pcm]
+          description: |
+            Audio response format. Unknown values are silently coerced to
+            `mp3` server-side.
+          example: "mp3"
+        speed:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0.25
+          maximum: 4.0
+          description: |
+            Playback speed multiplier. Values outside the documented range
+            are clamped server-side.
+          example: 1.0
+
+    TranscriptionResponse:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          description: Transcribed text. May be an empty string for silence or
+            unintelligible audio.
+          example: "Turn on the office lights."
+        provider:
+          type: string
+          description: Provider id that handled the transcription.
+          example: "openAI"
+        model:
+          type: string
+          description: Model id that handled the transcription.
+          example: "whisper-1"
+
+    SpeechCapabilitySummary:
+      type: object
+      description: Public summary of an active speech provider. Secrets
+        (api keys, organization ids, etc.) are never included.
+      properties:
+        provider:
+          type: string
+          description: Provider id (e.g. `openAI`, `whisper`).
+        model:
+          type: string
+          nullable: true
+          description: First model id from the configured comma-separated list.
+        friendlyName:
+          type: string
+          nullable: true
+          description: Optional display name configured by the admin.
+
+    SpeechCapabilitiesResponse:
+      type: object
+      description: |
+        Reports whether the server has a TTS/STT provider configured. When a
+        bucket is `null` the chat UI falls back to the browser's Web Speech
+        API for that capability.
+      properties:
+        tts:
+          $ref: '#/components/schemas/SpeechCapabilitySummary'
+          nullable: true
+        stt:
+          $ref: '#/components/schemas/SpeechCapabilitySummary'
+          nullable: true
+
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
       type: string
@@ -3996,7 +4096,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4071,6 +4171,16 @@ components:
             $ref: '#/components/schemas/AIModelProviderConfig'
         imageGeneration:
           type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        tts:
+          type: array
+          description: Text-to-Speech providers used to generate chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        stt:
+          type: array
+          description: Speech-to-Text providers used to transcribe chat audio.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
@@ -13896,6 +14006,193 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+
+  # -------------------- Conversational Speech --------------------
+  /chat/transcribe:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Transcribe an audio clip (Speech-to-Text)
+      description: |
+        Upload a short audio recording and receive its transcript from the
+        configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
+        or a self-hosted `faster-whisper` model).<br><br>
+        <b>Overview:</b><br>
+        The chat UI captures audio via the browser's `MediaRecorder` and
+        POSTs it here as `multipart/form-data`. If no STT provider is
+        configured the endpoint returns <code>409</code> and the client falls
+        back to the browser's native Web Speech Recognition.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Audio payload is capped at 25 MB (matches OpenAI's
+              <code>audio.transcriptions.create</code> limit).</li>
+          <li>Supported MIME types include <code>audio/webm</code>,
+              <code>audio/ogg</code>, <code>audio/mp4</code>,
+              <code>audio/mpeg</code>, <code>audio/wav</code>, and
+              <code>audio/flac</code>.</li>
+        </ul>
+      operationId: transcribeChatAudio
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Recorded audio clip.
+                language:
+                  type: string
+                  nullable: true
+                  description: |
+                    Optional ISO-639-1 language hint forwarded to the
+                    provider (e.g. `en`, `fr`). When omitted the provider
+                    auto-detects.
+                  example: "en"
+      responses:
+        '200':
+          description: Transcription succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+        '400':
+          description: Empty audio payload.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Speech-to-Text provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: Audio payload exceeds the 25 MB limit.
+        '500':
+          description: |
+            Runtime error — for example the optional `faster-whisper`
+            package is not installed for the `whisper` provider.
+        '502':
+          description: Upstream provider failure (message is intentionally
+            generic; see server logs for details).
+
+  /chat/speak:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Synthesize audio for a message (Text-to-Speech)
+      description: |
+        Generate audio for the supplied text using the configured Text-to-Speech
+        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`). The response body is
+        the raw audio bytes in the requested format.<br><br>
+        <b>Overview:</b><br>
+        The chat UI calls this when the user clicks "Read aloud" on an
+        assistant message. If no TTS provider is configured the endpoint
+        returns <code>409</code> and the client falls back to the browser's
+        <code>speechSynthesis</code> API.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Input text is capped at 4096 characters.</li>
+          <li><code>speed</code> is clamped to the range
+              [<code>0.25</code>, <code>4.0</code>].</li>
+          <li>Unknown <code>format</code> values silently fall back to
+              <code>mp3</code>.</li>
+        </ul>
+      operationId: synthesizeChatSpeech
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeakRequest'
+      responses:
+        '200':
+          description: |
+            Raw audio bytes in the negotiated format. Response headers
+            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            the provider/model that produced the audio.
+          headers:
+            X-TTS-Provider:
+              schema:
+                type: string
+              description: Provider id that produced the audio.
+            X-TTS-Model:
+              schema:
+                type: string
+              description: Model id that produced the audio.
+            Cache-Control:
+              schema:
+                type: string
+              description: Always <code>no-store</code>.
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/pcm:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Request body missing or `text` is empty / whitespace.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Text-to-Speech provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: Text exceeds the 4096-character limit.
+        '502':
+          description: Upstream provider failure.
+
+  /chat/speech/capabilities:
+    get:
+      tags:
+        - Conversational Speech
+      summary: Report configured TTS/STT providers
+      description: |
+        Lightweight probe that tells the chat UI whether to use the server
+        speech routes or the browser Web Speech API. Only public provider
+        metadata is returned; API keys and organization ids are never
+        exposed.
+      operationId: getChatSpeechCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      responses:
+        '200':
+          description: Current TTS/STT capability summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechCapabilitiesResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
   /search:
