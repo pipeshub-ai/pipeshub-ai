@@ -10,13 +10,25 @@ import {
   categorizeNode,
   mergeChildrenIntoTree,
   treeHasNodeWithId,
+  findAncestorChainIds,
 } from '../../knowledge-base/utils/tree-builder';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense, useEffect, useRef, useState } from 'react';
 import { toast } from '@/lib/store/toast-store';
-import type { NodeType, EnhancedFolderTreeNode } from '../../knowledge-base/types';
+import type { NodeType, EnhancedFolderTreeNode, KnowledgeHubNode } from '../../knowledge-base/types';
+
+function dedupeBreadcrumbsById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
 
 function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
@@ -34,10 +46,8 @@ function KnowledgeBaseSidebarSlotContent() {
     connectors: storeConnectors,
     loadingNodeIds,
     isLoadingFlatCollections,
-    // Table data (for breadcrumbs used by auto-expansion)
     tableData,
     allRecordsTableData,
-    // Store actions
     setNodeLoading,
     cacheNodeChildren,
     addNodes,
@@ -50,19 +60,13 @@ function KnowledgeBaseSidebarSlotContent() {
     setPendingSidebarAction,
   } = useKnowledgeBaseStore();
 
-  // isLoadingNodes: true while the KB app's children (root collections) are being fetched.
-  // Covers both the root-nodes fetch AND the KB app-children fetch.
   const kbApp = useMemo(() => appNodes.find((n) => n.connector === 'KB'), [appNodes]);
-  // Derive loading state purely from explicit flags so we don't get stuck in a
-  // permanent loading state when the fetch fails or returns no KB app.
   const isSidebarTreeLoading = isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
-  // Derive page view mode from URL (single source of truth)
   const pageViewMode = isAllRecordsMode ? 'all-records' : 'collections';
 
   const handleBack = useCallback(() => router.push('/chat'), [router]);
 
-  // --- Collections mode: KB selection → navigate via URL ---
   const handleSelectKb = useCallback(
     (id: string) => {
       if (id) {
@@ -74,7 +78,6 @@ function KnowledgeBaseSidebarSlotContent() {
     [router, isAllRecordsMode]
   );
 
-  // --- Collections mode: Expand node → fetch children from API ---
   const handleNodeExpand = useCallback(
     async (nodeId: string, nodeType: NodeType) => {
       const {
@@ -83,7 +86,6 @@ function KnowledgeBaseSidebarSlotContent() {
         connectorAppTrees: freshConnectorTrees,
       } = useKnowledgeBaseStore.getState();
 
-      // Check if children already exist in tree
       const hasChildrenInTree = (tree: EnhancedFolderTreeNode[], targetId: string): boolean => {
         for (const node of tree) {
           if (node.id === targetId) return (node.children?.length ?? 0) > 0;
@@ -94,6 +96,10 @@ function KnowledgeBaseSidebarSlotContent() {
         return false;
       };
 
+      for (const tree of Array.from(freshConnectorTrees.values())) {
+        if (hasChildrenInTree(tree, nodeId)) return;
+      }
+
       if (freshCategorized) {
         const alreadyInKbTree =
           hasChildrenInTree(freshCategorized.shared, nodeId) ||
@@ -101,23 +107,18 @@ function KnowledgeBaseSidebarSlotContent() {
         if (alreadyInKbTree) return;
       }
 
-      for (const tree of freshConnectorTrees.values()) {
-        if (hasChildrenInTree(tree, nodeId)) return;
-      }
-
       const mergeIntoConnectorTrees = (
         children: KnowledgeHubNode[],
         effectiveHasChildFolders?: boolean
       ) => {
         const { connectorAppTrees } = useKnowledgeBaseStore.getState();
-        for (const [appId, tree] of connectorAppTrees) {
+        for (const [appId, tree] of Array.from(connectorAppTrees.entries())) {
           if (!treeHasNodeWithId(tree, nodeId)) continue;
           mergeConnectorAppTreeChildren(appId, nodeId, children, effectiveHasChildFolders);
           return;
         }
       };
 
-      // Check cache — re-merge if stale
       const cachedChildren = freshCache.get(nodeId);
       if (cachedChildren && cachedChildren.length > 0) {
         addNodes(cachedChildren);
@@ -138,7 +139,6 @@ function KnowledgeBaseSidebarSlotContent() {
         return;
       }
 
-      // Fetch from API
       try {
         setNodeLoading(nodeId, true);
         const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
@@ -160,11 +160,6 @@ function KnowledgeBaseSidebarSlotContent() {
           if (parentNode) {
             const section = categorizeNode(parentNode);
 
-            // Always derive effectiveHasChildren from the fresh counts response.
-            // The original hasChildren on the node may be stale or wrong (e.g. the
-            // server said true but no folder children actually exist). counts is the
-            // authoritative answer: if the "folders" entry is absent or 0, this node
-            // has no sub-folder children and the chevron should not show.
             const updatedTree = mergeChildrenIntoTree(
               latest.categorizedNodes[section],
               nodeId,
@@ -185,160 +180,212 @@ function KnowledgeBaseSidebarSlotContent() {
     [setNodeLoading, cacheNodeChildren, addNodes, setCategorizedNodes, mergeConnectorAppTreeChildren]
   );
 
-  // --- Auto-expansion: open sidebar tree to the currently navigated node ---
-  //
-  // WHY THIS EXISTS: fetchTableData in page.tsx tries to auto-expand but may
-  // run before categorizedNodes is populated (race condition with KB app
-  // children loading). This effect watches BOTH categorizedNodes AND tableData
-  // and fires when the LAST of the two arrives, so expansion always succeeds.
-  //
-  // KEY DESIGN DECISIONS:
-  // 1. Use ID-based matching to find the KB root breadcrumb — NOT nodeType check.
-  //    The API may return 'folder' for all breadcrumb nodeTypes, even the KB root.
-  //    Matching against categorizedNodes (which we know are KBs) is reliable.
-  // 2. Set lastAutoExpandedNodeIdRef AFTER confirming the KB root is found,
-  //    NOT before. This allows retries if the first attempt cannot find the root.
-  // 3. Reset the ref on error so broken navigations can recover on re-render.
-  const lastAutoExpandedNodeIdRef = useRef<string | null>(null);
+  const lastCompletedExpansionKeyRef = useRef<string | null>(null);
+  const expansionAttemptGenerationRef = useRef(0);
+  const inFlightExpansionKeyRef = useRef<string | null>(null);
   const [isAutoExpanding, setIsAutoExpanding] = useState(false);
 
   useEffect(() => {
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
+    if (!nodeType || !nodeId) return;
+
+    const breadcrumbs = isAllRecordsMode
+      ? allRecordsTableData?.breadcrumbs
+      : tableData?.breadcrumbs;
+    if (!breadcrumbs?.length) return;
 
     const allRootNodes = [
       ...(categorizedNodes?.shared ?? []),
       ...(categorizedNodes?.private ?? []),
     ];
 
-    if (!nodeType || !nodeId) return;
-    if (!categorizedNodes || allRootNodes.length === 0) return;
-
-    // Use the appropriate breadcrumbs based on view mode.
-    // All Records uses allRecordsTableData; Collections uses tableData.
-    const breadcrumbs = isAllRecordsMode
-      ? allRecordsTableData?.breadcrumbs
-      : tableData?.breadcrumbs;
-
-    if (!breadcrumbs?.length) return;
-
-    // -----------------------------------------------------------------------
-    // Detect the KB root breadcrumb.
-    //
-    // IMPORTANT: Do NOT rely on b.nodeType === 'kb'. The API may return a
-    // different nodeType for collection roots (e.g. 'folder' or 'recordGroup').
-    // Match by ID against the nodes in categorizedNodes — those came from the
-    // KB app's children and are guaranteed to be KB-level nodes.
-    // In All Records mode the nodeType in the URL may be 'recordGroup'; the
-    // ID-based match still works because KB app children populate categorizedNodes.
-    // -----------------------------------------------------------------------
-    const kbBreadcrumb = breadcrumbs.find(
-      (b) => allRootNodes.some((n) => n.id === b.id) || b.nodeType === 'kb'
-    );
-    const kbTreeNode = kbBreadcrumb ? allRootNodes.find((n) => n.id === kbBreadcrumb.id) : null;
-
-    console.log('DEBUG::sidebar::autoExpand::kbBreadcrumb', { kbBreadcrumb, allRootNodes: allRootNodes.map(n => ({ id: n.id, name: n.name, nodeType: n.nodeType })) });
-
-    if (!kbBreadcrumb) {
-      // Can't expand — KB root not yet in tree or breadcrumbs don't include it.
-      // Do NOT mark as expanded; allow retry when categorizedNodes updates.
+    if (isAllRecordsMode) {
+      if (appNodes.length === 0) return;
+    } else if (!categorizedNodes || allRootNodes.length === 0) {
       return;
     }
 
-    // Avoid re-running for the same target to prevent loops triggered by the
-    // setCategorizedNodes calls inside handleNodeExpand.
-    if (lastAutoExpandedNodeIdRef.current === nodeId) return;
+    const kbBreadcrumb =
+      allRootNodes.length > 0
+        ? breadcrumbs.find((b) =>
+            isAllRecordsMode
+              ? allRootNodes.some((n) => n.id === b.id)
+              : allRootNodes.some((n) => n.id === b.id) || b.nodeType === 'kb'
+          )
+        : null;
+    const kbTreeNode = kbBreadcrumb ? allRootNodes.find((n) => n.id === kbBreadcrumb.id) : null;
 
-    // Mark as in-progress NOW (after confirming we have a valid KB root).
-    lastAutoExpandedNodeIdRef.current = nodeId;
+    const branchTag = kbBreadcrumb ? 'kb' : 'app';
+    const breadcrumbPathKey = breadcrumbs.map((b) => b.id).join('/');
+    const breadcrumbIdSet = new Set(breadcrumbs.map((b) => b.id));
+
+    const nonKbApps = appNodes.filter((a) => a.connector !== 'KB');
+    const appsInBreadcrumbTrail = nonKbApps.filter((a) => breadcrumbIdSet.has(a.id));
+    const connectorPrimedKey = (() => {
+      if (!isAllRecordsMode || appNodes.length === 0) return '';
+      const readyFor = (appId: string) => {
+        const cached = appChildrenCache.get(appId);
+        const tree = connectorAppTrees.get(appId);
+        return (cached?.length ?? 0) > 0 && (tree?.length ?? 0) > 0;
+      };
+      if (appsInBreadcrumbTrail.length > 0) {
+        return `trail:${appsInBreadcrumbTrail.map((a) => (readyFor(a.id) ? '1' : '0')).join('')}`;
+      }
+      const anyReady = nonKbApps.some((a) => readyFor(a.id));
+      return `any:${anyReady ? '1' : '0'}`;
+    })();
+
+    const expansionKey = `${branchTag}:${nodeType}:${nodeId}:${breadcrumbPathKey}:cprim:${connectorPrimedKey}`;
+
+    if (lastCompletedExpansionKeyRef.current === expansionKey) return;
+    if (inFlightExpansionKeyRef.current === expansionKey) return;
+
+    inFlightExpansionKeyRef.current = expansionKey;
+    const attemptGeneration = ++expansionAttemptGenerationRef.current;
 
     async function doExpansion() {
       setIsAutoExpanding(true);
       try {
-        // ── Step 0: Highlight the target node in the sidebar ─────────────────
-        // setCurrentFolderId drives the isSelected highlight on FolderTreeItem.
-        // Must be set here for direct-link navigation (page.tsx only sets it
-        // from the old 'folderId' param, not from 'nodeId').
-        setCurrentFolderId(nodeId!);
+        setCurrentFolderId(nodeId);
 
-        // In All Records mode, also sync allRecordsSidebarSelection so the
-        // "All" button deselects and the correct root collection is reflected.
-        // Use the KB ROOT breadcrumb (the collection), not the deep nodeId
-        // (which may be a sub-folder). This keeps the collection-level selection
-        // consistent while currentFolderId drives the deep FolderTreeItem highlight.
-        if (isAllRecordsMode) {
-          const collectionName =
-            allRootNodes.find((n) => n.id === kbBreadcrumb!.id)?.name ||
-            kbBreadcrumb!.name ||
-            kbBreadcrumb!.id;
-          setAllRecordsSidebarSelection({ type: 'collection', id: kbBreadcrumb!.id, name: collectionName });
+        if (kbBreadcrumb) {
+          if (isAllRecordsMode) {
+            const collectionName =
+              allRootNodes.find((n) => n.id === kbBreadcrumb.id)?.name ||
+              kbBreadcrumb.name ||
+              kbBreadcrumb.id;
+            setAllRecordsSidebarSelection({ type: 'collection', id: kbBreadcrumb.id, name: collectionName });
+          }
+
+          const kbId = kbBreadcrumb.id;
+          const kbNodeType = (kbTreeNode?.nodeType ?? kbBreadcrumb.nodeType ?? 'kb') as NodeType;
+
+          useKnowledgeBaseStore.getState().expandFolderExclusive(kbId);
+          await handleNodeExpand(kbId, kbNodeType);
+
+          const kbIndex = breadcrumbs.findIndex((b) => b.id === kbId);
+          const pathAfterKb = breadcrumbs.slice(kbIndex + 1);
+          const intermediates = dedupeBreadcrumbsById(
+            pathAfterKb.filter((b) => b.id !== nodeId)
+          );
+
+          for (const folder of intermediates) {
+            useKnowledgeBaseStore.getState().expandFolderExclusive(folder.id);
+            await handleNodeExpand(folder.id, folder.nodeType as NodeType);
+          }
+        } else if (isAllRecordsMode) {
+          setAllRecordsSidebarSelection({ type: 'explorer' });
+
+          const store = useKnowledgeBaseStore.getState();
+          const apps = store.appNodes;
+          const trees = store.connectorAppTrees;
+          const flatNodes = store.nodes;
+
+          let anchorAppId: string | null =
+            breadcrumbs.find((b) => apps.some((a) => a.id === b.id) || b.nodeType === 'app')?.id ??
+            null;
+
+          if (!anchorAppId) {
+            for (const [appId, tree] of Array.from(trees.entries())) {
+              if (treeHasNodeWithId(tree, nodeId)) {
+                anchorAppId = appId;
+                break;
+              }
+            }
+          }
+
+          if (!anchorAppId) {
+            const hubNode = flatNodes.find((n) => n.id === nodeId);
+            const pid = hubNode?.parentId;
+            if (typeof pid === 'string' && pid.startsWith('apps/')) {
+              anchorAppId = pid.slice('apps/'.length);
+            }
+          }
+
+          if (anchorAppId) {
+            const appIdx = breadcrumbs.findIndex((b) => b.id === anchorAppId);
+            if (appIdx >= 0) {
+              const intermediates = dedupeBreadcrumbsById(
+                breadcrumbs.slice(appIdx + 1).filter((b) => b.id !== nodeId)
+              );
+              const appNode = apps.find((a) => a.id === anchorAppId);
+              const appNodeType = (appNode?.nodeType ?? 'app') as NodeType;
+              useKnowledgeBaseStore.getState().expandFolderExclusive(anchorAppId);
+              await handleNodeExpand(anchorAppId, appNodeType);
+              for (const anc of intermediates) {
+                useKnowledgeBaseStore.getState().expandFolderExclusive(anc.id);
+                await handleNodeExpand(anc.id, anc.nodeType as NodeType);
+              }
+            } else {
+              const tree = trees.get(anchorAppId);
+              if (tree?.length) {
+                const ancestorIds = findAncestorChainIds(tree, nodeId);
+                if (ancestorIds?.length) {
+                  for (const ancId of ancestorIds) {
+                    const nType = (flatNodes.find((n) => n.id === ancId)?.nodeType ?? 'folder') as NodeType;
+                    useKnowledgeBaseStore.getState().expandFolderExclusive(ancId);
+                    await handleNodeExpand(ancId, nType);
+                  }
+                }
+              }
+            }
+          }
         }
 
-        // ── Step 1: Expand the KB root ───────────────────────────────────────
-        const kbId = kbBreadcrumb!.id;
-        // Use nodeType from categorizedNodes tree node (reliable), fallback to
-        // breadcrumb nodeType, then default to 'kb'.
-        const kbNodeType = (kbTreeNode?.nodeType ?? kbBreadcrumb!.nodeType ?? 'kb') as NodeType;
-
-        // Exclusive expand collapses sibling KBs so only the target branch is open.
-        useKnowledgeBaseStore.getState().expandFolderExclusive(kbId);
-        await handleNodeExpand(kbId, kbNodeType);
-
-        // ── Step 2: Expand each folder ancestor between KB root and the target ──
-        const kbIndex = breadcrumbs!.findIndex((b) => b.id === kbId);
-        const pathAfterKb = breadcrumbs!.slice(kbIndex + 1);
-
-        // We want to expand ancestors but NOT the target node itself:
-        // - If nodeId is in breadcrumbs (last entry), exclude it.
-        // - If nodeId is the currentNode (not in breadcrumbs), expand all of pathAfterKb.
-        const intermediates = pathAfterKb.filter((b) => b.id !== nodeId);
-
-        for (const folder of intermediates) {
-          useKnowledgeBaseStore.getState().expandFolderExclusive(folder.id);
-          await handleNodeExpand(folder.id, folder.nodeType as NodeType);
-        }
+        if (attemptGeneration !== expansionAttemptGenerationRef.current) return;
+        lastCompletedExpansionKeyRef.current = expansionKey;
       } catch (err) {
         console.error('Failed to auto-expand sidebar tree', err);
-        // Reset so the same nodeId can be retried on next render cycle.
-        lastAutoExpandedNodeIdRef.current = null;
+        if (attemptGeneration === expansionAttemptGenerationRef.current) {
+          lastCompletedExpansionKeyRef.current = null;
+        }
       } finally {
-        setIsAutoExpanding(false);
+        if (attemptGeneration === expansionAttemptGenerationRef.current) {
+          setIsAutoExpanding(false);
+          if (inFlightExpansionKeyRef.current === expansionKey) {
+            inFlightExpansionKeyRef.current = null;
+          }
+        }
       }
     }
 
     doExpansion();
-  }, [categorizedNodes, allRecordsTableData, tableData, searchParams, isAllRecordsMode]);
-  // NOTE: handleNodeExpand intentionally omitted from deps — it is stable and
-  // including it would cause the effect to re-run on every expansion step.
+  }, [
+    categorizedNodes,
+    allRecordsTableData,
+    tableData,
+    searchParams,
+    isAllRecordsMode,
+    appNodes,
+    appChildrenCache,
+    connectorAppTrees,
+  ]);
 
-  // All Records mode: when no specific node is selected (root view), reset
-  // sidebar selection back to "All" and clear currentFolderId so no tree item
-  // remains highlighted from a previous navigation.
   const prevAllRecordsNodeIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!isAllRecordsMode) return;
     const nodeId = searchParams.get('nodeId');
-    // Only reset sidebar when nodeId actually changes (e.g. user navigated away
-    // from a node back to root), not on every searchParams update (e.g. page
-    // number or filter changes). Without this guard, paginating while in root
-    // view would reset the sidebar selection and, worse, reset the page to 1
-    // via setAllRecordsSidebarSelection's side-effect.
     if (nodeId === prevAllRecordsNodeIdRef.current) return;
     prevAllRecordsNodeIdRef.current = nodeId;
     if (!nodeId) {
       setCurrentFolderId(null);
       setAllRecordsSidebarSelection({ type: 'all' });
-      // Reset the ref so future navigation to the same nodeId triggers expansion.
-      lastAutoExpandedNodeIdRef.current = null;
+      lastCompletedExpansionKeyRef.current = null;
+      inFlightExpansionKeyRef.current = null;
+      expansionAttemptGenerationRef.current += 1;
     }
   }, [isAllRecordsMode, searchParams]);
 
   const handleNodeSelect = useCallback(
     (nodeType: string, nodeId: string) => {
       setCurrentFolderId(nodeId);
+      if (isAllRecordsMode) {
+        setAllRecordsSidebarSelection({ type: 'explorer' });
+      }
       router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
     },
-    [router, isAllRecordsMode, setCurrentFolderId]
+    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection]
   );
 
   // --- All Records mode handlers ---
@@ -367,15 +414,11 @@ function KnowledgeBaseSidebarSlotContent() {
     [router, isAllRecordsMode]
   );
 
-  // --- Sidebar item actions ---
-
-  /** Reindex: set pending action → page.tsx picks it up and opens dialog */
   const handleSidebarReindex = useCallback((nodeId: string) => {
     const findNodeInfo = (): { name: string; nodeType?: NodeType } => {
       const state = useKnowledgeBaseStore.getState();
       const { node } = findNodeInCategorized(state.categorizedNodes, nodeId);
       if (node) return { name: node.name, nodeType: node.nodeType };
-      // Check app nodes / app children cache
       const appNode = state.appNodes.find((n) => n.id === nodeId);
       if (appNode) return { name: appNode.name, nodeType: appNode.nodeType };
       const cacheEntries = Array.from(state.appChildrenCache.values());
@@ -389,7 +432,6 @@ function KnowledgeBaseSidebarSlotContent() {
     setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: nodeInfo.name, nodeType: nodeInfo.nodeType });
   }, [setPendingSidebarAction]);
 
-  /** Rename: call API directly (no confirmation dialog needed) */
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     try {
       const state = useKnowledgeBaseStore.getState();
@@ -405,7 +447,6 @@ function KnowledgeBaseSidebarSlotContent() {
         node?.nodeType === 'folder' ? 'Folder renamed successfully' : 'Collection renamed successfully'
       );
 
-      // Clear stale cache: breadcrumb path + parent of renamed node (so re-expand shows new name)
       const currentState = useKnowledgeBaseStore.getState();
       const cacheIdsToClear: string[] = [];
       if (currentState.tableData?.breadcrumbs) {
@@ -418,7 +459,6 @@ function KnowledgeBaseSidebarSlotContent() {
         clearNodeCacheEntries(cacheIdsToClear);
       }
 
-      // Refresh Collections via the KB app children (unified API call)
       await refreshKbTree(reMergeCachedChildrenIntoTree);
     } catch (error: unknown) {
       const httpError = error as { response?: { data?: { message?: string } }; message?: string };
@@ -427,7 +467,6 @@ function KnowledgeBaseSidebarSlotContent() {
     }
   }, [clearNodeCacheEntries, reMergeCachedChildrenIntoTree]);
 
-  /** Delete: set pending action → page.tsx picks it up and opens dialog */
   const handleSidebarDelete = useCallback((nodeId: string) => {
     const state = useKnowledgeBaseStore.getState();
     const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
@@ -440,12 +479,10 @@ function KnowledgeBaseSidebarSlotContent() {
     });
   }, [setPendingSidebarAction]);
 
-  /** Add private collection: set pending action → page.tsx picks it up and opens dialog */
   const handleAddPrivateCollection = useCallback(() => {
     setPendingSidebarAction({ type: 'create-collection' });
   }, [setPendingSidebarAction]);
 
-  // Filter appNodes to only show apps that have children loaded
   const filteredAppNodes = useMemo(
     () => appNodes.filter((app) => {
       const children = appChildrenCache.get(app.id);
@@ -458,7 +495,6 @@ function KnowledgeBaseSidebarSlotContent() {
     <KnowledgeBaseSidebar
       pageViewMode={pageViewMode}
       onBack={handleBack}
-      // Collections mode
       sharedTree={categorizedNodes?.shared}
       privateTree={categorizedNodes?.private}
       onSelectKb={handleSelectKb}
@@ -467,18 +503,15 @@ function KnowledgeBaseSidebarSlotContent() {
       onNodeSelect={handleNodeSelect}
       isLoadingNodes={isSidebarTreeLoading || isAutoExpanding}
       loadingNodeIds={loadingNodeIds}
-      // All Records mode
       appNodes={filteredAppNodes}
       appChildrenCache={appChildrenCache}
       connectorAppTrees={connectorAppTrees}
       loadingAppIds={loadingAppIds}
       connectors={storeConnectors}
       moreConnectors={isAdmin === true ? ADMIN_MORE_CONNECTORS : PERSONAL_MORE_CONNECTORS}
-      // Sidebar item actions
       onSidebarReindex={handleSidebarReindex}
       onSidebarRename={isAllRecordsMode ? undefined : handleSidebarRename}
       onSidebarDelete={handleSidebarDelete}
-      // All Records navigation
       onAllRecordsSelectAll={handleAllRecordsSelectAll}
       onAllRecordsSelectCollection={handleAllRecordsSelectCollection}
       onAllRecordsSelectConnectorItem={handleAllRecordsSelectConnectorItem}

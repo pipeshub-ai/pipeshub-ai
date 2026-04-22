@@ -97,6 +97,27 @@ export function treeHasNodeWithId(tree: EnhancedFolderTreeNode[], id: string): b
   return false;
 }
 
+/** Ancestor ids shallow→deep to `targetId` (excludes `targetId`). */
+export function findAncestorChainIds(
+  nodes: EnhancedFolderTreeNode[],
+  targetId: string
+): string[] | null {
+  const walk = (
+    arr: EnhancedFolderTreeNode[],
+    stack: string[]
+  ): string[] | null => {
+    for (const n of arr) {
+      if (n.id === targetId) return stack;
+      if (n.children?.length) {
+        const hit = walk(n.children as EnhancedFolderTreeNode[], [...stack, n.id]);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+  return walk(nodes, []);
+}
+
 /**
  * Build sidebar roots for a connector (non-KB) app from a flat API child list.
  * Tries common parentId shapes used by the knowledge-hub API.

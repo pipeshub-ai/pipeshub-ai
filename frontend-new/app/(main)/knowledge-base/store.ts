@@ -707,7 +707,9 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           state.allRecordsSidebarSelection = selection;
           state.selectedRecords.clear();
-          state.allRecordsPagination.page = 1;
+          if (selection.type !== 'explorer') {
+            state.allRecordsPagination.page = 1;
+          }
         }),
 
       selectRecord: (id) =>

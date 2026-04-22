@@ -12,10 +12,19 @@ import { DEFAULT_PAGE_SIZE } from './store';
 
 const BASE_URL = '/api/v1/knowledgeBase';
 
-/**
- * Sidebar tree: omit leaf records (records with no expandable children).
- * Folders, KBs, apps, and records with `hasChildren: true` are kept.
- */
+const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
+
+function getNodeChildrenCacheKey(
+  nodeType: NodeType,
+  nodeId: string,
+  params?: { page?: number; limit?: number; include?: string }
+) {
+  const page = params?.page ?? 1;
+  const limit = params?.limit ?? 50;
+  const include = params?.include ?? '';
+  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}`;
+}
+
 function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
   return items.filter(
     item => item.nodeType !== 'record' || item.hasChildren !== false
@@ -190,18 +199,31 @@ export const KnowledgeHubApi = {
       include?: string;
     }
   ) {
-    const { data } = await apiClient.get<KnowledgeHubApiResponse>(
-      `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
-      {
-        params: {
-          page: params?.page ?? 1,
-          limit: params?.limit ?? 50,
-          include: params?.include,
-        },
-      }
-    );
+    const key = getNodeChildrenCacheKey(nodeType, nodeId, params);
+    const existing = pendingGetNodeChildren.get(key);
+    if (existing) return existing;
 
-    return withSidebarFilteredItems(data);
+    const promise = (async (): Promise<KnowledgeHubApiResponse> => {
+      try {
+        const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+          `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
+          {
+            params: {
+              page: params?.page ?? 1,
+              limit: params?.limit ?? 50,
+              include: params?.include,
+            },
+          }
+        );
+
+        return withSidebarFilteredItems(data);
+      } finally {
+        pendingGetNodeChildren.delete(key);
+      }
+    })();
+
+    pendingGetNodeChildren.set(key, promise);
+    return promise;
   },
 
   /**
