@@ -4,6 +4,10 @@
 
 export type GroupType = 'admin' | 'everyone' | 'standard' | 'custom';
 
+export function isSystemGroup(group: Pick<Group, 'type'>): boolean {
+  return group.type !== 'custom';
+}
+
 export interface Group {
   /** MongoDB ObjectId */
   _id: string;

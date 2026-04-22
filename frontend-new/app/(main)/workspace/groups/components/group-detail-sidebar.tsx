@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Badge, Tooltip } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -16,6 +16,7 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
@@ -229,6 +230,22 @@ export function GroupDetailSidebar({
   }, [isEditMode, exitEditMode, closeDetailPanel]);
 
   const panelTitle = detailGroup?.name || 'Group';
+  const systemGroup = detailGroup ? isSystemGroup(detailGroup) : false;
+
+  const deleteButton = (
+    <LoadingButton
+      variant="outline"
+      color="red"
+      size="1"
+      onClick={handleDeleteGroup}
+      loading={isDeleting}
+      disabled={systemGroup}
+      loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
+      style={{ flexShrink: 0 }}
+    >
+      {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+    </LoadingButton>
+  );
 
   return (
     <WorkspaceRightPanel
@@ -544,17 +561,13 @@ export function GroupDetailSidebar({
                 )}
               </Text>
             </Flex>
-            <LoadingButton
-              variant="outline"
-              color="red"
-              size="1"
-              onClick={handleDeleteGroup}
-              loading={isDeleting}
-              loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
-              style={{ flexShrink: 0 }}
-            >
-              {t('workspace.groups.edit.deleteButton', 'Delete Group')}
-            </LoadingButton>
+            {systemGroup ? (
+              <Tooltip content={t('workspace.groups.actions.deleteSystemTooltip', 'Only custom groups can be deleted')}>
+                <span style={{ display: 'inline-flex' }}>{deleteButton}</span>
+              </Tooltip>
+            ) : (
+              deleteButton
+            )}
           </Flex>
         </Box>
       )}
