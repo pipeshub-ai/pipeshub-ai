@@ -38,6 +38,7 @@ export const aiModelsTypes = {
   REASONING: 'reasoning',
   LLM: 'llm',
   MULTI_MODAL: 'multiModal',
+  IMAGE_GENERATION: 'imageGeneration',
 };
 
 export const dbTypes = {
@@ -59,6 +60,13 @@ export interface PlatformFeatureFlagDef {
   label: string;
   description?: string;
   defaultEnabled?: boolean;
+  /**
+   * When true, the flag is still honoured by backend code and seeded with its
+   * default in the key-value store, but it is NOT returned by
+   * GET /platform/feature-flags/available and therefore never appears in the
+   * Labs UI. Use for legacy / internal-only flags we don't want users to toggle.
+   */
+  hidden?: boolean;
 }
 
 export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
@@ -67,5 +75,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable Beta Connectors',
     description: 'Allow usage of beta connector integrations that may be unstable.',
     defaultEnabled: false,
-  }
+    hidden: true,
+  },
+  {
+    key: 'ENABLE_CODE_EXECUTION',
+    label: 'Enable Code Execution',
+    description:
+      'Let agents run Python/TypeScript and SQL queries in a sandboxed environment. Disable to hide coding_sandbox and database_sandbox tools from all agents.',
+    defaultEnabled: true,
+  },
 ];

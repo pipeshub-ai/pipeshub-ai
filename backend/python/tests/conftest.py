@@ -26,18 +26,40 @@ def pytest_unconfigure(config):
 # and similar top-level imports succeed even when the package isn't present.
 # ---------------------------------------------------------------------------
 
-# Track which top-level packages should be fully mocked (including submodules)
-_MOCK_PACKAGE_ROOTS: set = set()
+# Track the EXACT dotted names that should be mocked. Any submodule of an
+# explicitly-mocked name is also covered, but the mock is NEVER extended up
+# to a broader root. That is critical: ``azure.storage.fileshare`` being
+# unavailable must not cause real ``azure.identity`` imports to be
+# intercepted by the mock layer.
+_MOCK_PACKAGE_NAMES: set = set()
 
 
 class _MockFinder(importlib.abc.MetaPathFinder):
     """A meta-path finder that intercepts imports for mocked packages and
     auto-creates mock modules for any submodule access."""
 
+    def _matches(self, fullname: str) -> bool:
+        for name in _MOCK_PACKAGE_NAMES:
+            if fullname == name or fullname.startswith(name + "."):
+                return True
+        return False
+
+    def find_spec(self, fullname, path, target=None):
+        if not self._matches(fullname):
+            return None
+        # Ensure mock is installed in sys.modules
+        self.load_module(fullname)
+        return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+
+    def create_module(self, spec):
+        return sys.modules.get(spec.name)
+
+    def exec_module(self, module):
+        pass
+
     def find_module(self, fullname, path=None):
-        for root in _MOCK_PACKAGE_ROOTS:
-            if fullname == root or fullname.startswith(root + "."):
-                return self
+        if self._matches(fullname):
+            return self
         return None
 
     def load_module(self, fullname):
@@ -46,7 +68,7 @@ class _MockFinder(importlib.abc.MetaPathFinder):
         mod = MagicMock()
         mod.__path__ = []
         mod.__name__ = fullname
-        mod.__spec__ = importlib.machinery.ModuleSpec(fullname, None)
+        mod.__spec__ = importlib.machinery.ModuleSpec(fullname, self)
         mod.__file__ = None
         mod.__loader__ = self
         mod.__package__ = fullname
@@ -64,16 +86,25 @@ def _ensure_module(name: str) -> None:
         return
     try:
         __import__(name)
-    except (ImportError, ModuleNotFoundError, RuntimeError, OSError):
+    except (ImportError, ModuleNotFoundError, RuntimeError, OSError, AttributeError):
         # Remove any partially-loaded submodules to avoid stale state
         to_remove = [k for k in sys.modules if k == name or k.startswith(name + ".")]
         for k in to_remove:
             del sys.modules[k]
-        # Register this package root for the meta-path finder
-        root = name.split(".")[0]
-        _MOCK_PACKAGE_ROOTS.add(root)
-        # Install the root mock module immediately
-        _mock_finder.load_module(name)
+        # Register this exact dotted name (and, to make ``import X.Y`` work,
+        # every parent package that was not already importable) so the
+        # meta-path finder can intercept subsequent imports. We intentionally
+        # do NOT hoist up to the root because doing so would make the finder
+        # intercept unrelated sibling subpackages (e.g. mocking
+        # ``azure.storage.fileshare`` must not mask real ``azure.identity``).
+        parts = name.split(".")
+        for i in range(1, len(parts) + 1):
+            dotted = ".".join(parts[:i])
+            try:
+                __import__(dotted)
+            except Exception:  # pragma: no cover - defensive
+                _MOCK_PACKAGE_NAMES.add(dotted)
+                _mock_finder.load_module(dotted)
 
 
 # Only mock packages that may genuinely be absent in the test environment.
@@ -86,6 +117,34 @@ _OPTIONAL_PACKAGES = [
     "google.cloud",
     "google.cloud.storage",
     "azure.storage.fileshare",
+    "sentence_transformers",
+    "langchain_core",
+    "langchain_anthropic",
+    "langchain_openai",
+    "langchain_google_genai",
+    "langchain_aws",
+    "langchain_mistralai",
+    "langchain_qdrant",
+    "litellm",
+    "qdrant_client",
+    "fastembed",
+    "etcd3",
+    "docling",
+    "docling_core",
+    "cv2",
+    "spacy",
+    "langchain_experimental",
+    "openpyxl",
+    "celery",
+    "aiokafka",
+    "github",
+    "kiota_abstractions",
+    "kiota_authentication_azure",
+    "kiota_http",
+    "msgraph",
+    "msgraph_core",
+    "slack_sdk",
+    "langchain",
 ]
 
 for _pkg in _OPTIONAL_PACKAGES:

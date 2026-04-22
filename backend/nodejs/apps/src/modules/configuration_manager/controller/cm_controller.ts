@@ -712,7 +712,11 @@ export const getAvailablePlatformFeatureFlags =
     res: Response,
     _next: NextFunction,
   ) => {
-    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+    // Only expose user-toggleable flags. Hidden flags are still seeded with
+    // their defaults by getPlatformSettingsFromStore but never surface in the
+    // Labs UI.
+    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    res.status(200).json({ flags }).end();
   };
 
 export const getAzureAdAuthConfig =
@@ -2530,6 +2534,7 @@ export const getAIModelsProviders =
             llm: [],
             reasoning: [],
             multiModal: [],
+            imageGeneration: [],
           },
           message: 'No AI models found',
         });
@@ -2551,6 +2556,7 @@ export const getAIModelsProviders =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
       };
 
       for (const key of Object.keys(defaultStructure)) {
@@ -2589,6 +2595,7 @@ export const getModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2658,6 +2665,7 @@ export const getAvailableModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2784,6 +2792,7 @@ export const addAIModelProvider =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2856,6 +2865,7 @@ export const addAIModelProvider =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
       };
       for (const key of Object.keys(defaultStructure)) {
         if (!(key in aiModels)) {

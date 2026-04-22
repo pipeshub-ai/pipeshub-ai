@@ -65,7 +65,7 @@ from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
-from app.models.entities import Record
+from app.models.entities import Record, RecordType
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
@@ -107,6 +107,49 @@ def get_mime_type_from_record(record: Record) -> str:
 
     # Fallback to octet-stream
     return "application/octet-stream"
+
+
+async def _stream_artifact_from_storage(
+    record: Record,
+    org_id: str,
+    config_service: ConfigurationService,
+) -> Response:
+    """Fetch an ARTIFACT record's content from blob storage and return it.
+
+    Uses the same storage buffer API as the KB connector, keyed on
+    ``record.external_record_id`` (which holds the blob storage document ID).
+    """
+    external_id = record.external_record_id
+    if not external_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="Artifact record has no storage document ID",
+        )
+
+    endpoints = await config_service.get_config(
+        config_node_constants.ENDPOINTS.value
+    )
+    storage_url = endpoints.get("storage", {}).get(
+        "endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value
+    )
+
+    buffer_url = f"{storage_url}/api/v1/document/internal/{external_id}/buffer"
+
+    jwt_payload = {
+        "orgId": org_id,
+        "scopes": ["storage:token"],
+    }
+    storage_token = await generate_jwt(config_service, jwt_payload)
+    response = await make_api_call(route=buffer_url, token=storage_token)
+
+    if isinstance(response["data"], dict):
+        data = response["data"].get("data")
+        buffer = bytes(data) if isinstance(data, list) else data
+    else:
+        buffer = response["data"]
+
+    mime = record.mime_type if record.mime_type else "application/octet-stream"
+    return Response(content=buffer or b"", media_type=mime)
 
 
 async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
@@ -743,6 +786,9 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
+
+        if record.record_type == RecordType.ARTIFACT:
+            return await _stream_artifact_from_storage(record, org_id, config_service)
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id

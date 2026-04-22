@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.utils.oauth_config import fetch_oauth_config_by_id, get_oauth_config
+from app.utils.oauth_config import (
+    fetch_oauth_config_by_id,
+    fetch_toolset_oauth_config_by_id,
+    get_oauth_config,
+)
 
 
 # ===================================================================
@@ -344,3 +348,131 @@ class TestFetchOAuthConfigById:
         )
         assert result is None
         logger.warning.assert_called()
+
+
+# ===================================================================
+# fetch_toolset_oauth_config_by_id
+# ===================================================================
+class TestFetchToolsetOAuthConfigById:
+    @pytest.mark.asyncio
+    async def test_found(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {"_id": "cfg-1", "config": {"clientId": "c1"}},
+            {"_id": "cfg-2", "config": {"clientId": "c2"}},
+        ]
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-2",
+            toolset_type="jira",
+            config_service=config_service,
+        )
+        assert result is not None
+        assert result["_id"] == "cfg-2"
+        # Verify the toolset-specific path was queried
+        call_args = config_service.get_config.call_args
+        assert "/services/oauths/toolsets/" in call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_not_found(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {"_id": "cfg-1", "config": {"clientId": "c1"}},
+        ]
+        logger = MagicMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="missing",
+            toolset_type="slack",
+            config_service=config_service,
+            logger=logger,
+        )
+        assert result is None
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_oauth_config_id(self):
+        config_service = AsyncMock()
+        logger = MagicMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="",
+            toolset_type="jira",
+            config_service=config_service,
+            logger=logger,
+        )
+        assert result is None
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_toolset_type(self):
+        config_service = AsyncMock()
+        logger = MagicMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="",
+            config_service=config_service,
+            logger=logger,
+        )
+        assert result is None
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_non_list_response(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = {"not": "a list"}
+        logger = MagicMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="jira",
+            config_service=config_service,
+            logger=logger,
+        )
+        assert result is None
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_service_raises(self):
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = RuntimeError("network error")
+        logger = MagicMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="jira",
+            config_service=config_service,
+            logger=logger,
+        )
+        assert result is None
+        logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_no_logger_empty_inputs(self):
+        config_service = AsyncMock()
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="",
+            toolset_type="",
+            config_service=config_service,
+            logger=None,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_logger_exception_branch(self):
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = RuntimeError("boom")
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="slack",
+            config_service=config_service,
+            logger=None,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_logger_not_found(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = []
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="slack",
+            config_service=config_service,
+            logger=None,
+        )
+        assert result is None

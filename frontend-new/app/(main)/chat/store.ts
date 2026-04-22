@@ -98,6 +98,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     activeExpandedMessageId: null,
     regenerateMessageId: null,
     pendingCollections: [],
+    artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
   };

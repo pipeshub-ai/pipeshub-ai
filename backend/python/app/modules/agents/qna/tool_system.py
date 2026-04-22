@@ -193,6 +193,64 @@ class ToolLoader:
 # Helper Functions
 # ============================================================================
 
+# Apps that let the LLM execute arbitrary user-controlled code on the host
+# (or in a sandbox container). These are *powerful* and must be gated behind
+# an explicit, opt-in deployment flag — otherwise any authenticated chat
+# user effectively has code-execution-as-a-service.
+_CODE_EXECUTION_APPS: frozenset[str] = frozenset({
+    "coding_sandbox",
+    "database_sandbox",
+})
+
+
+def _code_execution_enabled(state: ChatState) -> bool:
+    """Return whether this deployment/caller has access to code-execution tools.
+
+    Source of truth is the ``ENABLE_CODE_EXECUTION`` platform feature flag
+    managed from the admin **Labs** page. Defaults to ENABLED so the feature
+    works out of the box; admins disable it from the UI when desired.
+
+    Resolution order (first hit wins):
+
+    1. ``state["enable_code_execution"]`` — explicit per-request override
+       (bool). Lets callers force either on/off regardless of deployment
+       configuration.
+    2. ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var — explicit deploy-level
+       override. Honoured only when set to a recognised truthy/falsy value;
+       unset or unrecognised values fall through.
+    3. ``FeatureFlagService`` — reads the ``ENABLE_CODE_EXECUTION`` flag from
+       the platform settings (etcd/kv store) populated by the Labs page.
+    4. Default: ``True``.
+    """
+    state_flag = state.get("enable_code_execution")
+    if isinstance(state_flag, bool):
+        return state_flag
+
+    import os as _os
+    env_val = _os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION")
+    if env_val is not None:
+        raw = env_val.strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        # Unrecognised values fall through to the feature flag / default.
+
+    try:
+        from app.services.featureflag.config.config import CONFIG
+        from app.services.featureflag.featureflag import FeatureFlagService
+
+        return bool(
+            FeatureFlagService.get_service().is_feature_enabled(
+                CONFIG.ENABLE_CODE_EXECUTION, default=True
+            )
+        )
+    except Exception:
+        # If the feature flag subsystem is unavailable for any reason,
+        # fail open to the documented default.
+        return True
+
+
 def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[RegistryToolWrapper]:
     """
     Load all tools (internal + user toolsets).
@@ -235,6 +293,15 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
     # Check if knowledge is configured - retrieval tool is only loaded when knowledge exists
     has_knowledge = state.get("has_knowledge", False)
 
+    # SECURITY: Code-execution tools are opt-in. If the deployment has not
+    # enabled them, filter out coding_sandbox / database_sandbox completely
+    # so the LLM can never be tricked into running them.
+    code_exec_enabled = _code_execution_enabled(state)
+    if state_logger and not code_exec_enabled:
+        state_logger.info(
+            "Code-execution tools disabled (toggle in Labs → Enable Code Execution)"
+        )
+
     for full_name, registry_tool in registry_tools.items():
         try:
             app_name, tool_name = _parse_tool_name(full_name)
@@ -243,6 +310,14 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
             if full_name in blocked_tools:
                 if state_logger:
                     state_logger.warning(f"Blocking {full_name} (failed {blocked_tools[full_name]} times)")
+                continue
+
+            # SECURITY: Gate code-execution apps behind the opt-in flag.
+            if app_name.lower() in _CODE_EXECUTION_APPS and not code_exec_enabled:
+                if state_logger:
+                    state_logger.debug(
+                        f"Skipping code-execution tool {full_name} - disabled by deployment policy"
+                    )
                 continue
 
             # Skip retrieval tools when no knowledge is configured
@@ -375,7 +450,14 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     # Check app name (retrieval is NOT always internal - depends on knowledge config)
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name in ['calculator', 'datetime', 'utility']:
+        if app_name in [
+            'calculator',
+            'datetime',
+            'utility',
+            'coding_sandbox',
+            'database_sandbox',
+            'image_generator',
+        ]:
             return True
 
     # Fallback patterns (retrieval excluded - handled separately based on knowledge)
@@ -383,6 +465,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
         "calculator.",
         "web_search",
         "get_current_datetime",
+        "image_generator.",
     ]
 
     return any(p in full_name.lower() for p in internal_patterns)
@@ -570,10 +653,32 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
 
         def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-            """Create an async wrapper function that calls tool_wrapper.arun()."""
-            async def _async_tool_func(**kwargs: object) -> tuple[bool, str] | str | dict[str, Any] | list[Any]:
-                # Call arun with kwargs as a dict (arun handles both formats)
-                return await wrapper.arun(kwargs)
+            """Create an async wrapper function that calls tool_wrapper.arun().
+
+            Normalises the return value into a string suitable for a
+            ``ToolMessage``:
+
+            * Unwrap real Python ``(success, data)`` tuples — tools in this
+              codebase use that convention. Do NOT unwrap ``list`` because a
+              tool genuinely returning a 2-element list would be corrupted.
+            * If the resulting value is already a ``str``, pass it through.
+            * If it is a ``dict`` or ``list``, JSON-encode it so the LLM
+              sees proper JSON rather than Python ``repr`` (``{'a': 1}``).
+            * Otherwise fall back to ``str()``.
+            """
+            async def _async_tool_func(**kwargs: object) -> str:
+                result = await wrapper.arun(kwargs)
+                if isinstance(result, tuple) and len(result) == 2:
+                    _success, result = result
+                if isinstance(result, str):
+                    return result
+                if isinstance(result, (dict, list)):
+                    try:
+                        import json as _json
+                        return _json.dumps(result, default=str)
+                    except (TypeError, ValueError):
+                        return str(result)
+                return str(result)
             return _async_tool_func
 
         for tool_wrapper in registry_tools:
@@ -624,7 +729,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
         if state_logger:
             state_logger.debug(f"get_agent_tools_with_schemas: returning {len(structured_tools)} structured tools")
             tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
-            state_logger.debug(f"Structured tool names: {tool_names[:10]}")
+            state_logger.debug(f"Structured tool names: {tool_names[:12]}")
 
         # Add dynamic agent fetch_full_record tool
         virtual_record_map = state.get("virtual_record_id_to_result", {})

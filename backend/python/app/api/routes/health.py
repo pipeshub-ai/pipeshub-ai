@@ -10,9 +10,11 @@ from langchain_core.messages import HumanMessage  #type: ignore
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.utils.aimodels import (
+    ImageGenerationProvider,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
+    get_image_generation_model,
 )
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -653,6 +655,116 @@ async def perform_embedding_health_check(
         )
 
 
+async def perform_image_generation_health_check(
+    model_config: dict,
+    logger: Logger,
+) -> JSONResponse:
+    """Validate credentials for an image-generation provider.
+
+    We deliberately do **not** call ``generate()``: the underlying APIs meter
+    per-image cost and have strict rate limits. Instead we build a provider
+    client, call a cheap listing/get endpoint, and surface the result in the
+    same envelope used by the LLM/embedding health checks.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    model_string = configuration.get("model", "")
+    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+
+    if not model_names:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "No valid model names found in configuration",
+                "details": {
+                    "provider": provider,
+                    "model": model_string,
+                },
+            },
+        )
+
+    model_name = model_names[0]
+    try:
+        adapter = get_image_generation_model(
+            provider=provider,
+            config=model_config,
+            model_name=model_name,
+        )
+    except Exception as e:
+        logger.error(
+            "Image generation health check failed to build adapter for "
+            f"{provider}/{model_name}: {e}", exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Image generation health check failed: {_extract_error_message(e)}",
+                "details": {
+                    "provider": provider,
+                    "model": model_name,
+                    "error_type": type(e).__name__,
+                },
+            },
+        )
+
+    try:
+        if provider == ImageGenerationProvider.OPENAI.value:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                api_key=configuration["apiKey"],
+                organization=configuration.get("organizationId"),
+            )
+            try:
+                await asyncio.wait_for(client.models.list(), timeout=30.0)
+            finally:
+                await client.close()
+        elif provider == ImageGenerationProvider.GEMINI.value:
+            from google import genai
+
+            client = genai.Client(api_key=configuration["apiKey"])
+            await asyncio.wait_for(
+                client.aio.models.get(model=model_name),
+                timeout=30.0,
+            )
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": f"Unsupported image generation provider: {provider}",
+                },
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": "Image generation provider is reachable",
+                "details": {"provider": provider, "model": model_name},
+            },
+        )
+    except Exception as e:
+        logger.error(
+            f"Image generation health check failed for {provider}/{model_name}: {e}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Image generation health check failed: {_extract_error_message(e)}",
+                "details": {
+                    "provider": provider,
+                    "model": model_name,
+                    "error_type": type(e).__name__,
+                },
+            },
+        )
+
+
 @router.post("/health-check/{model_type}")
 async def health_check(request: Request, model_type: str, model_config: dict = Body(...)) -> JSONResponse:
     """Health check endpoint to validate the health of the application."""
@@ -669,6 +781,13 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
         elif model_type == "llm":
             logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
             return await perform_llm_health_check(model_config, logger)
+
+        elif model_type == "imageGeneration":
+            logger.info(
+                f"Performing image generation health check for {model_config.get('provider')} "
+                f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
+            )
+            return await perform_image_generation_health_check(model_config, logger)
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", exc_info=True)
