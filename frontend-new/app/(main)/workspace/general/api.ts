@@ -60,12 +60,15 @@ export const OrgApi = {
     return data;
   },
 
-  /** GET /api/v1/org/logo — download logo and return a local blob URL */
+  /** GET /api/v1/org/logo — download logo and return a local blob URL (null when the org has no logo, i.e. 204). */
   async getLogoUrl(): Promise<string | null> {
     try {
       const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
         responseType: 'blob',
       });
+      if (response.status === 204) {
+        return null;
+      }
       return URL.createObjectURL(response.data);
     } catch {
       return null;

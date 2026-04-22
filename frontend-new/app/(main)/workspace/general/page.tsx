@@ -10,7 +10,6 @@ import {
   Switch,
   TextField,
   Avatar,
-  IconButton,
 } from '@radix-ui/themes';
 import {
   ConfirmationDialog,
@@ -24,7 +23,6 @@ import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
 import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
@@ -379,33 +377,16 @@ export default function GeneralPage() {
           <SettingsSection title={t('workspace.general.companyProfile')}>
             {/* Logo */}
             <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
-              <Flex align="center" justify="end" gap="2" style={{ width: '100%' }}>
-                <AvatarUploadWidget
-                  src={logoUrl}
-                  initial={logoInitial}
-                  uploading={logoUploading || logoDeleting}
-                  onEditClick={() => {
-                    if (logoUploading || logoDeleting) return;
-                    fileInputRef.current?.click();
-                  }}
-                />
-                {hasServerLogo && (
-                  <IconButton
-                    type="button"
-                    variant="soft"
-                    color="red"
-                    size="2"
-                    onClick={handleDeleteLogo}
-                    disabled={logoUploading || logoDeleting}
-                    aria-label={t('workspace.general.removeLogoAria')}
-                    style={{
-                      cursor: logoUploading || logoDeleting ? 'wait' : 'pointer',
-                    }}
-                  >
-                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-                  </IconButton>
-                )}
-              </Flex>
+              <AvatarUploadWidget
+                src={logoUrl}
+                initial={logoInitial}
+                uploading={logoUploading || logoDeleting}
+                onEditClick={() => {
+                  if (logoUploading || logoDeleting) return;
+                  fileInputRef.current?.click();
+                }}
+                onDeleteClick={hasServerLogo ? handleDeleteLogo : undefined}
+              />
             </SettingsRow>
 
             {/* Registered Name */}
