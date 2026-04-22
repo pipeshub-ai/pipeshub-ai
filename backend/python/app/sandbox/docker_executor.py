@@ -518,28 +518,43 @@ def _get_archive_bytes(container: object, path: str) -> bytes:
     return b"".join(bits)
 
 
+# Keep up to 16 MiB of tar data in memory; anything larger spills to disk.
+# This avoids OOM on large artifact directories while still being fast for
+# the common small-output case.
+_TAR_SPOOL_MAX_SIZE = 16 * 1024 * 1024
+
+
 def _extract_container_dir(container: object, container_path: str, local_dir: str) -> None:
-    """Pull a directory from a container via ``get_archive`` and extract to *local_dir*."""
+    """Pull a directory from a container via ``get_archive`` and extract to *local_dir*.
+
+    The archive is streamed chunk-by-chunk into a ``SpooledTemporaryFile`` so
+    small archives stay in memory while large ones transparently spill to
+    disk. This prevents high memory consumption / OOM on large outputs.
+    """
     try:
         bits, _ = container.get_archive(container_path)
-        tar_stream = io.BytesIO(b"".join(bits))
-        resolved_root = os.path.realpath(local_dir)
-        with tarfile.open(fileobj=tar_stream) as tar:
-            prefix = os.path.basename(container_path.rstrip("/")) + "/"
-            for member in tar.getmembers():
-                if member.isdir():
-                    continue
-                if member.name.startswith(prefix):
-                    member.name = member.name[len(prefix):]
-                if not member.name:
-                    continue
-                target = os.path.realpath(os.path.join(local_dir, member.name))
-                if not target.startswith(resolved_root + os.sep) and target != resolved_root:
-                    logger.warning(
-                        "Skipping tar member with path traversal: %s -> %s",
-                        member.name, target,
-                    )
-                    continue
-                tar.extract(member, local_dir)
+        with tempfile.SpooledTemporaryFile(max_size=_TAR_SPOOL_MAX_SIZE) as tar_stream:
+            for chunk in bits:
+                if chunk:
+                    tar_stream.write(chunk)
+            tar_stream.seek(0)
+            resolved_root = os.path.realpath(local_dir)
+            with tarfile.open(fileobj=tar_stream, mode="r|*") as tar:
+                prefix = os.path.basename(container_path.rstrip("/")) + "/"
+                for member in tar:
+                    if member.isdir():
+                        continue
+                    if member.name.startswith(prefix):
+                        member.name = member.name[len(prefix):]
+                    if not member.name:
+                        continue
+                    target = os.path.realpath(os.path.join(local_dir, member.name))
+                    if not target.startswith(resolved_root + os.sep) and target != resolved_root:
+                        logger.warning(
+                            "Skipping tar member with path traversal: %s -> %s",
+                            member.name, target,
+                        )
+                        continue
+                    tar.extract(member, local_dir)
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)
