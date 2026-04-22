@@ -279,3 +279,235 @@ class TestRowsToCsvBytes:
         from app.agents.actions.database_sandbox.database_sandbox import _rows_to_csv_bytes
         result = _rows_to_csv_bytes(["x"], [])
         assert b"x" in result
+
+
+class TestScheduleCSVExport:
+    """Cover the ``_schedule_csv_export`` background-task branches."""
+
+    @pytest.mark.asyncio
+    async def test_success_uploads_and_creates_record(self):
+        import asyncio
+
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
+            "documentId": "doc-db-1",
+            "fileName": "sqlite_result_xxx.csv",
+            "signedUrl": "https://blob.example/x",
+        })
+        state = _make_state(
+            blob_store=mock_blob,
+            user_id="user-1",
+        )
+        sandbox = mod.DatabaseSandbox(state)
+
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "create_artifact_record",
+            AsyncMock(return_value="record-123"),
+        ), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_csv_export(
+                [{"id": "1", "name": "alice"}, {"id": "2", "name": "bob"}],
+                "sqlite_result",
+            )
+            assert len(captured_tasks) == 1
+            result = await captured_tasks[0]
+
+        assert result is not None
+        assert result["type"] == "artifacts"
+        assert len(result["artifacts"]) == 1
+        entry = result["artifacts"][0]
+        assert entry["mimeType"] == "text/csv"
+        assert entry["recordId"] == "record-123"
+        assert entry["sizeBytes"] > 0
+
+        mock_blob.save_conversation_file_to_storage.assert_awaited_once()
+        call = mock_blob.save_conversation_file_to_storage.await_args
+        assert call.kwargs["org_id"] == "org-db-001"
+        assert call.kwargs["conversation_id"] == "conv-db-001"
+        assert call.kwargs["file_name"].startswith("sqlite_result_")
+        assert call.kwargs["file_name"].endswith(".csv")
+
+    @pytest.mark.asyncio
+    async def test_record_creation_failure_still_returns_upload(self):
+        import asyncio
+
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
+            "documentId": "doc-db-2",
+            "fileName": "pg_result_yyy.csv",
+            "signedUrl": "https://blob.example/y",
+        })
+        state = _make_state(
+            blob_store=mock_blob,
+            user_id="user-1",
+        )
+        sandbox = mod.DatabaseSandbox(state)
+
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "create_artifact_record",
+            AsyncMock(side_effect=RuntimeError("graph down")),
+        ), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_csv_export(
+                [{"id": "1"}], "pg_result",
+            )
+            assert len(captured_tasks) == 1
+            result = await captured_tasks[0]
+
+        assert result is not None
+        assert len(result["artifacts"]) == 1
+        entry = result["artifacts"][0]
+        assert "recordId" not in entry
+        assert entry["mimeType"] == "text/csv"
+
+    @pytest.mark.asyncio
+    async def test_blob_save_raises_resolves_to_none(self):
+        import asyncio
+
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_conversation_file_to_storage = AsyncMock(
+            side_effect=RuntimeError("blob down"),
+        )
+        state = _make_state(blob_store=mock_blob, user_id="user-1")
+        sandbox = mod.DatabaseSandbox(state)
+
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_csv_export([{"id": "1"}], "sqlite_result")
+            assert len(captured_tasks) == 1
+            result = await captured_tasks[0]
+
+        assert result is None
+
+    def test_no_rows_is_noop(self):
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        sandbox = mod.DatabaseSandbox(_make_state())
+
+        with patch.object(mod, "register_task") as mock_register:
+            sandbox._schedule_csv_export([], "sqlite_result")
+
+        mock_register.assert_not_called()
+
+    def test_no_conversation_is_noop(self):
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        sandbox = mod.DatabaseSandbox(_make_state(conversation_id=None))
+
+        with patch.object(mod, "register_task") as mock_register:
+            sandbox._schedule_csv_export([{"id": "1"}], "sqlite_result")
+
+        mock_register.assert_not_called()
+
+
+class TestSqliteDisplayLimit:
+    """Ensure the 100-row display cap is applied and signalled to the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_sqlite_truncates_over_100_rows(self):
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        state = _make_state()
+        sandbox = mod.DatabaseSandbox(state)
+
+        rows = "id\n" + "\n".join(str(i) for i in range(150)) + "\n"
+        mock_result = ExecutionResult(
+            success=True, stdout=rows, exit_code=0, execution_time_ms=9,
+        )
+        with patch.object(mod, "get_executor") as mock_get, patch.object(
+            sandbox, "_schedule_csv_export",
+        ):
+            executor = AsyncMock()
+            executor.execute = AsyncMock(return_value=mock_result)
+            mock_get.return_value = executor
+
+            success, result_json = await sandbox.execute_sqlite("SELECT id FROM t;")
+
+        assert success is True
+        data = json.loads(result_json)
+        assert data["row_count"] == 150
+        assert data["truncated"] is True
+        assert data["displayed_row_count"] == 100
+        assert len(data["data"]) == 100
+
+
+class TestPostgresqlDisplayLimit:
+    @pytest.mark.asyncio
+    async def test_postgresql_truncates_over_100_rows(self, monkeypatch):
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        monkeypatch.setenv("SANDBOX_PG_URL", "postgresql://localhost/test")
+        state = _make_state()
+        sandbox = mod.DatabaseSandbox(state)
+
+        rows = "id\n" + "\n".join(str(i) for i in range(150)) + "\n"
+        mock_result = ExecutionResult(
+            success=True, stdout=rows, exit_code=0, execution_time_ms=11,
+        )
+        with patch.object(mod, "get_executor") as mock_get, patch.object(
+            sandbox, "_schedule_csv_export",
+        ):
+            executor = AsyncMock()
+            executor.execute = AsyncMock(return_value=mock_result)
+            mock_get.return_value = executor
+
+            success, result_json = await sandbox.execute_postgresql(
+                "SELECT id FROM t;",
+            )
+
+        assert success is True
+        data = json.loads(result_json)
+        assert data["row_count"] == 150
+        assert data["truncated"] is True
+        assert data["displayed_row_count"] == 100
+        assert len(data["data"]) == 100
+
+
+class TestParseCSVOutputHandlesError:
+    def test_csv_error_returns_empty(self):
+        import csv as _csv
+
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        class _BadReader:
+            def __init__(self, *args, **kwargs) -> None:
+                raise _csv.Error("invalid csv")
+
+        with patch.object(mod.csv, "DictReader", _BadReader):
+            result = mod._parse_csv_output("id,name\n1,alice\n")
+
+        assert result == []
+
+
+class TestTruncateHelper:
+    def test_truncate_helper_overflow(self):
+        from app.agents.actions.database_sandbox.database_sandbox import _truncate
+
+        text = "x" * 50
+        out = _truncate(text, 10)
+        assert out.startswith("x" * 10)
+        assert "truncated" in out
+        assert "50 total chars" in out
+
+    def test_truncate_helper_under_limit(self):
+        from app.agents.actions.database_sandbox.database_sandbox import _truncate
+
+        assert _truncate("short", 50) == "short"

@@ -712,7 +712,11 @@ export const getAvailablePlatformFeatureFlags =
     res: Response,
     _next: NextFunction,
   ) => {
-    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+    // Only expose user-toggleable flags. Hidden flags are still seeded with
+    // their defaults by getPlatformSettingsFromStore but never surface in the
+    // Labs UI.
+    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    res.status(200).json({ flags }).end();
   };
 
 export const getAzureAdAuthConfig =

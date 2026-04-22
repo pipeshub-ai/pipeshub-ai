@@ -319,3 +319,191 @@ class TestUploadArtifactsMethod:
         result = ExecutionResult(success=True, artifacts=[artifact])
         uploaded = await sandbox._upload_artifacts(result)
         assert uploaded == []
+
+    @pytest.mark.asyncio
+    async def test_blob_fallback_construction_fails(self):
+        """When no blob_store is injected and BlobStorage construction fails,
+        _upload_artifacts must return []."""
+        from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
+
+        state = _make_state(blob_store=None)
+        sandbox = CodingSandbox(state)
+
+        artifact = ArtifactOutput(
+            file_name="test.csv",
+            file_path="/tmp/test.csv",
+            mime_type="text/csv",
+            size_bytes=10,
+        )
+        result = ExecutionResult(success=True, artifacts=[artifact])
+
+        with patch(
+            "app.modules.transformers.blob_storage.BlobStorage",
+            side_effect=RuntimeError("missing storage config"),
+        ):
+            uploaded = await sandbox._upload_artifacts(result)
+
+        assert uploaded == []
+
+
+class TestPackageRejection:
+    """Cover the validate_packages failure branches in execute_python/typescript."""
+
+    @pytest.mark.asyncio
+    async def test_execute_python_rejects_disallowed_package(self):
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+        from app.sandbox.models import SandboxLanguage
+        from app.sandbox.package_policy import PackageNotAllowedError
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        exc = PackageNotAllowedError(
+            "evil-pkg", SandboxLanguage.PYTHON, ["pandas", "numpy"],
+        )
+        with patch(
+            "app.sandbox.models.validate_packages", side_effect=exc,
+        ):
+            success, result_json = await sandbox.execute_python(
+                "print('x')", requirements=["evil-pkg"],
+            )
+
+        assert success is False
+        data = json.loads(result_json)
+        assert data["error_code"] == "package_not_allowed"
+        assert data["rejected_package"] == "evil-pkg"
+        assert data["language"] == "python"
+        assert "evil-pkg" in data["message"]
+        assert set(data["allowed_packages"]) >= {"pandas", "numpy"} or isinstance(
+            data["allowed_packages"], list,
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_python_invalid_package_name(self):
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        with patch(
+            "app.sandbox.models.validate_packages",
+            side_effect=ValueError("not a valid PyPI name"),
+        ):
+            success, result_json = await sandbox.execute_python(
+                "print('x')", requirements=["$$$invalid"],
+            )
+
+        assert success is False
+        data = json.loads(result_json)
+        assert data["error_code"] == "invalid_package_name"
+        assert "not a valid PyPI name" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_execute_typescript_rejects_disallowed_package(self):
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+        from app.sandbox.models import SandboxLanguage
+        from app.sandbox.package_policy import PackageNotAllowedError
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        exc = PackageNotAllowedError(
+            "evil-npm", SandboxLanguage.TYPESCRIPT, ["chart.js", "sharp"],
+        )
+        with patch(
+            "app.sandbox.models.validate_packages", side_effect=exc,
+        ):
+            success, result_json = await sandbox.execute_typescript(
+                "console.log(1)", packages=["evil-npm"],
+            )
+
+        assert success is False
+        data = json.loads(result_json)
+        assert data["error_code"] == "package_not_allowed"
+        assert data["rejected_package"] == "evil-npm"
+        assert data["language"] == "typescript"
+
+    @pytest.mark.asyncio
+    async def test_execute_typescript_invalid_package_name(self):
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        with patch(
+            "app.sandbox.models.validate_packages",
+            side_effect=ValueError("bad npm name"),
+        ):
+            success, result_json = await sandbox.execute_typescript(
+                "console.log(1)", packages=["!!bad"],
+            )
+
+        assert success is False
+        data = json.loads(result_json)
+        assert data["error_code"] == "invalid_package_name"
+        assert "bad npm name" in data["message"]
+
+
+class TestScheduleArtifactUploadException:
+    """Exercise the background-task exception branch in _schedule_artifact_upload."""
+
+    @pytest.mark.asyncio
+    async def test_upload_exception_resolves_to_none(self):
+        import asyncio
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        artifact = ArtifactOutput(
+            file_name="out.csv", file_path="/tmp/out.csv",
+            mime_type="text/csv", size_bytes=10,
+        )
+        exec_result = ExecutionResult(
+            success=True, stdout="", exit_code=0,
+            execution_time_ms=1, artifacts=[artifact],
+        )
+
+        captured_tasks: list[asyncio.Task] = []
+
+        async def _raise(*args, **kwargs):
+            raise RuntimeError("upload boom")
+
+        with patch.object(sandbox, "_upload_artifacts", _raise), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_artifact_upload(exec_result)
+            assert len(captured_tasks) == 1
+            result = await captured_tasks[0]
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_upload_success_yields_artifacts(self):
+        import asyncio
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+
+        sandbox = mod.CodingSandbox(_make_state())
+
+        artifact = ArtifactOutput(
+            file_name="out.csv", file_path="/tmp/out.csv",
+            mime_type="text/csv", size_bytes=10,
+        )
+        exec_result = ExecutionResult(
+            success=True, stdout="", exit_code=0,
+            execution_time_ms=1, artifacts=[artifact],
+        )
+
+        captured_tasks: list[asyncio.Task] = []
+
+        async def _ok(*args, **kwargs):
+            return [{"fileName": "out.csv", "documentId": "d"}]
+
+        with patch.object(sandbox, "_upload_artifacts", _ok), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_artifact_upload(exec_result)
+            assert len(captured_tasks) == 1
+            result = await captured_tasks[0]
+
+        assert result == {
+            "type": "artifacts",
+            "artifacts": [{"fileName": "out.csv", "documentId": "d"}],
+        }
