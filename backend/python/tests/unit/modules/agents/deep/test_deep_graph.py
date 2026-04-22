@@ -172,6 +172,24 @@ class TestRouteAfterOrchestrator:
         graph_mod = _load_graph_module()
         assert graph_mod.route_after_orchestrator({}) == "critic"
 
+    def test_first_run_direct_answer_bypasses_critic(self):
+        """can_answer_directly=True on the first pass skips the critic LLM call."""
+        graph_mod = _load_graph_module()
+        state = {
+            "critic_done": False,
+            "execution_plan": {"can_answer_directly": True},
+        }
+        assert graph_mod.route_after_orchestrator(state) == "respond"
+
+    def test_first_run_non_direct_answer_still_hits_critic(self):
+        """can_answer_directly=False on the first pass must still go to the critic."""
+        graph_mod = _load_graph_module()
+        state = {
+            "critic_done": False,
+            "execution_plan": {"can_answer_directly": False},
+        }
+        assert graph_mod.route_after_orchestrator(state) == "critic"
+
     def test_error_short_circuits_to_respond(self):
         graph_mod = _load_graph_module()
         state = {"error": {"message": "boom"}, "critic_done": False}

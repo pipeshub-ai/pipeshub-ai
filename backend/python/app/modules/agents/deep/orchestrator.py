@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Literal
@@ -414,50 +413,6 @@ def _normalize_tasks(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-def _parse_orchestrator_response(content: str, log: logging.Logger) -> dict[str, Any]:
-    """Parse the orchestrator LLM response into a plan dict."""
-    # Try to extract JSON from the response
-    try:
-        # Strip markdown code blocks
-        text = content.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first and last lines (```json and ```)
-            json_lines = []
-            in_block = False
-            for line in lines:
-                if line.strip().startswith("```") and not in_block:
-                    in_block = True
-                    continue
-                if line.strip() == "```" and in_block:
-                    break
-                if in_block:
-                    json_lines.append(line)
-            text = "\n".join(json_lines)
-
-        plan = json.loads(text)
-
-        # Validate structure
-        if not isinstance(plan, dict):
-            log.warning("Orchestrator response is not a dict, using fallback")
-            return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
-        return plan
-
-    except json.JSONDecodeError:
-        # Try to find JSON within the text
-        import re
-        json_match = re.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        log.warning("Could not parse orchestrator response as JSON")
-        return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
 
 def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
     """Build knowledge context for the orchestrator prompt.

@@ -43,9 +43,12 @@ def route_after_orchestrator(
         return "respond"
  
     if not state.get("critic_done", False):
+        execution_plan = state.get("execution_plan", {}) or {}
+        if execution_plan.get("can_answer_directly"):
+            return "respond"
         # First orchestrator run — critic has not evaluated yet.
         return "critic"
- 
+
     # Critic already ran (either approved or triggered one revision).
     # Go straight to execution — no second critic evaluation.
     return should_dispatch(state)  # "dispatch" or "respond"

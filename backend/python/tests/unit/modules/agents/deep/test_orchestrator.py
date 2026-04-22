@@ -3,7 +3,6 @@ Tests for app.modules.agents.deep.orchestrator helper functions.
 
 Covers:
 - _normalize_tasks: single/multi-domain splitting
-- _parse_orchestrator_response: JSON parsing with markdown stripping
 - _build_knowledge_context: knowledge base detection
 - _build_tool_guidance: tool listing from state
 - _build_agent_instructions: agent instructions assembly
@@ -29,7 +28,6 @@ from app.modules.agents.deep.orchestrator import (
     _build_user_context,
     _create_retrieval_task,
     _normalize_tasks,
-    _parse_orchestrator_response,
     should_dispatch,
 )
 
@@ -163,69 +161,7 @@ class TestNormalizeTasks:
 
 
 # ============================================================================
-# 2. _parse_orchestrator_response
-# ============================================================================
-
-class TestParseOrchestratorResponse:
-    """Tests for _parse_orchestrator_response()."""
-
-    def test_clean_json(self):
-        log = _mock_log()
-        content = '{"can_answer_directly": true, "reasoning": "Simple greeting"}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert result["reasoning"] == "Simple greeting"
-
-    def test_markdown_wrapped_json(self):
-        log = _mock_log()
-        content = '```json\n{"tasks": [{"task_id": "t1"}], "reasoning": "test"}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert len(result["tasks"]) == 1
-
-    def test_malformed_json_fallback(self):
-        log = _mock_log()
-        content = "I cannot parse this as JSON at all, sorry!"
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "I cannot parse" in result["reasoning"]
-
-    def test_non_dict_json_fallback(self):
-        log = _mock_log()
-        content = '[1, 2, 3]'
-        result = _parse_orchestrator_response(content, log)
-        # Array is not a dict, so fallback
-        assert result["can_answer_directly"] is True
-
-    def test_json_embedded_in_text(self):
-        log = _mock_log()
-        content = 'Here is my plan:\n{"tasks": [{"task_id": "t1"}], "can_answer_directly": false}'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert result["can_answer_directly"] is False
-
-    def test_empty_content_fallback(self):
-        log = _mock_log()
-        content = ""
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_markdown_code_block_with_json_prefix(self):
-        log = _mock_log()
-        content = '```json\n{\n  "can_answer_directly": false,\n  "tasks": []\n}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is False
-        assert result["tasks"] == []
-
-    def test_nested_json_with_special_chars(self):
-        log = _mock_log()
-        content = '{"tasks": [{"task_id": "t1", "description": "Search for \\"bugs\\""}]}'
-        result = _parse_orchestrator_response(content, log)
-        assert len(result["tasks"]) == 1
-
-
-# ============================================================================
-# 3. _build_knowledge_context
+# 2. _build_knowledge_context
 # ============================================================================
 
 class TestBuildKnowledgeContext:
@@ -947,37 +883,7 @@ class TestOrchestratorNode:
 
 
 # ============================================================================
-# 12. _parse_orchestrator_response — additional branches
-# ============================================================================
-
-class TestParseOrchestratorResponseExtra:
-    """Additional branch coverage for _parse_orchestrator_response()."""
-
-    def test_json_embedded_after_text_with_brace_in_text(self):
-        """Content has braces before the real JSON."""
-        log = _mock_log()
-        content = 'Here is {some text} and now: {"can_answer_directly": false, "tasks": []}'
-        result = _parse_orchestrator_response(content, log)
-        assert isinstance(result, dict)
-
-    def test_markdown_block_without_json_tag(self):
-        """Markdown block starting with ``` but no json tag."""
-        log = _mock_log()
-        content = '```\n{"can_answer_directly": true}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_double_json_decode_error_fallback(self):
-        """When both direct parse and regex fail, returns fallback."""
-        log = _mock_log()
-        content = '{"broken: json, and {also broken}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "broken" in result.get("reasoning", "")
-
-
-# ============================================================================
-# 13. _build_iteration_context — branch coverage
+# 12. _build_iteration_context — branch coverage
 # ============================================================================
 
 class TestBuildIterationContextExtra:

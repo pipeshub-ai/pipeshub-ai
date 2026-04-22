@@ -33,12 +33,6 @@ Prompt improvements (v3)
 * Plan-time reflection leads with a structured self-examination checklist
   (query coverage, ordering, domain fit, complexity) before listing errors,
   so the model improves the plan's logic, not just its formatting.
-
-Usage
------
-Replace the existing `_parse_orchestrator_response` call and the block that
-follows it in `orchestrator_node` with `run_orchestrator_with_reflection(...)`.
-All other orchestrator_node code stays the same.
 """
 
 from __future__ import annotations
