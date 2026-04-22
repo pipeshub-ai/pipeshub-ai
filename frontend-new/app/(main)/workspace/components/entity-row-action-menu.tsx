@@ -355,6 +355,9 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
               const row = (
                 <Flex
+                  role="menuitem"
+                  aria-disabled={isDisabled || undefined}
+                  tabIndex={isDisabled ? -1 : 0}
                   align="center"
                   gap="1"
                   onClick={(e) => {
@@ -365,6 +368,19 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     } else {
                       action.onClick?.();
                       handleOpenChange(false);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (isDisabled) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (action.subMenu) {
+                        setView('rolePicker');
+                      } else {
+                        action.onClick?.();
+                        handleOpenChange(false);
+                      }
                     }
                   }}
                   onMouseEnter={({ currentTarget }) => {
