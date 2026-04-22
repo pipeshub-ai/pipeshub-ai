@@ -84,7 +84,7 @@ export function useAgentBuilderNodeTemplates(
           routing: 'auto',
           allowMultipleLLMs: true,
         },
-        inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+        inputs: ['input', 'toolsets', 'mcpServers', 'knowledge', 'llms'],
         outputs: ['response'],
         category: 'agent',
       },

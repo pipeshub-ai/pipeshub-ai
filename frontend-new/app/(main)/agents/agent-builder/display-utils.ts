@@ -13,6 +13,9 @@ export const AGENT_KNOWLEDGE_FALLBACK_ICON = '/assets/icons/connectors/collectio
 /** Neutral connector glyph when a tool/app connector asset is missing or fails to load. */
 export const AGENT_TOOLSET_FALLBACK_ICON = '/assets/icons/connectors/default.svg';
 
+/** Fallback icon for MCP server nodes when no server-specific icon is available. */
+export const AGENT_MCP_FALLBACK_ICON = '/assets/icons/connectors/default.svg';
+
 function isIconPathString(s: string): boolean {
   const t = s.trim();
   return t.startsWith('/') || t.startsWith('http');
@@ -37,6 +40,7 @@ export function resolveNodeHeaderIconErrorFallback(data: FlowNodeData): string {
   const { type } = data;
   if (type.startsWith('llm-')) return AGENT_LLM_FALLBACK_ICON;
   if (type.startsWith('kb-') && type !== 'kb-group') return AGENT_KNOWLEDGE_FALLBACK_ICON;
+  if (type.startsWith('mcp-server-')) return AGENT_MCP_FALLBACK_ICON;
   return AGENT_TOOLSET_FALLBACK_ICON;
 }
 
@@ -67,6 +71,13 @@ export function resolveNodeHeaderIconUrl(data: FlowNodeData): string | undefined
 
   if (data.type.startsWith('kb-') && data.type !== 'kb-group') {
     return AGENT_KNOWLEDGE_FALLBACK_ICON;
+  }
+
+  if (data.type.startsWith('mcp-server-')) {
+    const name =
+      (typeof cfg.mcpServerName === 'string' && cfg.mcpServerName.trim()) ||
+      data.type.slice('mcp-server-'.length);
+    return connectorIconPathFromLabel(name);
   }
 
   if (data.type.startsWith('toolset-')) {

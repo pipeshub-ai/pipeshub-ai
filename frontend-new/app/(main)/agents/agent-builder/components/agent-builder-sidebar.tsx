@@ -13,8 +13,10 @@ import { toggleKeyedBoolean } from '../sidebar-expand-utils';
 import { AGENT_LLM_FALLBACK_ICON, AGENT_TOOLSET_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
+import { SidebarMcpServersSection } from './sidebar-mcp-servers-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import type { MCPServerInstance } from '@/app/(main)/workspace/mcp-servers/types';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
 const PALETTE_ICON_SIZE = 20;
@@ -106,6 +108,16 @@ export function AgentBuilderSidebar(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
+  mcpServers: MCPServerInstance[];
+  activeMcpServerTypes: string[];
+  mcpServersHasMore: boolean;
+  mcpServersLoadingMore: boolean;
+  onLoadMoreMcpServers: () => void;
+  refreshMcpServers: (
+    agentKey?: string | null,
+    isServiceAccount?: boolean,
+    search?: string
+  ) => Promise<void>;
   onNotify: (message: string) => void;
   agentKey?: string | null;
   isServiceAccount?: boolean;
@@ -126,6 +138,12 @@ export function AgentBuilderSidebar(props: {
     toolsets,
     activeToolsetTypes,
     refreshToolsets,
+    mcpServers,
+    activeMcpServerTypes,
+    mcpServersHasMore,
+    mcpServersLoadingMore,
+    onLoadMoreMcpServers,
+    refreshMcpServers,
     onNotify,
     agentKey = null,
     isServiceAccount = false,
@@ -146,6 +164,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
+    'mcp-servers': true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -443,6 +462,31 @@ export function AgentBuilderSidebar(props: {
                 onNotify={onNotify}
                 structureLocked={paletteStructureLocked}
                 orgCredentialUiLocked={toolsetsOrgCredentialLocked}
+                onPaletteStructureDragBlocked={onPaletteDragBlocked}
+              />
+            </Box>
+          ) : null}
+
+          <SectionHeader
+            title={t('agentBuilder.mcpServersSection')}
+            icon="dns"
+            open={expanded['mcp-servers']}
+            onToggle={() => toggle('mcp-servers')}
+          />
+          {expanded['mcp-servers'] ? (
+            <Box className="agent-builder-palette-nest">
+              <SidebarMcpServersSection
+                mcpServers={mcpServers}
+                loading={loading}
+                refreshMcpServers={refreshMcpServers}
+                loadMoreMcpServers={onLoadMoreMcpServers}
+                mcpServersHasMore={mcpServersHasMore}
+                mcpServersLoadingMore={mcpServersLoadingMore}
+                activeMcpServerTypes={activeMcpServerTypes}
+                isServiceAccount={isServiceAccount}
+                agentKey={agentKey}
+                onNotify={onNotify}
+                structureLocked={paletteStructureLocked}
                 onPaletteStructureDragBlocked={onPaletteDragBlocked}
               />
             </Box>

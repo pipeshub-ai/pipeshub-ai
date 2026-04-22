@@ -16318,6 +16318,62 @@ class Neo4jProvider(IGraphDBProvider):
             )
             agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
 
+            # Get linked MCP servers with their tools
+            mcp_server_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            mcp_tool_label = collection_to_label(CollectionNames.AGENT_MCP_TOOLS.value)
+            agent_has_mcp_server_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_server_has_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+
+            mcp_servers_query = f"""
+            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_mcp_server_rel}]->(ms:{mcp_server_label})
+            OPTIONAL MATCH (ms)-[tr:{mcp_server_has_tool_rel}]->(tool:{mcp_tool_label})
+            WITH agent, ms, collect(DISTINCT CASE
+                WHEN tool IS NOT NULL THEN {{
+                    _key: tool.id,
+                    name: tool.name,
+                    namespacedName: tool.namespacedName,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema
+                }}
+                ELSE null
+            END) AS tools_raw
+            WITH agent, ms, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+            RETURN {{
+                _key: ms.id,
+                name: ms.name,
+                displayName: ms.displayName,
+                type: ms.type,
+                instanceId: ms.instanceId,
+                selectedTools: ms.selectedTools,
+                tools: tools
+            }} AS mcpServer
+            """
+            mcp_servers_result = await self.client.execute_query(
+                mcp_servers_query,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            
+            # Parse inputSchema from JSON string back to dict for each tool
+            mcp_servers_list = []
+            if mcp_servers_result:
+                import json
+                for r in mcp_servers_result:
+                    mcp_server = r["mcpServer"]
+                    for tool in mcp_server.get("tools", []):
+                        input_schema_str = tool.get("inputSchema")
+                        if input_schema_str and isinstance(input_schema_str, str):
+                            try:
+                                tool["inputSchema"] = json.loads(input_schema_str)
+                            except json.JSONDecodeError:
+                                self.logger.warning(f"Failed to parse inputSchema for tool {tool.get('name')}, using default")
+                                tool["inputSchema"] = {"type": "object", "properties": {}}
+                        elif not input_schema_str:
+                            tool["inputSchema"] = {"type": "object", "properties": {}}
+                    mcp_servers_list.append(mcp_server)
+            
+            agent["mcpServers"] = mcp_servers_list
+
             # Get linked knowledge with filters
             knowledge_query = f"""
             MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})

@@ -26,7 +26,7 @@ export interface NodeTemplate {
   defaultConfig: Record<string, unknown>;
   inputs?: string[];
   outputs?: string[];
-  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors';
+  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors' | 'mcp-servers';
 }
 
 export interface ToolRef {
@@ -50,6 +50,22 @@ export interface KnowledgeReference {
   filters?: Record<string, unknown>;
 }
 
+export interface MCPServerToolRef {
+  name: string;
+  namespacedName: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface MCPServerReference {
+  id: string;
+  instanceId?: string;
+  name: string;
+  displayName: string;
+  type: string;
+  tools?: MCPServerToolRef[];
+}
+
 export interface AgentFormPayload {
   name: string;
   description: string;
@@ -62,6 +78,7 @@ export interface AgentFormPayload {
   isServiceAccount?: boolean;
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
+  mcpServers?: MCPServerReference[];
   flow?: { nodes: FlowNode[]; edges: Edge[] };
 }
 

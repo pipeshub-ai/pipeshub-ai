@@ -69,18 +69,19 @@ function getModelLabel(cfg: Record<string, unknown> | undefined): string {
   return ((cfg.modelName as string) || '').trim();
 }
 
-type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets';
+type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'mcpServers';
 
 function inboundHandleForEdge(
   targetHandle: string | null | undefined,
   source: FlowNodeData
 ): CoreInboundHandle | null {
   const h = targetHandle as CoreInboundHandle | undefined;
-  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets') return h;
+  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets' || h === 'mcpServers') return h;
 
   const t = source.type;
   if (t === 'user-input') return 'input';
   if (t.startsWith('llm-')) return 'llms';
+  if (t.startsWith('mcp-server-')) return 'mcpServers';
   if (
     t.startsWith('toolset-') ||
     t.startsWith('tool-group-') ||
@@ -186,7 +187,7 @@ function ConnectionChip({
   );
 }
 
-const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, input: 4 } as const;
+const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, mcpServers: 5, input: 4 } as const;
 
 function ConnectedChips({
   nodes,
@@ -264,6 +265,7 @@ export function AgentCoreNode({
       toolsets: [],
       knowledge: [],
       llms: [],
+      mcpServers: [],
     };
     incoming.forEach((e) => {
       const source = storeNodes.find((n) => n.id === e.source);
@@ -498,6 +500,22 @@ export function AgentCoreNode({
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
                 {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
+
+          <Section title={t('agentBuilder.mcpServersSection')} icon="dns">
+            <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.mcpServers.length ? (
+              <ConnectedChips
+                nodes={connected.mcpServers}
+                max={MAX_VISIBLE.mcpServers}
+                labelOf={(n) => (n.config?.displayName as string) || (n.config?.mcpServerName as string) || n.label}
+                chipIconKind="toolset"
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.connectMcpServer')}
               </Text>
             )}
           </Section>

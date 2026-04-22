@@ -191,6 +191,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     tool_count = len(_global_tools_registry.list_tools())
     logger.info(f"✅ {tool_count} tools available from in-memory registry")
 
+    # Initialize MCP server registry (in-memory catalog of built-in MCP server templates)
+    logger.info("🔄 Initializing MCP server registry...")
+    from app.agents.mcp.registry import get_mcp_server_registry
+
+    mcp_server_registry = get_mcp_server_registry()
+    mcp_server_registry.auto_discover_mcp_servers()
+    app.state.mcp_server_registry = mcp_server_registry
+    logger.info(f"✅ Loaded {len(mcp_server_registry.list_all())} MCP server templates")
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
