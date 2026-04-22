@@ -149,6 +149,11 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         .with_icon("/assets/icons/connectors/linear.svg")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
+            "Linear OAuth Setup",
+            "https://linear.app/developers/oauth-2-0-authentication",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/linear/linear',
             'pipeshub'

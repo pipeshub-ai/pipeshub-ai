@@ -148,6 +148,22 @@ class TestKnowledgeBaseConnector:
         records = [_make_record()]
         await connector.reindex_records(records)
         connector.logger.info.assert_called()
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(records)
+
+    @pytest.mark.asyncio
+    async def test_reindex_records_excludes_folder_mime_type(self):
+        connector = _make_connector()
+        records = [
+            _make_record(external_record_id="file-1", mime_type="application/pdf"),
+            _make_record(external_record_id="folder-1", mime_type="application/vnd.folder"),
+        ]
+
+        await connector.reindex_records(records)
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+        filtered_records = connector.data_entities_processor.reindex_existing_records.await_args.args[0]
+        assert len(filtered_records) == 1
+        assert filtered_records[0].external_record_id == "file-1"
 
     @pytest.mark.asyncio
     async def test_get_filter_options_returns_empty(self):

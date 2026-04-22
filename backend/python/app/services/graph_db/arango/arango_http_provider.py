@@ -1441,8 +1441,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         Reindex a single record with permission checks and event publishing.
         Depth comes from caller: 0 = only this record (record-details, collections/KB);
-        >0 = include children (e.g. all-records tree uses 100). KB (UPLOAD) records use
-        record-events and ignore depth; connector records use sync-events with depth.
+        >0 = include children (e.g. all-records tree uses 100).
+        - KB (UPLOAD): depth > 0 uses sync-events; depth == 0 uses record-events.
+        - CONNECTOR: uses sync-events and honors depth.
 
         Args:
             record_id: Record ID to reindex
@@ -2784,7 +2785,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             record_group_id: Record group ID
-            connector_id: Connector ID (all records in group are from same connector)
+            connector_id: Connector ID filter (records matching this connectorId are returned)
             org_id: Organization ID (for security filtering)
             depth: Depth for traversing children and nested record groups (-1 = unlimited,
                    0 = only direct records, 1 = direct + 1 level nested, etc.)
@@ -2793,7 +2794,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            List[Record]: List of properly typed Record instances
+            List[Record]: List of properly typed Record instances. Origin is not
+            hard-filtered here; both CONNECTOR and UPLOAD records can be returned
+            when they match connectorId/org/permission constraints.
         """
         try:
             self.logger.info(
