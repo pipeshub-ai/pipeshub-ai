@@ -934,6 +934,7 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           defaultTab="preview"
+          onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}
         />
       )}

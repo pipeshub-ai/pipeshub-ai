@@ -98,6 +98,12 @@ export interface FilePreviewProps {
   /** Callback when fullscreen preview closes */
   onClose?: () => void;
 
+  /**
+   * Fullscreen header: return to the docked / sidebar preview without closing the file
+   * (pair with the sidebar’s “expand” / open_in_full control).
+   */
+  onExitFullscreen?: () => void;
+
   /** Callback when fullscreen toggle button is clicked */
   onToggleFullscreen?: () => void;
 

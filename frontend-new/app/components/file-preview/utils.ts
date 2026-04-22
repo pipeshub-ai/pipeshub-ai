@@ -88,6 +88,8 @@ export function getRendererType(mimeType: string, fileName: string): string {
   // Prefer MIME type over extension
   if (mimeType) {
     if (mimeType === 'application/pdf') return 'pdf';
+    // Legacy Word binary (preview via PDF conversion or download fallback)
+    if (mimeType === 'application/msword') return 'document';
     if (mimeType.startsWith('image/')) return 'image';
     if (mimeType.startsWith('video/')) return 'media';
     if (mimeType.startsWith('audio/')) return 'media';
@@ -97,8 +99,10 @@ export function getRendererType(mimeType: string, fileName: string): string {
     if (mimeType === 'text/csv') return 'spreadsheet';
     if (mimeType === 'application/vnd.ms-excel') return 'spreadsheet';
     if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'spreadsheet';
-    // Word documents (docx only)
-    if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+    // Word OOXML (.docx, .docm, .dotx)
+    if (isOoxmlWordMime(mimeType)) return 'docx';
+    // Citations / records sometimes use a bare extension token instead of a MIME string
+    if (isBareWordOoxmlToken(mimeType)) return 'docx';
     // PowerPoint -> PDF (backend converts)
     if (mimeType === 'application/vnd.ms-powerpoint') return 'pdf';
     if (mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pdf';
@@ -142,9 +146,9 @@ export function getRendererType(mimeType: string, fileName: string): string {
   // Spreadsheets
   if (['.xls', '.xlsx', '.csv'].includes(`.${ext}`)) return 'spreadsheet';
 
-  // Word documents
-  if (ext === 'docx') return 'docx';
-  if (ext === 'doc') return 'document'; // Legacy binary format - download only
+  // Word documents (OOXML → client preview; legacy .doc → download or PDF after server conversion)
+  if (['docx', 'docm', 'dotx'].includes(ext)) return 'docx';
+  if (ext === 'doc') return 'document'; // Legacy binary unless stream was converted to PDF (see resolvePreviewMimeAfterStream)
 
   // PowerPoint -> PDF (backend converts)
   if (['.ppt', '.pptx'].includes(`.${ext}`)) return 'pdf';
@@ -163,6 +167,65 @@ export const PPT_MIME_TYPES = [
 export const DOCX_MIME_TYPE =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
+/** Other Word OOXML MIME types handled like .docx in the browser preview. */
+const OOXML_WORD_MIME_TYPES: readonly string[] = [
+  DOCX_MIME_TYPE,
+  'application/vnd.ms-word.document.macroEnabled.12', // .docm
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.template', // .dotx
+];
+
+function isOoxmlWordMime(mimeType: string): boolean {
+  return OOXML_WORD_MIME_TYPES.includes(mimeType);
+}
+
+/** Strips a leading dot and lowercases (handles API values like ".docx" or "DOCX"). */
+export function normalizeFileExtension(ext?: string | null): string {
+  if (!ext) return '';
+  return ext.replace(/^\./, '').trim().toLowerCase();
+}
+
+/**
+ * Some APIs put a bare extension where a MIME string is expected (e.g. `"docx"`).
+ * Treat those like OOXML Word for routing and blob hand-off.
+ */
+function isBareWordOoxmlToken(value: string): boolean {
+  return ['docx', 'docm', 'dotx'].includes(normalizeFileExtension(value));
+}
+
+/**
+ * Legacy binary Word (.doc). OOXML Word uses {@link DOCX_MIME_TYPE} or .docx/.docm/.dotx extensions.
+ * Used to decide when to request server-side PDF conversion for preview (connectors that support it).
+ */
+export function isLegacyWordDocFile(mimeType?: string, fileName?: string): boolean {
+  if (mimeType === 'application/msword') return true;
+  if (!fileName) return false;
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  return ext === 'doc';
+}
+
+/**
+ * After `streamRecord`, align the MIME we pass to `getRendererType` with the actual response.
+ * Fixes legacy `.doc` (and similar) previews when the backend returns a converted PDF blob while
+ * record metadata still says `application/msword`.
+ */
+export function resolvePreviewMimeAfterStream(
+  recordMime: string,
+  fileName: string,
+  blob: Blob,
+  requestedPdfConversion: boolean,
+): string {
+  const base = (recordMime || '').trim();
+  if (requestedPdfConversion && blob.type === 'application/pdf') {
+    return 'application/pdf';
+  }
+  // Stream response Content-Type is authoritative when it names Word OOXML
+  if (blob.type && isOoxmlWordMime(blob.type)) {
+    return blob.type;
+  }
+  if (!base && blob.type) return blob.type;
+  return base || blob.type || '';
+}
+
 /**
  * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
  * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
@@ -178,15 +241,27 @@ export function isPresentationFile(mimeType?: string, fileName?: string): boolea
 }
 
 /**
- * Checks whether a file is an OOXML Word doc (.docx). DOCX is rendered client-side
+ * Checks whether a file is an OOXML Word doc (.docx / .docm / .dotx). DOCX is rendered client-side
  * by `docx-preview` directly from the in-memory Blob, so we skip `createObjectURL`
  * and the extra `fetch` round-trip the DOCX renderer would otherwise perform.
+ *
+ * @param extraExtensionHints — e.g. `fileRecord.extension` from record details (may include a leading dot).
  */
-export function isDocxFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType === DOCX_MIME_TYPE) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'docx') return true;
+export function isDocxFile(
+  mimeType?: string,
+  fileName?: string,
+  ...extraExtensionHints: Array<string | undefined | null>
+): boolean {
+  const mime = (mimeType || '').trim();
+  if (mime && isOoxmlWordMime(mime)) return true;
+  if (mime && isBareWordOoxmlToken(mime)) return true;
+
+  const names = [fileName, ...extraExtensionHints];
+  for (const raw of names) {
+    if (!raw) continue;
+    const extFromPath = raw.includes('.') ? (raw.split('.').pop() || '') : raw;
+    if (isBareWordOoxmlToken(extFromPath)) return true;
+    if (isBareWordOoxmlToken(normalizeFileExtension(raw))) return true;
   }
   return false;
 }
