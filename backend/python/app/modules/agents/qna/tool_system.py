@@ -359,17 +359,25 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
 
     tools = internal_tools + user_tools
 
+    # Load MCP server tools (from external MCP servers)
+    mcp_tools = _load_mcp_tools(state)
+    tools = tools + mcp_tools
+
     # Apply tool limit
     if len(tools) > MAX_TOOLS_LIMIT:
         if state_logger:
             state_logger.warning(
                 f"Tool limit: {len(tools)} → {MAX_TOOLS_LIMIT} "
-                f"({len(internal_tools)} internal + {MAX_TOOLS_LIMIT - len(internal_tools)} user)"
+                f"({len(internal_tools)} internal + {len(user_tools)} user + {len(mcp_tools)} mcp)"
             )
-        tools = internal_tools + user_tools[:MAX_TOOLS_LIMIT - len(internal_tools)]
+        remaining = MAX_TOOLS_LIMIT - len(internal_tools)
+        tools = internal_tools + user_tools[:remaining] + mcp_tools[:max(0, remaining - len(user_tools))]
 
     if state_logger:
-        state_logger.info(f"✅ {len(internal_tools)} internal + {len(user_tools)} user = {len(tools)} total")
+        state_logger.info(
+            f"✅ {len(internal_tools)} internal + {len(user_tools)} user + "
+            f"{len(mcp_tools)} mcp = {len(tools)} total"
+        )
 
     return tools
 
@@ -412,6 +420,122 @@ def _extract_tool_names_from_toolsets(agent_toolsets: list[dict]) -> set[str] | 
                     tool_names.add(f"{toolset_name}.{tool}")
 
     return tool_names if tool_names else None
+
+
+def _load_mcp_tools(state: ChatState) -> list:
+    """
+    Load MCP tools from the agent's configured MCP servers.
+
+    Creates MCPToolWrapper instances for each tool in the agent's
+    mcpServers config, allowing them to be called via the agent
+    framework alongside built-in toolset tools.
+    """
+    from app.agents.mcp.models import MCPToolInfo
+    from app.agents.mcp.wrapper import MCPToolWrapper
+
+    state_logger = state.get("logger")
+    agent_mcp_servers = state.get("agent_mcp_servers", [])
+    mcp_server_configs = state.get("mcp_server_configs", {})
+
+    if state_logger:
+        state_logger.info(
+            "_load_mcp_tools: agent_mcp_servers=%d, mcp_server_configs=%d, "
+            "server_details=%s",
+            len(agent_mcp_servers),
+            len(mcp_server_configs),
+            [
+                {
+                    "name": s.get("name"),
+                    "instanceId": s.get("instanceId"),
+                    "tools_count": len(s.get("tools", [])),
+                    "tool_names": [t.get("name") for t in s.get("tools", [])[:5]],
+                }
+                for s in agent_mcp_servers
+            ],
+        )
+
+    if not agent_mcp_servers:
+        return []
+
+    mcp_tools = []
+
+    for server in agent_mcp_servers:
+        if not isinstance(server, dict):
+            continue
+
+        from app.agents.constants.mcp_server_constants import normalize_mcp_server_name
+
+        server_name = server.get("name") or ""
+        server_type = server.get("type") or server_name
+        instance_id = server.get("instanceId") or ""
+        tools_list = server.get("tools", [])
+
+        if not tools_list:
+            if state_logger:
+                state_logger.debug(f"MCP server '{server_name}' has no tools configured")
+            continue
+
+        server_config = mcp_server_configs.get(instance_id, {})
+        fixed_params: dict[str, str] = server_config.get("fixedParams", {}) if isinstance(server_config, dict) else {}
+
+        if state_logger:
+            if fixed_params:
+                state_logger.info(
+                    "MCP server '%s' fixedParams loaded: %s",
+                    server_name, list(fixed_params.keys()),
+                )
+            else:
+                state_logger.debug(
+                    "MCP server '%s' has no fixedParams (tools will expose all params to LLM)",
+                    server_name,
+                )
+
+        for tool_data in tools_list:
+            if not isinstance(tool_data, dict):
+                continue
+
+            tool_name = tool_data.get("name") or ""
+            if not tool_name:
+                continue
+
+            namespaced_name = (
+                tool_data.get("namespacedName")
+                or tool_data.get("namespaced_name")
+                or f"mcp_{normalize_mcp_server_name(server_type)}_{tool_name}"
+            )
+            description = tool_data.get("description") or f"MCP tool: {tool_name}"
+            raw_input_schema = tool_data.get("inputSchema")
+            if raw_input_schema is None:
+                raw_input_schema = tool_data.get("input_schema")
+            input_schema = (
+                raw_input_schema
+                if isinstance(raw_input_schema, dict)
+                else {"type": "object", "properties": {}}
+            )
+
+            tool_info = MCPToolInfo(
+                name=tool_name,
+                namespaced_name=namespaced_name,
+                description=description,
+                input_schema=input_schema,
+                server_name=server_name,
+                instance_id=instance_id,
+                fixed_params=fixed_params,
+            )
+
+            try:
+                wrapper = MCPToolWrapper(tool_info=tool_info, state=dict(state))
+                mcp_tools.append(wrapper)
+                if state_logger:
+                    state_logger.debug(f"Loaded MCP tool: {namespaced_name}")
+            except Exception as e:
+                if state_logger:
+                    state_logger.error(f"Failed to load MCP tool {namespaced_name}: {e}")
+
+    if state_logger and mcp_tools:
+        state_logger.info(f"Loaded {len(mcp_tools)} MCP tool(s) from {len(agent_mcp_servers)} server(s)")
+
+    return mcp_tools
 
 
 def _is_knowledge_dependent_tool(full_name: str, registry_tool: 'Tool') -> bool:
@@ -600,6 +724,72 @@ def get_tool_results_summary(state: ChatState) -> str:
 # Modern Tool System with Pydantic Schemas (for ReAct Agent)
 # ============================================================================
 
+def _build_mcp_args_schema(wrapper: Any) -> type | None:
+    """Build a dynamic Pydantic model from an MCPToolWrapper's input_schema.
+
+    Converts the JSON Schema ``properties`` dict into a ``pydantic.create_model``
+    call so that LangChain can generate a proper tool-call schema for the LLM.
+    Fixed params (auto-injected at call time) are already stripped from
+    ``wrapper.mcp_input_schema`` by the wrapper's constructor.
+    Returns ``None`` when the schema is empty or cannot be built.
+
+    When the JSON Schema omits the ``required`` array (common with MCP servers
+    whose Zod schemas enforce required fields at runtime), all properties that
+    lack an explicit ``default`` are treated as required.  This ensures the
+    Pydantic model rejects calls with wrong/missing parameter names at
+    validation time instead of silently producing an empty model.
+    """
+    try:
+        from pydantic import Field, create_model
+
+        schema = wrapper.mcp_input_schema
+        properties = schema.get("properties", {})
+        if not properties:
+            return None
+
+        explicit_required = schema.get("required")
+        if isinstance(explicit_required, list):
+            required_fields = set(explicit_required)
+        else:
+            required_fields = {
+                name for name, spec in properties.items()
+                if "default" not in spec
+            }
+
+        field_definitions: dict[str, Any] = {}
+
+        _JSON_SCHEMA_TYPE_MAP: dict[str, type] = {
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+
+        for field_name, field_spec in properties.items():
+            field_type = _JSON_SCHEMA_TYPE_MAP.get(field_spec.get("type", "string"), str)
+            description = field_spec.get("description", "")
+            default_value = field_spec.get("default")
+
+            if field_name in required_fields:
+                field_definitions[field_name] = (
+                    field_type,
+                    Field(..., description=description),
+                )
+            else:
+                field_definitions[field_name] = (
+                    field_type,
+                    Field(default=default_value, description=description),
+                )
+
+        model_name = f"MCPArgs_{wrapper.mcp_tool_name}"
+        return create_model(model_name, **field_definitions)  # type: ignore[call-overload]
+    except Exception:
+        logger.debug("Could not build Pydantic schema for MCP tool '%s'", wrapper.name, exc_info=True)
+        return None
+
+
 def get_agent_tools_with_schemas(state: ChatState) -> list:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
@@ -621,12 +811,14 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
     try:
         from langchain_core.tools import StructuredTool
 
+        from app.agents.mcp.wrapper import MCPToolWrapper
+
         # Check for cached StructuredTools — avoid re-converting if
         # the underlying registry tools haven't changed
         cached_schema_tools = state.get("_cached_schema_tools")
         cached_registry_tools = state.get("_cached_agent_tools")
 
-        # Get tools from registry (RegistryToolWrapper objects)
+        # Get tools from registry (RegistryToolWrapper objects + MCPToolWrapper objects)
         registry_tools = get_agent_tools(state)
 
         # Cache hit: if registry tools are the same object (same cache), reuse
@@ -647,10 +839,17 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
         # Get LLM from state to determine if sanitization is needed
         llm = state.get("llm")
 
-        # Debug: Log tool count
         state_logger = state.get("logger")
         if state_logger:
-            state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
+            mcp_count = sum(1 for t in registry_tools if isinstance(t, MCPToolWrapper))
+            registry_count = len(registry_tools) - mcp_count
+            state_logger.info(
+                "get_agent_tools_with_schemas: %d tools total (%d registry + %d MCP)",
+                len(registry_tools), registry_count, mcp_count,
+            )
+            if mcp_count > 0:
+                mcp_names = [t.name for t in registry_tools if isinstance(t, MCPToolWrapper)]
+                state_logger.info("MCP tools to convert: %s", mcp_names[:10])
 
         def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
             """Create an async wrapper function that calls tool_wrapper.arun().
@@ -679,10 +878,49 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                     except (TypeError, ValueError):
                         return str(result)
                 return str(result)
+            """Create an async wrapper function that calls tool_wrapper.arun()."""
+            async def _async_tool_func(**kwargs: object) -> tuple[bool, str] | str | dict[str, Any] | list[Any]:
+                return await wrapper.arun(kwargs)
             return _async_tool_func
+
+        def _make_mcp_async_func(wrapper: MCPToolWrapper) -> Callable:
+            """Create an async wrapper function that calls MCPToolWrapper._arun()."""
+            async def _mcp_async_func(**kwargs: Any) -> str:
+                return await wrapper._arun(**kwargs)
+            return _mcp_async_func
 
         for tool_wrapper in registry_tools:
             try:
+                # Handle MCP tools: MCPToolWrapper is a BaseTool subclass, not a
+                # RegistryToolWrapper.  Convert it to a StructuredTool so it gets
+                # bound to the LLM alongside registry tools.
+                if isinstance(tool_wrapper, MCPToolWrapper):
+                    original_tool_name = tool_wrapper.name
+                    sanitized_name = _sanitize_tool_name_if_needed(original_tool_name, llm, state)
+                    args_schema = _build_mcp_args_schema(tool_wrapper)
+                    async_func = _make_mcp_async_func(tool_wrapper)
+
+                    if args_schema:
+                        structured_tool = StructuredTool.from_function(
+                            func=async_func,
+                            name=sanitized_name,
+                            description=tool_wrapper.description,
+                            args_schema=args_schema,
+                            coroutine=async_func,
+                        )
+                    else:
+                        structured_tool = StructuredTool.from_function(
+                            func=async_func,
+                            name=sanitized_name,
+                            description=tool_wrapper.description,
+                            coroutine=async_func,
+                        )
+
+                    setattr(structured_tool, '_original_name', original_tool_name)
+                    setattr(structured_tool, '_tool_wrapper', tool_wrapper)
+                    structured_tools.append(structured_tool)
+                    continue
+
                 registry_tool = tool_wrapper.registry_tool
 
                 # Get Pydantic schema from Tool object (stored during registration from @tool decorator)
@@ -696,23 +934,20 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 async_tool_func = _make_async_tool_func(tool_wrapper)
 
                 # Create StructuredTool with schema if available
-                # Explicitly mark as coroutine to ensure LangChain handles it correctly
                 if args_schema:
-                    # Use schema for validation
                     structured_tool = StructuredTool.from_function(
                         func=async_tool_func,
                         name=sanitized_tool_name,
                         description=tool_wrapper.description,
                         args_schema=args_schema,
-                        coroutine=async_tool_func,  # Explicitly pass the coroutine
+                        coroutine=async_tool_func,
                     )
                 else:
-                    # Fallback: no schema (for legacy tools without Pydantic schemas)
                     structured_tool = StructuredTool.from_function(
                         func=async_tool_func,
                         name=sanitized_tool_name,
                         description=tool_wrapper.description,
-                        coroutine=async_tool_func,  # Explicitly pass the coroutine
+                        coroutine=async_tool_func,
                     )
 
                 # Store original name and wrapper reference for backward compatibility
@@ -722,7 +957,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             except Exception as tool_error:
                 # Log but continue processing other tools
                 if state_logger:
-                    state_logger.warning(f"Failed to create StructuredTool for {tool_wrapper.name}: {tool_error}")
+                    state_logger.warning(f"Failed to create StructuredTool for {getattr(tool_wrapper, 'name', '?')}: {tool_error}")
                 continue
 
         # Debug: Log final tool count

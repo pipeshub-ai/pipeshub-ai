@@ -1,6 +1,7 @@
 import { i18n } from '@/lib/i18n';
 import type { AgentDetail } from '../types';
-import type { AgentFormPayload, KnowledgeReference, ToolsetReference } from './types';
+import type { AgentFormPayload, KnowledgeReference, MCPServerReference, MCPServerToolRef, ToolsetReference } from './types';
+import { mcpNamespacedName } from './mcp-naming';
 
 interface ToolsetDataInternal {
   name: string;
@@ -14,6 +15,14 @@ interface KnowledgeDataInternal {
   connectorId: string;
   filters: { recordGroups?: string[]; records?: string[]; [key: string]: unknown };
   category: 'knowledge' | 'action';
+}
+
+interface McpServerDataInternal {
+  name: string;
+  displayName: string;
+  type: string;
+  instanceId?: string;
+  tools: MCPServerToolRef[];
 }
 
 export function extractAgentConfigFromFlow(
@@ -31,6 +40,7 @@ export function extractAgentConfigFromFlow(
 ): AgentFormPayload {
   const toolsetsInternal: ToolsetDataInternal[] = [];
   const knowledgeInternal: KnowledgeDataInternal[] = [];
+  const mcpServersInternal: McpServerDataInternal[] = [];
   const models: { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[] = [];
 
   const addToolsetWithTools = (
@@ -96,6 +106,61 @@ export function extractAgentConfigFromFlow(
       knowledgeInternal.push({ connectorId, filters: normalizedFilters, category });
     }
   };
+
+  // ── MCP Server extraction ──────────────────────────────────────────────────
+
+  const connectedMcpNodeIds = new Set<string>();
+  edges.forEach((edge) => {
+    const sourceNode = nodes.find((n) => n.id === edge.source);
+    const targetNode = nodes.find((n) => n.id === edge.target);
+    const st = sourceNode?.data?.type ?? '';
+    const tt = targetNode?.data?.type ?? '';
+    if (st.startsWith('mcp-server-') && tt === 'agent-core' && edge.targetHandle === 'mcpServers') {
+      connectedMcpNodeIds.add(sourceNode!.id);
+    }
+  });
+
+  nodes.forEach((node) => {
+    const nt = node.data?.type ?? '';
+    if (!nt.startsWith('mcp-server-') || !connectedMcpNodeIds.has(node.id)) return;
+    const mcpCfg = node.data.config ?? {};
+    const mcpName =
+      (mcpCfg.mcpServerName as string) ||
+      (mcpCfg.instanceName as string) ||
+      node.data.label ||
+      '';
+    const displayName = (mcpCfg.displayName as string) || mcpName;
+    const serverType = (mcpCfg.serverType as string) || (mcpCfg.type as string) || '';
+    const instanceId = mcpCfg.instanceId as string | undefined;
+    const toolsFromConfig: MCPServerToolRef[] = [];
+    const toolsArr = mcpCfg.tools as unknown[] | undefined;
+    if (toolsArr && Array.isArray(toolsArr)) {
+      toolsArr.forEach((tool: unknown) => {
+        const t = tool as { name?: string; namespacedName?: string; description?: string; inputSchema?: Record<string, unknown> };
+        const toolName = t.name || '';
+        const namespacedName = mcpNamespacedName(serverType || undefined, mcpName, toolName, t.namespacedName);
+        if (toolName) {
+          toolsFromConfig.push({
+            name: toolName,
+            namespacedName,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          });
+        }
+      });
+    }
+    if (toolsFromConfig.length > 0) {
+      mcpServersInternal.push({
+        name: mcpName,
+        displayName,
+        type: serverType,
+        instanceId,
+        tools: toolsFromConfig,
+      });
+    }
+  });
+
+  // ── Toolset extraction ─────────────────────────────────────────────────────
 
   const connectedToolsetNodeIds = new Set<string>();
   edges.forEach((edge) => {
@@ -293,6 +358,15 @@ export function extractAgentConfigFromFlow(
     tools: ts.tools,
   }));
 
+  const mcpServers: MCPServerReference[] = mcpServersInternal.map((ms) => ({
+    id: ms.instanceId || ms.name,
+    instanceId: ms.instanceId,
+    name: ms.name,
+    displayName: ms.displayName,
+    type: ms.type,
+    tools: ms.tools,
+  }));
+
   const knowledge: KnowledgeReference[] = knowledgeInternal.map((k, index) => ({
     id: k.connectorId || `knowledge-${index}`,
     connectorId: k.connectorId,
@@ -317,6 +391,7 @@ export function extractAgentConfigFromFlow(
       ? (coreCfg.instructions as string | undefined)
       : currentAgent?.instructions,
     toolsets,
+    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
     knowledge,
     models,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

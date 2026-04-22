@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
+from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType
 from app.connectors.api.router import router
@@ -49,6 +50,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
                 "app.api.routes.entity",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
+                "app.api.routes.mcp_servers",
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
@@ -383,6 +385,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     tool_count = len(_global_tools_registry.list_tools())
     logger.info(f"✅ {tool_count} tools available from in-memory registry")
 
+    # Initialize MCP server registry (in-memory catalog of built-in MCP server templates)
+    logger.info("🔄 Initializing MCP server registry...")
+    from app.agents.mcp.registry import get_mcp_server_registry
+
+    mcp_server_registry = get_mcp_server_registry()
+    mcp_server_registry.auto_discover_mcp_servers()
+    app.state.mcp_server_registry = mcp_server_registry
+    logger.info(f"✅ Loaded {len(mcp_server_registry.list_all())} MCP server templates")
+
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
     from app.connectors.core.registry.oauth_config_registry import (
@@ -568,6 +579,7 @@ async def health_check() -> JSONResponse:
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
+app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(router)

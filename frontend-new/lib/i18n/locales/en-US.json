@@ -1030,7 +1030,9 @@
         "users": "Users",
         "groups": "Groups",
         "teams": "Teams",
-        "webSearch": "Web Search"
+        "webSearch": "Web Search",
+        "mcpServers": "MCP Servers",
+        "yourMcps": "Your MCPs"
       }
     },
     "actions": {
@@ -2004,7 +2006,26 @@
     "appKnowledgeAccessDescription": "Access {{name}} knowledge and context",
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
-    "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+    "nodeTemplateChatResponseDesc": "Sends the reply to the user",
+    "mcpServersSection": "MCP Servers",
+    "mcpServersLabel": "MCP Servers",
+    "noMcpServers": "No MCP servers configured",
+    "noMcpServersMatch": "No MCP servers match \u201c{{query}}\u201d.",
+    "mcpServerNotReady": "{{name}} is {{reason}}. Configure it before dragging onto the canvas.",
+    "mcpServerDuplicate": "Only one {{name}} MCP server can be on the canvas at a time.",
+    "connectionMcpToMcpServersHandle": "MCP servers must connect to the MCP Servers handle on the agent",
+    "connectMcpServer": "Optional",
+    "mcpServerToolCount": "{{count}} tools",
+    "mcpServerNodeSubtitle": "MCP Server",
+    "searchMcpServers": "Search MCP servers\u2026",
+    "mcpServerAuthenticated": "Authenticated and ready to use",
+    "mcpServerNeedsAuth": "Configured \u2014 sign in to authenticate",
+    "mcpServerRegistry": "Registry listing \u2014 not configured for your workspace",
+    "mcpServerNotConfiguredNotify": "{{name}} is not configured yet. Ask an administrator to add this MCP server.",
+    "mcpServerGoToSettings": "Go to MCP server settings to configure",
+    "mcpServerDropNoTools": "No tools found for this MCP server.",
+    "mcpServerWithToolCount": "{{name}} with {{count}} tools",
+    "mcpServerNodeDescriptionTools": "{{name}} \u2014 {{count}} tools"
   },
   "recordView": {
     "sections": {
