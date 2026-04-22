@@ -1491,6 +1491,8 @@
         "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Weiterleitungs-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
         "oauthCredentialsSubtextAdmin": "Client-Anmeldedaten eingeben oder prüfen (für eine neue Registrierung oder eine oben ausgewählte gespeicherte App).",
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
+        "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
+        "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
       },
       "docSection": {

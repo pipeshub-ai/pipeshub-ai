@@ -45,14 +45,12 @@ export function AuthenticateTab() {
 
   const { t } = useTranslation();
 
-  if (!connectorSchema || !panelConnector) return null;
-
   const isCreateMode = !panelConnectorId;
-  const authConfig = connectorSchema?.auth;
-  const supportedAuthTypes = authConfig?.supportedAuthTypes ?? [];
-  const showAuthTypeSelector = isCreateMode && supportedAuthTypes.length > 1;
 
-  const currentSchemaFields = resolveAuthFields(authConfig, selectedAuthType);
+  const currentSchemaFields = useMemo(
+    () => resolveAuthFields(connectorSchema?.auth, selectedAuthType),
+    [connectorSchema, selectedAuthType]
+  );
   const linkedOAuthAppId = useMemo(() => {
     const fromForm = (formData.auth.oauthConfigId as string | undefined)?.trim();
     if (fromForm) return fromForm;
@@ -95,11 +93,12 @@ export function AuthenticateTab() {
   ]);
 
   const oauthCredentialFieldNames = useMemo(() => {
-    if (selectedAuthType !== 'OAUTH' || !authConfig) return [];
-    return resolveAuthFields(authConfig, 'OAUTH')
+    const auth = connectorSchema?.auth;
+    if (selectedAuthType !== 'OAUTH' || !auth) return [];
+    return resolveAuthFields(auth, 'OAUTH')
       .map((f) => f.name)
       .filter((n) => n !== 'oauthConfigId');
-  }, [authConfig, selectedAuthType]);
+  }, [connectorSchema, selectedAuthType]);
 
   const oauthCredentialHydratedKeyRef = useRef<string | null>(null);
 
@@ -191,6 +190,14 @@ export function AuthenticateTab() {
     oauthCredentialFieldNames,
   ]);
 
+  if (!connectorSchema || !panelConnector) {
+    return null;
+  }
+
+  const authConfig = connectorSchema.auth;
+  const supportedAuthTypes = authConfig?.supportedAuthTypes ?? [];
+  const showAuthTypeSelector = isCreateMode && supportedAuthTypes.length > 1;
+
   const authFieldsDisabled =
     isProfileInitialized && !isCreateMode && isAdmin === false;
 
@@ -205,7 +212,7 @@ export function AuthenticateTab() {
       ? `${window.location.origin.replace(/\/$/, '')}/${redirectPath.replace(/^\//, '')}`
       : null;
 
-  const docLinks = connectorSchema?.documentationLinks ?? [];
+  const docLinks = connectorSchema.documentationLinks ?? [];
 
   const showOAuthConnectionCard =
     isOAuthType(selectedAuthType) &&
@@ -231,7 +238,7 @@ export function AuthenticateTab() {
               Redirect URL
             </Text>
             <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-              Add this exact URL to the allowed redirect list on your identity provider.
+              {t('workspace.connectors.authTab.redirectUrlDescription')}
             </Text>
           </Flex>
           <Flex
@@ -321,7 +328,7 @@ export function AuthenticateTab() {
 
       {selectedAuthType !== 'OAUTH' && callbackUrl && displayRedirect !== false && (
         <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-          Register the redirect URL in your identity provider, then complete the fields below.
+          {t('workspace.connectors.authTab.redirectUrlHelperNonOauth')}
         </Text>
       )}
     </>
@@ -362,7 +369,6 @@ export function AuthenticateTab() {
               field={field}
               value={formData.auth[field.name]}
               onChange={setAuthFormValue}
-              visible={true}
               error={formErrors[field.name]}
               disabled={authFieldsDisabled}
             />

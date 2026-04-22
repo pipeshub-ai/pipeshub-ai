@@ -1489,6 +1489,8 @@
         "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
         "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
         "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
+        "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
+        "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector"
       },
       "docSection": {
