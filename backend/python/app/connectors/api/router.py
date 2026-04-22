@@ -113,11 +113,17 @@ async def _stream_artifact_from_storage(
     record: Record,
     org_id: str,
     config_service: ConfigurationService,
-) -> Response:
+    convert_to: str | None = None,
+) -> Response | StreamingResponse:
     """Fetch an ARTIFACT record's content from blob storage and return it.
 
     Uses the same storage buffer API as the KB connector, keyed on
     ``record.external_record_id`` (which holds the blob storage document ID).
+
+    When ``convert_to == MimeTypes.PDF.value`` and the artifact is a PPT/PPTX
+    (or Google Slides) file, the buffer is converted to PDF via LibreOffice
+    before being returned — mirroring the behaviour of the non-artifact
+    streaming path so the frontend PDF renderer can preview it.
     """
     external_id = record.external_record_id
     if not external_id:
@@ -149,6 +155,42 @@ async def _stream_artifact_from_storage(
         buffer = response["data"]
 
     mime = record.mime_type if record.mime_type else "application/octet-stream"
+
+    if convert_to == MimeTypes.PDF.value:
+        record_name = (
+            getattr(record, 'record_name', None)
+            or getattr(record, 'name', None)
+            or 'file'
+        )
+        file_extension = None
+        if record_name and '.' in record_name:
+            file_extension = record_name.rsplit('.', 1)[-1].lower()
+
+        needs_conversion = (
+            file_extension in ['ppt', 'pptx']
+            or mime in [
+                MimeTypes.PPT.value,
+                MimeTypes.PPTX.value,
+                MimeTypes.GOOGLE_SLIDES.value,
+            ]
+        )
+
+        if needs_conversion:
+            try:
+                return await convert_buffer_to_pdf_stream(
+                    buffer or b"", record_name, file_extension
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Error converting artifact to PDF: {str(e)}", exc_info=True
+                )
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to convert artifact to PDF",
+                ) from e
+
     return Response(content=buffer or b"", media_type=mime)
 
 
@@ -788,7 +830,9 @@ async def stream_record(
             )
 
         if record.record_type == RecordType.ARTIFACT:
-            return await _stream_artifact_from_storage(record, org_id, config_service)
+            return await _stream_artifact_from_storage(
+                record, org_id, config_service, convert_to=convertTo
+            )
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id

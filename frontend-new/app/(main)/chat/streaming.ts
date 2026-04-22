@@ -139,6 +139,48 @@ export async function streamMessageForSlot(
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
 
+  // ── Minimum-dwell scheduler for SSE status messages ─────────────────
+  // Backend can emit bursts of status events (planning → executing →
+  // analyzing → generating) within a few ms. Writing each one directly
+  // to the store overwrites the previous before React paints, so users
+  // see statuses blink past. Guarantee each visible status stays for at
+  // least MIN_STATUS_DWELL_MS. Events arriving inside the window are
+  // coalesced — latest wins — and flushed when the window elapses.
+  const MIN_STATUS_DWELL_MS = 400;
+  let lastStatusAt = 0;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingStatus: StatusMessage | null = null;
+
+  function applyStatus(msg: StatusMessage | null) {
+    lastStatusAt = Date.now();
+    useChatStore.getState().updateSlot(slotId, { currentStatusMessage: msg });
+  }
+
+  function scheduleStatus(msg: StatusMessage) {
+    const elapsed = Date.now() - lastStatusAt;
+    if (elapsed >= MIN_STATUS_DWELL_MS) {
+      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+      pendingStatus = null;
+      applyStatus(msg);
+      return;
+    }
+    pendingStatus = msg;
+    if (statusTimer !== null) return;
+    statusTimer = setTimeout(() => {
+      statusTimer = null;
+      if (pendingStatus) {
+        const m = pendingStatus;
+        pendingStatus = null;
+        applyStatus(m);
+      }
+    }, MIN_STATUS_DWELL_MS - elapsed);
+  }
+
+  function cancelPendingStatus() {
+    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+    pendingStatus = null;
+  }
+
   function flushContentToStore() {
     debugLog.rafFlush();
     const citationMaps = pendingCitationMaps;
@@ -174,9 +216,7 @@ export async function streamMessageForSlot(
   try {
     await ChatApi.streamMessage(request, {
       onConnected: (data) => {
-        useChatStore.getState().updateSlot(slotId, {
-          currentStatusMessage: statusMessageFromConnectedEvent(data),
-        });
+        scheduleStatus(statusMessageFromConnectedEvent(data));
       },
 
       onRestreaming: () => {
@@ -184,6 +224,7 @@ export async function streamMessageForSlot(
           clearTimeout(flushTimer);
           flushTimer = null;
         }
+        cancelPendingStatus();
         accumulatedContent = '';
         lastCitationKey = '';
         clearedStatusWhenAnswerVisible = false;
@@ -191,8 +232,8 @@ export async function streamMessageForSlot(
         useChatStore.getState().updateSlot(slotId, {
           streamingContent: '',
           streamingCitationMaps: null,
-          currentStatusMessage: statusMessageRestreaming(),
         });
+        applyStatus(statusMessageRestreaming());
       },
 
       onStatus: (data) => {
@@ -202,9 +243,7 @@ export async function streamMessageForSlot(
           message: data.message,
           timestamp: new Date().toISOString(),
         };
-        useChatStore.getState().updateSlot(slotId, {
-          currentStatusMessage: statusMessage,
-        });
+        scheduleStatus(statusMessage);
       },
 
       onChunk: (data) => {
@@ -212,6 +251,7 @@ export async function streamMessageForSlot(
         accumulatedContent = data.accumulated;
         if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
           clearedStatusWhenAnswerVisible = true;
+          cancelPendingStatus();
           useChatStore.getState().updateSlot(slotId, { currentStatusMessage: null });
         }
         // Deduplicate citation maps: only stage a new maps object when
@@ -246,6 +286,7 @@ export async function streamMessageForSlot(
 
       onComplete: (data) => {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        cancelPendingStatus();
         const conv = data.conversation as { _id?: string; id?: string };
         const newConvId = conv._id || conv.id || '';
 
@@ -294,6 +335,7 @@ export async function streamMessageForSlot(
 
       onError: (error) => {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        cancelPendingStatus();
         console.error('[streaming] Stream error for slot', slotId, error);
         const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
         useChatStore.getState().updateSlot(slotId, {
@@ -325,6 +367,7 @@ export async function streamMessageForSlot(
       clearTimeout(flushTimer);
       flushTimer = null;
     }
+    cancelPendingStatus();
 
     const aborted =
       (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
@@ -427,6 +470,42 @@ export async function streamRegenerateForSlot(
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
 
+  // Minimum-dwell scheduler for SSE status messages (see streamMessageForSlot).
+  const MIN_STATUS_DWELL_MS = 400;
+  let lastStatusAt = 0;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingStatus: StatusMessage | null = null;
+
+  function applyStatus(msg: StatusMessage | null) {
+    lastStatusAt = Date.now();
+    useChatStore.getState().updateSlot(slotId, { currentStatusMessage: msg });
+  }
+
+  function scheduleStatus(msg: StatusMessage) {
+    const elapsed = Date.now() - lastStatusAt;
+    if (elapsed >= MIN_STATUS_DWELL_MS) {
+      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+      pendingStatus = null;
+      applyStatus(msg);
+      return;
+    }
+    pendingStatus = msg;
+    if (statusTimer !== null) return;
+    statusTimer = setTimeout(() => {
+      statusTimer = null;
+      if (pendingStatus) {
+        const m = pendingStatus;
+        pendingStatus = null;
+        applyStatus(m);
+      }
+    }, MIN_STATUS_DWELL_MS - elapsed);
+  }
+
+  function cancelPendingStatus() {
+    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+    pendingStatus = null;
+  }
+
   function flushContentToStore() {
     debugLog.rafFlush();
     const citationMaps = pendingCitationMaps;
@@ -466,9 +545,7 @@ export async function streamRegenerateForSlot(
 
   const regenerateCallbacks: StreamMessageCallbacks = {
     onConnected: (data) => {
-      useChatStore.getState().updateSlot(slotId, {
-        currentStatusMessage: statusMessageFromConnectedEvent(data),
-      });
+      scheduleStatus(statusMessageFromConnectedEvent(data));
     },
 
     onRestreaming: () => {
@@ -476,6 +553,7 @@ export async function streamRegenerateForSlot(
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      cancelPendingStatus();
       accumulatedContent = '';
       lastCitationKey = '';
       clearedStatusWhenAnswerVisible = false;
@@ -483,18 +561,16 @@ export async function streamRegenerateForSlot(
       useChatStore.getState().updateSlot(slotId, {
         streamingContent: '',
         streamingCitationMaps: null,
-        currentStatusMessage: statusMessageRestreaming(),
       });
+      applyStatus(statusMessageRestreaming());
     },
 
     onStatus: (data) => {
-      useChatStore.getState().updateSlot(slotId, {
-        currentStatusMessage: {
-          id: `status-${Date.now()}`,
-          status: data.status,
-          message: data.message,
-          timestamp: new Date().toISOString(),
-        },
+      scheduleStatus({
+        id: `status-${Date.now()}`,
+        status: data.status,
+        message: data.message,
+        timestamp: new Date().toISOString(),
       });
     },
 
@@ -503,6 +579,7 @@ export async function streamRegenerateForSlot(
       accumulatedContent = data.accumulated;
       if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
         clearedStatusWhenAnswerVisible = true;
+        cancelPendingStatus();
         useChatStore.getState().updateSlot(slotId, { currentStatusMessage: null });
       }
       if (data.citations && data.citations.length > 0) {
@@ -520,6 +597,7 @@ export async function streamRegenerateForSlot(
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      cancelPendingStatus();
       try {
         const messages = reloadViaAgentId
           ? (await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)).messages
@@ -555,6 +633,7 @@ export async function streamRegenerateForSlot(
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
       useChatStore.getState().updateSlot(slotId, {
         isStreaming: false,
@@ -601,6 +680,7 @@ export async function streamRegenerateForSlot(
     }
   } catch (error) {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    cancelPendingStatus();
     console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,

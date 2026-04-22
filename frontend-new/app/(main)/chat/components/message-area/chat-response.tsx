@@ -24,6 +24,12 @@ import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { DownloadTasks } from './download-tasks';
+import {
+  isPresentationFile,
+  isDocxFile,
+  isLegacyWordDocFile,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import { useTranslation } from 'react-i18next';
 
 // Stable empty reference — avoids creating new objects in default params
@@ -250,13 +256,36 @@ export const ChatResponse = React.memo(function ChatResponse({
                   if (artifact.recordId) {
                     try {
                       const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                      const blob = await KnowledgeBaseApi.streamRecord(artifact.recordId);
-                      const objectUrl = URL.createObjectURL(blob);
+                      // PPT/PPTX and legacy Word (.doc) need server-side PDF
+                      // conversion — mirror the citation preview flow so the
+                      // browser actually has a renderer for the returned blob.
+                      const streamAsPdf =
+                        isPresentationFile(artifact.mimeType, artifact.fileName) ||
+                        isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
+                      const streamOptions = streamAsPdf
+                        ? { convertTo: 'application/pdf' }
+                        : undefined;
+                      const blob = await KnowledgeBaseApi.streamRecord(
+                        artifact.recordId,
+                        streamOptions,
+                      );
+                      const resolvedType = resolvePreviewMimeAfterStream(
+                        artifact.mimeType,
+                        artifact.fileName,
+                        blob,
+                        !!streamOptions,
+                      );
+                      // DOCX is rendered client-side directly from the Blob;
+                      // everything else uses an object URL (consistent with
+                      // the citation preview path).
+                      const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
+                      const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
                       useChatStore.getState().setPreviewFile({
                         id: artifact.recordId,
                         url: objectUrl,
+                        blob: isDocx ? blob : undefined,
                         name: artifact.fileName,
-                        type: artifact.mimeType,
+                        type: resolvedType,
                         size: artifact.sizeBytes,
                         hideFileDetails: true,
                       });
