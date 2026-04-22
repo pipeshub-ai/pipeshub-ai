@@ -679,6 +679,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           if (!connectorId) return;
           s.activeConnectors = s.activeConnectors.filter((c) => c._key !== connectorId);
           s.instances = s.instances.filter((i) => i._key !== connectorId);
+          s.registryConnectors = s.registryConnectors.filter((c) => c._key !== connectorId);
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
           if (!s.deletedInstanceIds.includes(connectorId)) {

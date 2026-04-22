@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Avatar, Box, Button } from '@radix-ui/themes';
+import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
@@ -17,6 +17,8 @@ interface SettingsTabProps {
   config?: ConnectorConfig | null;
   /** Opens remove confirmation (parent owns the dialog). */
   onRequestRemoveConnector?: () => void;
+  removeDisabled?: boolean;
+  removeDisabledTooltip?: string;
 }
 
 // ========================================
@@ -27,6 +29,8 @@ export function SettingsTab({
   instance,
   config,
   onRequestRemoveConnector,
+  removeDisabled = false,
+  removeDisabledTooltip,
 }: SettingsTabProps) {
   const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
@@ -34,20 +38,33 @@ export function SettingsTab({
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
   const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
 
-  const removeConnectorControl = onRequestRemoveConnector ? (
+  const removeConnectorButton = onRequestRemoveConnector ? (
     <Button
       type="button"
       color="red"
       variant="soft"
+      disabled={removeDisabled}
       style={{
         alignSelf: 'flex-start',
-        cursor: 'pointer',
+        cursor: removeDisabled ? 'not-allowed' : 'pointer',
       }}
-      onClick={() => onRequestRemoveConnector()}
+      onClick={() => {
+        if (removeDisabled) return;
+        onRequestRemoveConnector();
+      }}
     >
       Remove connector instance
     </Button>
   ) : null;
+
+  const removeConnectorControl =
+    removeConnectorButton && removeDisabled && removeDisabledTooltip ? (
+      <Tooltip content={removeDisabledTooltip}>
+        <span style={{ display: 'inline-flex' }}>{removeConnectorButton}</span>
+      </Tooltip>
+    ) : (
+      removeConnectorButton
+    );
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
