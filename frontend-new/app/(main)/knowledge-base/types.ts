@@ -321,6 +321,8 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   permission?: NodePermission;
   origin?: NodeOrigin;
   connector?: string;
+  extension?: string | null;
+  mimeType?: string | null;
 }
 
 export type SidebarSection = 'shared' | 'private';

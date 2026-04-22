@@ -37,6 +37,8 @@ export function nodeToTreeNode(
     permission: node.permission,
     origin: node.origin,
     connector: node.connector,
+    extension: node.extension,
+    mimeType: node.mimeType,
   };
 }
 

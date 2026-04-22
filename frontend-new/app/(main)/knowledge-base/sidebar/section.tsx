@@ -10,17 +10,14 @@ import { mapConnectorType } from '../utils/all-records-transformer';
 import { useTranslation } from 'react-i18next';
 import type {
   KnowledgeHubNode,
-  FolderTreeNode,
   EnhancedFolderTreeNode,
   NodeType,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
-/**
- * Convert KnowledgeHubNode to FolderTreeNode for use in FolderTreeItem
- */
-export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): FolderTreeNode & { nodeType?: NodeType; hasChildren?: boolean } {
+/** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
+export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
   return {
     id: node.id,
     name: node.name,
@@ -30,6 +27,11 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): Fo
     children: [],
     nodeType: node.nodeType,
     hasChildren: node.hasChildren,
+    permission: node.permission,
+    origin: node.origin,
+    connector: node.connector,
+    extension: node.extension,
+    mimeType: node.mimeType,
   };
 }
 

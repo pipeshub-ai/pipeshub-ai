@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Box, Text, Button, TextField, Tooltip, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FolderIcon } from '@/app/components/ui';
+import { KbNodeNameIcon } from '../../utils/kb-node-name-icon';
 import {
   ELEMENT_HEIGHT,
   TREE_INDENT_PER_LEVEL,
@@ -262,21 +262,18 @@ export function FolderTreeItem({
             <Box style={{ width: '20px', flexShrink: 0 }} />
           )}
 
-          {enhancedNode.nodeType === 'app' ? (
-            <MaterialIcon
-              name="extension"
+          <Box style={{ marginRight: '4px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+            <KbNodeNameIcon
+              isKnowledgeHub
+              nodeType={enhancedNode.nodeType}
+              connector={enhancedNode.connector}
+              extension={enhancedNode.extension}
+              mimeType={enhancedNode.mimeType}
+              name={node.name}
+              isSelected={isSelected}
               size={16}
-              color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
-              style={{ marginRight: '4px', flexShrink: 0 }}
             />
-          ) : (
-            <FolderIcon
-              variant="default"
-              size={16}
-              color="var(--emerald-11)"
-              style={{ marginRight: '4px', flexShrink: 0 }}
-            />
-          )}
+          </Box>
 
           {isEditing ? (
             <Box

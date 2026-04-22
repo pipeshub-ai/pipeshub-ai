@@ -4,7 +4,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
-import { FileIcon } from '@/app/components/ui/file-icon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
 import { ItemActionMenu } from './item-action-menu';
 import type {
@@ -17,6 +16,7 @@ import type {
   AllRecordsSortConfig,
 } from '../types';
 import { FolderIcon } from '@/app/components/ui';
+import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
@@ -371,21 +371,17 @@ function TableRow({
         gap="2"
         style={{ flex: 1, padding: '0 var(--space-2)', minWidth: 0 }}
       >
-        {isFolder && item.nodeType === 'app' ? (
-          <ConnectorIcon type={item.connector?.toLowerCase().replace(/[^a-z0-9-]/g, '')} size={20} />
-        ) : isFolder ? (
-          <FolderIcon variant="default" size={20} color="var(--emerald-11)" />
-        ) : (
-          <FileIcon
-            extension={
-              isKnowledgeHubNode(item)
-                ? item.extension || item.mimeType?.split('/')[1]
-                : item.fileType
-            }
-            size={20}
-            fallbackIcon="description"
-          />
-        )}
+        <KbNodeNameIcon
+          isKnowledgeHub={isKnowledgeHubNode(item)}
+          nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
+          connector={isKnowledgeHubNode(item) ? item.connector : undefined}
+          extension={isKnowledgeHubNode(item) ? item.extension : undefined}
+          mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
+          legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}
+          legacyFileType={!isKnowledgeHubNode(item) ? item.fileType : undefined}
+          name={item.name}
+          size={20}
+        />
         {isEditing ? (
           <>
             {/* Hidden span to measure text width */}
