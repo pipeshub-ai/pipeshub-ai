@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -53,7 +53,10 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
-  const tabs = getTabsForSource(source, { hideFileDetails });
+  const tabs = useMemo(
+    () => getTabsForSource(source, { hideFileDetails }),
+    [source, hideFileDetails],
+  );
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(

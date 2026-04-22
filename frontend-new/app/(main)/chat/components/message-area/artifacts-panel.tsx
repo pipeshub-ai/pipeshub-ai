@@ -206,7 +206,7 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
           <Spinner size={14} color="var(--slate-11)" />
         </Flex>
       )}
-      {errored && !src && (
+      {errored && (
         <Flex
           align="center"
           justify="center"
