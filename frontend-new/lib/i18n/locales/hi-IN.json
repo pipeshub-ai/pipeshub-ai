@@ -16,6 +16,12 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है…"
   },
+  "timeGroup": {
+    "today": "आज",
+    "yesterday": "कल",
+    "previous7Days": "पिछले 7 दिन",
+    "older": "पुराना"
+  },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
     "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
@@ -536,11 +542,6 @@
     "documentation": "डॉक्यूमेंटेशन",
     "darkMode": "डार्क मोड",
     "lightMode": "लाइट मोड"
-  },
-  "timeGroup": {
-    "today": "आज",
-    "previous7Days": "पिछले 7 दिन",
-    "older": "पुराने"
   },
   "workspace": {
     "users": {

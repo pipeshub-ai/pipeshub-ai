@@ -16,6 +16,12 @@
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
     "loading": "Loading…"
   },
+  "timeGroup": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "previous7Days": "Last 7 days",
+    "older": "Older"
+  },
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…"
@@ -533,11 +539,6 @@
     "documentation": "Documentation",
     "darkMode": "Dark Mode",
     "lightMode": "Light Mode"
-  },
-  "timeGroup": {
-    "today": "Today",
-    "previous7Days": "Previous 7 Days",
-    "older": "Older"
   },
   "workspace": {
     "users": {

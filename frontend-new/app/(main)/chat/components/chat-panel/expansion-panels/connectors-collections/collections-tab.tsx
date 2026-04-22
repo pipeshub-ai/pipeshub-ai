@@ -104,7 +104,7 @@ export function CollectionsTab({
         )
       : collections;
     const groups = groupByTime(filtered, (c) => c.updatedAt);
-    return getNonEmptyGroups(groups);
+    return getNonEmptyGroups(groups, (c) => c.updatedAt);
   }, [collections, searchQuery]);
 
   return (

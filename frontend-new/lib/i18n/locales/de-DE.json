@@ -16,6 +16,12 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen…"
   },
+  "timeGroup": {
+    "today": "Heute",
+    "yesterday": "Gestern",
+    "previous7Days": "Letzte 7 Tage",
+    "older": "Älter"
+  },
   "chatStream": {
     "thinkingFallback": "Denken…",
     "refiningResponse": "Antwort wird verfeinert…"
@@ -533,11 +539,6 @@
     "documentation": "Dokumentation",
     "darkMode": "Dunkelmodus",
     "lightMode": "Hellmodus"
-  },
-  "timeGroup": {
-    "today": "Heute",
-    "previous7Days": "Letzte 7 Tage",
-    "older": "Älter"
   },
   "workspace": {
     "users": {
