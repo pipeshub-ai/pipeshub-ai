@@ -93,6 +93,100 @@ export const buildAIFailureResponseMessage = (): IMessage => ({
   updatedAt: new Date(),
 });
 
+/**
+ * Attach populated citation documents across ALL messages of a conversation.
+ *
+ * Earlier implementations built a lookup map from ONLY the newly-created
+ * citations for the current response and then applied it to every message in
+ * the conversation. That wiped `citationData` for previously-saved assistant
+ * messages because their citationIds were not in the new-citations map — which
+ * is exactly what caused inline citation chips in earlier answers to collapse
+ * to unclickable numbered badges (no filename, no popover) on the client after
+ * any follow-up query, only recovering on a full page refresh (the GET
+ * `getConversationById` path correctly populates citations).
+ *
+ * Strategy:
+ *   1. Re-fetch the conversation with `populate` on every citationId across
+ *      all messages (matches the GET path).
+ *   2. For each message citation, if populate resolved to a full Citation
+ *      document, use it. Otherwise fall back to the newly-created
+ *      `fallbackCitations` array (handles transactional edge cases where the
+ *      just-saved citation isn't visible to a follow-up query).
+ */
+export const attachPopulatedCitations = async <
+  T extends IConversation | IAgentConversation,
+>(
+  conversationId: mongoose.Types.ObjectId | string | undefined,
+  updatedConversationObject: T,
+  fallbackCitations: ICitation[],
+  isAgent: boolean,
+  session?: ClientSession | null,
+): Promise<T> => {
+  let plainConversation: T = updatedConversationObject;
+
+  if (conversationId) {
+    try {
+      const Model = isAgent ? AgentConversation : Conversation;
+      const populated = await (Model as any)
+        .findById(conversationId)
+        .populate({
+          path: 'messages.citations.citationId',
+          model: 'citation',
+          select: '-__v',
+        })
+        .session(session ?? null)
+        .lean()
+        .exec();
+      if (populated) {
+        plainConversation = populated as T;
+      }
+    } catch (err: any) {
+      logger.warn(
+        'Failed to populate citations for conversation response; falling back to newly-created citations only',
+        { conversationId: conversationId?.toString(), error: err?.message },
+      );
+    }
+  }
+
+  return {
+    ...plainConversation,
+    messages: (plainConversation.messages as IMessage[]).map(
+      (message: IMessage) => ({
+        ...message,
+        citations:
+          message.citations?.map((citation: IMessageCitation) => {
+            // After populate, `citationId` is the full Citation document.
+            const populated = citation.citationId as unknown as
+              | (ICitation & { _id?: mongoose.Types.ObjectId })
+              | mongoose.Types.ObjectId
+              | undefined;
+            if (
+              populated &&
+              typeof populated === 'object' &&
+              '_id' in populated
+            ) {
+              return {
+                ...citation,
+                citationId: populated._id,
+                citationData: populated as ICitation,
+              };
+            }
+            // Fallback to the newly-created citations for this response.
+            return {
+              ...citation,
+              citationData: citation.citationId
+                ? fallbackCitations.find(
+                    (c: ICitation) =>
+                      c._id?.toString() === citation.citationId?.toString(),
+                  )
+                : undefined,
+            };
+          }) || [],
+      }),
+    ),
+  } as T;
+};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: ICitation[] = [],
@@ -692,62 +786,13 @@ export const saveCompleteConversation = async (
       throw new InternalServerError('Failed to update conversation');
     }
 
-    // Populate citation documents across ALL messages (not just the newly
-    // added one). The previous implementation built a citationMap containing
-    // only the newly-created citations and applied it to every message,
-    // which wiped citationData on all previously-saved assistant messages.
-    // That caused earlier answers' inline citation chips to collapse to an
-    // unclickable numbered badge on the client until a full page refresh
-    // (which calls getConversationById, the GET path that populates
-    // citations correctly).
-    const populatedConversation = await Conversation.findById(
-      updatedConversation._id,
-    )
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
-      })
-      .session(session ?? null)
-      .lean()
-      .exec();
-
-    const plainConversation: IConversation = (populatedConversation ??
-      updatedConversation.toObject()) as IConversation;
-
-    return {
-      ...plainConversation,
-      messages: plainConversation.messages.map((message: IMessage) => ({
-        ...message,
-        citations:
-          message.citations?.map((citation: IMessageCitation) => {
-            // After populate, `citationId` is the full Citation document.
-            // Fall back to the legacy citationMap (new citations for this
-            // response) when populate didn't resolve — e.g. if the citation
-            // was just created in the same session and hasn't been flushed.
-            const populated = citation.citationId as unknown as
-              | (ICitation & { _id?: mongoose.Types.ObjectId })
-              | mongoose.Types.ObjectId
-              | undefined;
-            if (populated && typeof populated === 'object' && '_id' in populated) {
-              return {
-                ...citation,
-                citationId: populated._id,
-                citationData: populated,
-              };
-            }
-            return {
-              ...citation,
-              citationData: citation.citationId
-                ? citations.find(
-                    (c: ICitation) =>
-                      c._id?.toString() === citation.citationId?.toString(),
-                  )
-                : undefined,
-            };
-          }) || [],
-      })),
-    };
+    return attachPopulatedCitations(
+      updatedConversation._id as mongoose.Types.ObjectId,
+      updatedConversation.toObject() as IConversation,
+      citations,
+      false,
+      session,
+    );
   } catch (error: any) {
     logger.error('Error saving complete conversation', {
       conversationId: conversation._id,
@@ -953,54 +998,13 @@ export const saveCompleteAgentConversation = async (
       throw new InternalServerError('Failed to update agent conversation');
     }
 
-    // See saveCompleteConversation for why we populate across ALL messages
-    // here instead of applying a citationMap built from only the new
-    // citations (which would clobber citationData on every older assistant
-    // message and break inline citation chips in the UI until refresh).
-    const populatedConversation = await AgentConversation.findById(
-      updatedConversation._id,
-    )
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
-      })
-      .session(session ?? null)
-      .lean()
-      .exec();
-
-    const plainConversation: IAgentConversation = (populatedConversation ??
-      updatedConversation.toObject()) as IAgentConversation;
-
-    return {
-      ...plainConversation,
-      messages: plainConversation.messages.map((message: IMessage) => ({
-        ...message,
-        citations:
-          message.citations?.map((citation: IMessageCitation) => {
-            const populated = citation.citationId as unknown as
-              | (ICitation & { _id?: mongoose.Types.ObjectId })
-              | mongoose.Types.ObjectId
-              | undefined;
-            if (populated && typeof populated === 'object' && '_id' in populated) {
-              return {
-                ...citation,
-                citationId: populated._id,
-                citationData: populated,
-              };
-            }
-            return {
-              ...citation,
-              citationData: citation.citationId
-                ? citations.find(
-                    (c: ICitation) =>
-                      c._id?.toString() === citation.citationId?.toString(),
-                  )
-                : undefined,
-            };
-          }) || [],
-      })),
-    };
+    return attachPopulatedCitations(
+      updatedConversation._id as mongoose.Types.ObjectId,
+      updatedConversation.toObject() as IAgentConversation,
+      citations,
+      true,
+      session,
+    );
   } catch (error: any) {
     logger.error('Error saving complete agent conversation', {
       conversationId: conversation._id,
@@ -1733,30 +1737,18 @@ export const handleRegenerationSuccess = async (
     );
   }
 
-  // Format response conversation
-  const plainConversation = updatedConversation.toObject();
-  const responseConversation = {
-    ...plainConversation,
-    messages: plainConversation.messages.map(
-      (message: IMessage, idx: number) => {
-        if (idx === messageIndex) {
-          return {
-            ...message,
-            citations:
-              message.citations?.map((citation: IMessageCitation) => ({
-                ...citation,
-                citationData: savedCitations.find(
-                  (c) =>
-                    (c as mongoose.Document).id.toString() ===
-                    citation.citationId?.toString(),
-                ),
-              })) || [],
-          };
-        }
-        return message;
-      },
-    ),
-  };
+  // Populate citationData across ALL messages so the frontend can rebuild its
+  // citationMaps for the entire conversation. Otherwise previous messages lose
+  // inline citation chips (see attachPopulatedCitations docstring).
+  const isAgent = (updatedConversation as IAgentConversationDocument)
+    .agentKey !== undefined;
+  const responseConversation = await attachPopulatedCitations(
+    updatedConversation._id as mongoose.Types.ObjectId,
+    updatedConversation.toObject() as IConversation | IAgentConversation,
+    savedCitations,
+    isAgent,
+    session,
+  );
 
   return {
     conversation: responseConversation,
