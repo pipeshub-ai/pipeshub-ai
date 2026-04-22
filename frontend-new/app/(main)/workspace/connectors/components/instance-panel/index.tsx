@@ -38,7 +38,6 @@ export function InstanceManagementPanel() {
     openPanel,
     openInstancePanel,
     removeConnectorInstance,
-    bumpCatalogRefresh,
   } = useConnectorsStore();
 
   const [iconError, setIconError] = useState(false);
@@ -62,20 +61,17 @@ export function InstanceManagementPanel() {
   const openRemoveDialog = useCallback(() => {
     if (!selectedInstance?._key) return;
     if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
-    if (selectedInstance.isActive) return;
+    if (selectedInstance.isActive) {
+      addToast({
+        variant: 'warning',
+        title: 'Disable sync first',
+        description: 'Turn off sync before removing this connector.',
+      });
+      return;
+    }
     setPendingDeleteId(selectedInstance._key);
     setDeleteOpen(true);
-  }, [selectedInstance]);
-
-  const removeConnectorDisabled =
-    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING || selectedInstance.isActive;
-
-  const removeConnectorDisabledTooltip =
-    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING
-      ? 'This connector is already being removed.'
-      : selectedInstance.isActive
-        ? 'Turn off sync before removing this connector.'
-        : undefined;
+  }, [selectedInstance, addToast]);
 
   const removeConnectorDisabled =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING ||
@@ -103,7 +99,6 @@ export function InstanceManagementPanel() {
         title: 'Connector removed',
         duration: 3000,
       });
-      bumpCatalogRefresh();
     } catch (error: unknown) {
       console.error('ConnectorsApi.deleteConnectorInstance', error);
       let description: string | undefined;
@@ -127,10 +122,17 @@ export function InstanceManagementPanel() {
     removeConnectorInstance,
     addToast,
     closeInstancePanel,
-    bumpCatalogRefresh,
   ]);
 
   if (!selectedInstance) return null;
+
+  const removeConnectorDisabled =
+    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
+
+  const removeConnectorDisabledTooltip =
+    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING
+      ? 'This connector is already being removed.'
+      : undefined;
 
   const instanceId = selectedInstance._key;
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
