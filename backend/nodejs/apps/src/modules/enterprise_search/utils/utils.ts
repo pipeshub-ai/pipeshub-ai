@@ -124,19 +124,25 @@ export const attachPopulatedCitations = async <
 ): Promise<T> => {
   let plainConversation: T = updatedConversationObject;
 
-  if (conversationId) {
+  // Only attempt the populate round-trip when Mongoose is actually connected.
+  // In unit tests (and any environment without an active DB connection) the
+  // default Mongoose buffering would hang this call for ~10s before failing,
+  // which is both slow and unnecessary — the fallback branch below handles
+  // those cases using the newly-created citations.
+  const isConnected = mongoose.connection?.readyState === 1;
+
+  if (conversationId && isConnected) {
     try {
       const Model = isAgent ? AgentConversation : Conversation;
-      const populated = await (Model as any)
-        .findById(conversationId)
-        .populate({
-          path: 'messages.citations.citationId',
-          model: 'citation',
-          select: '-__v',
-        })
-        .session(session ?? null)
-        .lean()
-        .exec();
+      const query = (Model as any).findById(conversationId).populate({
+        path: 'messages.citations.citationId',
+        model: 'citation',
+        select: '-__v',
+      });
+      if (session) {
+        query.session(session);
+      }
+      const populated = await query.lean().exec();
       if (populated) {
         plainConversation = populated as T;
       }
