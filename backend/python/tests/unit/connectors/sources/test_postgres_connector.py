@@ -787,22 +787,46 @@ class TestGetFilterValues:
 
     def test_returns_none_none_when_no_filters(self):
         connector = _make_connector()
-        schemas, tables = connector._get_filter_values()
+        schemas, schemas_op, tables, tables_op = connector._get_filter_values()
         assert schemas is None
         assert tables is None
+        # Default operator when filter is absent is IN
+        assert schemas_op == "in"
+        assert tables_op == "in"
 
     def test_returns_filter_values(self):
         connector = _make_connector()
         schema_filter = MagicMock()
         schema_filter.value = ["public"]
+        schema_filter.operator_value = "in"
         table_filter = MagicMock()
         table_filter.value = ["public.users"]
+        table_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.side_effect = lambda k: {"schemas": schema_filter, "tables": table_filter}.get(k)
 
-        schemas, tables = connector._get_filter_values()
+        schemas, schemas_op, tables, tables_op = connector._get_filter_values()
         assert schemas == ["public"]
+        assert schemas_op == "in"
         assert tables == ["public.users"]
+        assert tables_op == "in"
+
+    def test_returns_not_in_operator(self):
+        connector = _make_connector()
+        schema_filter = MagicMock()
+        schema_filter.value = ["pg_catalog", "information_schema"]
+        schema_filter.operator_value = "not_in"
+        table_filter = MagicMock()
+        table_filter.value = ["public.audit_log"]
+        table_filter.operator_value = "not_in"
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get.side_effect = lambda k: {"schemas": schema_filter, "tables": table_filter}.get(k)
+
+        schemas, schemas_op, tables, tables_op = connector._get_filter_values()
+        assert schemas == ["pg_catalog", "information_schema"]
+        assert schemas_op == "not_in"
+        assert tables == ["public.audit_log"]
+        assert tables_op == "not_in"
 
 
 # ===========================================================================
@@ -1786,7 +1810,7 @@ class TestGetCurrentTableStates:
             return_value=_pg_response(True, {"columns": [{"name": "id"}]})
         )
 
-        states = await connector._get_current_table_states(None, None)
+        states = await connector._get_current_table_states(None)
         assert "public.users" in states
         assert states["public.users"].n_tup_ins == 50
         assert states["public.users"].n_tup_upd == 10
@@ -1800,7 +1824,7 @@ class TestGetCurrentTableStates:
         connector.data_source.get_table_stats = AsyncMock(
             return_value=_pg_response(False, error="Error")
         )
-        states = await connector._get_current_table_states(None, None)
+        states = await connector._get_current_table_states(None)
         assert states == {}
 
     @pytest.mark.asyncio
@@ -1817,9 +1841,57 @@ class TestGetCurrentTableStates:
             return_value=_pg_response(True, {"columns": []})
         )
 
-        states = await connector._get_current_table_states(None, ["public.users"])
+        states = await connector._get_current_table_states(
+            None, selected_tables=["public.users"]
+        )
         assert "public.users" in states
         assert "public.orders" not in states
+
+    @pytest.mark.asyncio
+    async def test_tables_not_in_filter_excludes_matches(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.get_table_stats = AsyncMock(
+            return_value=_pg_response(True, [
+                {"schema_name": "public", "table_name": "users", "n_live_tup": 10, "n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0},
+                {"schema_name": "public", "table_name": "orders", "n_live_tup": 20, "n_tup_ins": 2, "n_tup_upd": 0, "n_tup_del": 0},
+            ])
+        )
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_pg_response(True, {"columns": []})
+        )
+
+        states = await connector._get_current_table_states(
+            None, selected_tables=["public.orders"], tables_op="not_in"
+        )
+        assert "public.users" in states
+        assert "public.orders" not in states
+
+    @pytest.mark.asyncio
+    async def test_schemas_not_in_fetches_all_then_excludes_client_side(self):
+        """NOT_IN cannot be pushed down through get_table_stats(schema_list); we must
+        fetch all and filter client-side. Verifies the stats_scope=None decision path."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        stats_mock = AsyncMock(
+            return_value=_pg_response(True, [
+                {"schema_name": "public", "table_name": "users", "n_live_tup": 10, "n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0},
+                {"schema_name": "pg_catalog", "table_name": "pg_class", "n_live_tup": 50, "n_tup_ins": 0, "n_tup_upd": 0, "n_tup_del": 0},
+            ])
+        )
+        connector.data_source.get_table_stats = stats_mock
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_pg_response(True, {"columns": []})
+        )
+
+        states = await connector._get_current_table_states(
+            ["pg_catalog"], schemas_op="not_in"
+        )
+
+        # Stats query was issued with no schema scope (fetch-all) so client-side exclude works.
+        stats_mock.assert_awaited_once_with(None)
+        assert "public.users" in states
+        assert "pg_catalog.pg_class" not in states
 
 
 # ===========================================================================

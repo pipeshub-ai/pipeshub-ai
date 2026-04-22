@@ -2441,7 +2441,9 @@ class TestProcessorInit:
         assert proc.graph_provider is not None
         assert proc.parsers == {}
         assert proc.indexing_pipeline is not None
-        assert proc._prev_virtual_record_id is None
+        # prev_virtual_record_id is threaded as a method argument now,
+        # not stored on the Processor instance.
+        assert not hasattr(proc, "_prev_virtual_record_id")
 
 
 # ============================================================================

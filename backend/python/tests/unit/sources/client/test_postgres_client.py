@@ -585,6 +585,54 @@ class TestAuthConfig:
         assert cfg.port == 5433
         assert cfg.sslmode == "require"
 
+    def test_populates_from_connection_string(self):
+        cfg = AuthConfig.model_validate({
+            "connection_string": "postgresql://alice:secret@db.example.com:6432/mydb",
+        })
+        assert cfg.host == "db.example.com"
+        assert cfg.port == 6432
+        assert cfg.database == "mydb"
+        assert cfg.user == "alice"
+        assert cfg.password == "secret"
+
+    def test_connection_string_alias(self):
+        cfg = AuthConfig.model_validate({
+            "connectionString": "postgresql://u:p@h:5432/db",
+        })
+        assert cfg.host == "h"
+        assert cfg.database == "db"
+        assert cfg.user == "u"
+
+    def test_url_encoded_credentials_are_decoded(self):
+        # Password contains characters that must be percent-encoded in a URI.
+        cfg = AuthConfig.model_validate({
+            "connection_string": "postgresql://alice%40corp:p%40ss%2Fword@h/db",
+        })
+        assert cfg.user == "alice@corp"
+        assert cfg.password == "p@ss/word"
+
+    def test_explicit_fields_override_connection_string(self):
+        # If caller provides both, explicit fields win over the parsed DSN.
+        cfg = AuthConfig.model_validate({
+            "connection_string": "postgresql://a:b@h1:5432/db1",
+            "host": "h2",
+            "database": "db2",
+        })
+        assert cfg.host == "h2"
+        assert cfg.database == "db2"
+        # Fields not explicitly set still come from the connection string.
+        assert cfg.user == "a"
+
+    def test_missing_required_fields_raises(self):
+        with pytest.raises(ValidationError):
+            AuthConfig.model_validate({"host": "h", "database": "d"})
+
+    def test_connection_string_missing_database_raises(self):
+        with pytest.raises(ValidationError):
+            AuthConfig.model_validate({
+                "connection_string": "postgresql://user@host:5432/",
+            })
+
 
 class TestPostgreSQLConnectorConfig:
     def test_from_dict(self):

@@ -669,17 +669,32 @@ class TestGetFilterValues:
 
     def test_returns_none_when_no_filter(self):
         connector = _make_connector()
-        result = connector._get_filter_values()
-        assert result is None
+        selected, op = connector._get_filter_values()
+        assert selected is None
+        # Default operator when filter is absent is IN.
+        assert op == "in"
 
     def test_returns_filter_values(self):
         connector = _make_connector()
         mock_filter = MagicMock()
         mock_filter.value = ["mydb.users", "mydb.orders"]
+        mock_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
-        result = connector._get_filter_values()
-        assert result == ["mydb.users", "mydb.orders"]
+        selected, op = connector._get_filter_values()
+        assert selected == ["mydb.users", "mydb.orders"]
+        assert op == "in"
+
+    def test_returns_not_in_operator(self):
+        connector = _make_connector()
+        mock_filter = MagicMock()
+        mock_filter.value = ["mydb.audit_log"]
+        mock_filter.operator_value = "not_in"
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get.return_value = mock_filter
+        selected, op = connector._get_filter_values()
+        assert selected == ["mydb.audit_log"]
+        assert op == "not_in"
 
 
 # ===========================================================================
@@ -1575,6 +1590,27 @@ class TestGetCurrentTableStates:
         )
 
         states = await connector._get_current_table_states(["testdb.users"])
+        assert "testdb.users" in states
+        assert "testdb.orders" not in states
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_excludes_matches(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.database_name = "testdb"
+        connector.data_source.get_table_stats = AsyncMock(
+            return_value=_mdb_response(True, [
+                {"database_name": "testdb", "table_name": "users", "n_live_tup": 10, "last_updated": None, "auto_increment": 0},
+                {"database_name": "testdb", "table_name": "orders", "n_live_tup": 20, "last_updated": None, "auto_increment": 0},
+            ])
+        )
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_mdb_response(True, {"columns": []})
+        )
+
+        states = await connector._get_current_table_states(
+            ["testdb.orders"], filter_op="not_in"
+        )
         assert "testdb.users" in states
         assert "testdb.orders" not in states
 
