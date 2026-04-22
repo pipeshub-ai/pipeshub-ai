@@ -377,16 +377,19 @@ export default function GeneralPage() {
           <SettingsSection title={t('workspace.general.companyProfile')}>
             {/* Logo */}
             <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
-              <AvatarUploadWidget
-                src={logoUrl}
-                initial={logoInitial}
-                uploading={logoUploading || logoDeleting}
-                onEditClick={() => {
-                  if (logoUploading || logoDeleting) return;
-                  fileInputRef.current?.click();
-                }}
-                onDeleteClick={hasServerLogo ? handleDeleteLogo : undefined}
-              />
+              <Flex align="center" justify="end" style={{ width: '100%' }}>
+                <AvatarUploadWidget
+                  src={logoUrl}
+                  initial={logoInitial}
+                  uploading={logoUploading || logoDeleting}
+                  onEditClick={() => {
+                    if (logoUploading || logoDeleting) return;
+                    fileInputRef.current?.click();
+                  }}
+                  onDeleteClick={hasServerLogo ? handleDeleteLogo : undefined}
+                  triggerAriaLabel={t('workspace.general.editLogoAria')}
+                />
+              </Flex>
             </SettingsRow>
 
             {/* Registered Name */}

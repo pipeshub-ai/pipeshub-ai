@@ -1215,7 +1215,7 @@
       "dataCollectionReason5": "Zur Personalisierung Ihrer Benutzererfahrung",
       "dataCollectionReason6": "Zur Verbesserung und Weiterentwicklung unserer Produkte und Dienstleistungen",
       "manageSubtitle": "Verwalten Sie Ihr Unternehmensprofil",
-      "removeLogoAria": "Organisationslogo entfernen",
+      "editLogoAria": "Organisationslogo bearbeiten",
       "toasts": {
         "loadError": "Organisation konnte nicht geladen werden",
         "loadErrorDescription": "Ihre Organisationsdaten konnten nicht abgerufen werden",
@@ -1661,6 +1661,7 @@
       "general": {
         "avatarLabel": "Ihr Profilbild",
         "avatarDescription": "Empfohlene Größe: 256 × 256 Pixel",
+        "editAvatarAria": "Profilbild bearbeiten",
         "fullName": "Vollständiger Name",
         "fullNameDescription": "Bitte geben Sie Ihren vollständigen Namen ein",
         "fullNamePlaceholder": "z. B. Max Mustermann",

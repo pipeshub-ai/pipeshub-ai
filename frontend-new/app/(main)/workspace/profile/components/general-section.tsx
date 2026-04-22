@@ -63,6 +63,7 @@ export function GeneralSection({
           uploading={avatarUploading}
           onEditClick={onEditAvatarClick}
           onDeleteClick={onDeleteAvatarClick}
+          triggerAriaLabel={t('workspace.profile.general.editAvatarAria')}
         />
       </SettingsRow>
 

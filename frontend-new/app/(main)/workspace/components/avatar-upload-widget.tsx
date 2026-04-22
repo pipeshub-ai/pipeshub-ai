@@ -15,6 +15,8 @@ export interface AvatarUploadWidgetProps {
   onEditClick: () => void;
   /** Called when the user wants to remove the image (dropdown shown only when defined AND src is set) */
   onDeleteClick?: () => void;
+  /** Accessible name for the trigger button (covers both the plain-edit and dropdown-menu states) */
+  triggerAriaLabel?: string;
 }
 
 /**
@@ -33,6 +35,7 @@ export function AvatarUploadWidget({
   uploading = false,
   onEditClick,
   onDeleteClick,
+  triggerAriaLabel,
 }: AvatarUploadWidgetProps) {
   const showDropdown = !!src && !!onDeleteClick;
 
@@ -54,6 +57,7 @@ export function AvatarUploadWidget({
               color="gray"
               size="2"
               disabled={uploading}
+              aria-label={triggerAriaLabel}
               style={{ cursor: uploading ? 'wait' : 'pointer' }}
             >
               <MaterialIcon name="edit" size={16} color="var(--gray-11)" />
@@ -81,6 +85,7 @@ export function AvatarUploadWidget({
           size="2"
           onClick={onEditClick}
           disabled={uploading}
+          aria-label={triggerAriaLabel}
           style={{ cursor: uploading ? 'wait' : 'pointer' }}
         >
           <MaterialIcon name="edit" size={16} color="var(--gray-11)" />

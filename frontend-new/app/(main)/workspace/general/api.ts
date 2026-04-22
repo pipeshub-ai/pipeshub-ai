@@ -69,7 +69,7 @@ export const OrgApi = {
       if (response.status === 204) {
         return null;
       }
-      return URL.createObjectURL(response.data);
+      return response.data instanceof Blob ? URL.createObjectURL(response.data) : null;
     } catch {
       return null;
     }
