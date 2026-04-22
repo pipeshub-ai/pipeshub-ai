@@ -941,7 +941,7 @@ class TestConditionalOrchestrationHelpers:
 
         config = {
             "mode": "regex",
-            "regexPattern": r"score:\\s*(9|10)",
+            "regexPattern": r"score:\s*(9|10)",
         }
         assert _evaluate_condition_node(config, "Quality score: 9", {}) is True
 
@@ -999,6 +999,6 @@ class TestConditionalOrchestrationHelpers:
             }
         }
 
-        with pytest.raises(InvalidRequestError):
+        with pytest.raises(InvalidRequestError) as exc_info:
             _build_conditional_orchestration_graph(agent)
-        assert q.retrievalMode == "HYBRID"
+        assert "both pass and fail outputs connected" in str(exc_info.value)

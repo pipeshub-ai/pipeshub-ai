@@ -108,34 +108,83 @@ export const FlowNode = React.memo(function FlowNode({
   }
 
   if (data.type === 'conditional-check') {
+    const modeLabel = (() => {
+      const modeLabels: Record<string, string> = {
+        contains: 'Contains',
+        not_contains: 'Not Contains',
+        equals: 'Equals',
+        not_equals: 'Not Equals',
+        starts_with: 'Starts With',
+        ends_with: 'Ends With',
+        regex: 'Regex',
+        min_length: 'Min Length',
+        max_length: 'Max Length',
+        is_empty: 'Is Empty',
+        not_empty: 'Not Empty',
+        json_path_equals: 'JSON Path',
+      };
+      const mode = (data.config?.mode as string) ?? 'contains';
+      return modeLabels[mode] ?? mode ?? 'Contains';
+    })();
+
     return (
-      <NodeCardShell
-        id={id}
-        data={data}
-        chrome={chrome}
-        selected={selected}
-        readOnly={readOnly}
-        onDelete={onDelete}
-        headerLabel="Condition Check"
-        subtitle={`Mode: ${(() => {
-          const modeLabels: Record<string, string> = {
-            contains: 'Contains',
-            not_contains: 'Not Contains',
-            equals: 'Equals',
-            not_equals: 'Not Equals',
-            starts_with: 'Starts With',
-            ends_with: 'Ends With',
-            regex: 'Regex',
-            min_length: 'Min Length',
-            max_length: 'Max Length',
-            is_empty: 'Is Empty',
-            not_empty: 'Not Empty',
-            json_path_equals: 'JSON Path',
-          };
-          return modeLabels[(data.config?.mode as string) ?? 'contains'] ?? (data.config?.mode as string) ?? 'Contains';
-        })()}`}
-        icon="source_branch"
-      />
+      <div className="flow-node-card">
+        <NodeCardShell
+          selected={selected}
+          header={
+            <Flex align="center" justify="between" gap="2" px="3" py="2">
+              <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{ flexShrink: 0, lineHeight: 0 }}
+                  aria-hidden
+                >
+                  <MaterialIcon name="source_branch" size={22} color={chrome.iconColor} />
+                </Flex>
+                <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                  <Text
+                    weight="medium"
+                    style={{
+                      wordBreak: 'break-word',
+                      color: 'var(--agent-flow-text)',
+                      lineHeight: '20px',
+                      fontSize: 14,
+                    }}
+                  >
+                    Condition Check
+                  </Text>
+                  <Text
+                    size="1"
+                    style={{
+                      display: 'block',
+                      color: 'var(--agent-flow-text-muted)',
+                      lineHeight: '16px',
+                    }}
+                  >
+                    {`Mode: ${modeLabel}`}
+                  </Text>
+                </Flex>
+              </Flex>
+              {!readOnly && onDelete ? (
+                <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    onClick={() => onDelete(id)}
+                    aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                  >
+                    <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                  </IconButton>
+                </span>
+              ) : null}
+            </Flex>
+          }
+        >
+          <NodeHandles data={data} />
+        </NodeCardShell>
+      </div>
     );
   }
 
