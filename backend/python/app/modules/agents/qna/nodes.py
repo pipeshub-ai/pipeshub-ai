@@ -6663,10 +6663,17 @@ async def _generate_direct_response(
     Streams the LLM response to the frontend, sends the completion event,
     and stores the result in state. Fully self-contained — the caller just
     needs to ``return state`` after this returns.
+
+    When ``state["response"]`` is set by a prior node (e.g. ReAct), the full text is
+    embedded in the user message; ``stream_llm_response`` still runs so citation
+    normalization, chunking, and other streaming behavior stay unchanged.
     """
 
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
+
+    _pr = state.get("response")
+    prior_react: str | None = _pr if isinstance(_pr, str) and _pr.strip() else None
 
     # Build messages with full conversation history (same as planner)
     messages = []
@@ -6722,6 +6729,12 @@ async def _generate_direct_response(
         if user_context:
             system_content += "\n\nWhen the user asks about themselves, use the provided user info directly."
 
+    if prior_react:
+        system_content += (
+            "\n\nIf the user message includes a **draft / preliminary assistant response** from the ReAct step "
+            "in this turn, your final answer must follow its substance and structure; adjust wording only."
+        )
+
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
@@ -6735,10 +6748,18 @@ async def _generate_direct_response(
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")
 
-    # Current query
+    # Current user turn (include full ReAct handoff in full when present; no truncation)
     user_content = query
     if user_context:
         user_content += f"\n\n{user_context}"
+    if prior_react:
+        user_content = (
+            "## Draft output\n\n"
+            f"{prior_react}\n\n"
+            "---\n\n"
+            "## User message\n\n"
+            f"{user_content}"
+        )
     messages.append(HumanMessage(content=user_content))
 
     answer_text = ""
