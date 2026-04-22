@@ -86,6 +86,36 @@ export function categorizeNodes(nodes: KnowledgeHubNode[], rootParentId: string 
  * @param effectiveHasChildFolders - When provided, overwrites the parent node's hasChildren
  *   with the value derived from the fresh API response (e.g. counts).
  */
+/** True if any node in the tree matches `id` (recursive). */
+export function treeHasNodeWithId(tree: EnhancedFolderTreeNode[], id: string): boolean {
+  for (const node of tree) {
+    if (node.id === id) return true;
+    if (node.children?.length && treeHasNodeWithId(node.children as EnhancedFolderTreeNode[], id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Build sidebar roots for a connector (non-KB) app from a flat API child list.
+ * Tries common parentId shapes used by the knowledge-hub API.
+ */
+export function buildConnectorAppSidebarTree(
+  appId: string,
+  items: KnowledgeHubNode[]
+): EnhancedFolderTreeNode[] {
+  const filtered = items.filter((n) => n.nodeType !== 'app');
+  const appPrefix = `apps/${appId}`;
+  const byAppPrefix = buildTreeFromNodes(filtered, appPrefix);
+  if (byAppPrefix.length > 0) return byAppPrefix;
+  const byAppId = buildTreeFromNodes(filtered, appId);
+  if (byAppId.length > 0) return byAppId;
+  const byNull = buildTreeFromNodes(filtered, null);
+  if (byNull.length > 0) return byNull;
+  return filtered.map((n) => nodeToTreeNode(n, 0, []));
+}
+
 export function mergeChildrenIntoTree(
   tree: EnhancedFolderTreeNode[],
   parentId: string,

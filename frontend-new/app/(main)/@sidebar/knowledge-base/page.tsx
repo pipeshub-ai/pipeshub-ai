@@ -6,7 +6,11 @@ import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
 import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/constants';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import { categorizeNode, mergeChildrenIntoTree } from '../../knowledge-base/utils/tree-builder';
+import {
+  categorizeNode,
+  mergeChildrenIntoTree,
+  treeHasNodeWithId,
+} from '../../knowledge-base/utils/tree-builder';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
@@ -25,6 +29,7 @@ function KnowledgeBaseSidebarSlotContent() {
     categorizedNodes,
     appNodes,
     appChildrenCache,
+    connectorAppTrees,
     loadingAppIds,
     connectors: storeConnectors,
     loadingNodeIds,
@@ -37,6 +42,7 @@ function KnowledgeBaseSidebarSlotContent() {
     cacheNodeChildren,
     addNodes,
     setCategorizedNodes,
+    mergeConnectorAppTreeChildren,
     setCurrentFolderId,
     setAllRecordsSidebarSelection,
     clearNodeCacheEntries,
@@ -74,6 +80,7 @@ function KnowledgeBaseSidebarSlotContent() {
       const {
         categorizedNodes: freshCategorized,
         nodeChildrenCache: freshCache,
+        connectorAppTrees: freshConnectorTrees,
       } = useKnowledgeBaseStore.getState();
 
       // Check if children already exist in tree
@@ -88,11 +95,27 @@ function KnowledgeBaseSidebarSlotContent() {
       };
 
       if (freshCategorized) {
-        const alreadyInTree =
+        const alreadyInKbTree =
           hasChildrenInTree(freshCategorized.shared, nodeId) ||
           hasChildrenInTree(freshCategorized.private, nodeId);
-        if (alreadyInTree) return;
+        if (alreadyInKbTree) return;
       }
+
+      for (const tree of freshConnectorTrees.values()) {
+        if (hasChildrenInTree(tree, nodeId)) return;
+      }
+
+      const mergeIntoConnectorTrees = (
+        children: KnowledgeHubNode[],
+        effectiveHasChildFolders?: boolean
+      ) => {
+        const { connectorAppTrees } = useKnowledgeBaseStore.getState();
+        for (const [appId, tree] of connectorAppTrees) {
+          if (!treeHasNodeWithId(tree, nodeId)) continue;
+          mergeConnectorAppTreeChildren(appId, nodeId, children, effectiveHasChildFolders);
+          return;
+        }
+      };
 
       // Check cache — re-merge if stale
       const cachedChildren = freshCache.get(nodeId);
@@ -111,6 +134,7 @@ function KnowledgeBaseSidebarSlotContent() {
             setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
           }
         }
+        mergeIntoConnectorTrees(cachedChildren);
         return;
       }
 
@@ -126,6 +150,10 @@ function KnowledgeBaseSidebarSlotContent() {
         cacheNodeChildren(nodeId, response.items);
         addNodes(response.items);
 
+        const foldersCount =
+          response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
+        const effectiveHasChildFolders = foldersCount > 0;
+
         const latest = useKnowledgeBaseStore.getState();
         if (latest.categorizedNodes) {
           const parentNode = latest.nodes.find((n) => n.id === nodeId);
@@ -137,10 +165,6 @@ function KnowledgeBaseSidebarSlotContent() {
             // server said true but no folder children actually exist). counts is the
             // authoritative answer: if the "folders" entry is absent or 0, this node
             // has no sub-folder children and the chevron should not show.
-            const foldersCount =
-              response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-            const effectiveHasChildFolders = foldersCount > 0;
-
             const updatedTree = mergeChildrenIntoTree(
               latest.categorizedNodes[section],
               nodeId,
@@ -150,13 +174,15 @@ function KnowledgeBaseSidebarSlotContent() {
             setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
           }
         }
+
+        mergeIntoConnectorTrees(response.items, effectiveHasChildFolders);
       } catch (error) {
         console.error('Failed to expand node', { nodeId, error });
       } finally {
         setNodeLoading(nodeId, false);
       }
     },
-    [setNodeLoading, cacheNodeChildren, addNodes, setCategorizedNodes]
+    [setNodeLoading, cacheNodeChildren, addNodes, setCategorizedNodes, mergeConnectorAppTreeChildren]
   );
 
   // --- Auto-expansion: open sidebar tree to the currently navigated node ---
@@ -444,6 +470,7 @@ function KnowledgeBaseSidebarSlotContent() {
       // All Records mode
       appNodes={filteredAppNodes}
       appChildrenCache={appChildrenCache}
+      connectorAppTrees={connectorAppTrees}
       loadingAppIds={loadingAppIds}
       connectors={storeConnectors}
       moreConnectors={isAdmin === true ? ADMIN_MORE_CONNECTORS : PERSONAL_MORE_CONNECTORS}

@@ -39,7 +39,12 @@ import type {
   RecordDetailsResponse,
   Breadcrumb,
 } from './types';
-import { categorizeNodes, mergeChildrenIntoTree, categorizeNode } from './utils/tree-builder';
+import {
+  categorizeNodes,
+  mergeChildrenIntoTree,
+  categorizeNode,
+  buildConnectorAppSidebarTree,
+} from './utils/tree-builder';
 import {
   getSourceDisplay,
   buildKbLookup,
@@ -120,6 +125,7 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     cacheAppChildren,
+    setConnectorAppTree,
     setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
@@ -480,6 +486,11 @@ function KnowledgeBasePageContent() {
           // KB children have parentId = "apps/<appId>" so pass it as rootParentId
           const categorized = categorizeNodes(response.items, `apps/${app.id}`);
           setCategorizedNodes(categorized);
+        } else {
+          // Non-KB apps (All Records): same nested sidebar model as KB via connectorAppTrees
+          addNodes(response.items);
+          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
+          setConnectorAppTree(app.id, connectorTree);
         }
       } catch (error) {
         console.error(`Error fetching children for app ${app.name}:`, error);
@@ -488,7 +499,16 @@ function KnowledgeBasePageContent() {
       }
     });
   // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [appNodes, isAllRecordsMode, setAppLoading, cacheAppChildren, setNodes, setCategorizedNodes]);
+  }, [
+    appNodes,
+    isAllRecordsMode,
+    setAppLoading,
+    cacheAppChildren,
+    setNodes,
+    setCategorizedNodes,
+    addNodes,
+    setConnectorAppTree,
+  ]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {

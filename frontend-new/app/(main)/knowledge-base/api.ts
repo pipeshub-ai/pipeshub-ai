@@ -12,33 +12,27 @@ import { DEFAULT_PAGE_SIZE } from './store';
 
 const BASE_URL = '/api/v1/knowledgeBase';
 
+/**
+ * Sidebar tree: omit leaf records (records with no expandable children).
+ * Folders, KBs, apps, and records with `hasChildren: true` are kept.
+ */
+function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
+  return items.filter(
+    item => item.nodeType !== 'record' || item.hasChildren !== false
+  );
+}
+
+function withSidebarFilteredItems(data: KnowledgeHubApiResponse): KnowledgeHubApiResponse {
+  return {
+    ...data,
+    items: filterSidebarItems(data.items),
+  };
+}
+
 // File metadata for folder uploads (preserves folder hierarchy)
 export interface FileMetadata {
   file_path: string;
   last_modified: number;
-}
-
-// ============================================================================
-// TEMPORARY HELPER - Remove after API is fixed
-// ============================================================================
-
-/**
- * TEMPORARY: Filter out records with nodeType "record" from API responses
- *
- * The API currently returns records even when onlyContainers=true is requested.
- * This helper removes those records until the backend is fixed.
- *
- * TODO: Remove this function once API properly respects onlyContainers parameter
- *
- * NOTE: App nodes are NOT filtered at this level. They are filtered at the
- * categorization level (tree-builder.ts) for Collections mode only, since
- * All Records mode needs app nodes for connector grouping.
- *
- * @param items Array of nodes from API response
- * @returns Filtered array with only container nodes (kb, app, folder, recordGroup)
- */
-function filterOutRecords<T extends { nodeType?: string }>(items: T[]): T[] {
-  return items.filter(item => item.nodeType !== 'record');
 }
 
 // ============================================================================
@@ -55,10 +49,10 @@ function filterOutRecords<T extends { nodeType?: string }>(items: T[]): T[] {
 export const KnowledgeHubApi = {
   /**
    * Collections View: Initial sidebar load
-   * 
-   * Fetches top-level folders, KBs, and apps for the sidebar navigation tree.
-   * Always includes only containers (folders, KBs, apps) with counts.
-   * 
+   *
+   * Fetches top-level nodes for the sidebar navigation tree. Leaf records
+   * (`hasChildren: false`) are omitted; record groups and containers remain.
+   *
    * @returns Root navigation nodes with counts
    */
   async initializeSidebar() {
@@ -66,8 +60,6 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
-          // TEMPORARY: onlyContainers disabled until API is fixed
-          // onlyContainers: true,
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
@@ -76,22 +68,15 @@ export const KnowledgeHubApi = {
       }
     );
 
-    // TEMPORARY: Filter out records manually until API respects onlyContainers
-    // TODO: Remove this filtering once API is fixed
-    // NOTE: App nodes are NOT filtered here - they're filtered at categorization level
-    // for Collections mode only. All Records mode needs app nodes for connectors.
-    return {
-      ...data,
-      items: filterOutRecords(data.items),
-    };
+    return withSidebarFilteredItems(data);
   },
 
   /**
    * Collections View: Expand folder in sidebar
-   * 
-   * Fetches children of a specific folder/KB for sidebar expansion.
-   * Returns only containers (subfolders, nested KBs).
-   * 
+   *
+   * Fetches children of a specific folder/KB for sidebar expansion. Omits leaf
+   * records (same rule as {@link initializeSidebar}).
+   *
    * @param nodeId - ID of the folder/KB to expand
    * @returns Child navigation nodes
    */
@@ -101,22 +86,13 @@ export const KnowledgeHubApi = {
       {
         params: {
           nodeId,
-          // TEMPORARY: onlyContainers disabled until API is fixed
-          // onlyContainers: true,
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
         },
       }
     );
 
-    // TEMPORARY: Filter out records manually until API respects onlyContainers
-    // TODO: Remove this filtering once API is fixed
-    // NOTE: App nodes are NOT filtered here - they're filtered at categorization level
-    // for Collections mode only. All Records mode needs app nodes for connectors.
-    return {
-      ...data,
-      items: filterOutRecords(data.items),
-    };
+    return withSidebarFilteredItems(data);
   },
 
   /**
@@ -195,24 +171,14 @@ export const KnowledgeHubApi = {
   },
 
   /**
-   * All Records View: Get all root items
-   * 
-   * Fetches all accessible items at root level (not just containers).
-   * Used for populating the All Records data table.
-   * 
-   * @param params - Optional filters, pagination, sorting
-   * @returns All root-level items with metadata
+   * Get node children for sidebar expansion
    *
-
-  /**
-   * Get node children for sidebar expansion (with onlyContainers)
-   * 
-   * Used when expanding nodes in the sidebar tree.
-   * 
+   * Used when expanding nodes in the sidebar tree. Omits leaf records
+   * (`hasChildren: false`); containers and record groups stay.
+   *
    * @param nodeType - Type of parent node
    * @param nodeId - ID of parent node
-   * @param params - Optional params (onlyContainers will be applied)
-   * @returns Child nodes (containers only)
+   * @param params - Optional pagination and include flags
    */
   async getNodeChildren(
     nodeType: NodeType,
@@ -228,8 +194,6 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
       {
         params: {
-          // TEMPORARY: onlyContainers disabled until API is fixed
-          // onlyContainers: params?.onlyContainers ?? true,
           page: params?.page ?? 1,
           limit: params?.limit ?? 50,
           include: params?.include,
@@ -237,31 +201,20 @@ export const KnowledgeHubApi = {
       }
     );
 
-    // TEMPORARY: Filter out records manually if onlyContainers was requested
-    // TODO: Remove this filtering once API is fixed
-    // NOTE: App nodes are NOT filtered here - they're filtered at categorization level
-    // for Collections mode only. All Records mode needs app nodes for connectors.
-    if (params?.onlyContainers !== false) {
-      return {
-        ...data,
-        items: filterOutRecords(data.items),
-      };
-    }
-
-    return data;
+    return withSidebarFilteredItems(data);
   },
 
   /**
    * Get node table data (all items in a folder for data table)
-   * 
-   * Fetches top-level nodes. Applies container filtering based on params.
-   * 
+   *
+   * Fetches top-level nodes. When onlyContainers is not false, delegates to
+   * initializeSidebar for the same root /knowledge-hub/nodes request used by the sidebar.
+   *
    * @param params - Query parameters
    * @returns Root nodes
    */
   async getRootNodes(params?: { page?: number; limit?: number; onlyContainers?: boolean }) {
     if (params?.onlyContainers !== false) {
-      // For sidebar: use initializeSidebar which handles filtering
       return this.initializeSidebar();
     }
     
@@ -269,6 +222,15 @@ export const KnowledgeHubApi = {
     return this.getAllRootItems(params);
   },
 
+  /**
+   * All Records View: Get all root items
+   *
+   * Fetches all accessible items at root level (not just containers).
+   * Used for populating the All Records data table.
+   *
+   * @param params - Optional filters, pagination, sorting
+   * @returns All root-level items with metadata
+   */
   async getAllRootItems(params?: Partial<KnowledgeHubQueryParams>) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
