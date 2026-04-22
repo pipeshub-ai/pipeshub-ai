@@ -80,11 +80,15 @@ export const KB_SECTION_HEADER_MARGIN_BOTTOM = '4px';
 // TREE STRUCTURE (KNOWLEDGE BASE)
 // ============================================
 
-/** Indentation per tree nesting level in pixels (used by KB folder trees) */
-export const TREE_INDENT_PER_LEVEL = 31;
+/**
+ * Horizontal indent per nesting level for KB folder trees.
+ * Matches the FolderTreeItem chevron column (16px + space-1 gap) so a child’s
+ * expand chevron lines up under the parent’s folder icon.
+ */
+export const TREE_INDENT_PER_LEVEL = 20;
 
-/** Base left padding for tree items in pixels */
-export const TREE_BASE_PADDING = 12;
+/** Base left padding for tree rows (shared with vertical guide lines in tree-lines) */
+export const TREE_BASE_PADDING = 8;
 
 /**
  * Horizontal offset for tree lines (distance from padding edge to line center)

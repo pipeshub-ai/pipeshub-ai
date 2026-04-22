@@ -109,7 +109,10 @@ export function AppSection({
       </Flex>
 
       {/* Children — same tree structure as Collections */}
-      <Box className="no-scrollbar" style={{ overflowX: 'auto', marginTop: 'var(--space-1)' }}>
+      <Box
+        className="no-scrollbar"
+        style={{ overflowX: 'auto', marginTop: 'var(--space-1)', minWidth: 0 }}
+      >
       <Flex direction="column" gap="0">
         {isLoading ? (
           <Flex align="center" gap="2" style={{ padding: 'var(--space-2) var(--space-6)' }}>
@@ -157,7 +160,7 @@ export function AppSection({
             {(maxVisible ? children.slice(0, maxVisible) : children).map((child) => (
               <FolderTreeItem
                 key={child.id}
-                node={convertToTreeNode(child, 1)}
+                node={convertToTreeNode(child, 0)}
                 isSelected={currentFolderId === child.id}
                 currentFolderId={currentFolderId}
                 onSelect={(id) => {

@@ -301,7 +301,7 @@ function KBSidebarContent({
               appChildren.map((child) => (
                 <FolderTreeItem
                   key={child.id}
-                  node={convertToTreeNode(child, 1)}
+                  node={convertToTreeNode(child, 0)}
                   isSelected={currentFolderId === child.id}
                   currentFolderId={currentFolderId}
                   onSelect={(id) => {
