@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
+import { isLegacyWordDocFile } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
 
 // Export new specialized renderers
@@ -35,8 +36,7 @@ export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRend
   }, [fileUrl, fileBlob]);
 
   const downloadHref = (fileUrl && fileUrl.trim() !== '') ? fileUrl : blobUrl;
-  const ext = fileName.split('.').pop()?.toLowerCase() || '';
-  const isLegacyDoc = ext === 'doc';
+  const isLegacyDoc = isLegacyWordDocFile(undefined, fileName);
 
   return (
     <Flex

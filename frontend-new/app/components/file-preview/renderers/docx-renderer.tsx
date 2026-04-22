@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import type { PreviewCitation } from '../types';
 import { useTextHighlighter } from '../use-text-highlighter';
@@ -47,6 +47,10 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
   const [error, setError] = useState<string | null>(null);
   const [documentReady, setDocumentReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const activeCitationIdRef = useRef<string | null | undefined>(activeCitationId);
+  useLayoutEffect(() => {
+    activeCitationIdRef.current = activeCitationId;
+  }, [activeCitationId]);
 
   const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
     citations,
@@ -155,26 +159,52 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
   // ── Step 3: Scroll to active citation (retry pattern) ─────────────
   // `useTextHighlighter.applyHighlights` schedules work in rAF; wait briefly before scrolling
   // so the `.highlight-*` spans exist (mirrors `TextRenderer` / `HtmlRenderer`).
+  // Cleanup cancels the initial delay and all nested retries; a ref avoids scrolling to a superseded id.
   useEffect(() => {
     if (!activeCitationId || !documentReady || !citations?.length) return;
-    const container = containerRef.current;
-    if (!container) return;
+    if (!containerRef.current) return;
 
-    const start = setTimeout(() => {
+    const targetId = activeCitationId;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    let cancelled = false;
+
+    const clearAll = () => {
+      cancelled = true;
+      for (const t of timeouts) clearTimeout(t);
+      timeouts.length = 0;
+    };
+
+    const schedule = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => {
+        if (cancelled) return;
+        fn();
+      }, ms);
+      timeouts.push(id);
+    };
+
+    schedule(() => {
+      if (activeCitationIdRef.current !== targetId) return;
       const attemptScroll = (attempts: number) => {
+        if (cancelled) return;
+        if (activeCitationIdRef.current !== targetId) return;
         const root = containerRef.current;
         if (attempts <= 0 || !root) return;
-        const el = root.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
+        const el = root.querySelector(`.highlight-${CSS.escape(targetId)}`);
         if (el) {
-          scrollToHighlight(activeCitationId, root);
+          if (activeCitationIdRef.current !== targetId) return;
+          scrollToHighlight(targetId, root);
         } else if (attempts > 1) {
-          setTimeout(() => attemptScroll(attempts - 1), 120);
+          schedule(() => {
+            if (activeCitationIdRef.current === targetId) {
+              attemptScroll(attempts - 1);
+            }
+          }, 120);
         }
       };
       attemptScroll(12);
     }, 150);
 
-    return () => clearTimeout(start);
+    return clearAll;
   }, [activeCitationId, documentReady, scrollToHighlight, citations]);
 
   // ── Inject scoped styles for docx-preview highlights ──────────────

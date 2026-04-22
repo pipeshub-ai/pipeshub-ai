@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -44,6 +44,10 @@ export function FilePreviewSidebar({
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
   const [panelWidthPx, setPanelWidthPx] = useState(() => readSavedPanelWidthPx(hasCitations));
+  const panelWidthRef = useRef(panelWidthPx);
+  useLayoutEffect(() => {
+    panelWidthRef.current = panelWidthPx;
+  }, [panelWidthPx]);
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
@@ -78,7 +82,7 @@ export function FilePreviewSidebar({
   const beginPanelEdgeResize = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = panelWidthPx;
+    const startW = panelWidthRef.current;
     const maxW = Math.min(PANEL_MAX_PX, viewportMaxPanelPx());
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
@@ -100,7 +104,7 @@ export function FilePreviewSidebar({
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-  }, [panelWidthPx]);
+  }, []);
 
   // Handle page detection callback from renderer
   const handleTotalPagesDetected = useCallback((numPages: number) => {
@@ -488,7 +492,6 @@ export function FilePreviewSidebar({
                   citations={citations}
                   activeCitationId={activeCitationId}
                   onCitationClick={handleCitationClick}
-                  widthPx={citationsWidthPx}
                 />
               </Box>
             </>

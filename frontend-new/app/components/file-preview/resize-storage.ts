@@ -1,5 +1,7 @@
 export const PANEL_WIDTH_LS_KEY = 'ph.filePreview.panelWidthPx';
 export const CITATIONS_WIDTH_LS_KEY = 'ph.filePreview.citationsWidthPx';
+/** Fired on `window` when the citations column width is saved (same tab). Keeps multiple hook instances in sync. */
+export const CITATIONS_WIDTH_BROADCAST = 'ph-filePreview-citations-width' as const;
 
 export const PANEL_MIN_PX = 360;
 export const PANEL_MAX_PX = 1680;

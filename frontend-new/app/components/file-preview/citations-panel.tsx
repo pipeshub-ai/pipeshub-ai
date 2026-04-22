@@ -10,8 +10,6 @@ interface CitationsPanelProps {
   activeCitationId?: string | null;
   /** Called when a citation card is clicked */
   onCitationClick?: (citation: PreviewCitation) => void;
-  /** Column width in pixels (parent may resize via drag handle). Default 260. */
-  widthPx?: number;
 }
 
 /**
@@ -26,14 +24,13 @@ interface CitationsPanelProps {
  *   – Active citation auto-scrolls into view (delayed 350ms for smooth UX)
  *   – Clicking a card triggers `onCitationClick` (parent navigates PDF)
  *
- * Visible only when `citations` is non-empty; the parent layout is
- * responsible for hiding this panel otherwise.
+ * Visible only when `citations` is non-empty; the parent layout
+ * (fixed-width column) sizes this panel — it fills the column width.
  */
 export function CitationsPanel({
   citations,
   activeCitationId,
   onCitationClick,
-  widthPx = 260,
 }: CitationsPanelProps) {
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -57,9 +54,9 @@ export function CitationsPanel({
     <Flex
       direction="column"
       style={{
-        width: `${widthPx}px`,
-        minWidth: `${widthPx}px`,
-        maxWidth: `${widthPx}px`,
+        width: '100%',
+        minWidth: 0,
+        alignSelf: 'stretch',
         flexShrink: 0,
         height: '100%',
         overflow: 'hidden',

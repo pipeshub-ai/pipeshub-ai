@@ -323,7 +323,6 @@ export function FilePreviewFullscreen({
                 citations={citations}
                 activeCitationId={activeCitationId}
                 onCitationClick={handleCitationClick}
-                widthPx={citationsWidthPx}
               />
             </Box>
           </>
