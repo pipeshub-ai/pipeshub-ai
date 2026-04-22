@@ -135,6 +135,13 @@ export interface FilePreviewProps {
    * citation [2] even when multiple citations share the same page.
    */
   initialCitationId?: string;
+
+  /**
+   * Hide the "File Details" tab. Used for previews that don't correspond
+   * to a KB record (e.g. chat-generated artifacts) where the tab would
+   * otherwise render an empty panel.
+   */
+  hideFileDetails?: boolean;
 }
 
 /**

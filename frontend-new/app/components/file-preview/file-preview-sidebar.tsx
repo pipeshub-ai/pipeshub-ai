@@ -39,6 +39,7 @@ export function FilePreviewSidebar({
   highlightBox,
   citations,
   initialCitationId,
+  hideFileDetails,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
@@ -52,7 +53,7 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
-  const tabs = getTabsForSource(source);
+  const tabs = getTabsForSource(source, { hideFileDetails });
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -68,6 +69,14 @@ export function FilePreviewSidebar({
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
   }, [file.id, file.url, initialPage]);
+
+  // If the active tab is no longer visible (e.g. we previously had record
+  // details and now the user opened an artifact without any), fall back to
+  // the Preview tab so we never render an empty body.
+  useEffect(() => {
+    const stillVisible = tabs.some((t) => t.id === activeTab && t.visible);
+    if (!stillVisible) setActiveTab('preview');
+  }, [tabs, activeTab]);
 
   // Keep panel width within viewport when the window resizes
   useEffect(() => {
@@ -110,11 +119,6 @@ export function FilePreviewSidebar({
   const handleTotalPagesDetected = useCallback((numPages: number) => {
     setTotalPages(numPages);
   }, []);
-
-  const handleChatClick = () => {
-    // TODO: Implement chat functionality
-    console.log('Chat button clicked');
-  };
 
   const handleTabChange = (tab: FilePreviewTab) => {
     setActiveTab(tab);
@@ -430,31 +434,13 @@ export function FilePreviewSidebar({
                   >
                     <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
                   </IconButton>
-
-                  <Box
-                    style={{
-                      backgroundColor: 'var(--accent-a3)',
-                      borderRadius: 'var(--radius-2)',
-                      padding: '8px 12px',
-                      height: '32px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                    }}
-                    onClick={handleChatClick}
-                  >
-                    <MaterialIcon name="chat" size={ICON_SIZES.SECONDARY} color="var(--accent-11)" />
-                    <Text size="2" weight="medium" style={{ color: 'var(--accent-11)' }}>
-                      Chat
-                    </Text>
-                  </Box>
                 </Flex>
               )}
           </Box>
 
-          {/* Citations Panel — only when citations are provided */}
-          {hasCitations && (
+          {/* Citations Panel — only shown on the Preview tab (File Details
+              has its own full-width body). */}
+          {hasCitations && activeTab === 'preview' && (
             <>
               <Box
                 role="separator"
