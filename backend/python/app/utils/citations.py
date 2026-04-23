@@ -292,6 +292,49 @@ def _normalize_markdown_link_citations(
     new_citations = []
     new_citation_num = 1
 
+    def _append_citation_from_record(
+        record: dict[str, Any],
+        record_id: str,
+        block_index: int,
+        empty_data_log_prefix: str,
+        url: str,
+    ) -> bool:
+        nonlocal new_citation_num
+
+        block_container = record.get("block_containers", {}) or {}
+        blocks = block_container.get("blocks", []) or []
+        if not (0 <= block_index < len(blocks)):
+            return False
+
+        block = blocks[block_index]
+        enhanced_metadata = get_enhanced_metadata(record, block, {})
+        block_type = block.get("type")
+        data = block.get("data")
+        if block_type == BlockType.TABLE_ROW.value:
+            data = data.get("row_natural_language_text", "")
+        elif block_type == BlockType.IMAGE.value:
+            data = data.get("uri", "")
+        if not data:
+            logger.warning(
+                "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
+                empty_data_log_prefix, record_id, block_index, block_type,
+            )
+            return False
+
+        citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
+        if not citation_content:
+            return False
+
+        new_citations.append({
+            "content": citation_content,
+            "chunkIndex": new_citation_num,
+            "metadata": enhanced_metadata,
+            "citationType": "vectordb|document",
+        })
+        url_to_citation_num[url] = new_citation_num
+        new_citation_num += 1
+        return True
+
     for url in unique_urls:
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
@@ -322,74 +365,29 @@ def _normalize_markdown_link_citations(
                 _matched = False
                 for r in records:
                     if r.get("id") == record_id:
-                        block_container = r.get("block_containers", {}) or {}
-                        blocks = block_container.get("blocks", []) or []
-                        if 0 <= block_index < len(blocks):
-                            block = blocks[block_index]
-                            enhanced_metadata = get_enhanced_metadata(r, block, {})
-                            block_type = block.get("type")
-                            data = block.get("data")
-                            if block_type == BlockType.TABLE_ROW.value:
-                                data = data.get("row_natural_language_text", "")
-                            elif block_type == BlockType.IMAGE.value:
-                                data = data.get("uri", "")
-                            if not data:
-                                logger.warning(
-                                    "🔎 [KB-CITE] normalize(chat): records fallback empty data | record_id=%s block_index=%s block_type=%s",
-                                    record_id, block_index, block_type,
-                                )
-                                continue
-                            citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
-                            if not citation_content:
-                                continue
-                            new_citations.append({
-                                "content": citation_content,
-                                "chunkIndex": new_citation_num,
-                                "metadata": enhanced_metadata,
-                                "citationType": "vectordb|document",
-                            })
-                            url_to_citation_num[url] = new_citation_num
-                            new_citation_num += 1
-                            _matched = True
+                        _matched = _append_citation_from_record(
+                            record=r,
+                            record_id=record_id,
+                            block_index=block_index,
+                            empty_data_log_prefix="records fallback empty data",
+                            url=url,
+                        )
                         break
 
                 if not _matched and virtual_record_id_to_result:
                     for rec in virtual_record_id_to_result.values():
                         if rec and rec.get("id") == record_id:
-                            block_container = rec.get("block_containers", {}) or {}
-                            blocks = block_container.get("blocks", []) or []
-
-                            if 0 <= block_index < len(blocks):
-                                block = blocks[block_index]
-                                enhanced_metadata = get_enhanced_metadata(rec, block, {})
-                                block_type = block.get("type")
-                                data = block.get("data")
-                                if block_type == BlockType.TABLE_ROW.value:
-                                    data = data.get("row_natural_language_text", "")
-                                elif block_type == BlockType.IMAGE.value:
-                                    data = data.get("uri", "")
-                                if not data:
-                                    logger.warning(
-                                        "🔎 [KB-CITE] normalize(chat): vrid_map fallback empty data | record_id=%s block_index=%s block_type=%s",
-                                        record_id, block_index, block_type,
-                                    )
-                                    continue
-                                citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
-                                if not citation_content:
-                                    continue
-                                new_citations.append({
-                                    "content": citation_content,
-                                    "chunkIndex": new_citation_num,
-                                    "metadata": enhanced_metadata,
-                                    "citationType": "vectordb|document",
-                                })
-                                url_to_citation_num[url] = new_citation_num
-                                new_citation_num += 1
-                                _matched = True
+                            _matched = _append_citation_from_record(
+                                record=rec,
+                                record_id=record_id,
+                                block_index=block_index,
+                                empty_data_log_prefix="vrid_map fallback empty data",
+                                url=url,
+                            )
                             break
 
                 if not _matched:
-                    logger.error(
+                    logger.warning(
                         "🔎 [KB-CITE] normalize(chat): DROPPED citation | url=%s record_id=%s block_index=%s records_len=%d vrid_map_len=%d",
                         url, record_id, block_index,
                         len(records) if records else 0,

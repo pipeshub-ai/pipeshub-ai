@@ -625,6 +625,35 @@ class TestNormalizeCitationsAndChunks:
         assert len(citations) == 1
         assert citations[0]["content"] == "vrid fallback text"
 
+    def test_record_fallback_via_virtual_record_id_to_result_image_block(self):
+        """Chat normalize uses image label for IMAGE blocks from virtual_record_id_to_result fallback."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{
+                        "type": BlockType.IMAGE.value,
+                        "data": {"uri": _VALID_MINIMAL_PNG_DATA_URI},
+                        "index": 0,
+                    }]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            _, citations = normalize_citations_and_chunks(
+                answer,
+                final_results=[],
+                records=[],
+                virtual_record_id_to_result=vrid_map,
+            )
+
+        assert len(citations) == 1
+        assert citations[0]["content"] == "Image"
+
     def test_none_virtual_record_id_to_result_defaults_to_empty(self):
         """Passing None for virtual_record_id_to_result should not break chat normalize."""
         url = _url(REC1, 0)
