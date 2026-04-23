@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import type { User } from '@/app/(main)/workspace/users/types';
 import type { ShareAdapter, SharedMember, ShareSubmission, ShareUser } from '@/app/components/share/types';
 import { useUserStore } from '@/lib/store/user-store';
 import { AgentsApi } from '@/app/(main)/agents/api';
@@ -103,17 +104,13 @@ export function createChatShareAdapter(
       const idsToLookup = Array.from(
         new Set([...sharedWithMongoIds, ...(ownerId ? [ownerId] : [])])
       );
-      // Raw docs from POST /api/v1/users/by-ids use _id (not id/userId) and fullName (not name).
-      type RawUserDoc = { _id?: { toString(): string } | string; fullName?: string; email?: string };
-      let rawUsers: RawUserDoc[] = [];
+      let users: User[] = [];
       try {
-        rawUsers = (await UsersApi.getUsersByIds(idsToLookup)) as unknown as RawUserDoc[];
+        users = await UsersApi.getUsersByIds(idsToLookup);
       } catch {
         // Fallback: show IDs only
       }
-      const userMap = new Map<string, RawUserDoc>(
-        rawUsers.map((u) => [u._id?.toString() ?? '', u])
-      );
+      const userMap = new Map<string, User>(users.map((u) => [u.userId, u]));
 
       // Build accessLevel lookup from sharedWith entries
       const accessMap = new Map(sharedWithEntries.map((entry: SharedWithEntry) => [entry.userId, entry.accessLevel]));
@@ -125,7 +122,7 @@ export function createChatShareAdapter(
         members.push({
           id: ownerId.toString(),
           type: 'user',
-          name: ownerData?.fullName ?? ownerData?.email ?? 'Owner',
+          name: ownerData?.name ?? ownerData?.email ?? 'Owner',
           email: ownerData?.email,
           avatarUrl: undefined,
           role: 'OWNER',
@@ -142,7 +139,7 @@ export function createChatShareAdapter(
         members.push({
           id: mongoId,
           type: 'user',
-          name: userData?.fullName ?? userData?.email ?? mongoId,
+          name: userData?.name ?? userData?.email ?? mongoId,
           email: userData?.email,
           avatarUrl: undefined,
           role: accessLevel === 'write' ? 'WRITER' : 'READER',

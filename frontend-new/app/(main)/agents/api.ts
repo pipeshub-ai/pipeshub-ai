@@ -26,6 +26,12 @@ const AGENTS_BASE_URL = '/api/v1/agents';
 
 const KB_PAGE_MAX = 100;
 
+/**
+ * Fallback `agentPagination.limit` when the grouped archives response omits the envelope.
+ * Must match `AGENT_ARCHIVES_INITIAL_AGENT_LIMIT` in es_controller.ts (not the `parseInt(..., 10)` radix).
+ */
+const DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT = 5;
+
 /** Stable slug for `tool-*` node types; flow reconstruction matches on `full_name` first. */
 function catalogToolIdFromFullName(fullName: string): string {
   const s = fullName.trim() || 'tool';
@@ -487,7 +493,12 @@ export const AgentsApi = {
         pagination: g.pagination,
       })),
       agentPagination: data?.agentPagination ?? {
-        page: 1, limit: 5, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false,
+        page: 1,
+        limit: DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT,
+        totalCount: 0,
+        totalPages: 0,
+        hasNextPage: false,
+        hasPrevPage: false,
       },
     };
   },

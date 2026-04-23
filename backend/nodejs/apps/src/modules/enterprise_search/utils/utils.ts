@@ -297,16 +297,20 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
+/**
+ * Mongo filter for conversations shown in the "shared with me" list (same org,
+ * not started by this user). Requires both `isShared` and an entry in
+ * `sharedWith` for the current user.
+ *
+ * `isShared: true` without a `sharedWith` row for this user does not match.
+ * Share endpoints record recipients in `sharedWith`, so this is the intended
+ * grant shape; it avoids treating a lone `isShared` flag as org-wide visibility.
+ */
 export const buildSharedWithMeFilter = (req: AuthenticatedUserRequest) => {
-  // Initialize base filter with required fields
   const filter = {
     orgId: new mongoose.Types.ObjectId(`${req.user?.orgId}`),
     isDeleted: false,
     isArchived: false,
-    // Only include conversations where:
-    // 1. User is not the initiator
-    // 2. Either the conversation is explicitly shared with the user
-    //    or the conversation is publicly shared
     initiator: { $ne: new mongoose.Types.ObjectId(`${req.user?.userId}`) },
     $and: [
       { isShared: true },
@@ -333,13 +337,21 @@ export const addComputedFields = (
   };
 };
 
+/**
+ * Base access filter for conversations / enterprise searches in list and
+ * by-id flows. Matches either:
+ * - rows owned by this user (`userId`), or
+ * - rows explicitly shared with this user (`isShared` and `sharedWith` contains
+ *   their id).
+ *
+ * The shared branch uses `$and` so `isShared: true` alone does not grant access.
+ */
 export const buildFilter = (
   req: AuthenticatedUserRequest,
   orgId: string,
   userId: string,
   id?: string, // conversationId or searchId
 ) => {
-  // Initialize base filter with required fields
   const filter: any = {
     orgId: new mongoose.Types.ObjectId(`${orgId}`),
     isDeleted: false,
