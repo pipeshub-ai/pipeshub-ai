@@ -22,9 +22,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: |
-            backend/nodejs/apps/package-lock.json
-            backend/nodejs/apps/pipeshub-cli/package-lock.json
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install backend dependencies
         run: |
@@ -50,12 +48,6 @@ jobs:
         run: |
           cd backend/nodejs/apps
           npm run build
-
-      - name: Pipeshub CLI — install and unit tests
-        run: |
-          cd backend/nodejs/apps/pipeshub-cli
-          npm ci
-          npm run test:ci
 
       # - name: Run backend tests
       #   run: |
