@@ -395,7 +395,6 @@ export function ConnectorPanel() {
     setInstanceNameError,
     setSaveError,
     t,
-    setSaveError,
   ]);
 
   const handleSaveAuth = useCallback(async () => {

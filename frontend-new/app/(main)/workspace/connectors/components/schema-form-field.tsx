@@ -543,11 +543,9 @@ function TextareaInput({
           ...textareaStyle,
           ...(hasError && !isFocused ? errorFieldChrome : {}),
           ...(isFocused
-            ? {
-                ...(hasError
-                  ? { ...focusStyle, height: 80, border: '2px solid var(--red-9)' }
-                  : { ...focusStyle, height: 80 }),
-              }
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
             : {}),
           opacity: disabled ? 0.6 : 1,
         }}
@@ -591,15 +589,13 @@ function JsonInput({
         aria-invalid={hasError || undefined}
         style={{
           ...textareaStyle,
+          height: 120,
           ...(hasError && !isFocused ? errorFieldChrome : {}),
           ...(isFocused
-            ? {
-                ...(hasError
-                  ? { ...focusStyle, height: 120, border: '2px solid var(--red-9)' }
-                  : { ...focusStyle, height: 120 }),
-              }
-            : { height: 120 }),
-          height: 120,
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
+            : {}),
           fontFamily: 'monospace',
           fontSize: 13,
           opacity: disabled ? 0.6 : 1,

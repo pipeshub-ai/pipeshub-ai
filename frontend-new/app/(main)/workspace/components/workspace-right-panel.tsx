@@ -377,10 +377,6 @@ export function WorkspaceRightPanel({
                     onClick={onPrimaryClick}
                     disabled={primaryDisabled}
                     loading={primaryLoading}
-                    style={{
-                      backgroundColor:
-                        primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
-                    }}
                   >
                     {primaryLabel}
                   </LoadingButton>
@@ -393,10 +389,6 @@ export function WorkspaceRightPanel({
                 onClick={onPrimaryClick}
                 disabled={primaryDisabled}
                 loading={primaryLoading}
-                style={{
-                  backgroundColor:
-                    primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
-                }}
               >
                 {primaryLabel}
               </LoadingButton>

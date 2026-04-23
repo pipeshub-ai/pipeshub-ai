@@ -346,7 +346,7 @@ export function ActionSetupPanel({
       requestAnimationFrame(() => {
         if (next.instanceName) {
           document.querySelector('[data-ph-action-instance-name]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else if (Object.keys(next).find((k) => k === 'clientId' || k === 'clientSecret')) {
+        } else if (next.clientId || next.clientSecret) {
           document.querySelector('[data-ph-action-oauth-credentials]')?.scrollIntoView({
             behavior: 'smooth',
             block: 'center',
