@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "Esta página solo es accesible desde un enlace de correo electrónico para restablecer la contraseña. Por favor, utilice la opción Olvidé mi contraseña en la página de inicio de sesión.",
+      "inviteExpiredMessage": "Este enlace de invitación ha caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación.",
+      "resetExpiredMessage": "Este enlace para restablecer la contraseña ha caducado. Por favor, solicite uno nuevo desde la opción Olvidé mi contraseña en la página de inicio de sesión.",
+      "backToSignIn": "Volver al inicio de sesión",
+      "genericLinkInvalidMessage": "Este enlace puede haber caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación."
+    }
+  },
   "agents": {
     "createPageTitle": "Crear agente",
     "createPageDescription": "Página dedicada para crear un agente. Conecte aquí su formulario o redirija a su constructor de agentes.",
@@ -7,9 +16,35 @@
     "missingAgentKey": "Falta la clave del agente. Abra un agente desde la barra lateral del chat o use un enlace válido.",
     "loading": "Cargando…"
   },
+  "timeGroup": {
+    "today": "Hoy",
+    "yesterday": "Ayer",
+    "previous7Days": "Últimos 7 días",
+    "older": "Anteriores"
+  },
   "chatStream": {
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…"
+  },
+  "uploadProgress": {
+    "uploadFailedDefault": "Error al subir",
+    "uploadIncomplete": "Subida incompleta",
+    "genericFailureHint": "Error al subir. Inténtelo de nuevo o use un tipo de archivo admitido.",
+    "ariaFailed": "{{name}}, error al subir",
+    "ariaFailedWithDetail": "{{name}}, error al subir. {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} · error",
+    "headerCompletedAndFailed": "{{completed}} completados · {{failed}} con error",
+    "headerFailuresOnly": "{{count}} con error",
+    "headerAllComplete": "{{completed}}/{{total}} subidas completadas",
+    "sessionFilesAndSize": "{{count}} archivos · {{size}}",
+    "totalSizeLabel": "Total: {{size}}",
+    "status": {
+      "pending": "pendiente",
+      "uploading": "subiendo",
+      "completed": "completado",
+      "failed": "error"
+    }
   },
   "onboarding": {
     "skipEmbeddingDefault": "Omitir",
@@ -20,7 +55,91 @@
     "embeddingDefaultNotInRegistry": "No hay embedding predeterminado del sistema disponible en este despliegue.",
     "failedToLoadEmbeddingProviders": "No se pudieron cargar los proveedores de embedding.",
     "failedToLoadConfiguredModels": "No se pudieron cargar los modelos configurados.",
-    "nextDisabledEmbeddingHintNoRegistryDefault": "Añada un proveedor de embeddings abajo para continuar"
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Añada un proveedor de embeddings abajo para continuar",
+    "steps": {
+      "aiModel": {
+        "title": "Modelo de IA*",
+        "description": "Conecta un LLM para respuestas de búsqueda e insights"
+      },
+      "embeddingModel": {
+        "title": "Modelo de Embeddings",
+        "description": "Habilita la búsqueda semántica en tus documentos"
+      },
+      "storage": {
+        "title": "Almacenamiento",
+        "description": "Elige dónde se almacenan tus datos indexados"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "Configura el correo para invitaciones y restablecimiento de contraseñas"
+      }
+    },
+    "systemConfig": "Configuración del sistema",
+    "stepHeading": "Paso {{current}}/{{total}}: Configurar {{name}}",
+    "stepAiModel": {
+      "stepName": "Modelo de IA*",
+      "addLlmHint": "Agrega al menos un proveedor de texto (LLM) para continuar.",
+      "loadProvidersError": "No se pudieron cargar los proveedores de modelos de IA",
+      "loadModelsError": "No se pudieron cargar los modelos configurados",
+      "setDefaultSuccess": "Modelo predeterminado actualizado",
+      "setDefaultError": "No se pudo establecer el modelo predeterminado"
+    },
+    "stepStorage": {
+      "stepName": "Almacenamiento",
+      "infoBanner": "Elige tu solución de almacenamiento preferida. El almacenamiento local se usa por defecto si se omite.",
+      "providerTypeLabel": "Tipo de proveedor*",
+      "providerLocal": "Local (Predeterminado del sistema)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "Clave de acceso*",
+      "accessKeyPlaceholder": "Ingresa la clave de acceso",
+      "secretKeyLabel": "Clave secreta*",
+      "secretKeyPlaceholder": "Ingresa la clave secreta",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Ingresa el bucket",
+      "regionLabel": "Región*",
+      "regionSelectPlaceholder": "Selecciona la región",
+      "accountNameLabel": "Nombre de cuenta*",
+      "accountNamePlaceholder": "Ingresa el nombre de cuenta",
+      "accountKeyLabel": "Clave de cuenta*",
+      "accountKeyPlaceholder": "Ingresa la clave de cuenta",
+      "containerLabel": "Contenedor*",
+      "containerPlaceholder": "Ingresa el contenedor",
+      "mountNameLabel": "Nombre de montaje (opcional)",
+      "mountNamePlaceholder": "ej: uploads",
+      "baseUrlLabel": "URL base (opcional)",
+      "baseUrlPlaceholder": "ej: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "Este es un paso recomendado para habilitar correos, invitaciones y restablecimiento de contraseñas",
+      "hostLabel": "Host SMTP*",
+      "hostPlaceholder": "ej: smtp.gmail.com",
+      "portLabel": "Puerto",
+      "portPlaceholder": "ej: 587",
+      "fromEmailLabel": "Correo de origen*",
+      "fromEmailPlaceholder": "ej: noreply@company.com",
+      "usernameLabel": "Usuario",
+      "usernamePlaceholder": "ej: user@gmail.com",
+      "passwordLabel": "Contraseña",
+      "passwordPlaceholder": "Ingresa la contraseña"
+    },
+    "nav": {
+      "prev": "Anterior",
+      "next": "Siguiente",
+      "enterPipeshub": "Entrar a Pipeshub",
+      "finishing": "Finalizando…",
+      "saveLlmFirst": "Guarda el paso de modelo de IA primero para continuar"
+    },
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "Política de privacidad",
+      "website": "Sitio web",
+      "visitDocs": "Visita la",
+      "docsLabel": "documentación",
+      "toLearnMore": "para saber más."
+    }
   },
   "nav": {
     "collections": "Colecciones",
@@ -64,6 +183,8 @@
     "dateCreated": "Fecha de creación",
     "lastUpdated": "Última actualización",
     "source": "Origen",
+    "connector": "Conector",
+    "connectors": "Conectores",
     "createdAt": "Creado el",
     "folder": "Carpeta",
     "file": "Archivo",
@@ -263,6 +384,23 @@
     "voiceInputNotSupported": "La entrada de voz no es compatible con este navegador",
     "voiceError": "No se pudo acceder al micrófono",
     "connectorsTooltip": "Conectores y Colecciones",
+    "agentResourcesTooltip": "Conectores, colecciones y acciones",
+    "agentResources": {
+      "sheetTitle": "Conectores, colecciones y acciones",
+      "searchConnectors": "Buscar conectores",
+      "searchCollections": "Buscar colecciones",
+      "searchActions": "Buscar acciones",
+      "actionsTab": "Acciones",
+      "noConnectors": "No hay conectores configurados para este agente.",
+      "noCollections": "No hay colecciones configuradas para este agente.",
+      "noCollectionMatches": "Ninguna colección coincide con tu búsqueda.",
+      "noActions": "No hay acciones (conjuntos de herramientas) configuradas para este agente.",
+      "configureMoreActions": "Configurar más acciones",
+      "browseWorkspaceActions": "Explorar acciones del espacio de trabajo",
+      "browseWorkspaceActionsAria": "Abrir acciones del espacio de trabajo para añadir o gestionar integraciones",
+      "actionsCount": "{{count}} acciones",
+      "resetDefaults": "Restablecer valores predeterminados"
+    },
     "aiModelsTooltip": "Modelos de IA",
     "attachmentTooltip": "Adjuntar archivos",
     "micTooltip": "Entrada de voz",
@@ -291,6 +429,7 @@
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
+    "ttsFailed": "Error en la conversión de texto a voz. Inténtalo de nuevo.",
     "copiedAsMarkdown": "Copiado como markdown",
     "copiedAsText": "Copiado como texto",
     "citations": "Citas",
@@ -299,7 +438,7 @@
     "differentModesOfQuery": "Diferentes modos de consulta",
     "askMore": "Preguntar más",
     "failedToLoad": "Error al cargar",
-    "generatingTitle": "Generando título…",
+    "generatingTitle": "Generando chat…",
     "newChat": "Nuevo chat",
     "startChat": "Iniciar un chat",
     "searchAgents": "Buscar agentes…",
@@ -490,11 +629,6 @@
     "darkMode": "Modo oscuro",
     "lightMode": "Modo claro"
   },
-  "timeGroup": {
-    "today": "Hoy",
-    "previous7Days": "Últimos 7 días",
-    "older": "Más antiguos"
-  },
   "workspace": {
     "users": {
       "title": "Usuarios",
@@ -526,6 +660,12 @@
         "resendInvite": "Reenviar invitación",
         "editInvite": "Editar invitación",
         "cancelInvite": "Cancelar invitación",
+        "cancelInviteConfirmTitle": "¿Cancelar invitación?",
+        "cancelInviteConfirmMessage": "¿Está seguro de que desea cancelar la invitación para {{email}}?",
+        "cancelInviteSuccess": "Invitación cancelada",
+        "cancelInviteSuccessDescription": "La invitación a {{email}} ha sido cancelada",
+        "cancelInviteError": "Error al cancelar la invitación",
+        "keepInviteButton": "Mantener invitación",
         "comingSoonTitle": "No compatible",
         "comingSoonDescription": "Esta acción estará disponible pronto",
         "unblock": "Desbloquear",
@@ -536,7 +676,8 @@
         "unblockConfirmAction": "Desbloquear",
         "unblockSuccess": "Usuario desbloqueado correctamente",
         "unblockError": "No se pudo desbloquear al usuario",
-        "unblocking": "Desbloqueando…"
+        "unblocking": "Desbloqueando…",
+        "edit": "Editar"
       },
       "profile": {
         "title": "Perfil",
@@ -1177,7 +1318,7 @@
       "dataCollectionReason5": "To personalize your user experience",
       "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
-      "removeLogoAria": "Remove organization logo",
+      "editLogoAria": "Edit organization logo",
       "toasts": {
         "loadError": "Failed to load organization",
         "loadErrorDescription": "Could not fetch your organization details",
@@ -1237,6 +1378,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "Configurar",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1265,8 +1407,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1370,8 +1512,16 @@
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
         "statInProgressSub": "Still being indexed",
+        "statQueued": "Queued",
+        "statQueuedSub": "Waiting to be indexed",
         "statNotStarted": "Not Started",
-        "statNotStartedSub": "Queued for sync",
+        "statNotStartedSub": "Awaiting connector sync",
+        "statManualIndexing": "Manual indexing",
+        "statManualIndexingSub": "Synced but not indexed yet",
+        "statCompleted": "Completed",
+        "statCompletedSub": "Indexed and searchable",
+        "statEmpty": "Empty",
+        "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "personalRecordsIndexed": "Personal Records Indexed"
@@ -1388,6 +1538,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "Registros Seleccionados",
+        "syncStrategy": "Estrategia de Sincronización",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1431,7 +1583,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1444,6 +1599,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1459,7 +1640,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1478,6 +1660,31 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1496,8 +1703,18 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1519,7 +1736,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1528,8 +1749,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1542,6 +1772,7 @@
       "general": {
         "avatarLabel": "Your Display Picture",
         "avatarDescription": "Recommended size is 256px by 256px",
+        "editAvatarAria": "Edit profile picture",
         "fullName": "Full Name",
         "fullNameDescription": "Please write your full name",
         "fullNamePlaceholder": "eg: John Doe",
@@ -1549,7 +1780,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1559,6 +1791,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1615,7 +1849,12 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      }
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
     }
   },
   "filePreview": {
@@ -1887,6 +2126,84 @@
     "paletteToolGroupLabel": "Herramientas de {{app}}",
     "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
   },
+  "recordView": {
+    "sections": {
+      "documentSummary": "Resumen",
+      "documentFields": "Documento",
+      "recordMetadata": "Información del registro"
+    },
+    "metadata": {
+      "departments": "Departamentos",
+      "documentCategory": "Categoría del documento",
+      "subcategory1": "Subcategoría nivel 1",
+      "subcategory2": "Subcategoría nivel 2",
+      "subcategory3": "Subcategoría nivel 3",
+      "topics": "Temas",
+      "languages": "Idiomas"
+    },
+    "mail": {
+      "from": "De",
+      "to": "Para",
+      "cc": "Cc",
+      "labels": "Etiquetas",
+      "date": "Fecha"
+    },
+    "emptyState": {
+      "noRecordMetadata": "No hay metadatos adicionales para este elemento."
+    },
+    "indexingReasonAria": "Detalles del error de indexación",
+    "tabRecordInformation": "Información del registro",
+    "tabDocumentDetails": "Detalles del documento",
+    "chat": "Chat",
+    "download": "Descargar",
+    "openFullscreen": "Abrir a pantalla completa",
+    "exitFullscreen": "Salir de pantalla completa",
+    "close": "Cerrar",
+    "forceReindex": "Forzar reindexación",
+    "retryIndexing": "Reintentar indexación",
+    "startIndexing": "Iniciar indexación",
+    "resumeIndexing": "Reanudar indexación",
+    "reindexLoading": "Enviando solicitud de reindexación…",
+    "reindexSuccess": "Solicitud de reindexación enviada correctamente",
+    "reindexError": "Error al enviar la solicitud de reindexación",
+    "loading": "Cargando…",
+    "loadFailed": "No se pudo cargar este registro.",
+    "externalSource": "Origen externo",
+    "collectionUpload": "Colección",
+    "openExternal": "Abrir",
+    "previewUnavailable": "Vista previa no disponible para este tipo de registro.",
+    "permissionOwner": "Propietario",
+    "permissionReader": "Lector",
+    "permissionWriter": "Editor",
+    "labels": {
+      "name": "Nombre",
+      "fileName": "Nombre de archivo",
+      "fileSize": "Tamaño del archivo",
+      "recordId": "ID del registro",
+      "origin": "Origen",
+      "originConnector": "Conector",
+      "originUpload": "Carga en colección",
+      "recordType": "Tipo de registro",
+      "version": "Versión",
+      "createdAt": "Creado el",
+      "updatedAt": "Actualizado el",
+      "collection": "Colección",
+      "permissions": "Permisos",
+      "noPermissions": "Sin permisos asignados",
+      "indexingStatus": "Estado de indexación",
+      "connector": "Origen",
+      "folder": "Carpeta",
+      "connectorId": "ID del conector",
+      "notAvailable": "N/D",
+      "typeEmail": "Correo",
+      "typeTicket": "Ticket",
+      "typeWebpage": "Página web",
+      "typeMessage": "Mensaje",
+      "mailSubject": "Asunto",
+      "ticketSummary": "Resumen",
+      "ticketDescription": "Descripción"
+    }
+  },
   "oauthConsent": {
     "loading": "Cargando solicitud de autorización…",
     "missingParams": "Faltan parámetros OAuth obligatorios (client_id, redirect_uri).",
@@ -1925,6 +2242,86 @@
       "invalid_request": "La URI de redirección proporcionada no coincide con ninguna URI registrada para esta aplicación. Verifique las URIs de redirección en la Configuración de Desarrollador.",
       "invalid_client": "El client_id no coincide con ninguna aplicación OAuth registrada. Verifique el ID de cliente en la configuración de su aplicación.",
       "server_error": "Ocurrió un error inesperado en el servidor. Inténtelo de nuevo más tarde."
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Bienvenido a Pipeshub",
+      "defaultSubtitle": "El conocimiento de tu organización, por fin buscable y conectado."
+    },
+    "signUp": {
+      "title": "Comenzar",
+      "subtitle": "¡Bienvenido a Pipeshub, empecemos!",
+      "firstNameLabel": "Nombre*",
+      "lastNameLabel": "Apellido*",
+      "orgNameLabel": "Nombre de la organización*",
+      "emailLabel": "Tu correo electrónico*",
+      "passwordLabel": "Contraseña*",
+      "confirmPasswordLabel": "Confirmar contraseña*",
+      "preferredLanguageLabel": "Idioma preferido",
+      "firstNamePlaceholder": "Ingresa tu nombre",
+      "lastNamePlaceholder": "Ingresa tu apellido",
+      "orgNamePlaceholder": "Ingresa el nombre de tu organización",
+      "emailPlaceholder": "Ingresa tu correo electrónico",
+      "passwordPlaceholder": "Ingresa tu contraseña",
+      "confirmPasswordPlaceholder": "Confirma tu contraseña",
+      "passwordHint": "Al menos 8 caracteres: minúscula, mayúscula, número, símbolo.",
+      "continueButton": "Continuar",
+      "savingToast": "Guardando detalles...",
+      "savingToastDescription": "Esto tomará unos segundos",
+      "successToast": "¡Cuenta creada exitosamente!",
+      "failToast": "Error al registrarse. Por favor, inténtalo de nuevo.",
+      "errors": {
+        "firstNameRequired": "El nombre es obligatorio.",
+        "lastNameRequired": "El apellido es obligatorio.",
+        "orgNameRequired": "El nombre de la organización es obligatorio.",
+        "emailRequired": "El correo electrónico es obligatorio.",
+        "emailInvalid": "Por favor ingresa una dirección de correo válida.",
+        "passwordRequired": "La contraseña es obligatoria.",
+        "confirmPasswordRequired": "Por favor confirma tu contraseña.",
+        "passwordsMismatch": "Las contraseñas no coinciden.",
+        "emailAlreadyExists": "Ya existe una cuenta con este correo electrónico."
+      }
+    },
+    "login": {
+      "emailVerifiedTitle": "Correo verificado",
+      "emailVerifiedDescription": "Tu dirección de correo fue actualizada. Inicia sesión con tu nuevo correo.",
+      "emailVerifyFailedTitle": "Error al verificar correo",
+      "emailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado.",
+      "samlErrorTitle": "Error al iniciar sesión con SAML",
+      "samlSignInFailedTitle": "Error al iniciar sesión",
+      "samlSignInFailedDescription": "SAML SSO no pudo completarse. Por favor, inténtalo de nuevo."
+    },
+    "common": {
+      "signIn": "Iniciar sesión",
+      "signingIn": "Iniciando sesión…",
+      "sendOtp": "Enviar OTP",
+      "sending": "Enviando…",
+      "forgotPassword": "¿Olvidaste tu contraseña?",
+      "emailLabel": "Correo electrónico",
+      "emailPlaceholder": "Ingresa tu correo electrónico",
+      "passwordLabel": "Contraseña",
+      "passwordPlaceholder": "Ingresa tu contraseña",
+      "emailRequired": "El correo electrónico es obligatorio.",
+      "emailInvalid": "Por favor ingresa una dirección de correo válida.",
+      "passwordRequired": "La contraseña es obligatoria.",
+      "incorrectPassword": "Contraseña incorrecta.",
+      "noPasswordSet": "Sin contraseña. Usa «Olvidaste tu contraseña» más abajo.",
+      "authFailed": "Error de autenticación. Por favor, inténtalo de nuevo.",
+      "otpInvalidLength": "Por favor ingresa el código completo de 6 dígitos.",
+      "signInWithPasswordInstead": "Iniciar sesión con contraseña",
+      "signInWithEmailOtp": "Iniciar sesión con OTP por correo",
+      "orContinueWith": "o continuar con {{provider}}",
+      "orContinueWithAny": "o continuar con cualquiera de ellos",
+      "orContinueWithSso": "o continuar con inicio de sesión único",
+      "googleNotConfigured": "El inicio de sesión con Google no está configurado para tu organización.",
+      "microsoftNotConfigured": "El inicio de sesión con Microsoft no está configurado para tu organización.",
+      "oauthNotConfigured": "El inicio de sesión OAuth no está configurado para tu organización.",
+      "googleUnavailable": "El inicio de sesión con Google no está disponible. Contacta a tu administrador.",
+      "microsoftUnavailable": "El inicio de sesión con Microsoft no está disponible. Contacta a tu administrador.",
+      "oauthUnavailable": "El inicio de sesión OAuth no está disponible. Contacta a tu administrador.",
+      "showPassword": "Mostrar contraseña",
+      "hidePassword": "Ocultar contraseña"
     }
   }
 }

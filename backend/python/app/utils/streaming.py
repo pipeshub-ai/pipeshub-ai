@@ -423,7 +423,7 @@ async def execute_tool_calls(
     context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: bool | None = False,
-    max_hops: int = 1,
+    max_hops: int = 2,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
@@ -1262,17 +1262,74 @@ async def handle_simple_mode(
             yield event
 
 
+# Markers the frontend interprets as artifact / download cards. These are
+# authored ONLY by the backend (this function) — if an answer from the LLM
+# happens to contain the same syntax (directly or via prompt injection from
+# RAG content), the frontend would render attacker-controlled download cards
+# pointing at arbitrary URLs. Strip any pre-existing matches before we append
+# our own, trusted markers.
+_LLM_ARTIFACT_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
+)
+_LLM_DOWNLOAD_MARKER_RE = re.compile(
+    r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
+)
+
+
+def _strip_llm_authored_markers(answer: str) -> str:
+    """Remove any LLM-authored artifact / download markers from *answer*.
+
+    The frontend's marker parser runs against the full saved message, so a
+    marker anywhere in the stream is a URL-spoofing primitive. We drop them
+    before the backend appends its own known-good markers.
+    """
+    if not answer:
+        return answer
+    stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
+    stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
+    return stripped
+
+
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
-    """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
+    """Append ::download_conversation_task and ::artifact markers to the answer string.
+
+    Handles two task result shapes:
+    - Legacy: ``{"type": "csv_download", "fileName": ..., "signedUrl": ...}``
+    - Artifacts: ``{"type": "artifacts", "artifacts": [{"fileName": ..., "mimeType": ..., ...}]}``
+
+    Before appending, any LLM-authored marker strings already present in
+    ``answer`` are removed (see :func:`_strip_llm_authored_markers`) so the
+    frontend only ever sees backend-emitted markers.
+    """
+    answer = _strip_llm_authored_markers(answer)
+
     if not conversation_tasks:
         return answer
-    markers = "\n\n" + "  ".join(
-        f"::download_conversation_task[{t.get('fileName', 'Download')}]({t.get('signedUrl') or t.get('downloadUrl', '')})"
-        for t in conversation_tasks
-        if t.get("signedUrl") or t.get("downloadUrl")
-    )
 
-    return answer + markers
+    parts: list[str] = []
+    for t in conversation_tasks:
+        task_type = t.get("type", "")
+
+        if task_type == "artifacts":
+            for art in t.get("artifacts", []):
+                url = art.get("signedUrl") or art.get("downloadUrl", "")
+                if not url:
+                    continue
+                fname = art.get("fileName", "Download")
+                mime = art.get("mimeType", "application/octet-stream")
+                doc_id = art.get("documentId", "")
+                record_id = art.get("recordId", "")
+                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+        else:
+            url = t.get("signedUrl") or t.get("downloadUrl", "")
+            if url:
+                fname = t.get("fileName", "Download")
+                parts.append(f"::download_conversation_task[{fname}]({url})")
+
+    if not parts:
+        return answer
+
+    return answer + "\n\n" + "\n\n".join(parts)
 
 
 async def stream_llm_response_with_tools(
@@ -1789,6 +1846,7 @@ async def call_aiter_llm_stream(
 
     try:
         response_text = state.full_json_buf
+        logger.debug("[streaming] before cleanup_content (full_json_buf) type=%s", type(response_text).__name__)
         if  isinstance(response_text, str):
             response_text = cleanup_content(response_text)
 
@@ -2008,9 +2066,17 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
 
 def cleanup_content(response_text: str) -> str:
+    # Diagnostic: catch 'tuple' (or other non-str) has no attribute 'startswith'
+    if not isinstance(response_text, str):
+        logger.warning(
+            "[streaming cleanup_content] response_text is not str | type=%s repr=%s",
+            type(response_text).__name__, repr(response_text)[:300],
+        )
+        response_text = str(response_text)
     response_text = response_text.strip()
     if '</think>' in response_text:
             response_text = response_text.split('</think>')[-1]
+    logger.debug("[streaming cleanup_content] before startswith/endswith type=%s", type(response_text).__name__)
     if response_text.startswith("```json"):
         response_text = response_text.replace("```json", "", 1)
     if response_text.endswith("```"):
@@ -2053,6 +2119,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                 logger.debug("Response is a dict with 'content' key, extracting content for parsing")
                 response_content = response['content']
+                logger.debug("[streaming] before cleanup_content (dict content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -2067,6 +2134,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is an AIMessage or string
                 logger.debug("Response is AIMessage, extracting content for parsing")
                 response_content = response.content
+                logger.debug("[streaming] before cleanup_content (AIMessage.content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -2105,6 +2173,7 @@ Respond only with valid JSON that matches the schema."""
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                         logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
                         reflection_content = reflection_response['content']
+                        logger.debug("[streaming] before cleanup_content (reflection dict content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)
@@ -2116,6 +2185,7 @@ Respond only with valid JSON that matches the schema."""
                     if hasattr(reflection_response, 'content'):
                         logger.debug("Reflection response is AIMessage, extracting content")
                         reflection_content = reflection_response.content
+                        logger.debug("[streaming] before cleanup_content (reflection AIMessage.content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)

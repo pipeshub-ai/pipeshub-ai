@@ -470,6 +470,7 @@ export function useAgentBuilderReconstruction(): {
         agent.toolsets.forEach((toolset: AgentToolset, index: number) => {
           const toolsetName = toolset.name || '';
           const toolsetDisplayName = toolset.displayName || toolset.name || t('agentBuilder.toolsetDefaultName');
+          const toolsetInstanceName = toolset.instanceName?.trim();
           const toolsetType = toolset.type || toolsetName;
           const toolsetInstanceId = toolset.instanceId as string | undefined;
           const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-');
@@ -536,6 +537,7 @@ export function useAgentBuilderReconstruction(): {
 
           nodeCounter += 1;
           const nodeId = `toolset-${toolsetName}-${nodeCounter}`;
+          const nodeHeaderLabel = toolsetInstanceName || toolsetDisplayName;
           const toolsetNode: Node<FlowNodeData> = {
             id: nodeId,
             type: 'flowNode',
@@ -543,7 +545,7 @@ export function useAgentBuilderReconstruction(): {
             data: {
               id: nodeId,
               type: `toolset-${toolsetName}`,
-              label: normalizeDisplayName(toolsetDisplayName),
+              label: normalizeDisplayName(nodeHeaderLabel),
               description: t('agentBuilder.toolsetWithToolCount', {
                 name: toolsetDisplayName,
                 count: toolsForNode.length,
@@ -552,6 +554,7 @@ export function useAgentBuilderReconstruction(): {
               category: 'toolset',
               config: {
                 instanceId: toolsetInstanceId,
+                instanceName: toolsetInstanceName || undefined,
                 toolsetName,
                 displayName: toolsetDisplayName,
                 iconPath,

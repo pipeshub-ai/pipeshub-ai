@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { Box, Text, Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
@@ -54,7 +55,7 @@ export function CollectionItem({ collection, isSelected, onSelect, depth = 1 }: 
           variant="default"
           size={16}
           color="var(--emerald-11)"
-          style={{ marginRight: '4px' }}
+          style={{ marginRight: 'var(--space-1)' }}
         />
         <Text
           size="2"
@@ -91,7 +92,7 @@ interface ConnectorItemComponentProps {
 function getConnectorItemIcon(connectorType: string, isSelected: boolean) {
   const iconColor = isSelected ? 'var(--accent-9)' : 'var(--slate-11)';
   const iconSize = 16;
-  const iconStyle = { marginRight: '4px' };
+  const iconStyle = { marginRight: 'var(--space-1)' };
 
   switch (connectorType) {
     case 'slack':
@@ -160,27 +161,39 @@ export function ConnectorItemComponent({
 
 interface MoreConnectorItemProps {
   connector: MoreConnectorLink;
+  href: string;
   onNavigate: (connectorTypeParam: string) => void;
 }
 
-export function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemProps) {
+export function MoreConnectorItem({ connector, href, onNavigate }: MoreConnectorItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
+  const handleClick = (e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    onNavigate(connector.connectorTypeParam);
+  };
+
   return (
-    <Button
-      variant="ghost"
-      size="2"
-      color="gray"
-      onClick={() => onNavigate(connector.connectorTypeParam)}
+    <Link
+      href={href}
+      onClick={handleClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
+        display: 'flex',
+        alignItems: 'center',
         width: '100%',
         height: `${ELEMENT_HEIGHT}px`,
-        justifyContent: 'flex-start',
-        paddingLeft: '12px',
+        paddingLeft: 'var(--space-3)',
+        paddingRight: 'var(--space-2)',
+        boxSizing: 'border-box',
         backgroundColor: isHovered ? 'var(--slate-3)' : 'transparent',
-        gap: '8px',
+        gap: 'var(--space-2)',
+        borderRadius: 'var(--radius-1)',
+        textDecoration: 'none',
+        color: 'inherit',
+        cursor: 'pointer',
       }}
     >
       <ConnectorIcon type={connector.type} size={16} color="var(--slate-11)" />
@@ -206,6 +219,6 @@ export function MoreConnectorItem({ connector, onNavigate }: MoreConnectorItemPr
       >
         <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
       </Flex>
-    </Button>
+    </Link>
   );
 }

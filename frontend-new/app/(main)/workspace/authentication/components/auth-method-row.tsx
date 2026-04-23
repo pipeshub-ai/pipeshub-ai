@@ -61,6 +61,11 @@ export function AuthMethodRow({
 
   const showConfigureButton = isConfigurable;
 
+  const switchStyle = {
+    '--accent-9': 'rgba(0, 0, 51, 0.25)',
+    '--accent-indicator': 'white',
+  } as React.CSSProperties;
+
   // ── Badge colour ─────────────────────────────────────────
   const badgeColor = isConfigured ? 'green' : 'orange';
   const badgeLabel = isConfigured ? t('workspace.authentication.badges.configured') : t('workspace.authentication.badges.notConfigured');
@@ -69,11 +74,14 @@ export function AuthMethodRow({
     <Flex
       align="center"
       gap="3"
+      py="3"
+      px="4"
       style={{
-        padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        backgroundColor: 'var(--olive-2)',
+        backdropFilter: 'blur(25px)',
+        opacity: toggleDisabled ? 0.7 : 1,
       }}
     >
       {/* Icon */}
@@ -81,21 +89,20 @@ export function AuthMethodRow({
         align="center"
         justify="center"
         style={{
-          width: 36,
-          height: 36,
           borderRadius: 'var(--radius-2)',
-          backgroundColor: 'var(--slate-3)',
+          backgroundColor: 'var(--slate-a2)',
           flexShrink: 0,
+          padding: 'var(--space-2)'
         }}
       >
         {meta.iconType === 'image' ? (
           <img
             src={meta.icon}
             alt={meta.label}
-            style={{ width: 18, height: 18, objectFit: 'contain' }}
+            style={{ width: 16, height: 16, objectFit: 'contain' }}
           />
         ) : (
-          <MaterialIcon name={meta.icon} size={18} color="var(--slate-11)" />
+          <MaterialIcon name={meta.icon} size={16} color="var(--slate-11)" />
         )}
       </Flex>
 
@@ -131,7 +138,7 @@ export function AuthMethodRow({
 
         {/* Gear / configure button */}
         {showConfigureButton && (
-          <Tooltip content={t('workspace.aiModels.configure')}>
+          <Tooltip content={t('workspace.authentication.configure')}>
             <IconButton
               variant="ghost"
               color="gray"
@@ -149,21 +156,25 @@ export function AuthMethodRow({
           <Tooltip content={disabledReason}>
             <span style={{ display: 'inline-flex', alignItems: 'center' }}>
               <Switch
-                color="jade"
-                size="2"
+                color="gray"
+                size="1"
+                variant="classic"
                 checked={state.enabled}
                 disabled={toggleDisabled}
                 onCheckedChange={() => onToggle(state.type)}
+                style={switchStyle}
               />
             </span>
           </Tooltip>
         ) : (
           <Switch
-            color="jade"
-            size="2"
+            color="gray"
+            size="1"
+            variant="classic"
             checked={state.enabled}
             disabled={toggleDisabled}
             onCheckedChange={() => onToggle(state.type)}
+            style={switchStyle}
           />
         )}
       </Flex>

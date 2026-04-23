@@ -25,6 +25,7 @@ const PARAM = {
   RECORD_TYPES: 'recordTypes',
   INDEXING_STATUS: 'indexingStatus',
   SIZE_RANGES: 'sizeRanges',
+  CONNECTOR_IDS: 'connectorIds',
   ORIGINS: 'origins',
   CREATED_AFTER: 'createdAfter',
   CREATED_BEFORE: 'createdBefore',
@@ -49,9 +50,19 @@ const DEFAULTS = {
 
 // Valid enum values for parsing
 const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET']);
-const VALID_INDEXING_STATUS = new Set<string>(['COMPLETED', 'IN_PROGRESS', 'FAILED', 'FILE_TYPE_NOT_SUPPORTED']);
+/** Must match `IndexingStatus` in ./types — used so URL round-trip keeps filter state */
+const VALID_INDEXING_STATUS = new Set<string>([
+  'COMPLETED',
+  'IN_PROGRESS',
+  'FAILED',
+  'FILE_TYPE_NOT_SUPPORTED',
+  'NOT_STARTED',
+  'AUTO_INDEX_OFF',
+  'QUEUED',
+  'EMPTY',
+]);
 const VALID_SIZE_RANGES = new Set<string>(['lt1mb', '1to10mb', '10to100mb']);
-const VALID_ORIGINS = new Set<string>(['KB', 'CONNECTOR']);
+const VALID_ORIGINS = new Set<string>(['COLLECTION', 'CONNECTOR']);
 const VALID_DATE_TYPES = new Set<string>(['on', 'between', 'before', 'after']);
 const VALID_SORT_FIELDS = new Set<string>(['name', 'createdAt', 'updatedAt', 'size', 'nodeType']);
 const VALID_ALL_RECORDS_SORT_FIELDS = new Set<string>(['name', 'size', 'createdAt', 'updatedAt', 'indexingStatus', 'origin']);
@@ -71,6 +82,24 @@ function parseCommaSeparated<T extends string>(value: string | null, validSet: S
 function joinArray(arr: string[] | undefined): string | undefined {
   if (!arr || arr.length === 0) return undefined;
   return arr.join(',');
+}
+
+/** Max IDs per query (aligned with API guidance). Single ID max length for sanity. */
+const MAX_FILTER_IDS = 100;
+const MAX_FILTER_ID_LEN = 128;
+
+/**
+ * Parse comma-separated opaque IDs (connector / collection keys).
+ * No strict format — server validates; we trim, cap count/length, drop empties.
+ */
+function parseCommaSeparatedIds(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= MAX_FILTER_ID_LEN)
+    .slice(0, MAX_FILTER_IDS);
+  return items.length > 0 ? items : undefined;
 }
 
 // ============================================================================
@@ -145,6 +174,9 @@ export function serializeAllRecordsParams(
   // Origins is specific to all-records mode
   const ori = joinArray(filter.origins);
   if (ori) params[PARAM.ORIGINS] = ori;
+
+  const conn = joinArray(filter.connectorIds);
+  if (conn) params[PARAM.CONNECTOR_IDS] = conn;
 
   serializeSortParams(sort.field, sort.order, params);
   serializePaginationParams(pagination.page, pagination.limit, params);
@@ -240,6 +272,9 @@ export function parseAllRecordsParams(searchParams: URLSearchParams): {
 
   const origins = parseCommaSeparated<NodeOrigin>(searchParams.get(PARAM.ORIGINS), VALID_ORIGINS);
   if (origins) filter.origins = origins;
+
+  const connectorIds = parseCommaSeparatedIds(searchParams.get(PARAM.CONNECTOR_IDS));
+  if (connectorIds) filter.connectorIds = connectorIds;
 
   const sfRaw = searchParams.get(PARAM.SORT_FIELD);
   const sf = sfRaw && VALID_ALL_RECORDS_SORT_FIELDS.has(sfRaw) ? (sfRaw as AllRecordsSortField) : DEFAULTS.SORT_FIELD;

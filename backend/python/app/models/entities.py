@@ -1,11 +1,16 @@
 import builtins
+import os
+import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
-
+from jinja2 import Template
+from app.modules.qna.prompt_templates import (
+    agent_block_group_prompt,
+)
 from pydantic import BaseModel, Field
-
+from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -23,6 +28,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+
+class LlmTextContent(BaseModel):
+    """A single LLM message-content item produced by ``to_llm_full_context``."""
+
+    type: Literal["text"]
+    text: str
+
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
@@ -52,6 +65,9 @@ class RecordGroupType(str, Enum):
     CASE = "CASE"
     TASK = "TASK"
     SALESFORCE_ORG = "SALESFORCE_ORG"
+    SQL_DATABASE = "SQL_DATABASE"
+    SQL_NAMESPACE = "SQL_NAMESPACE"
+    STAGE = "STAGE"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -79,7 +95,10 @@ class RecordType(str, Enum):
     DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
+    ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
+    SQL_TABLE = "SQL_TABLE"
+    SQL_VIEW = "SQL_VIEW"
     OTHERS = "OTHERS"
 
 
@@ -152,13 +171,20 @@ class RelatedExternalRecord(BaseModel):
 
     This model ensures type safety and validation for related external records.
     Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
+    Optional source_column, target_column, constraint_name are used for SQL FK edges.
     """
     external_record_id: str = Field(description="External ID of the related record")
     record_type: RecordType = Field(description="Type of the related record")
+    record_name: Optional[str] = Field(default=None, description="Human-readable name for the related record placeholder (e.g., table name for SQL FK targets). Defaults to external_record_id if not provided.")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
         description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"
     )
+    source_column: Optional[str] = Field(default=None, description="Source column name (e.g. for SQL foreign keys)")
+    target_column: Optional[str] = Field(default=None, description="Target column name (e.g. for SQL foreign keys)")
+    child_table_name: Optional[str] = Field(default=None, description="Child table name (e.g. for SQL foreign keys)")
+    parent_table_name: Optional[str] = Field(default=None, description="Parent table name (e.g. for SQL foreign keys)")
+    constraint_name: Optional[str] = Field(default=None, description="Constraint name (e.g. FK constraint name)")
 
 
 class Record(BaseModel):
@@ -241,13 +267,16 @@ class Record(BaseModel):
             f"External ID     : {self.external_record_id}",
             f"Created At      : {self._format_timestamp(self.source_created_at)}",
             f"Last Updated At : {self._format_timestamp(self.source_updated_at)}",
+            f"Connector ID    : {self.connector_id if self.connector_id else 'N/A'}",
+            f"connector Name  : {self.connector_name.value if self.connector_name else 'N/A'}",
         ]
         if self.mime_type:
             lines.append(f"MIME Type       : {self.mime_type}")
 
         if self.weburl:
             if not self.weburl.startswith("http"):
-                weburl = f"{frontend_url}{self.weburl}" if frontend_url else self.weburl
+                base_url = frontend_url or "http://localhost:3000"
+                weburl = f"{base_url.rstrip('/')}{self.weburl}"
             else:
                 weburl = self.weburl
 
@@ -373,6 +402,129 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def to_llm_full_context(self) -> list[LlmTextContent]:
+        """
+        Convert a record JSON object to message content format matching get_message_content.
+
+        Args:
+            record: The record JSON object containing block_containers and other metadata
+            ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
+
+        Returns:
+            Tuple of (content list, ref_mapper)
+        """
+
+        try:
+            from app.utils.chat_helpers import valid_group_labels, build_group_blocks
+
+            content: list[LlmTextContent] = []
+            context_metadata = f"record/{self.id}"
+            content.append(LlmTextContent(
+                type="text",
+                text=f"""<record>\n{context_metadata}
+    Record blocks (sorted):\n\n""",
+            ))
+            # Process blocks
+            block_containers = self.block_containers
+            blocks = block_containers.blocks
+            block_groups = block_containers.block_groups
+
+            # build_group_blocks (in chat_helpers) expects plain dicts, not Pydantic models
+            blocks_as_dicts = [b.model_dump() for b in blocks]
+            block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
+
+            seen_block_groups = set()
+            for block in blocks:
+                block_type = block.type.value if block.type else None
+
+                data = block.data or ""
+
+                if block_type == BlockType.IMAGE.value:
+                    continue
+                elif block_type == BlockType.TEXT.value and block.parent_index is None:
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
+                elif block_type == BlockType.TABLE_ROW.value:
+                    block_group_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    if block_group_index is not None:
+                        corresponding_block_group = block_groups[block_group_index]
+
+                        block_type = corresponding_block_group.type.value if corresponding_block_group.type else None
+                        data = corresponding_block_group.data or {}
+
+                        if block_type == GroupType.TABLE.value:
+                            children = corresponding_block_group.children
+                            rows_to_be_included_list = []
+                            if children:
+                                for range_obj in children.block_ranges:
+                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
+
+                            child_results = []
+                            for row_index in rows_to_be_included_list:
+                                if row_index < len(blocks):
+                                    row_block = blocks[row_index]
+                                    block_data = row_block.data
+                                    if isinstance(block_data, dict):
+                                        row_text = block_data.get("row_natural_language_text", "")
+                                    else:
+                                        row_text = str(block_data or "")
+
+                                    child_results.append({
+                                        "content": row_text
+                                    })
+
+                            if child_results:
+                                template = Template(agent_block_group_prompt)
+                                rendered_form = template.render(
+                                    block_group_index=block_group_index,
+                                    label=GroupType.TABLE.value,
+                                    blocks=child_results,
+                                )
+                                content.append(LlmTextContent(
+                                    type="text",
+                                    text=f"{rendered_form}\n\n",
+                                ))
+                elif block.parent_index is not None:
+                    parent_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    template = Template(agent_block_group_prompt)
+                    if parent_index >= len(block_groups):
+                        continue
+                    block_group = block_groups[parent_index]
+                    block_group_type = block_group.type.value if block_group.type else None
+                    if block_group_type not in valid_group_labels:
+                        continue
+
+                    virtual_record_id = self.virtual_record_id or ""
+                    group_blocks = build_group_blocks(block_groups_as_dicts, blocks_as_dicts, parent_index, virtual_record_id, self.to_kafka_record(), {})
+
+                    if not group_blocks:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    rendered_form = template.render(
+                        block_group_index=parent_index,
+                        label=block_group_type,
+                        blocks=group_blocks,
+                    )
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"{rendered_form}\n\n",
+                    ))
+                else:
+                    continue
+
+            return content
+        except Exception as e:
+            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {
@@ -1607,6 +1759,193 @@ class SharePointPageRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+
+class SQLViewRecord(Record):
+    """Record class for SQL views (Snowflake, etc.)"""
+    database_name: Optional[str] = Field(default=None, description="Database containing the view")
+    schema_name: Optional[str] = Field(default=None, description="Schema containing the view")
+    fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.view")
+    definition: Optional[str] = Field(default=None, description="SQL definition of the view")
+    source_tables: Optional[List[str]] = Field(default_factory=list, description="Tables referenced by this view")
+    is_secure: bool = Field(default=False, description="Whether this is a secure view")
+    comment: Optional[str] = Field(default=None, description="View description/comment")
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "databaseName": self.database_name,
+            "schemaName": self.schema_name,
+            "fqn": self.fqn,
+            "definition": self.definition,
+            "sourceTables": self.source_tables,
+            "isSecure": self.is_secure,
+            "comment": self.comment,
+        }
+
+    @staticmethod
+    def from_arango_record(view_doc: dict, record_doc: dict) -> "SQLViewRecord":
+        """Create SQLViewRecord from ArangoDB documents (records + sqlViews collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLViewRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            database_name=view_doc.get("databaseName"),
+            schema_name=view_doc.get("schemaName"),
+            fqn=view_doc.get("fqn"),
+            definition=view_doc.get("definition"),
+            source_tables=view_doc.get("sourceTables") or [],
+            is_secure=view_doc.get("isSecure", False),
+            comment=view_doc.get("comment"),
+        )
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+
+class SQLTableRecord(Record):
+    """Record class for SQL tables (Snowflake, etc.)"""
+    database_name: Optional[str] = Field(default=None, description="Database containing the table")
+    schema_name: Optional[str] = Field(default=None, description="Schema containing the table")
+    fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.table")
+    row_count: Optional[int] = Field(default=None, description="Number of rows in the table")
+    size_bytes: Optional[int] = Field(default=None, description="Size of the table in bytes")
+    column_count: Optional[int] = Field(default=None, description="Number of columns in the table")
+    ddl: Optional[str] = Field(default=None, description="CREATE TABLE DDL statement")
+    primary_keys: Optional[List[str]] = Field(default_factory=list, description="Primary key column names")
+    foreign_keys: Optional[List[Dict]] = Field(default_factory=list, description="Foreign key definitions")
+    comment: Optional[str] = Field(default=None, description="Table description/comment")
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "databaseName": self.database_name,
+            "schemaName": self.schema_name,
+            "fqn": self.fqn,
+            "rowCount": self.row_count,
+            "sizeInBytes": self.size_bytes,
+            "columnCount": self.column_count,
+            "ddl": self.ddl,
+            "primaryKeys": self.primary_keys,
+            "foreignKeys": self.foreign_keys,
+            "comment": self.comment,
+        }
+
+    @staticmethod
+    def from_arango_record(table_doc: dict, record_doc: dict) -> "SQLTableRecord":
+        """Create SQLTableRecord from ArangoDB documents (records + sqlTables collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLTableRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            database_name=table_doc.get("databaseName"),
+            schema_name=table_doc.get("schemaName"),
+            fqn=table_doc.get("fqn"),
+            row_count=table_doc.get("rowCount"),
+            size_bytes=table_doc.get("sizeInBytes"),
+            column_count=table_doc.get("columnCount"),
+            ddl=table_doc.get("ddl"),
+            primary_keys=table_doc.get("primaryKeys") or [],
+            foreign_keys=table_doc.get("foreignKeys") or [],
+            comment=table_doc.get("comment"),
+        )
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -1655,6 +1994,111 @@ class PullRequestRecord(Record):
             "lastCommitSha": self.last_commit_sha,
         }
 
+class LifecycleStatus(str, Enum):
+    """Lifecycle status of the artifact"""
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    ARCHIVED = "ARCHIVED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ArtifactType(str, Enum):
+    """Type of artifact produced by sandbox code execution."""
+    CODE_OUTPUT = "CODE_OUTPUT"
+    CHART = "CHART"
+    DOCUMENT = "DOCUMENT"
+    IMAGE = "IMAGE"
+    SPREADSHEET = "SPREADSHEET"
+    PRESENTATION = "PRESENTATION"
+    DATA_FILE = "DATA_FILE"
+    OTHER = "OTHER"
+
+
+class ArtifactRecord(Record):
+    """Record class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
+    lifecycle_status: LifecycleStatus = Field(description="Lifecycle status of the artifact", default=LifecycleStatus.PUBLISHED)
+    artifact_type: ArtifactType = Field(default=ArtifactType.OTHER, description="Type of artifact")
+    source_tool: str | None = Field(default=None, description="Tool that generated this artifact (e.g. coding_sandbox.execute_python)")
+    conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
+    is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
+    expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+
+    def to_arango_artifact_record(self) -> dict:
+        """Return artifact sub-record for the ``artifacts`` collection."""
+        _, ext = os.path.splitext(self.record_name) if self.record_name else ("", "")
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "extension": ext.lstrip(".") if ext else None,
+            "mimeType": self.mime_type,
+            "sizeInBytes": self.size_in_bytes,
+            "description": self.description,
+            "lifecycleStatus": self.lifecycle_status.value,
+            "artifactType": self.artifact_type.value,
+            "sourceTool": self.source_tool,
+            "conversationId": self.conversation_id,
+            "isTemporary": self.is_temporary,
+            "expiresAt": self.expires_at,
+        }
+
+    @staticmethod
+    def from_arango_record(artifact_doc: dict, record_doc: dict) -> "ArtifactRecord":
+        """Create ArtifactRecord from ArangoDB documents (records + artifacts collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.CODING_SANDBOX
+        except ValueError:
+            connector_name = Connectors.CODING_SANDBOX
+
+        lifecycle_raw = artifact_doc.get("lifecycleStatus")
+        try:
+            lifecycle = LifecycleStatus(lifecycle_raw) if lifecycle_raw else LifecycleStatus.PUBLISHED
+        except ValueError:
+            lifecycle = LifecycleStatus.PUBLISHED
+
+        artifact_type_raw = artifact_doc.get("artifactType")
+        try:
+            artifact_type = ArtifactType(artifact_type_raw) if artifact_type_raw else ArtifactType.OTHER
+        except ValueError:
+            artifact_type = ArtifactType.OTHER
+
+        return ArtifactRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType"),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            size_in_bytes=record_doc.get("sizeInBytes"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            hide_weburl=record_doc.get("hideWeburl", False),
+            description=artifact_doc.get("description", ""),
+            lifecycle_status=lifecycle,
+            artifact_type=artifact_type,
+            source_tool=artifact_doc.get("sourceTool"),
+            conversation_id=artifact_doc.get("conversationId"),
+            is_temporary=artifact_doc.get("isTemporary", False),
+            expires_at=artifact_doc.get("expiresAt"),
+        )
+
+        
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
@@ -1715,6 +2159,10 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
         )
+
+class ArtifactsRecordGroup(RecordGroup):
+    """Record group class for Artifacts"""
+    description: str = Field(description="Description of the artifact", default="")
 
 class CodeFileRecord(Record):
     """Record class for Code Files"""

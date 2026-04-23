@@ -28,6 +28,8 @@ def mock_deps():
         "graph_provider": MagicMock(),
         "reranker_service": MagicMock(),
         "config_service": MagicMock(),
+        "model_name": "gpt-test",
+        "model_key": "test-model-key",
     }
 
 
@@ -90,6 +92,8 @@ class TestBuildInitialState:
         assert state["virtual_record_id_to_result"] == {}
         assert state["record_label_to_uuid_map"] == {}
         assert state["is_multimodal_llm"] is False
+        assert state["model_name"] == "gpt-test"
+        assert state["model_key"] == "test-model-key"
 
     def test_custom_chat_query_fields(self, mock_deps, minimal_user_info):
         cq = {

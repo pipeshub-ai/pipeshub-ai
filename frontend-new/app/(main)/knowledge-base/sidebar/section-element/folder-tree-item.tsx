@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Text, Button, TextField, Tooltip, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FolderIcon } from '@/app/components/ui';
+import { KbNodeNameIcon } from '../../utils/kb-node-name-icon';
 import {
   ELEMENT_HEIGHT,
   TREE_INDENT_PER_LEVEL,
@@ -168,15 +168,38 @@ export function FolderTreeItem({
       color: 'red' as const,
     },
   ];
+  const hasMenuItems = menuActions.some(Boolean);
 
   return (
     <>
       <Box
-        style={{ position: 'relative', width: '100%', paddingLeft: '10px', height: `${ELEMENT_HEIGHT}px`, boxSizing: 'border-box', flexShrink: 0, minWidth: 0, overflow: 'hidden' }}
+        style={{
+          position: 'relative',
+          width: '100%',
+          minWidth: 0,
+          paddingLeft: 'var(--space-2)',
+          height: `${ELEMENT_HEIGHT}px`,
+          boxSizing: 'border-box',
+          flexShrink: 0,
+        }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
         {renderTreeLines(node.depth, showRootLines ? 0 : 1)}
+        <Flex
+          align="center"
+          gap="1"
+          style={{
+            width: '100%',
+            minWidth: 0,
+            minHeight: `${ELEMENT_HEIGHT}px`,
+            paddingLeft: `${TREE_BASE_PADDING + indent}px`,
+            paddingRight: 'var(--space-2)',
+            boxSizing: 'border-box',
+            borderRadius: 'var(--radius-1)',
+            backgroundColor: isSelected ? 'var(--olive-3)' : isHovered ? HOVER_BACKGROUND : 'transparent',
+          }}
+        >
         <Button
           variant="ghost"
           size="2"
@@ -188,13 +211,19 @@ export function FolderTreeItem({
             }
           }}
           style={{
-            width: '100%',
+            flex: 1,
+            minWidth: 0,
+            maxWidth: '100%',
+            display: 'flex',
+            alignItems: 'center',
             boxSizing: 'border-box',
             justifyContent: 'flex-start',
-            paddingLeft: `${TREE_BASE_PADDING + indent}px`,
-            paddingRight: showMeatballMenu ? '32px' : '8px',
-            borderRadius: 'var(--radius-1)',
-            backgroundColor: isSelected ? 'var(--olive-3)' : isHovered ? HOVER_BACKGROUND : 'transparent',
+            padding: 0,
+            height: `${ELEMENT_HEIGHT}px`,
+            borderRadius: 0,
+            backgroundColor: 'transparent',
+            boxShadow: 'none',
+            cursor: 'pointer',
           }}
         >
           {hasChildren ? (
@@ -202,10 +231,11 @@ export function FolderTreeItem({
               style={{
                 width: '16px',
                 height: '16px',
+                flexShrink: 0,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                marginRight: '4px',
+                marginRight: 'var(--space-1)',
                 cursor: 'pointer',
               }}
               onClick={(e) => {
@@ -229,24 +259,21 @@ export function FolderTreeItem({
               )}
             </Box>
           ) : (
-            <Box style={{ width: '20px' }} />
+            <Box style={{ width: '20px', flexShrink: 0 }} />
           )}
 
-          {enhancedNode.nodeType === 'app' ? (
-            <MaterialIcon
-              name="extension"
+          <Box style={{ marginRight: '4px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+            <KbNodeNameIcon
+              isKnowledgeHub
+              nodeType={enhancedNode.nodeType}
+              connector={enhancedNode.connector}
+              extension={enhancedNode.extension}
+              mimeType={enhancedNode.mimeType}
+              name={node.name}
+              isSelected={isSelected}
               size={16}
-              color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
-              style={{ marginRight: '4px' }}
             />
-          ) : (
-            <FolderIcon
-              variant="default"
-              size={16}
-              color="var(--emerald-11)"
-              style={{ marginRight: '4px' }}
-            />
-          )}
+          </Box>
 
           {isEditing ? (
             <Box
@@ -271,39 +298,38 @@ export function FolderTreeItem({
               />
             </Box>
           ) : (
-            <Tooltip
-              content={node.name}
-              delayDuration={200}
-              open={isNameTruncated ? undefined : false}
-            >
-              <Text
-                ref={nameRef}
-                size="2"
-                style={{
-                  color: isSelected ? 'var(--accent-11)' : 'var(--slate-11)',
-                  fontWeight: isSelected ? 500 : 400,
-                  whiteSpace: 'nowrap',
-                  textAlign: 'left',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: 1,
-                  minWidth: 0,
-                }}
+            <Box style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+              <Tooltip
+                content={node.name}
+                delayDuration={200}
+                open={isNameTruncated ? undefined : false}
               >
-                {node.name}
-              </Text>
-            </Tooltip>
+                <Text
+                  ref={nameRef}
+                  size="2"
+                  style={{
+                    display: 'block',
+                    color: isSelected ? 'var(--accent-11)' : 'var(--slate-11)',
+                    fontWeight: isSelected ? 500 : 400,
+                    whiteSpace: 'nowrap',
+                    textAlign: 'left',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    maxWidth: '100%',
+                  }}
+                >
+                  {node.name}
+                </Text>
+              </Tooltip>
+            </Box>
           )}
         </Button>
-
-        {/* Meatball menu */}
-        {showMeatballMenu && (
+        {showMeatballMenu && hasMenuItems && (
           <Box
             style={{
-              position: 'absolute',
-              right: '10px',
-              top: '50%',
-              transform: 'translateY(-50%)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
             }}
           >
             <ItemActionMenu
@@ -313,6 +339,7 @@ export function FolderTreeItem({
             />
           </Box>
         )}
+        </Flex>
       </Box>
 
       {isExpanded &&

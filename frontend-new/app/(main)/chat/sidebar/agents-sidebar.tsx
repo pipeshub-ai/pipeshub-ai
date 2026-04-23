@@ -144,12 +144,9 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
     return () => observer.disconnect();
   }, [loadMore]);
 
-  const handleSelect = (agent: AgentListRecord) => {
-    const id = agent.id || agent._key;
-    if (!id) return;
+  const handleSelect = () => {
     if (isMobile) closeMobileSidebar();
     onBack();
-    router.push(buildChatHref({ agentId: id }));
   };
 
   const handleCreateAgent = () => {
@@ -210,11 +207,11 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
           style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
         >
           {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '24px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
               <LottieLoader variant="loader" size={28} showLabel />
             </Flex>
           ) : loadError ? (
-            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
               <Text size="2" style={{ color: 'var(--red-11)', textAlign: 'center' }}>
                 {loadError}
               </Text>
@@ -231,7 +228,8 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
                     label={label}
                     icon={<MaterialIcon name="smart_toy" size={ICON_SIZE_DEFAULT} />}
                     isActive={!!id && onChatRoute && chatAgentId === id}
-                    onSelect={() => handleSelect(agent)}
+                    href={id ? buildChatHref({ agentId: id }) : undefined}
+                    onSelect={handleSelect}
                     onBeforeNavigate={() => {
                       if (isMobile) closeMobileSidebar();
                       onBack();
@@ -248,9 +246,9 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
                 );
               })}
               {(hasNextPage || isLoadingMore) && (
-                <Box ref={sentinelRef} style={{ padding: '8px 0', textAlign: 'center' }}>
+                <Box ref={sentinelRef} style={{ padding: 'var(--space-2) 0', textAlign: 'center' }}>
                   {isLoadingMore && (
-                    <Flex align="center" justify="center" gap="2" style={{ padding: '4px 0' }}>
+                    <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-1) 0' }}>
                       <LottieLoader variant="loader" size={20} showLabel />
                     </Flex>
                   )}
@@ -258,7 +256,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
               )}
             </>
           ) : (
-            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.noAgentsFound')}
               </Text>

@@ -4,7 +4,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
-import { FileIcon } from '@/app/components/ui/file-icon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
 import { ItemActionMenu } from './item-action-menu';
 import type {
@@ -17,6 +16,7 @@ import type {
   AllRecordsSortConfig,
 } from '../types';
 import { FolderIcon } from '@/app/components/ui';
+import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
@@ -27,6 +27,11 @@ type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 // Type guard to check if item is KnowledgeHubNode
 function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
+}
+
+/** All Records rows extended with sourceName/sourceType from getSourceDisplay */
+function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
+  return 'sourceName' in item && 'sourceType' in item;
 }
 
 interface TableHeaderCellProps {
@@ -69,7 +74,7 @@ function TableHeaderCell({
           width,
           flex,
           justifyContent: 'flex-start',
-          padding: '0 8px',
+          padding: '0 var(--space-2)',
           cursor: 'pointer',
           backgroundColor: 'transparent'
         }}
@@ -99,7 +104,7 @@ function TableHeaderCell({
       style={{
         width,
         flex,
-        padding: '0 8px',
+        padding: '0 var(--space-2)',
       }}
     >
       <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
@@ -224,11 +229,19 @@ function TableRow({
   // Status label for tooltip
   const getStatusLabel = (): string => {
     if (isKnowledgeHubNode(item)) {
+      // No status from API — do not imply "Queued"
+      if (item.indexingStatus == null) {
+        return '';
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED': return 'Completed';
         case 'IN_PROGRESS': return 'In Progress';
         case 'FAILED': return 'Failed';
         case 'FILE_TYPE_NOT_SUPPORTED': return 'File Type Not Supported';
+        case 'NOT_STARTED': return 'Not Started';
+        case 'QUEUED': return 'Queued';
+        case 'AUTO_INDEX_OFF': return 'Manual Indexing';
+        case 'EMPTY': return 'Empty';
         default: return 'Queued';
       }
     }
@@ -243,10 +256,14 @@ function TableRow({
 
   // Status indicator
   const getStatusIcon = () => {
-    // if (isFolder) return null;
+    if (isFolder) return null;
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
+      // Missing status — no icon (avoid looking like "queued" via default branch)
+      if (item.indexingStatus == null) {
+        return null;
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
@@ -255,7 +272,23 @@ function TableRow({
         case 'FAILED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
         case 'FILE_TYPE_NOT_SUPPORTED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;  
+          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        case 'NOT_STARTED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
+          );
+        case 'QUEUED':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          );
+        case 'AUTO_INDEX_OFF':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={16} color="var(--olive-11)" />
+          );
+        case 'EMPTY':
+          return (
+            <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
+          );
         default:
           return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
       }
@@ -336,23 +369,19 @@ function TableRow({
       <Flex
         align="center"
         gap="2"
-        style={{ flex: 1, padding: '0 8px', minWidth: 0 }}
+        style={{ flex: 1, padding: '0 var(--space-2)', minWidth: 0 }}
       >
-        {isFolder && item.nodeType === 'app' ? (
-          <ConnectorIcon type={item.connector?.toLowerCase().replace(/[^a-z0-9-]/g, '')} size={20} />
-        ) : isFolder ? (
-          <FolderIcon variant="default" size={20} color="var(--emerald-11)" />
-        ) : (
-          <FileIcon
-            extension={
-              isKnowledgeHubNode(item)
-                ? item.extension || item.mimeType?.split('/')[1]
-                : item.fileType
-            }
-            size={20}
-            fallbackIcon="description"
-          />
-        )}
+        <KbNodeNameIcon
+          isKnowledgeHub={isKnowledgeHubNode(item)}
+          nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
+          connector={isKnowledgeHubNode(item) ? item.connector : undefined}
+          extension={isKnowledgeHubNode(item) ? item.extension : undefined}
+          mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
+          legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}
+          legacyFileType={!isKnowledgeHubNode(item) ? item.fileType : undefined}
+          name={item.name}
+          size={20}
+        />
         {isEditing ? (
           <>
             {/* Hidden span to measure text width */}
@@ -364,7 +393,7 @@ function TableRow({
                 whiteSpace: 'pre',
                 font: 'inherit',
                 fontSize: '14px',
-                padding: '2px 6px',
+                padding: 'var(--space-1) var(--space-2)',
               }}
             />
             <input
@@ -388,7 +417,7 @@ function TableRow({
                 backgroundColor: 'var(--slate-1)',
                 border: '1px solid var(--accent-8)',
                 borderRadius: 'var(--radius-1)',
-                padding: '2px 6px',
+                padding: 'var(--space-1) var(--space-2)',
                 outline: 'none',
                 width: inputWidth ? `${inputWidth}px` : 'auto',
                 minWidth: '60px',
@@ -422,7 +451,7 @@ function TableRow({
               background: 'var(--surface-1)',
               border: '1px solid var(--slate-a7)',
               borderRadius: 'var(--radius-2)',
-              padding: '4px 8px',
+              padding: 'var(--space-1) var(--space-2)',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
@@ -432,36 +461,39 @@ function TableRow({
         )}
       </Flex>
 
-      {/* Status */}
-      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 8px' }}>
-        <Tooltip content={getStatusLabel()} side="top" delayDuration={200}>
-          <Box style={{ display: 'inline-flex' }}>
-            {getStatusIcon()}
-          </Box>
-        </Tooltip>
+      {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
+      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
+        {(() => {
+          const statusIcon = getStatusIcon();
+          const statusLabel = getStatusLabel();
+          if (!statusIcon) {
+            return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
+          }
+          return (
+            <Tooltip content={statusLabel} side="top" delayDuration={200}>
+              <Box style={{ display: 'inline-flex' }}>{statusIcon}</Box>
+            </Tooltip>
+          );
+        })()}
       </Flex>
 
-      {/* Source - Only shown in All Records mode */}
-      {showSourceColumn && (
-        <Flex align="center" justify="center" gap="2" style={{ width: '70px', padding: '0 8px' }}>
-          {item.nodeType === 'app' ? (
-            <ConnectorIcon
-              type={item.sourceType}
-              size={16}
-            />
-          ) : (
-            <FolderIcon
-              variant="default"
-              size={16}
-              color="var(--emerald-11)"
-              style={{ marginRight: '4px' }}
-            />
-          )}
+      {/* Source — All Records rows only; icon + source name on hover */}
+      {showSourceColumn && isAllRecordDisplayRow(item) && (
+        <Flex align="center" justify="center" gap="2" style={{ width: '70px', padding: '0 var(--space-2)' }}>
+          <Tooltip content={item.sourceName} side="top" delayDuration={200}>
+            <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+              {item.sourceType === 'collection' ? (
+                <FolderIcon variant="default" size={16} color="var(--emerald-11)" />
+              ) : (
+                <ConnectorIcon type={item.sourceType} size={16} />
+              )}
+            </Box>
+          </Tooltip>
         </Flex>
       )}
 
       {/* Size */}
-      <Flex align="center" style={{ width: '89px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatSize(item.sizeInBytes ?? undefined)
@@ -471,7 +503,7 @@ function TableRow({
       </Flex>
 
       {/* Created */}
-      <Flex align="center" style={{ width: '147px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatDate(new Date(item.createdAt).toISOString())
@@ -481,7 +513,7 @@ function TableRow({
       </Flex>
 
       {/* Updated */}
-      <Flex align="center" style={{ width: '146px', padding: '0 8px' }}>
+      <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
         <Text size="2" style={{ color: 'var(--slate-9)' }}>
           {isKnowledgeHubNode(item)
             ? formatDate(new Date(item.updatedAt).toISOString())
@@ -491,7 +523,7 @@ function TableRow({
       </Flex>
 
       {/* Actions */}
-      <Flex align="center" gap="1" style={{ width: '80px', padding: '0 8px' }}>
+      <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
         <ItemActionMenu
           open={isMenuOpen}
           onOpenChange={setIsMenuOpen}
@@ -572,7 +604,7 @@ export function KbListView({
       <Flex
         align="center"
         style={{
-          height: '36px',
+          height: 'var(--space-9)',
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           backdropFilter: 'blur(8px)',
@@ -583,7 +615,7 @@ export function KbListView({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', padding: '0 8px', cursor: 'pointer' }}
+          style={{ width: '38px', padding: '0 var(--space-2)', cursor: 'pointer' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
@@ -648,7 +680,7 @@ export function KbListView({
           justify="between"
           align="center"
           style={{
-            padding: '8px 16px',
+            padding: 'var(--space-2) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--olive-2)',
@@ -678,7 +710,7 @@ export function KbListView({
             {/* Page Number Box */}
             <Box
               style={{
-                padding: '4px 12px',
+                padding: 'var(--space-1) var(--space-3)',
                 backgroundColor: 'var(--slate-3)',
                 borderRadius: 'var(--radius-2)',
                 minWidth: '32px',
@@ -716,7 +748,7 @@ export function KbListView({
                   gap="1"
                   style={{
                     cursor: 'pointer',
-                    padding: '4px 8px',
+                    padding: 'var(--space-1) var(--space-2)',
                     backgroundColor: 'var(--slate-3)',
                     borderRadius: 'var(--radius-2)',
                   }}

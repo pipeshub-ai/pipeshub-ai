@@ -53,6 +53,8 @@
     "dateCreated": "Date Created",
     "lastUpdated": "Last Updated",
     "source": "Source",
+    "connector": "Connector",
+    "connectors": "Connectors",
     "createdAt": "Created At",
     "folder": "Folder",
     "file": "File",
@@ -630,6 +632,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "Configure",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -658,8 +661,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -763,8 +766,16 @@
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
         "statInProgressSub": "Still being indexed",
+        "statQueued": "Queued",
+        "statQueuedSub": "Waiting to be indexed",
         "statNotStarted": "Not Started",
-        "statNotStartedSub": "Queued for sync",
+        "statNotStartedSub": "Awaiting connector sync",
+        "statManualIndexing": "Manual indexing",
+        "statManualIndexingSub": "Synced but not indexed yet",
+        "statCompleted": "Completed",
+        "statCompletedSub": "Indexed and searchable",
+        "statEmpty": "Empty",
+        "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "personalRecordsIndexed": "Personal Records Indexed"
@@ -781,6 +792,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "Records Selected",
+        "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -824,7 +837,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -837,6 +853,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -852,7 +894,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -871,6 +914,31 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -889,8 +957,18 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -912,7 +990,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -921,8 +1003,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -942,7 +1033,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -952,6 +1044,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1008,7 +1102,256 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Welcome to Pipeshub",
+      "defaultSubtitle": "Your organization's knowledge, finally searchable and connected."
+    },
+    "signUp": {
+      "title": "Get Started",
+      "subtitle": "Welcome to Pipeshub -- let's get started!",
+      "firstNameLabel": "First Name*",
+      "lastNameLabel": "Last Name*",
+      "orgNameLabel": "Organization Name*",
+      "emailLabel": "Your Email*",
+      "passwordLabel": "Password*",
+      "confirmPasswordLabel": "Confirm Password*",
+      "preferredLanguageLabel": "Preferred Language",
+      "firstNamePlaceholder": "Enter your first name",
+      "lastNamePlaceholder": "Enter your last name",
+      "orgNamePlaceholder": "Enter your organization name",
+      "emailPlaceholder": "Enter your email",
+      "passwordPlaceholder": "Enter your password",
+      "confirmPasswordPlaceholder": "Confirm your password",
+      "passwordHint": "At least 8 characters: lowercase, uppercase, number, symbol.",
+      "continueButton": "Continue",
+      "savingToast": "Saving details...",
+      "savingToastDescription": "This will take a few seconds",
+      "successToast": "Account created successfully!",
+      "failToast": "Sign up failed. Please try again.",
+      "errors": {
+        "firstNameRequired": "First name is required.",
+        "lastNameRequired": "Last name is required.",
+        "orgNameRequired": "Organization name is required.",
+        "emailRequired": "Email is required.",
+        "emailInvalid": "Please enter a valid email address.",
+        "passwordRequired": "Password is required.",
+        "confirmPasswordRequired": "Please confirm your password.",
+        "passwordsMismatch": "Passwords do not match.",
+        "emailAlreadyExists": "An account with this email already exists."
       }
+    },
+    "login": {
+      "emailVerifiedTitle": "Email verified",
+      "emailVerifiedDescription": "Your email address was updated. Sign in with your new email.",
+      "emailVerifyFailedTitle": "Email verification failed",
+      "emailVerifyFailedDescription": "The link may be invalid or expired.",
+      "samlErrorTitle": "Error in logging in with SAML",
+      "samlSignInFailedTitle": "Sign-in failed",
+      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again."
+    },
+    "common": {
+      "signIn": "Sign In",
+      "signingIn": "Signing in…",
+      "sendOtp": "Send OTP",
+      "sending": "Sending…",
+      "forgotPassword": "Forgot Password",
+      "emailLabel": "Email",
+      "emailPlaceholder": "Enter your email",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Enter your password",
+      "emailRequired": "Email is required.",
+      "emailInvalid": "Please enter a valid email address.",
+      "passwordRequired": "Password is required.",
+      "incorrectPassword": "Incorrect password.",
+      "noPasswordSet": "No password set. Use Forgot Password below.",
+      "authFailed": "Authentication failed. Please try again.",
+      "otpInvalidLength": "Please enter the full 6-digit code.",
+      "signInWithPasswordInstead": "Sign in with password instead",
+      "signInWithEmailOtp": "Sign in with email OTP",
+      "orContinueWith": "or continue with {{provider}}",
+      "orContinueWithAny": "or continue with any one of them",
+      "orContinueWithSso": "or continue with Single Sign-On",
+      "googleNotConfigured": "Google sign-in is not configured for your organisation.",
+      "microsoftNotConfigured": "Microsoft sign-in is not configured for your organisation.",
+      "oauthNotConfigured": "OAuth sign-in is not configured for your organisation.",
+      "googleUnavailable": "Google sign-in is currently unavailable. Contact your administrator.",
+      "microsoftUnavailable": "Microsoft sign-in is currently unavailable. Contact your administrator.",
+      "oauthUnavailable": "OAuth sign-in is currently unavailable. Contact your administrator.",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password"
+    }
+  },
+  "recordView": {
+    "sections": {
+      "documentSummary": "Summary",
+      "documentFields": "Document",
+      "recordMetadata": "Record information"
+    },
+    "metadata": {
+      "departments": "Departments",
+      "documentCategory": "Document category",
+      "subcategory1": "Sub-category level 1",
+      "subcategory2": "Sub-category level 2",
+      "subcategory3": "Sub-category level 3",
+      "topics": "Topics",
+      "languages": "Languages"
+    },
+    "mail": {
+      "from": "From",
+      "to": "To",
+      "cc": "Cc",
+      "labels": "Labels",
+      "date": "Date"
+    },
+    "emptyState": {
+      "noRecordMetadata": "No additional record metadata for this item."
+    },
+    "indexingReasonAria": "Indexing failure details",
+    "tabRecordInformation": "Record Information",
+    "tabDocumentDetails": "Document details",
+    "chat": "Chat",
+    "download": "Download",
+    "openFullscreen": "Open in Full Screen",
+    "exitFullscreen": "Exit full screen",
+    "close": "Close",
+    "forceReindex": "Force reindex",
+    "retryIndexing": "Retry indexing",
+    "startIndexing": "Start indexing",
+    "resumeIndexing": "Resume indexing",
+    "reindexLoading": "Submitting reindex request…",
+    "reindexSuccess": "Reindex request submitted successfully",
+    "reindexError": "Failed to submit reindex request",
+    "loading": "Loading…",
+    "loadFailed": "Could not load this record.",
+    "externalSource": "External source",
+    "collectionUpload": "Collection",
+    "openExternal": "Open",
+    "previewUnavailable": "Preview not available for this record type.",
+    "permissionOwner": "Owner",
+    "permissionReader": "Reader",
+    "permissionWriter": "Writer",
+    "labels": {
+      "name": "Name",
+      "fileName": "File name",
+      "fileSize": "File size",
+      "recordId": "Record ID",
+      "origin": "Origin",
+      "originConnector": "Connector",
+      "originUpload": "Collection upload",
+      "recordType": "Record type",
+      "version": "Version",
+      "createdAt": "Created at",
+      "updatedAt": "Updated at",
+      "collection": "Collection",
+      "permissions": "Permissions",
+      "noPermissions": "No permissions assigned",
+      "indexingStatus": "Indexing status",
+      "connector": "Origin",
+      "folder": "Folder",
+      "connectorId": "Connector ID",
+      "notAvailable": "N/A",
+      "typeEmail": "Email",
+      "typeTicket": "Ticket",
+      "typeWebpage": "Web page",
+      "typeMessage": "Message",
+      "mailSubject": "Subject",
+      "ticketSummary": "Summary",
+      "ticketDescription": "Description"
+    }
+  },
+  "onboarding": {
+    "steps": {
+      "aiModel": {
+        "title": "AI Model*",
+        "description": "Connect an LLM to power search answers and insights"
+      },
+      "embeddingModel": {
+        "title": "Embedding Model",
+        "description": "Enable semantic search across your documents"
+      },
+      "storage": {
+        "title": "Storage",
+        "description": "Choose where your indexed data is stored"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "Set up email for invites and password resets"
+      }
+    },
+    "systemConfig": "System Configuration",
+    "stepHeading": "Step {{current}}/{{total}}: Configure {{name}}",
+    "stepAiModel": {
+      "stepName": "AI Model*",
+      "addLlmHint": "Add at least one text (LLM) provider to continue.",
+      "loadProvidersError": "Failed to load AI model providers",
+      "loadModelsError": "Failed to load configured models",
+      "setDefaultSuccess": "Default model updated",
+      "setDefaultError": "Failed to set default model"
+    },
+    "stepStorage": {
+      "stepName": "Storage",
+      "infoBanner": "Choose your preferred storage solution. Local storage is used by default if skipped.",
+      "providerTypeLabel": "Provider Type*",
+      "providerLocal": "Local (System Default)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "Access Key*",
+      "accessKeyPlaceholder": "Enter Access Key",
+      "secretKeyLabel": "Secret Key*",
+      "secretKeyPlaceholder": "Enter Secret Key",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Enter Bucket",
+      "regionLabel": "Region*",
+      "regionSelectPlaceholder": "Select Region",
+      "accountNameLabel": "Account Name*",
+      "accountNamePlaceholder": "Enter Account Name",
+      "accountKeyLabel": "Account Key*",
+      "accountKeyPlaceholder": "Enter Account Key",
+      "containerLabel": "Container*",
+      "containerPlaceholder": "Enter Container",
+      "mountNameLabel": "Mount Name (optional)",
+      "mountNamePlaceholder": "eg: uploads",
+      "baseUrlLabel": "Base URL (optional)",
+      "baseUrlPlaceholder": "eg: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "This is a recommended step to enable emails, invites & password resets",
+      "hostLabel": "SMTP Host*",
+      "hostPlaceholder": "eg: smtp.gmail.com",
+      "portLabel": "Port",
+      "portPlaceholder": "eg: 587",
+      "fromEmailLabel": "From Email*",
+      "fromEmailPlaceholder": "eg: noreply@company.com",
+      "usernameLabel": "Username",
+      "usernamePlaceholder": "eg: user@gmail.com",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Enter Password"
+    },
+    "nav": {
+      "prev": "Prev",
+      "next": "Next",
+      "enterPipeshub": "Enter Pipeshub",
+      "finishing": "Finishing…",
+      "saveLlmFirst": "Save the AI Model step first to continue"
+    },
+    "save": "Save",
+    "saving": "Saving…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "Privacy Policy",
+      "website": "Website",
+      "visitDocs": "Visit",
+      "docsLabel": "documentation",
+      "toLearnMore": "to learn more."
     }
   }
 }

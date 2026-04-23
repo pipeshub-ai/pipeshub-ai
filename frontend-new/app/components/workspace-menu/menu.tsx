@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { logoutAndRedirect } from '@/lib/store/auth-store';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
@@ -42,7 +41,6 @@ interface WorkspaceMenuProps {
  * with the organisation badge rendered directly here.
  */
 export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMenuProps) {
-  const router = useRouter();
   const menuRef = useRef<HTMLDivElement>(null);
   const [activePanel, setActivePanel] = useState<ActiveSubPanel>(null);
 
@@ -114,10 +112,7 @@ export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMen
     >
       {/* ── Section 1: Settings ── */}
       <SettingsSection
-        onWorkspaceSettings={() => {
-          onClose();
-          router.push('/workspace');
-        }}
+        onWorkspaceSettings={onClose}
         onAppearanceToggle={() => togglePanel('appearance')}
         isAppearanceActive={activePanel === 'appearance'}
         onLanguageToggle={() => togglePanel('language')}

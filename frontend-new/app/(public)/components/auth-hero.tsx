@@ -75,7 +75,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
         style={{
           position: 'absolute',
           inset: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          backgroundColor: 'rgba(0, 0, 0, 0.2)',
           pointerEvents: 'none',
         }}
       />
@@ -94,6 +94,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           textTransform: 'uppercase',
           letterSpacing: '0.02em',
           zIndex: 1,
+          fontFamily: 'ClashGrotesk, sans-serif',
         }}
       >
         Explainable Enterprise Search for modern enterprises.

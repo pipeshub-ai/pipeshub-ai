@@ -40,7 +40,7 @@ export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pag
     case 'docx':
       return <DocxRenderer fileUrl={fileUrl} fileName={fileName} fileBlob={fileBlob} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
     case 'document':
-      return <DocumentPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} />;
+      return <DocumentPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} fileBlob={fileBlob} />;
     default:
       return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} />;
   }

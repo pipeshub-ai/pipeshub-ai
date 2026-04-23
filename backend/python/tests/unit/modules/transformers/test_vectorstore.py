@@ -150,6 +150,7 @@ class TestVectorStoreApply:
 
         ctx = MagicMock()
         ctx.record = record
+        ctx.reconciliation_context = None
 
         result = await vs.apply(ctx)
 
@@ -159,6 +160,8 @@ class TestVectorStoreApply:
             "rec-1",
             "vr-1",
             "application/pdf",
+            block_ids_to_delete=None,
+            is_reconciliation=False,
         )
         assert result is True
 
@@ -177,6 +180,7 @@ class TestVectorStoreApply:
 
         ctx = MagicMock()
         ctx.record = record
+        ctx.reconciliation_context = None
 
         with pytest.raises(Exception, match="indexing failed"):
             await vs.apply(ctx)
@@ -197,6 +201,7 @@ class TestVectorStoreApply:
 
         ctx = MagicMock()
         ctx.record = record
+        ctx.reconciliation_context = None
 
         await vs.apply(ctx)
 
@@ -206,6 +211,8 @@ class TestVectorStoreApply:
             "specific-rec-id",
             "specific-vr-id",
             "image/png",
+            block_ids_to_delete=None,
+            is_reconciliation=False,
         )
 
 
@@ -926,9 +933,9 @@ class TestIndexDocuments:
 
     @pytest.mark.asyncio
     async def test_create_embeddings_failure_raises(self):
-        """Raises EmbeddingError when _create_embeddings fails."""
+        """Raises IndexingError when _create_embeddings raises an unknown exception."""
         from app.models.blocks import Block, BlocksContainer
-        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.exceptions.indexing_exceptions import IndexingError
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock(side_effect=RuntimeError("embed fail"))
@@ -939,7 +946,7 @@ class TestIndexDocuments:
 
         with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(EmbeddingError):
+            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
 
     @pytest.mark.asyncio
@@ -1099,6 +1106,7 @@ class TestApply:
         mock_ctx.record.block_containers = MagicMock()
         mock_ctx.record.org_id = "org-1"
         mock_ctx.record.mime_type = "text/plain"
+        mock_ctx.reconciliation_context = None
 
         result = await vs.apply(mock_ctx)
 
@@ -1109,6 +1117,8 @@ class TestApply:
             "rec-1",
             "vr-1",
             "text/plain",
+            block_ids_to_delete=None,
+            is_reconciliation=False,
         )
 
 
@@ -1761,8 +1771,8 @@ class TestIndexDocumentsAdditional:
 
     @pytest.mark.asyncio
     async def test_embedding_creation_failure_raises(self):
-        """When _create_embeddings fails, should raise EmbeddingError."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
+        """When _create_embeddings raises an unknown exception, index_documents wraps it in IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
@@ -1774,7 +1784,7 @@ class TestIndexDocumentsAdditional:
 
         with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(EmbeddingError, match="Failed to create or store embeddings"):
+            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
 
 

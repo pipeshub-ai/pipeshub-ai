@@ -22,8 +22,10 @@ def _make_tx_store():
     store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1"})
     store.get_nodes_by_filters = AsyncMock(return_value=[])
     store.get_edge = AsyncMock(return_value=None)
+    store.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     store.batch_upsert_nodes = AsyncMock()
     store.batch_create_edges = AsyncMock()
+    store.batch_delete_edges = AsyncMock(return_value=0)
     return store
 
 
@@ -222,8 +224,17 @@ class TestSaveMetadataToDb:
         tx_store.get_nodes_by_filters.return_value = [
             {"_key": "dept-key-1", "departmentName": "Engineering"}
         ]
-        # Edge already exists
-        tx_store.get_edge.return_value = {"_id": "existing-edge"}
+        # Edge already exists in reconciliation lookup
+        dept_to = f"{CollectionNames.DEPARTMENTS.value}/dept-key-1"
+
+        async def edges_side_effect(record_from, edge_collection):
+            if edge_collection == CollectionNames.BELONGS_TO_DEPARTMENT.value:
+                return [{"_to": dept_to, "name": "Engineering"}]
+            return []
+
+        tx_store.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=edges_side_effect
+        )
         transformer, _ = self._setup_transformer_with_tx(tx_store)
 
         metadata = _make_semantic_metadata(
@@ -298,8 +309,12 @@ class TestSaveMetadataToDb:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should create language edge (or skip if exists)
-        assert tx_store.get_edge.await_count >= 1
+        # Should create language edge via reconciliation
+        lang_edge_calls = [
+            c for c in tx_store.batch_create_edges.call_args_list
+            if len(c[0]) > 1 and c[0][1] == CollectionNames.BELONGS_TO_LANGUAGE.value
+        ]
+        assert len(lang_edge_calls) >= 1
 
     @pytest.mark.asyncio
     async def test_handles_topics(self):
@@ -319,7 +334,11 @@ class TestSaveMetadataToDb:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        assert tx_store.get_edge.await_count >= 1
+        topic_edge_calls = [
+            c for c in tx_store.batch_create_edges.call_args_list
+            if len(c[0]) > 1 and c[0][1] == CollectionNames.BELONGS_TO_TOPIC.value
+        ]
+        assert len(topic_edge_calls) >= 1
 
     @pytest.mark.asyncio
     async def test_handles_subcategories_chain(self):

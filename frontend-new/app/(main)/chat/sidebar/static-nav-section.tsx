@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -26,8 +25,8 @@ interface NavItem {
 /** Primary navigation items — labels resolved via i18n */
 const MAIN_NAV_ITEMS: NavItem[] = [
   // { icon: 'search', labelKey: 'nav.searchChats', route: '/search' },
-  { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base' },
-  { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base?view=all-records' },
+  { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
+  { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
 ];
 
 // ========================================
@@ -43,7 +42,7 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
       padding: KBD_BADGE_PADDING,
       borderRadius: 'var(--radius-2)',
       fontSize: 12,
-      lineHeight: '16px',
+      lineHeight: 'var(--line-height-1)',
       letterSpacing: '0.04px',
       color: 'var(--slate-12)',
       fontWeight: 400,
@@ -57,7 +56,6 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
  * Static navigation section — "New Chat" button, Search, Collections, etc.
  */
 export function StaticNavSection() {
-  const router = useRouter();
   const dispatch = useCommandStore((s) => s.dispatch);
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
@@ -80,12 +78,12 @@ export function StaticNavSection() {
         icon={
           <ChatStarIcon
             size={ICON_SIZE_DEFAULT}
-            color="var(--accent-8)"
+            color="var(--accent-a11)"
           />
         }
         label={t('chat.newChat')}
         onClick={handleNewChat}
-        textColor="var(--accent-8)"
+        textColor="var(--accent-a11)"
         fontWeight={500}
       />
       {/* Search Chats — opens command palette (⌘+K) */}
@@ -103,7 +101,7 @@ export function StaticNavSection() {
             key={item.route}
             icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} />}
             label={t(item.labelKey)}
-            onClick={() => router.push(item.route)}
+            href={item.route}
           />
         ))}
     </Flex>

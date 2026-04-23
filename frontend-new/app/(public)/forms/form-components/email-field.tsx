@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Flex, Text, TextField } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -29,8 +30,8 @@ export interface EmailFieldProps {
 const EmailField = React.forwardRef<HTMLInputElement, EmailFieldProps>(function EmailField({
   value,
   onChange,
-  label = 'Email',
-  placeholder = 'Enter your email',
+  label,
+  placeholder,
   error,
   autoFocus = false,
   readOnly = false,
@@ -38,6 +39,10 @@ const EmailField = React.forwardRef<HTMLInputElement, EmailFieldProps>(function 
   onKeyDown,
   onBlur,
 }, ref) {
+  const { t } = useTranslation();
+  const resolvedLabel = label ?? t('auth.common.emailLabel');
+  const resolvedPlaceholder = placeholder ?? t('auth.common.emailPlaceholder');
+
   return (
     <Flex direction="column" gap="1">
       <Text
@@ -50,7 +55,7 @@ const EmailField = React.forwardRef<HTMLInputElement, EmailFieldProps>(function 
           lineHeight: '20px',
         }}
       >
-        {label}
+        {resolvedLabel}
       </Text>
       <TextField.Root
         ref={ref}
@@ -61,7 +66,7 @@ const EmailField = React.forwardRef<HTMLInputElement, EmailFieldProps>(function 
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
         onBlur={onBlur}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         autoComplete="email"
         autoFocus={autoFocus}
         readOnly={readOnly}

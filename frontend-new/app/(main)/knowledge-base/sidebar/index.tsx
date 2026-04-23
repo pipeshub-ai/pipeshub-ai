@@ -49,6 +49,8 @@ interface KBSidebarProps {
   // All Records mode props
   appNodes?: KnowledgeHubNode[];
   appChildrenCache?: Map<string, KnowledgeHubNode[]>;
+  /** Nested trees for non-KB apps in All Records (same role as categorizedNodes for KB) */
+  connectorAppTrees?: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds?: Set<string>;
   connectors?: Connector[];
   moreConnectors?: MoreConnectorLink[];
@@ -97,7 +99,7 @@ function KBSidebarFromStore() {
 
   return (
     <SidebarBase header={<SidebarBackHeader title={title} onBack={handleBack} />}>
-      <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px' }}>
+      <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2)' }}>
         {t('action.loading')}
       </Text>
     </SidebarBase>
@@ -126,6 +128,7 @@ function KBSidebarContent({
   privateTree: privateTreeProp,
   appNodes = [],
   appChildrenCache = new Map(),
+  connectorAppTrees = new Map(),
   loadingAppIds = new Set(),
   connectors = [],
   navigationStack: _navigationStack = [],
@@ -253,9 +256,11 @@ function KBSidebarContent({
       const appNode = appNodes.find((a) => a.id === appId);
       const isKbApp = appNode?.connector === 'KB';
       const appChildren = appChildrenCache.get(appId) || [];
+      const connectorTreePanel = !isKbApp ? connectorAppTrees.get(appId) : undefined;
       const categorizedTree = isKbApp
         ? [...(sharedTree || []), ...(privateTree || [])]
         : undefined;
+      const hierarchicalPanelTree = categorizedTree ?? connectorTreePanel;
 
       return (
         <SecondaryPanel
@@ -267,9 +272,9 @@ function KBSidebarContent({
           }
         >
           <Flex direction="column" gap="0">
-            {categorizedTree ? (
-              categorizedTree.length > 0 ? (
-                categorizedTree.map((node) => (
+            {hierarchicalPanelTree ? (
+              hierarchicalPanelTree.length > 0 ? (
+                hierarchicalPanelTree.map((node) => (
                   <FolderTreeItem
                     key={node.id}
                     node={node}
@@ -293,7 +298,7 @@ function KBSidebarContent({
                   />
                 ))
               ) : (
-                <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+                <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                   No items
                 </Text>
               )
@@ -301,7 +306,7 @@ function KBSidebarContent({
               appChildren.map((child) => (
                 <FolderTreeItem
                   key={child.id}
-                  node={convertToTreeNode(child, 1)}
+                  node={convertToTreeNode(child, 0)}
                   isSelected={currentFolderId === child.id}
                   currentFolderId={currentFolderId}
                   onSelect={(id) => {
@@ -328,7 +333,7 @@ function KBSidebarContent({
                 />
               ))
             ) : (
-              <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+              <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                 No items
               </Text>
             )}
@@ -460,6 +465,7 @@ function KBSidebarContent({
           onSelectConnectorItem={handleSelectConnectorItem}
           appNodes={appNodes}
           appChildrenCache={appChildrenCache}
+          connectorAppTrees={connectorAppTrees}
           loadingAppIds={loadingAppIds}
           connectors={connectors}
           moreConnectors={moreConnectors}
@@ -477,6 +483,8 @@ function KBSidebarContent({
           onNavigateToConnector={(connectorTypeParam) =>
             router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
           }
+          connectorsHref={buildConnectorsUrl(isAdmin)}
+          buildConnectorHref={(param) => buildConnectorsUrl(isAdmin, param)}
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}

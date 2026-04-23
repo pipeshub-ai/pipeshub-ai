@@ -25,7 +25,7 @@ export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectio
     <SettingsSection title={t('workspace.profile.rolesPermissions.title')}>
 
       {/* Role */}
-      <SettingsRow label={t('workspace.users.profile.role')} description={t('workspace.profile.rolesPermissions.roleDescription')}>
+      <SettingsRow label={t('workspace.profile.rolesPermissions.role')} description={t('workspace.profile.rolesPermissions.roleDescription')}>
         <TextField.Root
           value={role}
           readOnly
@@ -34,7 +34,7 @@ export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectio
       </SettingsRow>
 
       {/* Groups */}
-      <SettingsRow label={t('workspace.groups.title')} description={t('workspace.profile.rolesPermissions.groupsDescription')}>
+      <SettingsRow label={t('workspace.profile.rolesPermissions.groups')} description={t('workspace.profile.rolesPermissions.groupsDescription')}>
         {groups.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
             {t('workspace.profile.rolesPermissions.noGroups')}

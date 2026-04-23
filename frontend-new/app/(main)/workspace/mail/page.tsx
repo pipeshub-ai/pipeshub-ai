@@ -99,14 +99,14 @@ export default function MailPage() {
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <Box style={{ padding: '4em 6.25em 5em' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mail.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.mail.subtitle')}
             </Text>
           </Box>
@@ -129,14 +129,14 @@ export default function MailPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-            marginBottom: 20,
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
           }}
         >
           {/* Section header */}
-          <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
+          <Box style={{ padding: '14px 16px' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
               {t('workspace.mail.serverConfig')}
             </Text>
@@ -147,6 +147,9 @@ export default function MailPage() {
               {t('workspace.mail.serverConfigDescription')}
             </Text>
           </Box>
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+          </Box>
 
           {/* SMTP row */}
           <Box style={{ padding: '12px 14px' }}>
@@ -155,9 +158,10 @@ export default function MailPage() {
                 gap="3"
                 style={{
                   padding: '12px 14px',
-                  border: '1px solid var(--slate-4)',
-                  borderRadius: 'var(--radius-2)',
-                  backgroundColor: 'var(--slate-1)',
+                  border: '1px solid var(--slate-3)',
+                  borderRadius: 'var(--radius-1)',
+                  background: 'var(--olive-2)',
+                  backdropFilter: 'blur(25px)',
                 }}
               >
                 {/* Mail icon box */}
@@ -165,14 +169,13 @@ export default function MailPage() {
                   align="center"
                   justify="center"
                   style={{
-                    width: 36,
-                    height: 36,
+                    padding: 'var(--space-2)',
                     borderRadius: 'var(--radius-2)',
-                    backgroundColor: 'var(--slate-3)',
+                    backgroundColor: 'var(--slate-a2)',
                     flexShrink: 0,
                   }}
                 >
-                  <MaterialIcon name="mail" size={18} color="var(--slate-11)" />
+                  <MaterialIcon name="mail" size={16} color="var(--slate-11)" />
                 </Flex>
 
                 {/* Label + description */}

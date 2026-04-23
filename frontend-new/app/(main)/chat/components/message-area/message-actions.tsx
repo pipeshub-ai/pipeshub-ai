@@ -13,7 +13,7 @@ import type { ModelInfo } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
-import { useSpeechSynthesis } from '@/lib/hooks/use-speech-synthesis';
+import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 
 // ========================================
 // Types
@@ -89,10 +89,20 @@ export function MessageActions({
   const [readAloudHovered, setReadAloudHovered] = useState(false);
   const { t, i18n } = useTranslation();
 
-  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useSpeechSynthesis({
+  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useChatSpeechSynthesis({
     lang: i18n.language,
-    onError: () => {
-      toast.error(t('chat.ttsNotSupported'));
+    onError: (error) => {
+      // The Read-Aloud button is only rendered when TTS is supported, so
+      // any runtime failure here is a synthesis / playback error, not a
+      // browser-capability problem. The legacy string claimed otherwise
+      // and was confusing users when only the first sentence played.
+      // Fall back to the legacy message only for the rare pre-flight
+      // "not-supported" signal, to preserve its meaning for callers.
+      if (error === 'not-supported') {
+        toast.error(t('chat.ttsNotSupported'));
+      } else {
+        toast.error(t('chat.ttsFailed'));
+      }
     },
   });
 
@@ -183,14 +193,14 @@ export function MessageActions({
               borderRadius: 'var(--radius-1)',
               margin: 0,
               cursor: 'pointer',
-              backgroundColor: feedback === 'like' ? 'var(--emerald-a4)' : likeHovered ? 'var(--slate-a3)' : 'transparent',
-              color: feedback === 'like' ? 'var(--emerald-11)' : 'var(--slate-9)',
+              backgroundColor: likeHovered ? 'var(--slate-a3)' : 'transparent',
             }}
           >
             <MaterialIcon
               name={feedback === 'like' ? 'thumb_up' : 'thumb_up_off_alt'}
               size={ICON_SIZES.SECONDARY}
-              color="var(--slate-11)"
+              variant={feedback === 'like' ? 'filled' : 'outlined'}
+              color={feedback === 'like' ? 'var(--emerald-11)' : 'var(--slate-11)'}
             />
           </IconButton>
         </Tooltip>
@@ -208,8 +218,7 @@ export function MessageActions({
               borderRadius: 'var(--radius-1)',
               margin: 0,
               cursor: 'pointer',
-              backgroundColor: feedback === 'dislike' ? 'var(--red-a4)' : dislikeHovered ? 'var(--slate-a3)' : 'transparent',
-              color: feedback === 'dislike' ? 'var(--red-11)' : 'var(--slate-9)',
+              backgroundColor: dislikeHovered ? 'var(--slate-a3)' : 'transparent',
             }}
           >
             <MaterialIcon
@@ -219,7 +228,8 @@ export function MessageActions({
                   : 'thumb_down_off_alt'
               }
               size={ICON_SIZES.SECONDARY}
-              color="var(--slate-11)"
+              variant={feedback === 'dislike' ? 'filled' : 'outlined'}
+              color={feedback === 'dislike' ? 'var(--red-11)' : 'var(--slate-11)'}
             />
           </IconButton>
         </Tooltip>
@@ -291,11 +301,10 @@ export function MessageActions({
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
                   backdropFilter: 'blur(25px)',
-                  fontSize: 'var(--font-size-1)',
-                  color: 'var(--slate-11)',
+                  gap: 'var(--space-1)',
                 }}
               >
-                <Flex direction="column">
+                <Flex direction="column" gap="1">
                   <CopyOption
                     label={t('chat.markdownWithCitations')}
                     onClick={handleCopyMarkdown}
@@ -351,7 +360,7 @@ export function MessageActions({
             >
               <MaterialIcon
                 name={isSpeaking ? 'stop' : 'volume_up'}
-                size={ICON_SIZES.SECONDARY}
+                size={ICON_SIZES.MINIMAL}
                 color={isSpeaking ? 'var(--accent-11)' : 'var(--slate-11)'}
               />
             </IconButton>
@@ -376,7 +385,7 @@ export function MessageActions({
               size="1"
               style={{
                 color: 'var(--slate-11)',
-                lineHeight: '16px',
+                lineHeight: 'var(--line-height-1)',
                 whiteSpace: 'nowrap',
               }}
             >
@@ -406,7 +415,7 @@ export function MessageActions({
               size="1"
               style={{
                 color: 'var(--slate-11)',
-                lineHeight: '16px',
+                lineHeight: 'var(--line-height-1)',
                 whiteSpace: 'nowrap',
               }}
             >
@@ -439,10 +448,16 @@ function CopyOption({ label, onClick }: CopyOptionProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
-        padding: 'var(--space-2) var(--space-1)',
+        display: 'flex',
+        alignItems: 'center',
+        height: '24px',
+        paddingLeft: 'var(--space-2)',
+        paddingRight: 'var(--space-2)',
+        borderRadius: 'var(--radius-1)',
         cursor: 'pointer',
         backgroundColor: isHovered ? 'var(--slate-a3)' : 'transparent',
         transition: 'background-color 0.1s ease',
+        width: '100%',
       }}
     >
       <Text
@@ -450,6 +465,8 @@ function CopyOption({ label, onClick }: CopyOptionProps) {
         style={{
           color: 'var(--slate-11)',
           whiteSpace: 'nowrap',
+          lineHeight: '16px',
+          letterSpacing: '0.04px',
         }}
       >
         {label}

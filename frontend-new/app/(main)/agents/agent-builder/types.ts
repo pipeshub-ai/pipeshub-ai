@@ -38,6 +38,8 @@ export interface ToolRef {
 export interface ToolsetReference {
   id: string;
   instanceId?: string;
+  /** Human label for this configured instance (shown in builder + API when supported). */
+  instanceName?: string;
   name: string;
   displayName: string;
   type: string;

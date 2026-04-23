@@ -133,6 +133,11 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
+      # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
+      # Defaults to "docker" -- the sandbox-image service below builds the required
+      # pipeshub/sandbox:latest image before pipeshub-ai starts.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+
     depends_on:
       qdrant:
         condition: service_healthy
@@ -142,18 +147,31 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Probe the aggregated /api/v1/health/services endpoint served by the
+    # nodejs API. If curl succeeds, the nodejs service itself is up; the JSON
+    # body must additionally report every Python application service
+    # (query, connector, indexing, docling) as "healthy" before the container
+    # is considered ready. This makes `docker compose up --wait` block until
+    # all 5 pipeshub services inside the container have finished starting.
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health/services || exit 1"]
-      interval: 30s
+      test:
+        - CMD-SHELL
+        - >
+          curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 300s
 
   mongodb:
     image: mongo:8.0.17
@@ -267,6 +285,18 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # Build-only helper that ensures the pipeshub/sandbox:latest image is
+  # available on the host Docker daemon before pipeshub-ai starts.
+  # The container itself is a no-op: it prints a message and exits 0, leaving
+  # the image in place for SANDBOX_MODE=docker ephemeral execution.
+  sandbox-image:
+    image: pipeshub/sandbox:latest
+    build:
+      context: ../../deployment/sandbox
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
 
   qdrant:
     image: qdrant/qdrant:v1.15

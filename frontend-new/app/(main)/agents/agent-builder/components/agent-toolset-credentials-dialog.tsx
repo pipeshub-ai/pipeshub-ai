@@ -57,9 +57,12 @@ export function AgentToolsetCredentialsDialog({
 }: AgentToolsetCredentialsDialogProps) {
   const { t } = useTranslation();
   const authType = (toolset.authType || 'NONE').toUpperCase();
-  const displayName = toolset.displayName || toolset.instanceName || t('agentBuilder.toolsetDefaultName');
+  const productName =
+    toolset.displayName || toolset.name || t('agentBuilder.toolsetDefaultName');
+  const instanceLabel = (toolset.instanceName ?? '').trim();
+  const displayName = instanceLabel || productName;
   const subtitle =
-    toolset.instanceName && toolset.instanceName !== displayName ? toolset.instanceName : null;
+    instanceLabel && productName && instanceLabel !== productName ? productName : null;
   const iconPath = toolset.iconPath || '';
   const tools = toolset.tools || [];
   const [iconBroken, setIconBroken] = useState(false);

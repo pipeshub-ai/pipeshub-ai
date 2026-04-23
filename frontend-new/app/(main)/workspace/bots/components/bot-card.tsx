@@ -56,8 +56,8 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
         backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: 12,
-        gap: 24,
+        padding: 'var(--space-3)',
+        gap: 'var(--space-6)',
         cursor: 'pointer',
         transition: 'background-color 150ms ease',
       }}
@@ -69,9 +69,9 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
           align="center"
           justify="center"
           style={{
-            width: 32,
-            height: 32,
-            padding: 8,
+            width: 'var(--space-8)',
+            height: 'var(--space-8)',
+            padding: 'var(--space-2)',
             backgroundColor: 'var(--gray-a2)',
             borderRadius: 'var(--radius-1)',
             flexShrink: 0,
@@ -145,9 +145,9 @@ function ManageButton({ onClick }: { onClick: () => void }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
+        gap: 'var(--space-2)',
         width: '100%',
-        height: 32,
+        height: 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-a4)' : 'var(--accent-a3)',
         cursor: 'pointer',

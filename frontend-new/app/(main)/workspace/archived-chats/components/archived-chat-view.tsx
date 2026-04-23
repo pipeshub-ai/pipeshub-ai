@@ -66,7 +66,7 @@ function EmptyState() {
       direction="column"
       align="center"
       justify="center"
-      style={{ height: '100%', width: '100%', gap: 12 }}
+      style={{ height: '100%', width: '100%', gap: 'var(--space-3)' }}
     >
       <ChatPixelIcon
         size={72}
@@ -100,6 +100,8 @@ interface ArchivedChatViewProps {
   messages: ConversationMessage[];
   isLoading: boolean;
   error: string | null;
+  /** If set, this is an agent conversation and API calls will use agent-scoped endpoints. */
+  agentKey?: string | null;
   /** Called after a successful restore — page should navigate to /chat */
   onRestored: (conversationId: string) => void;
   /** Called after a successful permanent delete — page selects next conv */
@@ -112,6 +114,7 @@ export function ArchivedChatView({
   messages,
   isLoading,
   error,
+  agentKey,
   onRestored,
   onDeleted,
 }: ArchivedChatViewProps) {
@@ -130,7 +133,11 @@ export function ArchivedChatView({
     if (isRestoring) return;
     setIsRestoring(true);
     try {
-      await ArchivedChatsApi.restoreConversation(conversationId);
+      if (agentKey) {
+        await ArchivedChatsApi.restoreAgentConversation(agentKey, conversationId);
+      } else {
+        await ArchivedChatsApi.restoreConversation(conversationId);
+      }
       addToast({
         variant: 'success',
         title: t('workspace.archivedChats.restoreSuccess'),
@@ -151,7 +158,11 @@ export function ArchivedChatView({
     if (isDeleting) return;
     setIsDeleting(true);
     try {
-      await ArchivedChatsApi.deleteConversation(conversationId);
+      if (agentKey) {
+        await ArchivedChatsApi.deleteAgentConversation(agentKey, conversationId);
+      } else {
+        await ArchivedChatsApi.deleteConversation(conversationId);
+      }
       setDeleteDialogOpen(false);
       addToast({
         variant: 'success',
@@ -199,8 +210,8 @@ export function ArchivedChatView({
       <Box
         style={{
           position: 'absolute',
-          top: 12,
-          right: 12,
+          top: 'var(--space-3)',
+          right: 'var(--space-3)',
           zIndex: 10,
         }}
       >
@@ -260,7 +271,7 @@ export function ArchivedChatView({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '40px 0 32px',
+          padding: '40px 0 var(--space-8)',
           maxWidth: 720,
           width: '100%',
           margin: '0 auto',
@@ -269,7 +280,7 @@ export function ArchivedChatView({
         {messagePairs.length === 0 ? (
           <EmptyState />
         ) : (
-          <Flex direction="column" gap="6" style={{ padding: '0 24px' }}>
+          <Flex direction="column" gap="6" style={{ padding: '0 var(--space-6)' }}>
             {/* Message pairs */}
             {messagePairs.map((pair) => (
               <ChatResponse

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
@@ -32,6 +33,7 @@ interface AllRecordsModeProps {
   // Data
   appNodes: KnowledgeHubNode[];
   appChildrenCache: Map<string, KnowledgeHubNode[]>;
+  connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];
@@ -56,6 +58,8 @@ interface AllRecordsModeProps {
   // Navigation
   onNavigateToConnectors: () => void;
   onNavigateToConnector: (connectorTypeParam: string) => void;
+  connectorsHref: string;
+  buildConnectorHref: (connectorTypeParam: string) => string;
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -83,6 +87,7 @@ export function AllRecordsMode({
   onSelectConnectorItem,
   appNodes,
   appChildrenCache,
+  connectorAppTrees,
   loadingAppIds,
   connectors,
   moreConnectors,
@@ -98,6 +103,8 @@ export function AllRecordsMode({
   kbPrivateTree,
   onNavigateToConnectors,
   onNavigateToConnector,
+  connectorsHref,
+  buildConnectorHref,
   onReindex,
   onRename,
   onDelete,
@@ -136,6 +143,7 @@ export function AllRecordsMode({
       {appNodes.map((app) => {
         const isKbApp = app.connector === 'KB';
         const appChildren = appChildrenCache.get(app.id) || [];
+        const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
         // For the KB app, pass the categorized tree (shared + private) so that
         // sub-folder children populated by handleNodeExpand are visible in the tree.
         const categorizedTree = isKbApp
@@ -146,6 +154,7 @@ export function AllRecordsMode({
             key={app.id}
             app={app}
             childNodes={appChildren}
+            connectorTree={connectorTree}
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state
@@ -169,7 +178,7 @@ export function AllRecordsMode({
             categorizedTree={categorizedTree}
             onReindex={onReindex}
             onRename={onRename}
-            onDelete={onDelete}
+            onDelete={isKbApp ? onDelete : undefined}
             maxVisible={SIDEBAR_COLLECTION_LIMIT}
             onMore={() => onOpenMoreFolders?.(app.id, app.name, app.connector || app.name)}
           />
@@ -217,9 +226,9 @@ export function AllRecordsMode({
               letterSpacing: '0.04px',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: 'var(--space-2)',
               padding: '4px 4px',
-              marginBottom: '8px',
+              marginBottom: 'var(--space-2)',
               fontWeight: 400,
               fontStyle: 'normal',
             }}
@@ -227,36 +236,47 @@ export function AllRecordsMode({
             <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
             {t('nav.moreConnectors')}
           </Text>
-          <Flex direction="column" gap="2" style={{ marginTop: '4px' }}>
+          <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} onNavigate={onNavigateToConnector} />
+              <MoreConnectorItem key={connector.id} connector={connector} href={buildConnectorHref(connector.connectorTypeParam)} onNavigate={onNavigateToConnector} />
             ))}
             <Button
+              asChild
               variant="ghost"
               size="2"
               color="gray"
-              onClick={onNavigateToConnectors}
-              style={{
-                width: '100%',
-                justifyContent: 'space-between',
-                paddingLeft: '12px',
-                display: 'flex',
-                alignItems: 'center',
-              }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
-                <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
-                  {t('sidebar.seeMoreConnectors')}
-                </Text>
-              </div>
-              <Flex
-                align="center"
-                justify="center"
-                style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+              <Link
+                href={connectorsHref}
+                onClick={(e: React.MouseEvent) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                  e.preventDefault();
+                  onNavigateToConnectors();
+                }}
+                style={{
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  paddingLeft: 'var(--space-3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  textDecoration: 'none',
+                  color: 'inherit',
+                }}
               >
-                <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-              </Flex>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
+                  <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
+                    {t('sidebar.seeMoreConnectors')}
+                  </Text>
+                </div>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+                >
+                  <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+                </Flex>
+              </Link>
             </Button>
           </Flex>
         </Box>

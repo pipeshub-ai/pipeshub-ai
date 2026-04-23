@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 
 interface SidebarItemProps {
@@ -12,6 +13,8 @@ interface SidebarItemProps {
   rightSlot?: React.ReactNode;
   /** Click handler */
   onClick?: () => void;
+  /** Navigation href — renders as <a> when provided */
+  href?: string;
   /** Whether this item is currently selected/active */
   isActive?: boolean;
   /** Text color (default: 'var(--slate-11)') */
@@ -38,6 +41,7 @@ export function SidebarItem({
   label,
   rightSlot,
   onClick,
+  href,
   isActive = false,
   textColor = 'var(--slate-11)',
   fontWeight = 400,
@@ -57,6 +61,83 @@ export function SidebarItem({
     onHoverChange?.(false);
   };
 
+  const sharedStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 'var(--space-2)',
+    width: '100%',
+    height: CHAT_ITEM_HEIGHT,
+    padding: '0 var(--space-3)',
+    boxSizing: 'border-box',
+    flexShrink: 0,
+    borderRadius: 'var(--radius-1)',
+    backgroundColor: highlighted ? 'var(--olive-3)' : 'transparent',
+    border: highlighted ? '1px solid var(--olive-4)' : '1px solid transparent',
+    cursor: (onClick || href) ? 'pointer' : 'default',
+    userSelect: 'none',
+    textDecoration: 'none',
+    color: 'inherit',
+  };
+
+  const labelContent = typeof label === 'string' ? (
+    <span
+      style={{
+        flex: 1,
+        fontSize: 14,
+        fontWeight,
+        lineHeight: 'var(--line-height-2)',
+        color: textColor,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        textAlign: 'left',
+      }}
+    >
+      {label}
+    </span>
+  ) : (
+    <div
+      style={{
+        flex: 1,
+        fontSize: 14,
+        fontWeight,
+        lineHeight: 'var(--line-height-2)',
+        color: textColor,
+        overflow: 'hidden',
+        textAlign: 'left',
+      }}
+    >
+      {label}
+    </div>
+  );
+
+  const content = (
+    <>
+      {icon}
+      {labelContent}
+      {rightSlot}
+    </>
+  );
+
+  if (href) {
+    const handleLinkClick = (e: React.MouseEvent) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+      onClick?.();
+    };
+
+    return (
+      <Link
+        href={href}
+        onClick={handleLinkClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        style={sharedStyle}
+      >
+        {content}
+      </Link>
+    );
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -72,57 +153,9 @@ export function SidebarItem({
       onKeyDown={handleKeyDown}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      style={{
-        // Layout
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        width: '100%',
-        height: CHAT_ITEM_HEIGHT,
-        padding: '0 12px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        // Visual
-        borderRadius: 'var(--radius-1)',
-        backgroundColor: highlighted ? 'var(--olive-3)' : 'transparent',
-        border: highlighted ? '1px solid var(--olive-4)' : '1px solid transparent',
-        cursor: onClick ? 'pointer' : 'default',
-        userSelect: 'none',
-      }}
+      style={sharedStyle}
     >
-      {icon}
-      {typeof label === 'string' ? (
-        <span
-          style={{
-            flex: 1,
-            fontSize: 14,
-            fontWeight,
-            lineHeight: '20px',
-            color: textColor,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            textAlign: 'left',
-          }}
-        >
-          {label}
-        </span>
-      ) : (
-        <div
-          style={{
-            flex: 1,
-            fontSize: 14,
-            fontWeight,
-            lineHeight: '20px',
-            color: textColor,
-            overflow: 'hidden',
-            textAlign: 'left',
-          }}
-        >
-          {label}
-        </div>
-      )}
-      {rightSlot}
+      {content}
     </div>
   );
 }

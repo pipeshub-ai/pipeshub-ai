@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "यह पृष्ठ केवल पासवर्ड-रीसेट ईमेल लिंक से ही उपलब्ध है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प का उपयोग करें।",
+      "inviteExpiredMessage": "यह आमंत्रण लिंक समाप्त हो गया है। कृपया अपने संगठन व्यवस्थापक से नया आमंत्रण भेजने के लिए कहें।",
+      "resetExpiredMessage": "यह पासवर्ड रीसेट लिंक समाप्त हो गया है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प से नया अनुरोध करें।",
+      "backToSignIn": "साइन इन पर वापस जाएं",
+      "genericLinkInvalidMessage": "यह लिंक समाप्त हो गया होगा। कृपया अपने संगठन व्यवस्थापक से नया आमंत्रण भेजने के लिए कहें।"
+    }
+  },
   "agents": {
     "createPageTitle": "एजेंट बनाएँ",
     "createPageDescription": "नया एजेंट बनाने के लिए यह पृष्ठ है। यहाँ अपना फ़ॉर्म जोड़ें या अपने एजेंट बिल्डर पर रीडायरेक्ट करें।",
@@ -7,9 +16,35 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है…"
   },
+  "timeGroup": {
+    "today": "आज",
+    "yesterday": "कल",
+    "previous7Days": "पिछले 7 दिन",
+    "older": "पुराना"
+  },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
     "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
+  },
+  "uploadProgress": {
+    "uploadFailedDefault": "अपलोड असफल",
+    "uploadIncomplete": "अपलोड अधूरा",
+    "genericFailureHint": "अपलोड असफल। फिर से कोशिश करें या समर्थित फ़ाइल प्रकार उपयोग करें।",
+    "ariaFailed": "{{name}}, अपलोड असफल",
+    "ariaFailedWithDetail": "{{name}}, अपलोड असफल। {{detail}}",
+    "ariaItemStatus": "{{name}}, {{status}}",
+    "sizeWithFailed": "{{size}} · असफल",
+    "headerCompletedAndFailed": "{{completed}} पूर्ण · {{failed}} असफल",
+    "headerFailuresOnly": "{{count}} असफल",
+    "headerAllComplete": "{{completed}}/{{total}} अपलोड पूर्ण",
+    "sessionFilesAndSize": "{{count}} फ़ाइलें · {{size}}",
+    "totalSizeLabel": "कुल: {{size}}",
+    "status": {
+      "pending": "लंबित",
+      "uploading": "अपलोड हो रहा है",
+      "completed": "पूर्ण",
+      "failed": "असफल"
+    }
   },
   "onboarding": {
     "skipEmbeddingDefault": "स्किप",
@@ -20,7 +55,91 @@
     "embeddingDefaultNotInRegistry": "इस डिप्लॉयमेंट के लिए कोई सिस्टम डिफ़ॉल्ट एम्बेडिंग उपलब्ध नहीं है।",
     "failedToLoadEmbeddingProviders": "एम्बेडिंग प्रदाता लोड नहीं हो सके।",
     "failedToLoadConfiguredModels": "कॉन्फ़िगर किए गए मॉडल लोड नहीं हो सके।",
-    "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें"
+    "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें",
+    "steps": {
+      "aiModel": {
+        "title": "AI मॉडल*",
+        "description": "खोज उत्तरों के लिए LLM कनेक्ट करें"
+      },
+      "embeddingModel": {
+        "title": "एम्बेडिंग मॉडल",
+        "description": "दस्तावेज़ों में सिमेंटिक खोज सक्षम करें"
+      },
+      "storage": {
+        "title": "स्टोरेज",
+        "description": "चुनें कि आपका इंडेक्स डेटा कहां संग्रहीत है"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "आमंत्रण और पासवर्ड रीसेट के लिए ईमेल सेटअप करें"
+      }
+    },
+    "systemConfig": "सिस्टम कॉन्फ़िगरेशन",
+    "stepHeading": "चरण {{current}}/{{total}}: {{name}} कॉन्फ़िगर करें",
+    "stepAiModel": {
+      "stepName": "AI मॉडल*",
+      "addLlmHint": "जारी रखने के लिए कम से कम एक टेक्स्ट (LLM) प्रदाता जोड़ें।",
+      "loadProvidersError": "AI मॉडल प्रदाता लोड नहीं हो सके",
+      "loadModelsError": "कॉन्फ़िगर मॉडल लोड नहीं हो सके",
+      "setDefaultSuccess": "डिफ़ॉल्ट मॉडल अपडेट हुआ",
+      "setDefaultError": "डिफ़ॉल्ट मॉडल सेट नहीं हो सका"
+    },
+    "stepStorage": {
+      "stepName": "स्टोरेज",
+      "infoBanner": "अपना पसंदीदा स्टोरेज समाधान चुनें। यदि छोड़ा जाए तो लोकल स्टोरेज डिफ़ॉल्ट रूप से उपयोग होता है।",
+      "providerTypeLabel": "प्रदाता प्रकार*",
+      "providerLocal": "लोकल (सिस्टम डिफ़ॉल्ट)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "एक्सेस की*",
+      "accessKeyPlaceholder": "एक्सेस की दर्ज करें",
+      "secretKeyLabel": "गुप्त की*",
+      "secretKeyPlaceholder": "गुप्त की दर्ज करें",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Bucket दर्ज करें",
+      "regionLabel": "क्षेत्र*",
+      "regionSelectPlaceholder": "क्षेत्र चुनें",
+      "accountNameLabel": "खाते का नाम*",
+      "accountNamePlaceholder": "खाते का नाम दर्ज करें",
+      "accountKeyLabel": "खाते की कुंजी*",
+      "accountKeyPlaceholder": "खाते की कुंजी दर्ज करें",
+      "containerLabel": "कंटेनर*",
+      "containerPlaceholder": "कंटेनर दर्ज करें",
+      "mountNameLabel": "माउंट नाम (वैकल्पिक)",
+      "mountNamePlaceholder": "जैसे: uploads",
+      "baseUrlLabel": "बेस URL (वैकल्पिक)",
+      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "ईमेल, आमंत्रण और पासवर्ड रीसेट सक्षम करने के लिए यह अनुशंसित चरण है",
+      "hostLabel": "SMTP होस्ट*",
+      "hostPlaceholder": "जैसे: smtp.gmail.com",
+      "portLabel": "पोर्ट",
+      "portPlaceholder": "जैसे: 587",
+      "fromEmailLabel": "प्रेषक ईमेल*",
+      "fromEmailPlaceholder": "जैसे: noreply@company.com",
+      "usernameLabel": "उपयोगकर्ता नाम",
+      "usernamePlaceholder": "जैसे: user@gmail.com",
+      "passwordLabel": "पासवर्ड",
+      "passwordPlaceholder": "पासवर्ड दर्ज करें"
+    },
+    "nav": {
+      "prev": "पिछला",
+      "next": "अगला",
+      "enterPipeshub": "Pipeshub में प्रवेश करें",
+      "finishing": "समाप्त हो रहा है…",
+      "saveLlmFirst": "जारी रखने के लिए पहले AI मॉडल चरण सहेजें"
+    },
+    "save": "सहेजें",
+    "saving": "सहेजा जा रहा है…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "गोपनीयता नीति",
+      "website": "वेबसाइट",
+      "visitDocs": "देखें",
+      "docsLabel": "दस्तावेज़ीकरण",
+      "toLearnMore": "अधिक जानने के लिए।"
+    }
   },
   "nav": {
     "collections": "कलेक्शन",
@@ -64,6 +183,8 @@
     "dateCreated": "निर्माण तिथि",
     "lastUpdated": "अंतिम अपडेट",
     "source": "स्रोत",
+    "connector": "कनेक्टर",
+    "connectors": "कनेक्टर",
     "createdAt": "बनाया गया",
     "folder": "फ़ोल्डर",
     "file": "फ़ाइल",
@@ -263,6 +384,23 @@
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
+    "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
+    "agentResources": {
+      "sheetTitle": "कनेक्टर, संग्रह और कार्य",
+      "searchConnectors": "कनेक्टर खोजें",
+      "searchCollections": "संग्रह खोजें",
+      "searchActions": "कार्य खोजें",
+      "actionsTab": "कार्य",
+      "noConnectors": "इस एजेंट के लिए कोई कनेक्टर कॉन्फ़िगर नहीं हैं।",
+      "noCollections": "इस एजेंट के लिए कोई संग्रह कॉन्फ़िगर नहीं हैं।",
+      "noCollectionMatches": "आपकी खोज से कोई संग्रह मेल नहीं खाता।",
+      "noActions": "इस एजेंट के लिए कोई कार्य (टूलसेट) कॉन्फ़िगर नहीं हैं।",
+      "configureMoreActions": "और कार्य कॉन्फ़िगर करें",
+      "browseWorkspaceActions": "वर्कस्पेस कार्य ब्राउज़ करें",
+      "browseWorkspaceActionsAria": "एकीकरण जोड़ने या प्रबंधित करने के लिए वर्कस्पेस कार्य खोलें",
+      "actionsCount": "{{count}} कार्य",
+      "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें"
+    },
     "aiModelsTooltip": "AI मॉडल",
     "attachmentTooltip": "फ़ाइलें संलग्न करें",
     "micTooltip": "वॉइस इनपुट",
@@ -291,6 +429,7 @@
     "readAloud": "जोर से पढ़ें",
     "stopReading": "पढ़ना बंद करें",
     "ttsNotSupported": "इस ब्राउज़र में टेक्स्ट-टू-स्पीच समर्थित नहीं है",
+    "ttsFailed": "टेक्स्ट-टू-स्पीच विफल रहा। कृपया पुनः प्रयास करें।",
     "copiedAsMarkdown": "Markdown के रूप में कॉपी किया गया",
     "copiedAsText": "टेक्स्ट के रूप में कॉपी किया गया",
     "citations": "उद्धरण",
@@ -299,7 +438,7 @@
     "differentModesOfQuery": "प्रश्न के विभिन्न तरीके",
     "askMore": "और पूछें",
     "failedToLoad": "लोड करने में विफल",
-    "generatingTitle": "शीर्षक उत्पन्न किया जा रहा है…",
+    "generatingTitle": "चैट उत्पन्न किया जा रहा है…",
     "newChat": "नया चैट",
     "startChat": "चैट शुरू करें",
     "searchAgents": "एजेंट खोजें…",
@@ -490,11 +629,6 @@
     "darkMode": "डार्क मोड",
     "lightMode": "लाइट मोड"
   },
-  "timeGroup": {
-    "today": "आज",
-    "previous7Days": "पिछले 7 दिन",
-    "older": "पुराने"
-  },
   "workspace": {
     "users": {
       "title": "उपयोगकर्ता",
@@ -526,6 +660,12 @@
         "resendInvite": "आमंत्रण पुनः भेजें",
         "editInvite": "आमंत्रण संपादित करें",
         "cancelInvite": "आमंत्रण रद्द करें",
+        "cancelInviteConfirmTitle": "आमंत्रण रद्द करें?",
+        "cancelInviteConfirmMessage": "क्या आप वाकई {{email}} के लिए आमंत्रण रद्द करना चाहते हैं?",
+        "cancelInviteSuccess": "आमंत्रण रद्द किया गया",
+        "cancelInviteSuccessDescription": "{{email}} को भेजा गया आमंत्रण रद्द कर दिया गया है",
+        "cancelInviteError": "आमंत्रण रद्द करने में विफल",
+        "keepInviteButton": "आमंत्रण रखें",
         "comingSoonTitle": "समर्थित नहीं",
         "comingSoonDescription": "यह कार्रवाई जल्द आ रही है",
         "unblock": "अनब्लॉक करें",
@@ -536,7 +676,8 @@
         "unblockConfirmAction": "अनब्लॉक करें",
         "unblockSuccess": "उपयोगकर्ता सफलतापूर्वक अनब्लॉक किया गया",
         "unblockError": "उपयोगकर्ता को अनब्लॉक करने में विफल",
-        "unblocking": "अनब्लॉक हो रहा है…"
+        "unblocking": "अनब्लॉक हो रहा है…",
+        "edit": "संपादित करें"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -1177,7 +1318,7 @@
       "dataCollectionReason5": "To personalize your user experience",
       "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
-      "removeLogoAria": "Remove organization logo",
+      "editLogoAria": "Edit organization logo",
       "toasts": {
         "loadError": "Failed to load organization",
         "loadErrorDescription": "Could not fetch your organization details",
@@ -1237,6 +1378,7 @@
     },
     "authentication": {
       "loading": "Loading authentication settings…",
+      "configure": "कॉन्फ़िगर करें",
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
@@ -1265,8 +1407,8 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "saml": "Configure SAML SSO",
-        "oauth2": "Configure OAuth 2.0"
+        "samlSso": "Configure SAML SSO",
+        "oauth": "Configure OAuth 2.0"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1370,8 +1512,16 @@
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
         "statInProgressSub": "Still being indexed",
+        "statQueued": "Queued",
+        "statQueuedSub": "Waiting to be indexed",
         "statNotStarted": "Not Started",
-        "statNotStartedSub": "Queued for sync",
+        "statNotStartedSub": "Awaiting connector sync",
+        "statManualIndexing": "Manual indexing",
+        "statManualIndexingSub": "Synced but not indexed yet",
+        "statCompleted": "Completed",
+        "statCompletedSub": "Indexed and searchable",
+        "statEmpty": "Empty",
+        "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "personalRecordsIndexed": "Personal Records Indexed"
@@ -1388,6 +1538,8 @@
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },
       "instanceCard": {
+        "recordsSelected": "चयनित रिकॉर्ड",
+        "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
@@ -1431,7 +1583,10 @@
         "saveErrorDescription": "Please check your credentials and try again.",
         "deleted": "Slack Bot deleted",
         "deletedDescription": "{{name}} has been removed.",
-        "deleteError": "Failed to delete bot"
+        "deleteError": "Failed to delete bot",
+        "updateError": "Failed to update bot",
+        "createError": "Failed to create bot",
+        "credentialsError": "Please check your credentials and try again."
       },
       "configPanel": {
         "title": "Bot Configuration",
@@ -1444,6 +1599,32 @@
         "agentPlaceholder": "Select an agent",
         "confirmDelete": "Confirm Delete",
         "deleteBot": "Delete Bot"
+      },
+      "title": "Bots",
+      "noBots": "No Bots",
+      "setupFirstBot": "Setup your first Bot now",
+      "documentation": "Documentation",
+      "configPanelTitle": "Bot Configuration",
+      "selectBotSetup": "Select Bot Setup",
+      "comingSoon": "Coming soon",
+      "deleting": "Deleting...",
+      "saving": "Saving...",
+      "deleteConfirm": "Confirm Delete",
+      "typeLabels": {
+        "slack": "Slack Bot",
+        "discord": "Discord Bot",
+        "telegram": "Telegram Bot",
+        "github": "GitHub Bot"
+      },
+      "form": {
+        "editTitle": "Edit Slack Bot",
+        "newTitle": "New Slack Bot",
+        "namePlaceholder": "e.g. My Slack Bot",
+        "botToken": "Bot Token",
+        "signingSecret": "Signing Secret",
+        "signingSecretPlaceholder": "Enter signing secret",
+        "agent": "Agent",
+        "agentPlaceholder": "Select an agent"
       }
     },
     "mail": {
@@ -1459,7 +1640,8 @@
         "hostRequired": "SMTP host is required",
         "portRequired": "Port is required",
         "portInvalid": "Enter a valid port (1–65535)",
-        "fromEmailRequired": "From email is required"
+        "fromEmailRequired": "From email is required",
+        "fromEmailInvalid": "Enter a valid email address"
       },
       "configPanel": {
         "title": "Configure SMTP Settings",
@@ -1478,6 +1660,31 @@
         "passwordLabel": "Password (Optional)",
         "passwordHint": "Password for SMTP authentication (if required)",
         "passwordPlaceholder": "••••••••••••••••••••"
+      },
+      "title": "Mail",
+      "serverConfig": "Server Configuration",
+      "serverConfigDescription": "Configure email and other server settings for authentication",
+      "smtp": "SMTP",
+      "notConfigured": "Not Configured",
+      "configured": "Configured",
+      "panelTitle": "Configure SMTP Settings",
+      "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
+      "toasts": {
+        "saved": "Mail settings saved",
+        "savedDescription": "Your email server configuration has been updated."
+      },
+      "fields": {
+        "host": "SMTP Host *",
+        "hostHint": "The hostname of your SMTP server",
+        "port": "Port *",
+        "portHint": "Common ports: 25, 465, 587",
+        "fromEmail": "From Email Address *",
+        "fromEmailHint": "The email address that will appear as the sender",
+        "username": "Username (Optional)",
+        "usernameHint": "Username for SMTP authentication (if required)",
+        "usernamePlaceholder": "Enter SMTP username",
+        "password": "Password (Optional)",
+        "passwordHint": "Password for SMTP authentication (if required)"
       }
     },
     "prompts": {
@@ -1496,8 +1703,18 @@
         "saveSuccessDescription": "The system prompt has been updated",
         "saveError": "Failed to save prompt",
         "discardSuccess": "Discarded changes",
-        "discardSuccessDescription": "Your edits have been reverted"
-      }
+        "discardSuccessDescription": "Your edits have been reverted",
+        "saved": "Prompt saved",
+        "savedDescription": "The system prompt has been updated",
+        "discarded": "Discarded changes",
+        "discardedDescription": "Your edits have been reverted",
+        "saveErrorDescription": "Failed to save prompt"
+      },
+      "heading": "Custom System Prompt",
+      "systemPrompt": "System Prompt",
+      "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
+      "configCalloutTitle": "Prompt Configuration",
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -1519,7 +1736,11 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
-        "updateError": "Failed to update setting"
+        "updateError": "Failed to update setting",
+        "saved": "Web search settings saved",
+        "savedDescription": "Your changes have been applied successfully.",
+        "oneProviderOnly": "Only one web search provider can be active at a time",
+        "settingError": "Failed to update setting"
       },
       "disabledReasons": {
         "notConfigured": "Configure this provider first before enabling it.",
@@ -1528,8 +1749,17 @@
       "badges": {
         "default": "Default",
         "configured": "Configured",
-        "notConfigured": "Not Configured"
-      }
+        "notConfigured": "Not Configured",
+        "active": "Configured"
+      },
+      "heading": "Web Search Configuration",
+      "methodsSection": "Different Web Search Methods",
+      "methodsSectionDescription": "Select the method users will use for web search",
+      "policyTitle": "Web Search Provider Policy",
+      "verifying": "Verifying connection...",
+      "disabledReasonConfigure": "Configure this provider first before enabling it.",
+      "disabledReasonActive": "Disable the currently active provider before enabling this one.",
+      "configureTip": "Configure"
     },
     "profile": {
       "subtitle": "Manage all your personal profile details here",
@@ -1542,6 +1772,7 @@
       "general": {
         "avatarLabel": "Your Display Picture",
         "avatarDescription": "Recommended size is 256px by 256px",
+        "editAvatarAria": "Edit profile picture",
         "fullName": "Full Name",
         "fullNameDescription": "Please write your full name",
         "fullNamePlaceholder": "eg: John Doe",
@@ -1549,7 +1780,8 @@
         "designationDescription": "Your job role in the company",
         "designationPlaceholder": "eg: Co-Founder",
         "companyEmail": "Company Email",
-        "companyEmailDescription": "Primary work email from the company"
+        "companyEmailDescription": "Primary work email from the company",
+        "title": "General"
       },
       "passwordSecurity": {
         "title": "Password & Security",
@@ -1559,6 +1791,8 @@
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
+        "role": "Role",
+        "groups": "Groups",
         "roleDescription": "Your role on Pipeshub app",
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
@@ -1615,7 +1849,12 @@
       },
       "errors": {
         "nameHtml": "Full name cannot contain HTML tags"
-      }
+      },
+      "title": "Profile",
+      "discardTitle": "Discard changes?",
+      "discardMessage": "If you discard, your edits won't be saved",
+      "discardConfirm": "Discard",
+      "discardCancel": "Continue Editing"
     }
   },
   "filePreview": {
@@ -1887,6 +2126,84 @@
     "paletteToolGroupLabel": "{{app}} टूल",
     "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
   },
+  "recordView": {
+    "sections": {
+      "documentSummary": "सारांश",
+      "documentFields": "दस्तावेज़",
+      "recordMetadata": "रिकॉर्ड जानकारी"
+    },
+    "metadata": {
+      "departments": "विभाग",
+      "documentCategory": "दस्तावेज़ श्रेणी",
+      "subcategory1": "उप-श्रेणी स्तर 1",
+      "subcategory2": "उप-श्रेणी स्तर 2",
+      "subcategory3": "उप-श्रेणी स्तर 3",
+      "topics": "विषय",
+      "languages": "भाषाएँ"
+    },
+    "mail": {
+      "from": "प्रेषक",
+      "to": "प्राप्तकर्ता",
+      "cc": "Cc",
+      "labels": "लेबल",
+      "date": "दिनांक"
+    },
+    "emptyState": {
+      "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
+    },
+    "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "tabRecordInformation": "रिकॉर्ड जानकारी",
+    "tabDocumentDetails": "दस्तावेज़ विवरण",
+    "chat": "चैट",
+    "download": "डाउनलोड",
+    "openFullscreen": "पूर्ण स्क्रीन में खोलें",
+    "exitFullscreen": "पूर्ण स्क्रीन से बाहर निकलें",
+    "close": "बंद करें",
+    "forceReindex": "बलपूर्वक पुनः अनुक्रमण",
+    "retryIndexing": "अनुक्रमण पुनः प्रयास करें",
+    "startIndexing": "अनुक्रमण शुरू करें",
+    "resumeIndexing": "अनुक्रमण जारी रखें",
+    "reindexLoading": "पुनः अनुक्रमण अनुरोध भेजा जा रहा है…",
+    "reindexSuccess": "पुनः अनुक्रमण अनुरोध सफलतापूर्वक भेजा गया",
+    "reindexError": "पुनः अनुक्रमण अनुरोध भेजने में विफल",
+    "loading": "लोड हो रहा है…",
+    "loadFailed": "यह रिकॉर्ड लोड नहीं हो सका।",
+    "externalSource": "बाहरी स्रोत",
+    "collectionUpload": "संग्रह",
+    "openExternal": "खोलें",
+    "previewUnavailable": "इस रिकॉर्ड प्रकार के लिए पूर्वावलोकन उपलब्ध नहीं है।",
+    "permissionOwner": "स्वामी",
+    "permissionReader": "पाठक",
+    "permissionWriter": "लेखक",
+    "labels": {
+      "name": "नाम",
+      "fileName": "फ़ाइल नाम",
+      "fileSize": "फ़ाइल आकार",
+      "recordId": "रिकॉर्ड ID",
+      "origin": "मूल",
+      "originConnector": "कनेक्टर",
+      "originUpload": "संग्रह अपलोड",
+      "recordType": "रिकॉर्ड प्रकार",
+      "version": "संस्करण",
+      "createdAt": "निर्माण तिथि",
+      "updatedAt": "अद्यतन तिथि",
+      "collection": "संग्रह",
+      "permissions": "अनुमतियाँ",
+      "noPermissions": "कोई अनुमति निर्धारित नहीं",
+      "indexingStatus": "अनुक्रमण स्थिति",
+      "connector": "मूल",
+      "folder": "फ़ोल्डर",
+      "connectorId": "कनेक्टर ID",
+      "notAvailable": "लागू नहीं",
+      "typeEmail": "ईमेल",
+      "typeTicket": "टिकट",
+      "typeWebpage": "वेब पृष्ठ",
+      "typeMessage": "संदेश",
+      "mailSubject": "विषय",
+      "ticketSummary": "सारांश",
+      "ticketDescription": "विवरण"
+    }
+  },
   "oauthConsent": {
     "loading": "प्राधिकरण अनुरोध लोड हो रहा है…",
     "missingParams": "आवश्यक OAuth पैरामीटर गुम हैं (client_id, redirect_uri)।",
@@ -1925,6 +2242,86 @@
       "invalid_request": "दिया गया रीडायरेक्ट URI इस एप्लिकेशन के लिए पंजीकृत किसी भी URI से मेल नहीं खाता। डेवलपर सेटिंग्स में रीडायरेक्ट URI की पुष्टि करें।",
       "invalid_client": "client_id किसी पंजीकृत OAuth एप्लिकेशन से मेल नहीं खाता। अपने एप्लिकेशन की कॉन्फ़िगरेशन में क्लाइंट ID सत्यापित करें।",
       "server_error": "सर्वर पर एक अप्रत्याशित त्रुटि हुई। कृपया बाद में पुनः प्रयास करें।"
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Pipeshub में आपका स्वागत है",
+      "defaultSubtitle": "आपके संगठन का ज्ञान, अंततः खोजयोग्य और जुड़ा हुआ।"
+    },
+    "signUp": {
+      "title": "शुरू करें",
+      "subtitle": "Pipeshub में आपका स्वागत है -- चलिए शुरू करते हैं!",
+      "firstNameLabel": "पहला नाम*",
+      "lastNameLabel": "अंतिम नाम*",
+      "orgNameLabel": "संगठन का नाम*",
+      "emailLabel": "आपका ईमेल*",
+      "passwordLabel": "पासवर्ड*",
+      "confirmPasswordLabel": "पासवर्ड पुष्टि करें*",
+      "preferredLanguageLabel": "पसंदीदा भाषा",
+      "firstNamePlaceholder": "अपना पहला नाम दर्ज करें",
+      "lastNamePlaceholder": "अपना अंतिम नाम दर्ज करें",
+      "orgNamePlaceholder": "संगठन का नाम दर्ज करें",
+      "emailPlaceholder": "अपना ईमेल दर्ज करें",
+      "passwordPlaceholder": "अपना पासवर्ड दर्ज करें",
+      "confirmPasswordPlaceholder": "अपना पासवर्ड पुष्ट करें",
+      "passwordHint": "कम से कम 8 अक्षर: छोटा, बड़ा, अंक, चिह्न।",
+      "continueButton": "जारी रखें",
+      "savingToast": "जानकारी सहेजी जा रही है...",
+      "savingToastDescription": "इसमें कुछ सेकंड लगेंगे",
+      "successToast": "खाता सफलतापूर्वक बनाया गया!",
+      "failToast": "साइन अप विफल हुआ। कृपया पुनः प्रयास करें।",
+      "errors": {
+        "firstNameRequired": "पहला नाम आवश्यक है।",
+        "lastNameRequired": "अंतिम नाम आवश्यक है।",
+        "orgNameRequired": "संगठन का नाम आवश्यक है।",
+        "emailRequired": "ईमेल आवश्यक है।",
+        "emailInvalid": "कृपया वैध ईमेल पता दर्ज करें।",
+        "passwordRequired": "पासवर्ड आवश्यक है।",
+        "confirmPasswordRequired": "कृपया अपना पासवर्ड पुष्ट करें।",
+        "passwordsMismatch": "पासवर्ड मेल नहीं खाते।",
+        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।"
+      }
+    },
+    "login": {
+      "emailVerifiedTitle": "ईमेल सत्यापित",
+      "emailVerifiedDescription": "आपका ईमेल पता अपडेट किया गया। नए ईमेल से साइन इन करें।",
+      "emailVerifyFailedTitle": "ईमेल सत्यापन विफल",
+      "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
+      "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
+      "samlSignInFailedTitle": "साइन-इन विफल",
+      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।"
+    },
+    "common": {
+      "signIn": "साइन इन",
+      "signingIn": "साइन इन हो रहा है…",
+      "sendOtp": "OTP भेजें",
+      "sending": "भेजा जा रहा है…",
+      "forgotPassword": "पासवर्ड भूल गए",
+      "emailLabel": "ईमेल",
+      "emailPlaceholder": "अपना ईमेल दर्ज करें",
+      "passwordLabel": "पासवर्ड",
+      "passwordPlaceholder": "अपना पासवर्ड दर्ज करें",
+      "emailRequired": "ईमेल आवश्यक है।",
+      "emailInvalid": "कृपया वैध ईमेल पता दर्ज करें।",
+      "passwordRequired": "पासवर्ड आवश्यक है।",
+      "incorrectPassword": "गलत पासवर्ड।",
+      "noPasswordSet": "कोई पासवर्ड नहीं। नीचे पासवर्ड भूले का उपयोग करें।",
+      "authFailed": "प्रमाणीकरण विफल। कृपया पुनः प्रयास करें।",
+      "otpInvalidLength": "कृपया पूरा 6 अंकों का कोड दर्ज करें।",
+      "signInWithPasswordInstead": "पासवर्ड से साइन इन करें",
+      "signInWithEmailOtp": "ईमेल OTP से साइन इन करें",
+      "orContinueWith": "या {{provider}} से जारी रखें",
+      "orContinueWithAny": "या इनमें से किसी एक से जारी रखें",
+      "orContinueWithSso": "या सिंगल साइन-ऑन से जारी रखें",
+      "googleNotConfigured": "Google साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "microsoftNotConfigured": "Microsoft साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "oauthNotConfigured": "OAuth साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "googleUnavailable": "Google साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "microsoftUnavailable": "Microsoft साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "oauthUnavailable": "OAuth साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "showPassword": "पासवर्ड दिखाएं",
+      "hidePassword": "पासवर्ड छुपाएं"
     }
   }
 }

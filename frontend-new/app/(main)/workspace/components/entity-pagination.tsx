@@ -45,7 +45,7 @@ export function EntityPagination({
       justify="between"
       align="center"
       style={{
-        padding: '12px 16px',
+        padding: 'var(--space-3) var(--space-4)',
         borderTop: '1px solid var(--slate-4)',
         backgroundColor: 'var(--slate-1)',
         flexShrink: 0,
@@ -77,10 +77,10 @@ export function EntityPagination({
         {/* Page number */}
         <Box
           style={{
-            padding: '4px 12px',
+            padding: 'var(--space-1) var(--space-3)',
             backgroundColor: 'var(--slate-3)',
             borderRadius: 'var(--radius-2)',
-            minWidth: '32px',
+            minWidth: 'var(--space-8)',
             textAlign: 'center',
           }}
         >
@@ -116,7 +116,7 @@ export function EntityPagination({
                 gap="1"
                 style={{
                   cursor: 'pointer',
-                  padding: '4px 8px',
+                  padding: 'var(--space-1) var(--space-2)',
                   backgroundColor: 'var(--slate-3)',
                   borderRadius: 'var(--radius-2)',
                 }}

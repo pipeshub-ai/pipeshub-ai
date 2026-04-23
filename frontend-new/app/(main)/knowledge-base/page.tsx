@@ -24,6 +24,7 @@ import {
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
+import { applyKnowledgeBaseUploadBatchResult } from './upload-batch-result';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 // import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
@@ -38,7 +39,12 @@ import type {
   RecordDetailsResponse,
   Breadcrumb,
 } from './types';
-import { categorizeNodes, mergeChildrenIntoTree, categorizeNode } from './utils/tree-builder';
+import {
+  categorizeNodes,
+  mergeChildrenIntoTree,
+  categorizeNode,
+  buildConnectorAppSidebarTree,
+} from './utils/tree-builder';
 import {
   getSourceDisplay,
   buildKbLookup,
@@ -57,10 +63,16 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
-import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
+import {
+  isPresentationFile,
+  isDocxFile,
+  isLegacyWordDocFile,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 
 function KnowledgeBasePageContent() {
@@ -113,6 +125,7 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     cacheAppChildren,
+    setConnectorAppTree,
     setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
@@ -176,7 +189,6 @@ function KnowledgeBasePageContent() {
     rawAllRecordsFilter.recordTypes?.join(','),
     rawAllRecordsFilter.indexingStatus?.join(','),
     rawAllRecordsFilter.origins?.join(','),
-    rawAllRecordsFilter.collectionIds?.join(','),
     rawAllRecordsFilter.connectorIds?.join(','),
     rawAllRecordsFilter.sizeRanges?.join(','),
     rawAllRecordsFilter.createdAfter,
@@ -192,20 +204,27 @@ function KnowledgeBasePageContent() {
   ]);
 
   /**
-   * Single source of truth for the current Knowledge Base ID
-   * 
-   * Priority:
-   * 1. Extract from breadcrumbs (most reliable, always present when viewing content)
-   * 2. Fall back to URL param kbId (for backward compatibility)
-   * 
-   * Breadcrumbs are available in both Collections and All Records modes.
-   * The KB is at breadcrumbs[1] (index 0 is the root/workspace node).
+   * Single source of truth for the current Knowledge Base (collection) ID.
+   *
+   * Prefer matching the breadcrumb trail to KB roots in categorizedNodes (same
+   * rule as sidebar auto-expand) so we are not tied to breadcrumbs[1] shape.
+   * Fall back to breadcrumbs[1] then URL kbId for backward compatibility.
    */
   const selectedKbId = useMemo(() => {
     const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-    const kbIdFromBreadcrumbs = currentTableData?.breadcrumbs?.[1]?.id;
-    return kbIdFromBreadcrumbs || kbId;
-  }, [isAllRecordsMode, allRecordsTableData, tableData, kbId]);
+    const crumbs = currentTableData?.breadcrumbs;
+    if (crumbs?.length && categorizedNodes) {
+      const allRootNodes = [
+        ...(categorizedNodes.shared ?? []),
+        ...(categorizedNodes.private ?? []),
+      ];
+      const kbBreadcrumb = crumbs.find(
+        (b) => allRootNodes.some((n) => n.id === b.id) || b.nodeType === 'kb'
+      );
+      if (kbBreadcrumb) return kbBreadcrumb.id;
+    }
+    return crumbs?.[1]?.id || kbId;
+  }, [isAllRecordsMode, allRecordsTableData, tableData, kbId, categorizedNodes]);
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -228,14 +247,26 @@ function KnowledgeBasePageContent() {
   const hasHydratedFromUrl = useRef(false);
   const isFirstUrlSyncRender = useRef(true);
 
-  // Hydration: Parse URL params into store on initial mount
+  // Hydration: Parse URL params into store once the URL is readable.
+  // useSearchParams() can mount empty before the real query is available; defer until it matches
+  // the browser URL so we never mark hydrated without applying view=all-records filters.
   useEffect(() => {
     if (hasHydratedFromUrl.current) return;
+
+    const qs = searchParams.toString();
+    const locationSearch =
+      typeof window !== 'undefined' ? window.location.search.replace(/^\?/, '') : '';
+    // Next can mount with empty useSearchParams while location already has the query — wait one tick.
+    if (!qs && locationSearch.length > 0) {
+      return;
+    }
+
     hasHydratedFromUrl.current = true;
 
     const store = useKnowledgeBaseStore.getState();
+    const allRecords = getIsAllRecordsMode(searchParams);
 
-    if (isAllRecordsMode) {
+    if (allRecords) {
       const parsed = parseAllRecordsParams(searchParams);
       if (Object.keys(parsed.filter).length > 0) store.hydrateAllRecordsFilter(parsed.filter);
       if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
@@ -262,7 +293,7 @@ function KnowledgeBasePageContent() {
         setIsSearchOpen(true);
       }
     }
-  }, []);
+  }, [searchParams]);
 
   // URL sync: Write store state to URL when filter/sort/pagination/search changes
   useEffect(() => {
@@ -273,27 +304,33 @@ function KnowledgeBasePageContent() {
     }
     if (!hasHydratedFromUrl.current) return;
 
+    // Always read the latest store snapshot here. This effect can run in the same commit as
+    // hydration; React closures may still hold the pre-hydration filter, which would serialize
+    // an empty filter and router.replace() would strip connectorIds / indexingStatus from the URL.
+    const store = useKnowledgeBaseStore.getState();
+    const allRecords = getIsAllRecordsMode(searchParams);
+
     // Build base navigation params (preserve view, nodeType, nodeId)
     const baseParams: Record<string, string> = {};
-    if (isAllRecordsMode) baseParams.view = 'all-records';
+    if (allRecords) baseParams.view = 'all-records';
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
     if (nodeType) baseParams.nodeType = nodeType;
     if (nodeId) baseParams.nodeId = nodeId;
 
     let filterParams: Record<string, string>;
-    if (isAllRecordsMode) {
+    if (allRecords) {
       filterParams = serializeAllRecordsParams(
-        allRecordsFilter,
-        allRecordsSort,
-        { page: allRecordsPagination.page, limit: allRecordsPagination.limit },
+        store.allRecordsFilter,
+        store.allRecordsSort,
+        { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
         debouncedAllRecordsSearchQuery
       );
     } else {
       filterParams = serializeCollectionsParams(
-        filter,
-        sort,
-        { page: collectionsPagination.page, limit: collectionsPagination.limit },
+        store.filter,
+        store.sort,
+        { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
         debouncedSearchQuery
       );
     }
@@ -322,8 +359,7 @@ function KnowledgeBasePageContent() {
         allRecordsFilter.updatedAfter ||
         allRecordsFilter.updatedBefore ||
         allRecordsFilter.origins?.length ||
-        allRecordsFilter.connectorIds?.length ||
-        allRecordsFilter.collectionIds?.length
+        allRecordsFilter.connectorIds?.length
       );
     }
     return !!(
@@ -398,7 +434,7 @@ function KnowledgeBasePageContent() {
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
   // Upload store actions
-  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, updateItemStatus, bulkUpdateItemStatus } = useUploadStore();
+  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
 
@@ -407,12 +443,11 @@ function KnowledgeBasePageContent() {
   // in the sidebar slot. Skipping here prevents setCurrentFolderId(null) from
   // racing with and overwriting the sidebar slot's setCurrentFolderId(nodeId).
   useEffect(() => {
-    if (!isAllRecordsMode) {
-      setCurrentFolderId(folderId);
-    }
-  }, [folderId, isAllRecordsMode, setCurrentFolderId]);
+    if (isAllRecordsMode) return;
+    if (searchParams.get('nodeId')) return;
+    setCurrentFolderId(folderId);
+  }, [folderId, isAllRecordsMode, setCurrentFolderId, searchParams]);
 
-  // Load app nodes for sidebar (used by both Collections and All Records modes)
   useEffect(() => {
     async function fetchAppNodes() {
       try {
@@ -430,7 +465,6 @@ function KnowledgeBasePageContent() {
         setAppNodes([...kbApps, ...connectorApps]);
       } catch (error) {
         console.error('Error fetching app nodes:', error);
-        // Use toast rather than overwriting the table error state
         toast.error('Failed to load sidebar', {
           description: 'Could not load app sections. Please refresh the page.',
         });
@@ -461,6 +495,7 @@ function KnowledgeBasePageContent() {
       setAppLoading(app.id, true);
       try {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
+          onlyContainers: true,
           page: 1,
           limit: 50,
         });
@@ -473,6 +508,11 @@ function KnowledgeBasePageContent() {
           // KB children have parentId = "apps/<appId>" so pass it as rootParentId
           const categorized = categorizeNodes(response.items, `apps/${app.id}`);
           setCategorizedNodes(categorized);
+        } else {
+          // Non-KB apps (All Records): same nested sidebar model as KB via connectorAppTrees
+          addNodes(response.items);
+          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
+          setConnectorAppTree(app.id, connectorTree);
         }
       } catch (error) {
         console.error(`Error fetching children for app ${app.name}:`, error);
@@ -481,7 +521,16 @@ function KnowledgeBasePageContent() {
       }
     });
   // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [appNodes, isAllRecordsMode, setAppLoading, cacheAppChildren, setNodes, setCategorizedNodes]);
+  }, [
+    appNodes,
+    isAllRecordsMode,
+    setAppLoading,
+    cacheAppChildren,
+    setNodes,
+    setCategorizedNodes,
+    addNodes,
+    setConnectorAppTree,
+  ]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
@@ -503,14 +552,6 @@ function KnowledgeBasePageContent() {
         currentAllRecordsSort,
         currentPagination
       );
-
-      console.log('DEBUG::page::fetchAllRecordsTableData::params', {
-        searchQuery: currentAllRecordsSearchQuery,
-        searchParam: params.q,
-        allParams: params,
-        nodeType,
-        nodeId
-      });
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
       let data;
@@ -626,7 +667,6 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
-      console.log('DEBUG::page::fetchTableData::start', { nodeType, nodeId });
       setIsLoadingTableData(true);
       setTableDataError(null);
 
@@ -646,12 +686,6 @@ function KnowledgeBasePageContent() {
           currentPagination
         );
 
-        console.log('DEBUG::page::fetchTableData::params', {
-          searchQuery: currentSearchQuery,
-          searchParam: params.q,
-          allParams: params
-        });
-
         const data = await KnowledgeHubApi.loadFolderData(
           nodeType as NodeType,
           nodeId,
@@ -666,24 +700,7 @@ function KnowledgeBasePageContent() {
         }
         setSelectedNode({ nodeType, nodeId });
 
-        console.log('DEBUG::page::fetchTableData::success', {
-          nodeType,
-          nodeId,
-          itemsCount: data.items?.length || 0,
-          hasBreadcrumbs: !!data.breadcrumbs,
-          breadcrumbsLength: data.breadcrumbs?.length || 0,
-          breadcrumbs: data.breadcrumbs?.map(b => ({ id: b.id, name: b.name, nodeType: b.nodeType })),
-          permissions: data.permissions,
-          currentNode: data.currentNode,
-        });
-
-        // NOTE: This is a "best-effort" expansion that only succeeds when
-        // categorizedNodes is already populated. If it's not ready yet (race
-        // condition on direct link navigation), the sidebar slot's dedicated
-        // auto-expansion effect (@sidebar/knowledge-base/page.tsx) will pick
-        // up the expansion once categorizedNodes arrives.
         if (data.breadcrumbs && data.breadcrumbs.length > 0) {
-          // Use fresh state for both cache checks and ID-based KB detection.
           const freshState = useKnowledgeBaseStore.getState();
           const allRootNodes = [
             ...(freshState.categorizedNodes?.shared ?? []),
@@ -712,9 +729,14 @@ function KnowledgeBasePageContent() {
               // Fetch KB children to populate sidebar
               try {
                 const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
+                  onlyContainers: true,
                   page: 1,
                   limit: 50,
                 });
+                const kbFoldersCount =
+                  kbChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
+                const kbEffectiveHasChildFolders = kbFoldersCount > 0;
+
                 cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
                 addNodes(kbChildren.items);
 
@@ -727,7 +749,8 @@ function KnowledgeBasePageContent() {
                     const updatedTree = mergeChildrenIntoTree(
                       latestState.categorizedNodes[section],
                       kbBreadcrumb.id,
-                      kbChildren.items
+                      kbChildren.items,
+                      kbEffectiveHasChildFolders
                     );
                     setCategorizedNodes({
                       ...latestState.categorizedNodes,
@@ -746,40 +769,43 @@ function KnowledgeBasePageContent() {
             const intermediates = pathAfterKb.filter((b) => b.id !== nodeId);
 
             for (const breadcrumb of intermediates) {
-              if (breadcrumb.nodeType === 'folder' || breadcrumb.nodeType === 'recordGroup') {
-                expandFolderExclusive(breadcrumb.id);
+              expandFolderExclusive(breadcrumb.id);
 
-                const iterState = useKnowledgeBaseStore.getState();
+              const iterState = useKnowledgeBaseStore.getState();
 
-                if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
-                  try {
-                    const folderChildren = await KnowledgeHubApi.getNodeChildren(
-                      breadcrumb.nodeType as NodeType,
-                      breadcrumb.id,
-                      { page: 1, limit: 50 }
-                    );
-                    cacheNodeChildren(breadcrumb.id, folderChildren.items);
-                    addNodes(folderChildren.items);
+              if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
+                try {
+                  const folderChildren = await KnowledgeHubApi.getNodeChildren(
+                    breadcrumb.nodeType as NodeType,
+                    breadcrumb.id,
+                    { onlyContainers: true, page: 1, limit: 50 }
+                  );
+                  const foldersCount =
+                    folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
+                  const effectiveHasChildFolders = foldersCount > 0;
 
-                    const mergeState = useKnowledgeBaseStore.getState();
-                    if (mergeState.categorizedNodes) {
-                      const parentNode = mergeState.nodes.find(n => n.id === breadcrumb.id);
-                      if (parentNode) {
-                        const section = categorizeNode(parentNode);
-                        const updatedTree = mergeChildrenIntoTree(
-                          mergeState.categorizedNodes[section],
-                          breadcrumb.id,
-                          folderChildren.items
-                        );
-                        setCategorizedNodes({
-                          ...mergeState.categorizedNodes,
-                          [section]: updatedTree,
-                        });
-                      }
+                  cacheNodeChildren(breadcrumb.id, folderChildren.items);
+                  addNodes(folderChildren.items);
+
+                  const mergeState = useKnowledgeBaseStore.getState();
+                  if (mergeState.categorizedNodes) {
+                    const parentNode = mergeState.nodes.find((n) => n.id === breadcrumb.id);
+                    if (parentNode) {
+                      const section = categorizeNode(parentNode);
+                      const updatedTree = mergeChildrenIntoTree(
+                        mergeState.categorizedNodes[section],
+                        breadcrumb.id,
+                        folderChildren.items,
+                        effectiveHasChildFolders
+                      );
+                      setCategorizedNodes({
+                        ...mergeState.categorizedNodes,
+                        [section]: updatedTree,
+                      });
                     }
-                  } catch (error) {
-                    console.error('Failed to fetch folder children for sidebar expansion', error);
                   }
+                } catch (error) {
+                  console.error('Failed to fetch folder children for sidebar expansion', error);
                 }
               }
             }
@@ -787,7 +813,6 @@ function KnowledgeBasePageContent() {
         }
 
       } catch (error) {
-        // ProcessedError from apiClient interceptor has statusCode (not response.status)
         const status = (error as { statusCode?: number })?.statusCode;
         if (status === 403) {
           await handleAccessRevoked();
@@ -800,8 +825,6 @@ function KnowledgeBasePageContent() {
         setIsLoadingTableData(false);
       }
     },
-    // Pagination/filter/sort read via getState() — keep this callback stable so the searchParams
-    // effect is the only collections refetch trigger (avoids double fetch with page/limit effects).
     [
       setTableData,
       setIsLoadingTableData,
@@ -829,7 +852,6 @@ function KnowledgeBasePageContent() {
   // When filters/sort/pagination change, the URL sync effect calls router.replace,
   // which updates searchParams and triggers this effect to refetch with latest store values.
   useEffect(() => {
-    // All Records mode has its own fetch effect below — skip here.
     if (isAllRecordsMode) return;
 
     const nodeType = searchParams.get('nodeType');
@@ -999,19 +1021,38 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, setAllRecordsSearchQuery, setSearchQuery]
   );
 
+  // Refetch main table for current route context (shared by handleRefresh and refreshData)
+  const refetchMainTableForCurrentRoute = useCallback(async () => {
+    if (isAllRecordsMode) {
+      // Preserve drill-down context: pass current nodeType/nodeId from URL
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchAllRecordsTableData(nodeType, nodeId);
+      } else {
+        await fetchAllRecordsTableData();
+      }
+    } else if (selectedNode) {
+      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
+    } else {
+      // Fallback: if selectedNode not set (e.g. after failed load), use URL params
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchTableData(nodeType, nodeId);
+      }
+    }
+  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+
   // Handle refresh
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      if (isAllRecordsMode) {
-        await fetchAllRecordsTableData();
-      } else if (selectedNode) {
-        await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-      }
+      await refetchMainTableForCurrentRoute();
     } finally {
       setIsRefreshing(false);
     }
-  }, [isAllRecordsMode, selectedNode, fetchTableData, fetchAllRecordsTableData, setIsRefreshing]);
+  }, [refetchMainTableForCurrentRoute, setIsRefreshing]);
 
   // Refresh orchestrator: Syncs sidebar and content area after mutations (delete, create, etc.)
   const refreshData = useCallback(async () => {
@@ -1030,22 +1071,10 @@ function KnowledgeBasePageContent() {
     await refreshKbTree();
 
     // 3. Refetch current content area data (which also re-expands the breadcrumb path)
-    if (isAllRecordsMode) {
-      // Preserve drill-down context: pass current nodeType/nodeId from URL so
-      // the refresh stays on the current collection/folder instead of resetting to root
-      const nodeType = searchParams.get('nodeType');
-      const nodeId = searchParams.get('nodeId');
-      if (nodeType && nodeId) {
-        await fetchAllRecordsTableData(nodeType, nodeId);
-      } else {
-        await fetchAllRecordsTableData();
-      }
-    } else if (selectedNode) {
-      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
+    await refetchMainTableForCurrentRoute();
 
     console.log('✅ Data refresh complete');
-  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+  }, [refetchMainTableForCurrentRoute]);
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
@@ -1278,39 +1307,12 @@ function KnowledgeBasePageContent() {
             );
           }
 
-          // Map response records back to individual file entries by index
-          const records: Record<string, unknown>[] = (responseData?.records as Record<string, unknown>[]) || [];
-          if (records.length > 0) {
-            records.forEach((_: Record<string, unknown>, idx: number) => {
-              const entry = batch[idx];
-              if (entry) completeUpload(entry.storeId);
-            });
-            // Files beyond the returned records count → upload incomplete
-            batch.slice(records.length).forEach((entry) =>
-              failUpload(entry.storeId, 'Upload incomplete')
-            );
-          } else {
-            // No record list returned — assume all succeeded
-            batch.forEach((entry) => completeUpload(entry.storeId));
-          }
-
-          // Handle any files the backend explicitly reports as failed
-          const failedFiles: Array<{ fileName?: string; filePath?: string; error?: string }> =
-            (responseData?.failedFilesDetails as Array<{ fileName?: string; filePath?: string; error?: string }>) || [];
-          failedFiles.forEach((ff) => {
-            // Prefer matching by full filePath to avoid basename collisions (e.g. a/readme.md vs b/readme.md)
-            let entry =
-              ff.filePath != null
-                ? batch.find((e) => e.filePath === ff.filePath)
-                : undefined;
-
-            if (!entry) {
-              const name = ff.fileName || ff.filePath?.split('/').pop();
-              if (name) entry = batch.find((e) => e.file.name === name);
-            }
-
-            if (entry) failUpload(entry.storeId, ff.error || 'Upload failed');
-          });
+          applyKnowledgeBaseUploadBatchResult(
+            batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
+            responseData,
+            completeUpload,
+            failUpload
+          );
 
           anySuccess = true;
         } catch (error) {
@@ -1329,7 +1331,7 @@ function KnowledgeBasePageContent() {
         }, 3000);
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, updateItemStatus, bulkUpdateItemStatus, refreshData, clearCompleted]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData, clearCompleted]
   );
 
   // Handle folder info click
@@ -1420,8 +1422,10 @@ function KnowledgeBasePageContent() {
         setPreviewMode('sidebar');
 
         // 2. Fetch record details and stream file in parallel
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const streamOptions = isPresentationFile(item.mimeType, item.name) ? { convertTo: 'application/pdf' } : undefined;
+        const streamAsPdf =
+          isPresentationFile(item.mimeType, item.name) ||
+          isLegacyWordDocFile(item.mimeType, item.name);
+        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, streamOptions),
@@ -1429,8 +1433,21 @@ function KnowledgeBasePageContent() {
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
-        const resolvedType = recordDetails.record.mimeType || item.extension || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const recordMime = recordDetails.record.mimeType || item.extension || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          recordMime,
+          item.name,
+          blob,
+          !!streamOptions,
+        );
+        const fr = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          item.extension ?? undefined,
+          fr?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         // 4. Update state with actual file URL and/or Blob
@@ -1440,7 +1457,10 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size: recordDetails.record.sizeInBytes,
+          size:
+            recordDetails.record.sizeInBytes ??
+            recordDetails.record.fileRecord?.sizeInBytes ??
+            undefined,
           isLoading: false,
           recordDetails,
         });
@@ -1471,16 +1491,31 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const legacyStreamOptions = isPresentationFile(item.fileType, item.name) ? { convertTo: 'pdf' } : undefined;
+        const legacyStreamAsPdf =
+          isPresentationFile(item.fileType, item.name) ||
+          isLegacyWordDocFile(item.fileType, item.name);
+        const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
         ]);
 
         // DOCX uses the Blob directly; other types stay on URLs.
-        const resolvedType = recordDetails.record.mimeType || item.fileType || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          legacyRecordMime,
+          item.name,
+          blob,
+          !!legacyStreamOptions,
+        );
+        const frLegacy = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          undefined,
+          frLegacy?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         setPreviewFile({
@@ -1489,7 +1524,10 @@ function KnowledgeBasePageContent() {
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size: recordDetails.record.sizeInBytes,
+          size:
+            recordDetails.record.sizeInBytes ??
+            recordDetails.record.fileRecord?.sizeInBytes ??
+            undefined,
           isLoading: false,
           recordDetails,
         });
@@ -1662,16 +1700,17 @@ function KnowledgeBasePageContent() {
     });
 
     try {
-      // Check if this is a folder inside an app (use record-group endpoint)
-      const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-      const breadcrumbs = currentTableData?.breadcrumbs ?? [];
-      const isFolderInsideApp =  (item as KnowledgeHubNode).nodeType === 'recordGroup'
-        && breadcrumbs.some(b => b.nodeType === 'app') && item.nodeType !== 'folder';
+      const nodeType = (item as KnowledgeHubNode).nodeType;
 
-      if (isFolderInsideApp) {
+      if (nodeType === 'recordGroup') {
+        // RecordGroups are connector-app folders — use record-group endpoint
         await KnowledgeBaseApi.reindexRecordGroup(item.id);
+      } else if (nodeType === 'folder') {
+        // KB folders — reindex all children
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       } else {
-        await KnowledgeBaseApi.reindexItem(item.id);
+        // Regular records — include children in reindex
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
       toast.update(toastId, {
@@ -1697,7 +1736,7 @@ function KnowledgeBasePageContent() {
         },
       });
     }
-  }, [refreshData, isAllRecordsMode, allRecordsTableData, tableData]);
+  }, [refreshData]);
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
@@ -1891,6 +1930,7 @@ function KnowledgeBasePageContent() {
     const items = selectedItemsArray.map(item => ({
       id: item.id,
       name: item.name,
+      nodeType: ('nodeType' in item) ? (item as KnowledgeHubNode).nodeType : undefined,
     }));
     await bulkReindexSelected(items, refreshData);
   }, [selectedItemsArray, bulkReindexSelected, refreshData]);
@@ -1946,11 +1986,20 @@ function KnowledgeBasePageContent() {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
+      } else if (allRecordsSidebarSelection.type === 'explorer') {
+        return allRecordsTableData?.currentNode?.name || 'All Records';
       }
       return 'All';
     }
     return tableData?.currentNode?.name || 'Collections';
-  }, [isAllRecordsMode, allRecordsSidebarSelection, tableData, allRecordsSearchQuery, searchQuery]);
+  }, [
+    isAllRecordsMode,
+    allRecordsSidebarSelection,
+    tableData,
+    allRecordsSearchQuery,
+    searchQuery,
+    allRecordsTableData?.currentNode?.name,
+  ]);
 
   // All Records mode: Prepend "All Records" root breadcrumb
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {
@@ -2027,14 +2076,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
-          onRefresh={() => {
-            if (isAllRecordsMode) {
-              // Trigger re-fetch by clearing data
-              setAllRecordsTableData(null);
-            } else if (selectedNode) {
-              fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-            }
-          }}
+          onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {
             if (isAllRecordsMode) {
               useKnowledgeBaseStore.getState().setAllRecordsPage(page);
@@ -2082,7 +2124,7 @@ function KnowledgeBasePageContent() {
         <Box
           style={{ 
             position: 'absolute',
-            bottom: '24px',
+            bottom: 'var(--space-6)',
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,
@@ -2200,6 +2242,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
             // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
             if (previewFile.url && previewFile.url.startsWith('blob:')) {

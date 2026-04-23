@@ -10,7 +10,6 @@ import {
   Switch,
   TextField,
   Avatar,
-  IconButton,
 } from '@radix-ui/themes';
 import {
   ConfirmationDialog,
@@ -24,7 +23,6 @@ import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
 import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
@@ -47,11 +45,11 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px' }}>
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.general.subtitle')}
           </Text>
         </Box>
@@ -365,21 +363,21 @@ export default function GeneralPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px' }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-            {t('workspace.general.manageSubtitle')}
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+           {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
 
         {/* ── Company Profile Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title={t('workspace.general.companyProfile')}>
             {/* Logo */}
             <SettingsRow label={t('workspace.general.logoLabel')} description={t('workspace.general.logoDescription')}>
-              <Flex align="center" justify="end" gap="2" style={{ width: '100%' }}>
+              <Flex align="center" justify="end" style={{ width: '100%' }}>
                 <AvatarUploadWidget
                   src={logoUrl}
                   initial={logoInitial}
@@ -388,23 +386,9 @@ export default function GeneralPage() {
                     if (logoUploading || logoDeleting) return;
                     fileInputRef.current?.click();
                   }}
+                  onDeleteClick={hasServerLogo ? handleDeleteLogo : undefined}
+                  triggerAriaLabel={t('workspace.general.editLogoAria')}
                 />
-                {hasServerLogo && (
-                  <IconButton
-                    type="button"
-                    variant="soft"
-                    color="red"
-                    size="2"
-                    onClick={handleDeleteLogo}
-                    disabled={logoUploading || logoDeleting}
-                    aria-label={t('workspace.general.removeLogoAria')}
-                    style={{
-                      cursor: logoUploading || logoDeleting ? 'wait' : 'pointer',
-                    }}
-                  >
-                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-                  </IconButton>
-                )}
               </Flex>
             </SettingsRow>
 
@@ -452,7 +436,7 @@ export default function GeneralPage() {
         </Box>
 
         {/* ── Company Address Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title={t('workspace.general.companyAddress')}>
             {/* Street Address */}
             <SettingsRow label={t('workspace.general.streetAddress')} description={t('workspace.general.streetAddressDescription')}>
@@ -522,7 +506,7 @@ export default function GeneralPage() {
                 <Switch
                   checked={form.dataCollection}
                   onCheckedChange={(checked) => setField('dataCollection', checked)}
-                  size="2"
+                  size="1"
                 />
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.general.enableDataCollection')}
@@ -530,14 +514,14 @@ export default function GeneralPage() {
               </Flex>
             }
           >
-            <Box style={{ padding: '16px 20px' }}>
+            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
               <Text
                 size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 12 }}
+                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
               >
                 {t('workspace.general.dataCollectionDescription')}
               </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 4 }}>
+              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
                 {[
                   t('workspace.general.dataCollectionReason1'),
                   t('workspace.general.dataCollectionReason2'),
@@ -549,11 +533,11 @@ export default function GeneralPage() {
                   <Flex key={item} align="start" gap="2">
                     <Box
                       style={{
-                        width: 4,
-                        height: 4,
+                        width: 'var(--space-1)',
+                        height: 'var(--space-1)',
                         borderRadius: '50%',
                         backgroundColor: 'var(--slate-9)',
-                        marginTop: 8,
+                        marginTop: 'var(--space-2)',
                         flexShrink: 0,
                       }}
                     />

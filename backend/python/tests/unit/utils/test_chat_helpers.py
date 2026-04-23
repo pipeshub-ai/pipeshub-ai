@@ -30,6 +30,7 @@ from app.utils.chat_helpers import (
     count_tokens_text,
     create_block_from_metadata,
     create_record_instance_from_dict,
+    enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
     extract_start_end_text,
     generate_text_fragment_url,
@@ -1996,6 +1997,7 @@ class TestGetRecord:
                 "version": 1,
                 "origin": "CONNECTOR",
                 "connectorName": "DRIVE",
+                "connectorId": "conn-1",
                 "webUrl": "https://example.com",
                 "mimeType": "application/pdf",
             },
@@ -2022,6 +2024,7 @@ class TestGetRecord:
                 "version": 1,
                 "origin": "CONNECTOR",
                 "connectorName": "DRIVE",
+                "connectorId": "conn-1",
                 "webUrl": "https://example.com",
                 "mimeType": "application/pdf",
             },
@@ -2047,6 +2050,7 @@ class TestGetRecord:
                 "version": 1,
                 "origin": "CONNECTOR",
                 "connectorName": "DRIVE",
+                "connectorId": "conn-1",
                 "webUrl": "https://example.com",
                 "mimeType": "application/pdf",
             },
@@ -4080,6 +4084,7 @@ class TestGetRecordGraphDoc:
                 "version": 1,
                 "origin": "CONNECTOR",
                 "connectorName": "DRIVE",
+                "connectorId": "conn-1",
                 "webUrl": "https://example.com",
                 "mimeType": "text/plain",
             },
@@ -4310,3 +4315,688 @@ class TestCreateRecordFromVectorMetadata:
 
         assert record is not None
         assert len(record["block_containers"]["blocks"]) == 0
+
+
+# ===================================================================
+# enrich_virtual_record_id_to_result_with_fk_children
+# ===================================================================
+class TestEnrichVirtualRecordIdFKChildren:
+    """Cover the new async FK-enrichment function."""
+
+    def _make_blob_store(self, record_blob=None):
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(
+            return_value=record_blob or _make_record_blob()
+        )
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={
+            "frontend": {"publicEndpoint": "https://app.example.com"}
+        })
+        return blob_store
+
+    def _make_graph_provider(
+        self,
+        child_relations=None,
+        parent_relations=None,
+        vrid_map=None,
+        graph_doc=None,
+    ):
+        gp = AsyncMock()
+        gp.get_child_record_ids_by_relation_type = AsyncMock(
+            return_value=child_relations or []
+        )
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(
+            return_value=parent_relations or []
+        )
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(
+            return_value=vrid_map or {}
+        )
+        gp.get_document = AsyncMock(return_value=graph_doc or {})
+        return gp
+
+    def _sql_table_record(self, vrid="vr-1", record_id="rec-sql-1", **overrides):
+        rec = _make_record_blob(
+            virtual_record_id=vrid,
+            record_type="SQL_TABLE",
+            id=record_id,
+        )
+        rec["block_containers"] = {
+            "blocks": [],
+            "block_groups": [{
+                "type": "table",
+                "data": {"table_summary": "users table", "ddl": "CREATE TABLE users(id INT)"},
+                "children": [],
+            }],
+        }
+        rec.update(overrides)
+        return rec
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_graph_provider(self):
+        vr_map = {"vr-1": self._sql_table_record()}
+        blob_store = self._make_blob_store()
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=None, flattened_results=flattened,
+        )
+        assert flattened == []
+
+    @pytest.mark.asyncio
+    async def test_skips_non_sql_table_records(self):
+        file_rec = _make_record_blob(record_type="FILE", id="rec-file")
+        vr_map = {"vr-1": file_rec}
+        gp = self._make_graph_provider()
+        blob_store = self._make_blob_store()
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        gp.get_child_record_ids_by_relation_type.assert_not_called()
+        gp.get_parent_record_ids_by_relation_type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetches_child_and_parent_fk_relations(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        gp = self._make_graph_provider()
+        blob_store = self._make_blob_store()
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=[],
+        )
+        gp.get_child_record_ids_by_relation_type.assert_called_once()
+        gp.get_parent_record_ids_by_relation_type.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_enriches_flattened_results_with_fk_relations(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child", "childTable": "orders"}]
+        parent_rels = [{"record_id": "rec-parent", "parentTable": "departments"}]
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            parent_relations=parent_rels,
+            vrid_map={"rec-child": "vr-child", "rec-parent": "vr-parent"},
+        )
+        child_blob = self._sql_table_record(vrid="vr-child", record_id="rec-child")
+        parent_blob = self._sql_table_record(vrid="vr-parent", record_id="rec-parent")
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda **kw: {
+            "vr-child": child_blob,
+            "vr-parent": parent_blob,
+        }.get(kw.get("virtual_record_id")))
+
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        assert "fk_child_relations" in flattened[0]
+        assert "fk_parent_relations" in flattened[0]
+        assert flattened[0]["fk_child_relations"] == child_rels
+        assert flattened[0]["fk_parent_relations"] == parent_rels
+
+    @pytest.mark.asyncio
+    async def test_fetches_blob_for_related_records(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        related_blob = self._sql_table_record(vrid="vr-child", record_id="rec-child")
+        blob_store = self._make_blob_store(related_blob)
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        blob_store.get_record_from_storage.assert_called()
+        assert "vr-child" in vr_map
+
+    @pytest.mark.asyncio
+    async def test_adds_ddl_block_group_to_flattened_results(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        related_blob = self._sql_table_record(vrid="vr-child", record_id="rec-child")
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        blob_store = self._make_blob_store(related_blob)
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+        assert len(fk_entries) >= 1
+        entry = fk_entries[0]
+        assert entry["metadata"]["source"] == "FK_ENRICHMENT"
+        summary_text = entry["content"][0]
+        assert "DDL:" in summary_text
+
+    @pytest.mark.asyncio
+    async def test_handles_no_related_records(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        gp = self._make_graph_provider()
+        blob_store = self._make_blob_store()
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        assert flattened == []
+        gp.get_virtual_record_ids_for_record_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handles_graph_provider_exceptions_gracefully(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        gp = self._make_graph_provider()
+        gp.get_child_record_ids_by_relation_type = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        blob_store = self._make_blob_store()
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        assert flattened == []
+
+    @pytest.mark.asyncio
+    async def test_skips_already_in_flattened_results(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        related_blob = self._sql_table_record(vrid="vr-child", record_id="rec-child")
+        vr_map["vr-child"] = related_blob
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        blob_store = self._make_blob_store()
+        flattened = [
+            {"virtual_record_id": "vr-child", "metadata": {"virtualRecordId": "vr-child"}},
+        ]
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+        assert len(fk_entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_non_dict_data_uses_str(self):
+        rec = self._sql_table_record()
+        rec["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": "plain text summary",
+            "children": [],
+        }]
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        related_blob = _make_record_blob(
+            virtual_record_id="vr-child", id="rec-child", record_type="SQL_TABLE",
+        )
+        related_blob["block_containers"] = {
+            "blocks": [],
+            "block_groups": [{
+                "type": "table",
+                "data": "plain text DDL info",
+                "children": [],
+            }],
+        }
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        blob_store = self._make_blob_store(related_blob)
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+        assert len(fk_entries) >= 1
+        assert fk_entries[0]["content"][0] == "plain text DDL info"
+
+    @pytest.mark.asyncio
+    async def test_sample_rows_included(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        related_blob = _make_record_blob(
+            virtual_record_id="vr-child", id="rec-child", record_type="SQL_TABLE",
+        )
+        related_blob["block_containers"] = {
+            "blocks": [
+                {"type": "table_row", "data": {"row_natural_language_text": "Alice, 30"}},
+                {"type": "table_row", "data": {"row_natural_language_text": "Bob, 25"}},
+                {"type": "table_row", "data": {"row_natural_language_text": "Charlie, 40"}},
+            ],
+            "block_groups": [{
+                "type": "table",
+                "data": {"table_summary": "people table", "ddl": "CREATE TABLE people(name TEXT, age INT)"},
+                "children": [],
+            }],
+        }
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        blob_store = self._make_blob_store(related_blob)
+        flattened = []
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+        fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+        assert len(fk_entries) == 1
+        summary_text = fk_entries[0]["content"][0]
+        assert "Sample Rows:" in summary_text
+        assert "Alice, 30" in summary_text
+        assert "Bob, 25" in summary_text
+        assert "Charlie, 40" not in summary_text
+
+    @pytest.mark.asyncio
+    async def test_flattened_results_none_skips_ddl(self):
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        child_rels = [{"record_id": "rec-child"}]
+        related_blob = self._sql_table_record(vrid="vr-child", record_id="rec-child")
+        gp = self._make_graph_provider(
+            child_relations=child_rels,
+            vrid_map={"rec-child": "vr-child"},
+        )
+        blob_store = self._make_blob_store(related_blob)
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=None,
+        )
+        assert "vr-child" in vr_map
+
+
+# ===================================================================
+# get_flattened_results — new branches
+# ===================================================================
+class TestGetFlattenedResultsNewBranches:
+    """Cover newly added branches in get_flattened_results."""
+
+    def _make_blob_store(self, record_blob=None):
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(
+            return_value=record_blob or _make_record_blob()
+        )
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={
+            "frontend": {"publicEndpoint": "https://app.example.com"}
+        })
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+        return blob_store
+
+    @pytest.mark.asyncio
+    async def test_blockindex_none_resolved_via_reconciliation(self):
+        block = _make_text_block(index=0, data="Resolved block")
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [block]
+
+        blob_store = self._make_blob_store(record)
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value={
+            "block_id_to_index": {"block-abc": 0},
+            "hash_to_block_ids": {},
+        })
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "Resolved block",
+            "score": 0.9,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": None,
+                "blockId": "block-abc",
+                "isBlockGroup": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) >= 1
+        assert results[0]["content"] == "Resolved block"
+
+    @pytest.mark.asyncio
+    async def test_blockindex_none_skipped_when_no_recon(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block()]
+
+        blob_store = self._make_blob_store(record)
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "No recon",
+            "score": 0.9,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": None,
+                "blockId": "block-xyz",
+                "isBlockGroup": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_block_group_index_out_of_bounds(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block()]
+        record["block_containers"]["block_groups"] = []
+
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "",
+            "score": 0.8,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 5,
+                "isBlockGroup": True,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_block_index_out_of_bounds_sql_table_fallback(self):
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": {"table_summary": "sql table", "ddl": "CREATE TABLE t(id INT)"},
+            "children": [],
+            "table_metadata": {},
+            "citation_metadata": None,
+        }]
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "id=1, name=Alice",
+            "score": 0.85,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 99,
+                "isBlockGroup": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        table_results = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert len(table_results) == 1
+        summary, children = table_results[0]["content"]
+        assert "DDL:" in summary
+        assert len(children) == 1
+        assert children[0]["content"] == "id=1, name=Alice"
+
+    @pytest.mark.asyncio
+    async def test_block_index_out_of_bounds_non_sql(self):
+        record = _make_record_blob(record_type="FILE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = []
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "orphan text",
+            "score": 0.7,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 10,
+                "isBlockGroup": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_ddl_prepended_to_table_summary(self):
+        rows = [_make_table_row_block(index=0, row_text="Row0", parent_index=0)]
+        table_group = {
+            "index": 0,
+            "type": GroupType.TABLE.value,
+            "data": {"table_summary": "Employee table", "ddl": "CREATE TABLE emp(id INT)"},
+            "table_metadata": {"num_of_cells": 3},
+            "children": [{"block_index": 0}],
+            "citation_metadata": None,
+            "parent_index": None,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [table_group]
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "",
+            "score": 0.8,
+            "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True},
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        table_results = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert len(table_results) == 1
+        summary = table_results[0]["content"][0]
+        assert summary.startswith("DDL:\nCREATE TABLE emp(id INT)")
+        assert "Employee table" in summary
+
+    @pytest.mark.asyncio
+    async def test_table_row_three_tuple_qdrant_content(self):
+        rows = [_make_table_row_block(index=0, row_text="Row0", parent_index=0)]
+        table_group = {
+            "index": 0,
+            "type": GroupType.TABLE.value,
+            "data": {"table_summary": "Row table"},
+            "table_metadata": {"num_of_cells": 500},
+            "children": [{"block_index": 0}],
+            "citation_metadata": None,
+            "parent_index": None,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [table_group]
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "Row0 text",
+            "score": 0.9,
+            "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        table_results = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert len(table_results) == 1
+        _, children = table_results[0]["content"]
+        assert len(children) == 1
+        assert children[0]["content"] == "Row0"
+
+    @pytest.mark.asyncio
+    async def test_synthetic_block_for_out_of_bounds_row(self):
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": {"table_summary": "synth table"},
+            "children": [],
+            "table_metadata": {},
+            "citation_metadata": None,
+        }]
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "synthetic row content",
+            "score": 0.75,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 100,
+                "isBlockGroup": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        table_results = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert len(table_results) == 1
+        _, children = table_results[0]["content"]
+        assert len(children) == 1
+        assert children[0]["content"] == "synthetic row content"
+        assert children[0]["citationType"] == "vectordb"
+
+
+# ===================================================================
+# get_enhanced_metadata — connectorId
+# ===================================================================
+class TestGetEnhancedMetadataConnectorId:
+
+    def test_connector_id_in_metadata(self):
+        record = _make_record_blob(connector_id="conn-42")
+        block = _make_text_block()
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["connectorId"] == "conn-42"
+
+
+# ===================================================================
+# get_message_content — FK relations
+# ===================================================================
+class TestGetMessageContentFKRelations:
+
+    def test_fk_parent_child_relations_in_table_content(self):
+        flattened = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=GroupType.TABLE.value,
+                content=("Table summary", [{"content": "row1", "block_index": 1}]),
+                block_group_index=0,
+                fk_parent_relations=[{
+                    "record_id": "rec-p",
+                    "parentTable": "departments",
+                    "sourceColumn": "dept_id",
+                    "targetColumn": "id",
+                }],
+                fk_child_relations=[{
+                    "record_id": "rec-c",
+                    "childTable": "orders",
+                    "sourceColumn": "user_id",
+                    "targetColumn": "id",
+                }],
+            ),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "FK Relations" in combined
+        assert "departments" in combined
+        assert "orders" in combined
+
+    def test_connector_name_and_id_appended(self):
+        flattened = [
+            _make_flattened_result(block_index=0, content="Hello"),
+        ]
+        # context_metadata is what drives record rendering; simulate what
+        # Record.to_llm_context produces for a POSTGRES connector.
+        context_metadata = (
+            "Record ID       : rec-1\n"
+            "Name            : Test Record\n"
+            "Connector       : POSTGRES\n"
+            "Connector ID    : conn-pg\n"
+        )
+        vr_map = {"vr-1": _make_record_blob(
+            connector_name="POSTGRES",
+            connector_id="conn-pg",
+            context_metadata=context_metadata,
+        )}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "POSTGRES" in combined
+        assert "conn-pg" in combined
+
+    def test_no_fk_relations_no_fk_info(self):
+        flattened = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=GroupType.TABLE.value,
+                content=("Table summary", []),
+                block_group_index=0,
+            ),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "FK Relations" not in combined
+
+
+# ===================================================================
+# record_to_message_content — raises wrapped exception on error
+# ===================================================================
+class TestRecordToMessageContentRaisesOnError:
+
+    def test_raises_on_exception(self):
+        record = _make_record_blob(virtual_record_id="vr-1")
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="X")]
+        bad_results = [42]  # int doesn't have .get()
+        with pytest.raises(Exception, match="Error in record_to_message_content"):
+            record_to_message_content(record, bad_results)
+
+
+# ===================================================================
+# create_record_from_vector_metadata — connectorId
+# ===================================================================
+class TestCreateRecordFromVectorMetadataConnectorId:
+
+    @pytest.mark.asyncio
+    async def test_connector_id_in_record(self):
+        from app.utils.chat_helpers import create_record_from_vector_metadata
+
+        metadata = {
+            "mimeType": "text/plain",
+            "recordId": "rec-1",
+            "recordName": "Test",
+            "recordType": "FILE",
+            "origin": "CONNECTOR",
+            "connector": "POSTGRES",
+            "connectorId": "conn-pg-99",
+            "version": "1",
+        }
+        mock_point = MagicMock()
+        mock_point.id = "pt-1"
+        mock_point.payload = None
+
+        blob_store = AsyncMock()
+        blob_store.config_service = AsyncMock()
+
+        mock_vector_service = AsyncMock()
+        mock_vector_service.filter_collection = AsyncMock(return_value="f")
+        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+
+        mock_container = MagicMock()
+        mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+
+        with patch.dict("sys.modules", {"app.containers.utils.utils": MagicMock(ContainerUtils=lambda: mock_container)}):
+            record, _ = await create_record_from_vector_metadata(
+                metadata, "org-1", "vr-1", blob_store,
+            )
+
+        assert record["connector_id"] == "conn-pg-99"

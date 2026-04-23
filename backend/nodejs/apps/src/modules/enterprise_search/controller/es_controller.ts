@@ -67,6 +67,7 @@ import {
   formatPreviousConversations,
   getPaginationParams,
   sortMessages,
+  attachPopulatedCitations,
 } from '../utils/utils';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import EnterpriseSemanticSearch, {
@@ -95,6 +96,78 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
+
+const AGENT_LIST_PAGE_LIMIT = 200;
+const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
+const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
+
+/**
+ * Loads soft-deleted agent instance keys the user can still see via permissions
+ * from the AI backend list-agents API (`isDeleted=true`). Callers should exclude
+ * these keys in Mongo (e.g. `agentKey: { $nin: keys }`). Returns null when the AI
+ * backend cannot be queried so callers can omit filtering instead of hiding all results.
+ */
+async function fetchDeletedAgentKeysForUser(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+): Promise<string[] | null> {
+  const keys: string[] = [];
+  let page = 1;
+  try {
+    while (true) {
+      const queryParams = new URLSearchParams();
+      queryParams.set('page', String(page));
+      queryParams.set('limit', String(AGENT_LIST_PAGE_LIMIT));
+      queryParams.set('isDeleted', 'true');
+      const uri = `${appConfig.aiBackend}/api/v1/agent/?${queryParams.toString()}`;
+      const aiCommand = new AIServiceCommand({
+        uri,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      });
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse.statusCode !== 200) {
+        logger.warn(
+          'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
+          { statusCode: aiResponse.statusCode },
+        );
+        return null;
+      }
+      const data = aiResponse.data as {
+        agents?: Array<Record<string, unknown>>;
+        pagination?: { hasNext?: boolean };
+      };
+      const agents = data.agents ?? [];
+      for (const a of agents) {
+        const raw = a._key ?? a.id;
+        if (typeof raw === 'string' && raw.length > 0) {
+          keys.push(raw);
+        } else if (typeof raw === 'number' && !Number.isNaN(raw)) {
+          keys.push(String(raw));
+        }
+      }
+      if (!data.pagination?.hasNext) break;
+      page += 1;
+      if (page > 5000) {
+        logger.warn('fetchDeletedAgentKeysForUser: page cap hit');
+        break;
+      }
+    }
+    return keys;
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : undefined;
+    logger.warn(
+      'fetchDeletedAgentKeysForUser failed; skipping agent soft-delete filter',
+      {
+        message,
+      },
+    );
+    return null;
+  }
+}
 
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
@@ -822,22 +895,17 @@ export const createConversation =
         if (!updatedConversation) {
           throw new InternalServerError('Failed to update conversation');
         }
-        const plainConversation: IConversation = updatedConversation.toObject();
+        const responseConversation = await attachPopulatedCitations(
+          updatedConversation._id as mongoose.Types.ObjectId,
+          updatedConversation.toObject() as IConversation,
+          citations,
+          false,
+          session,
+        );
         return {
           conversation: {
             _id: updatedConversation._id,
-            ...plainConversation,
-            messages: plainConversation.messages.map((message: IMessage) => ({
-              ...message,
-              citations: message.citations?.map(
-                (citation: IMessageCitation) => ({
-                  ...citation,
-                  citationData: citations.find(
-                    (c: ICitation) => c._id === citation.citationId,
-                  ),
-                }),
-              ),
-            })),
+            ...responseConversation,
           },
         };
       } catch (error: any) {
@@ -1178,23 +1246,15 @@ export const addMessage =
           }
 
           // Return the updated conversation with new messages.
-          const plainConversation = updatedConversation.toObject();
+          const responseConversation = await attachPopulatedCitations(
+            updatedConversation._id as mongoose.Types.ObjectId,
+            updatedConversation.toObject() as IConversation,
+            savedCitations,
+            false,
+            session,
+          );
           return {
-            conversation: {
-              ...plainConversation,
-              messages: plainConversation.messages.map((message: IMessage) => ({
-                ...message,
-                citations:
-                  message.citations?.map((citation: IMessageCitation) => ({
-                    ...citation,
-                    citationData: savedCitations.find(
-                      (c) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-              })),
-            },
+            conversation: responseConversation,
             recordsUsed: savedCitations.length, // or validated record count if needed
           };
         } catch (error: any) {
@@ -1585,24 +1645,13 @@ export const addMessageStream =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const plainConversation = updatedConversation.toObject();
-              const responseConversation = {
-                ...plainConversation,
-                messages: plainConversation.messages.map(
-                  (message: IMessage) => ({
-                    ...message,
-                    citations:
-                      message.citations?.map((citation: IMessageCitation) => ({
-                        ...citation,
-                        citationData: savedCitations.find(
-                          (c) =>
-                            (c as mongoose.Document).id.toString() ===
-                            citation.citationId?.toString(),
-                        ),
-                      })) || [],
-                  }),
-                ),
-              };
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                updatedConversation.toObject() as IConversation,
+                savedCitations,
+                false,
+                session,
+              );
 
               // Send the final conversation data in the same format as addMessage
               const responsePayload = {
@@ -3487,6 +3536,171 @@ export const listAllArchivesConversation = async (
   }
 };
 
+/**
+ * Search across all archived conversations — both assistant (Conversation)
+ * and agent (AgentConversation) collections — and return a unified,
+ * paginated result sorted by lastActivityAt desc.
+ *
+ * Query params: `search` (required), `page`, `limit`
+ *
+ * GET /api/v1/conversations/show/archives/search?search=foo&page=1&limit=20
+ */
+export const searchArchivedConversations =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+
+    // ── Search parameter (required) ────────────────────────────────
+    const rawSearch = req.query.search;
+    if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
+      throw new BadRequestError('search query parameter is required');
+    }
+    if (Array.isArray(rawSearch)) {
+      throw new BadRequestError('Search parameter must be a string, not an array');
+    }
+    const searchValue = rawSearch.trim();
+    validateNoXSS(searchValue, 'search parameter');
+    validateNoFormatSpecifiers(searchValue, 'search parameter');
+    if (searchValue.length > 1000) {
+      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+    }
+    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // ── Pagination ─────────────────────────────────────────────────
+    const { skip, limit, page } = getPaginationParams(req);
+
+    logger.debug('Searching archived conversations (assistant + agent)', {
+      requestId,
+      userId,
+      search: searchValue,
+      page,
+      limit,
+    });
+
+    // ── Shared base filter pieces ──────────────────────────────────
+    const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
+    const userOid = new mongoose.Types.ObjectId(`${userId}`);
+
+    const searchCondition = {
+      $or: [
+        { title: { $regex: escapedSearch, $options: 'i' } },
+        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+      ],
+    };
+
+    // ── Assistant (Conversation) filter ─────────────────────────────
+    const assistantFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      $or: [
+        { userId: userOid },
+        {
+          $and: [
+            { 'sharedWith.userId': userOid },
+            { isShared: true },
+          ],
+        },
+      ],
+      $and: [searchCondition],
+    };
+
+    // ── Agent (AgentConversation) filter ─────────────────────────────
+    const agentFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      userId: userOid,
+      $and: [searchCondition],
+    };
+    if (deletedAgentKeys !== null) {
+      agentFilter.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    // ── Execute queries: $unionWith aggregation + per-source counts ──
+    // $unionWith (Mongo 4.4+) merges both collections server-side so that
+    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
+    // in-memory loads when the search matches many documents.
+    const [aggregateResult, assistantCount, agentCount] = await Promise.all([
+      Conversation.aggregate([
+        { $match: assistantFilter },
+        { $addFields: { source: 'assistant' } },
+        {
+          $unionWith: {
+            coll: AgentConversation.collection.name,
+            pipeline: [
+              { $match: agentFilter },
+              { $addFields: { source: 'agent' } },
+            ],
+          },
+        },
+        { $sort: { lastActivityAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $project: { messages: 0, __v: 0 } },
+      ]),
+      Conversation.countDocuments(assistantFilter),
+      AgentConversation.countDocuments(agentFilter),
+    ]);
+
+    const totalCount = assistantCount + agentCount;
+
+    // ── Tag and apply computed fields (bounded to `limit` docs) ──────
+    const paginatedResults = aggregateResult.map((c: any) => ({
+      ...addComputedFields(c as IConversation, userId),
+      archivedAt: c.updatedAt,
+      archivedBy: c.archivedBy,
+      source: c.source as 'assistant' | 'agent',
+      ...(c.source === 'agent' ? { agentKey: c.agentKey } : {}),
+    }));
+
+    const response = {
+      conversations: paginatedResults,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      summary: {
+        totalMatches: totalCount,
+        assistantMatches: assistantCount,
+        agentMatches: agentCount,
+        searchQuery: searchValue,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    logger.debug('Successfully searched archived conversations', {
+      requestId,
+      totalMatches: totalCount,
+      assistantMatches: assistantCount,
+      agentMatches: agentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json(response);
+  } catch (error: any) {
+    logger.error('Error searching archived conversations', {
+      requestId,
+      message: 'Error searching archived conversations',
+      error: error.message,
+    });
+    next(error);
+  }
+  };
+
 export const search =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -5249,22 +5463,17 @@ export const createAgentConversation =
         if (!updatedConversation) {
           throw new InternalServerError('Failed to update conversation');
         }
-        const plainConversation: IConversation = updatedConversation.toObject();
+        const responseConversation = await attachPopulatedCitations(
+          updatedConversation._id as mongoose.Types.ObjectId,
+          updatedConversation.toObject() as IAgentConversation,
+          citations,
+          true,
+          session,
+        );
         return {
           conversation: {
             _id: updatedConversation._id,
-            ...plainConversation,
-            messages: plainConversation.messages.map((message: IMessage) => ({
-              ...message,
-              citations: message.citations?.map(
-                (citation: IMessageCitation) => ({
-                  ...citation,
-                  citationData: citations.find(
-                    (c: ICitation) => c._id === citation.citationId,
-                  ),
-                }),
-              ),
-            })),
+            ...responseConversation,
           },
         };
       } catch (error: any) {
@@ -5569,23 +5778,15 @@ export const createAgentConversation =
           }
 
           // Return the updated conversation with new messages.
-          const plainConversation = updatedConversation.toObject();
+          const responseConversation = await attachPopulatedCitations(
+            updatedConversation._id as mongoose.Types.ObjectId,
+            updatedConversation.toObject() as IAgentConversation,
+            savedCitations,
+            true,
+            session,
+          );
           return {
-            conversation: {
-              ...plainConversation,
-              messages: plainConversation.messages.map((message: IMessage) => ({
-                ...message,
-                citations:
-                  message.citations?.map((citation: IMessageCitation) => ({
-                    ...citation,
-                    citationData: savedCitations.find(
-                      (c) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-              })),
-            },
+            conversation: responseConversation,
             recordsUsed: savedCitations.length, // or validated record count if needed
           };
         } catch (error: any) {
@@ -5974,24 +6175,13 @@ export const addMessageStreamToAgentConversation =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const plainConversation = updatedConversation.toObject();
-              const responseConversation = {
-                ...plainConversation,
-                messages: plainConversation.messages.map(
-                  (message: IMessage) => ({
-                    ...message,
-                    citations:
-                      message.citations?.map((citation: IMessageCitation) => ({
-                        ...citation,
-                        citationData: savedCitations.find(
-                          (c) =>
-                            (c as mongoose.Document).id.toString() ===
-                            citation.citationId?.toString(),
-                        ),
-                      })) || [],
-                  }),
-                ),
-              };
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                updatedConversation.toObject() as IAgentConversation,
+                savedCitations,
+                true,
+                session,
+              );
 
               // Send the final conversation data in the same format as addMessage
               const responsePayload = {
@@ -6256,21 +6446,24 @@ export const getAllAgentConversations = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildAgentConversationFilter(
-      req,
-      orgId,
-      userId,
-      agentKey as string,
-      conversationId as string,
-    );
+    const filter = {
+      ...buildAgentConversationFilter(
+        req,
+        orgId,
+        userId,
+        agentKey as string,
+        conversationId as string,
+      ),
+      // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
+      isArchived: { $ne: true },
+    };
     const sortOptions = buildSortOptions(req);
 
     // sharedWith Me Conversation
-    const sharedWithMeFilter = buildAgentSharedWithMeFilter(
-      req,
-      userId,
-      agentKey as string,
-    );
+    const sharedWithMeFilter = {
+      ...buildAgentSharedWithMeFilter(req, userId, agentKey as string),
+      isArchived: { $ne: true },
+    };
 
     // Execute query
     const [conversations, totalCount, sharedWithMeConversations] =
@@ -6522,6 +6715,355 @@ export const deleteAgentConversationById = async (
   }
 };
 
+export const archiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to archive agent conversation', {
+      requestId,
+      message: 'Attempting to archive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performArchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (conversation.isArchived) {
+        throw new BadRequestError('Agent conversation already archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: true,
+            archivedBy: userId,
+            lastActivityAt: Date.now(),
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to archive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performArchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performArchive();
+    }
+
+    logger.debug('Agent conversation archived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'archived',
+      archivedBy: userId,
+      archivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error archiving agent conversation', {
+      requestId,
+      message: 'Error archiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const unarchiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to unarchive agent conversation', {
+      requestId,
+      message: 'Attempting to unarchive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performUnarchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (!conversation.isArchived) {
+        throw new BadRequestError('Agent conversation is not archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: false,
+            archivedBy: null,
+            lastActivityAt: Date.now(),
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to unarchive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performUnarchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performUnarchive();
+    }
+
+    logger.debug('Agent conversation unarchived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'unarchived',
+      unarchivedBy: userId,
+      unarchivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error unarchiving agent conversation', {
+      requestId,
+      message: 'Error unarchiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const listAllArchivesAgentConversation = () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { agentKey } = req.params;
+
+    logger.debug('Fetching all archived agent conversations', {
+      requestId,
+      userId,
+      agentKey,
+    });
+
+    const { skip, limit, page } = getPaginationParams(req);
+    const filter = {
+      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+      isArchived: true,
+      archivedBy: { $exists: true },
+    };
+    const sortOptions = buildSortOptions(req);
+
+    const [conversations, totalCount] = await Promise.all([
+      AgentConversation.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
+        .select('-messages')
+        .lean()
+        .exec(),
+      AgentConversation.countDocuments(filter),
+    ]);
+
+    const processedConversations = conversations.map((conversation: any) => ({
+      ...addComputedFields(conversation as IAgentConversation, userId),
+      archivedAt: conversation.updatedAt,
+      archivedBy: conversation.archivedBy,
+    }));
+
+    logger.debug('Successfully fetched archived agent conversations', {
+      requestId,
+      count: conversations.length,
+      totalCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversations: processedConversations,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      filters: buildFiltersMetadata(filter, req.query),
+      summary: {
+        totalArchived: totalCount,
+        oldestArchive: processedConversations[0]?.archivedAt,
+        newestArchive: processedConversations[processedConversations.length - 1]?.archivedAt,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching archived agent conversations', {
+      requestId,
+      message: 'Error fetching archived agent conversations',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+  };
+
+export const updateAgentConversationTitle = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation title', {
+      requestId,
+      message: 'Attempting to update agent conversation title',
+      conversationId,
+      agentKey,
+      userId,
+      title: req.body.title,
+      timestamp: new Date().toISOString(),
+    });
+
+    const conversation = await AgentConversation.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      agentKey,
+      isDeleted: false,
+    });
+
+    if (!conversation) {
+      throw new NotFoundError('Agent conversation not found');
+    }
+
+    const title = req.body.title?.trim();
+    if (!title) {
+      throw new BadRequestError('Title is required and cannot be empty');
+    }
+
+    conversation.title = title;
+    await conversation.save();
+
+    logger.debug('Agent conversation title updated successfully', {
+      requestId,
+      message: 'Agent conversation title updated successfully',
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversation: {
+        ...conversation.toObject(),
+        title: conversation.title,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error updating agent conversation title', {
+      requestId,
+      message: 'Error updating agent conversation title',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};
+
 export const getAvailableTools =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -6584,4 +7126,142 @@ export const getAgentPermissions =
     const backendError = handleBackendError(error, 'Get Agent Permissions');
     next(backendError);
   }
-};  
+};
+
+
+/**
+ * GET /api/v1/agents/conversations/show/archives
+ * Returns archived agent conversations for the current user, grouped by agentKey.
+ *
+ * Supports agent-level pagination via `agentPage` and `agentLimit` query params
+ * (defaults: page 1, limit {@link AGENT_ARCHIVES_INITIAL_AGENT_LIMIT}).
+ *
+ * Each group contains the first {@link AGENT_ARCHIVES_INITIAL_CHAT_LIMIT} conversations plus
+ * a totalCount so the frontend can render a "More Chats" affordance without extra round-trips.
+ *
+ * Conversations whose agent instance is soft-deleted in the AI backend are omitted
+ * (Mongo `agentKey` not in the user's deleted-agent list from the AI backend).
+ */
+export const listAllAgentsArchivedConversationsGrouped =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+
+    // Agent-level pagination params
+    const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
+    const agentLimit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.agentLimit as string, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT),
+    );
+    const agentSkip = (agentPage - 1) * agentLimit;
+
+    logger.debug('Fetching all agents archived conversations (grouped)', {
+      requestId,
+      userId,
+      agentPage,
+      agentLimit,
+    });
+
+    const filter: Record<string, unknown> = {
+      orgId: new mongoose.Types.ObjectId(`${orgId}`),
+      $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
+      isArchived: true,
+      archivedBy: { $exists: true },
+      isDeleted: false,
+    };
+    if (deletedAgentKeys !== null) {
+      filter.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    const aggregationResult = await AgentConversation.aggregate([
+      { $match: filter },
+      // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+      // so that the initial 5 chats here align with page 1 of the per-agent pagination
+      { $sort: { lastActivityAt: -1 as const } },
+      // Exclude heavy fields before grouping
+      { $project: { __v: 0, messages: 0 } },
+      {
+        $group: {
+          _id: '$agentKey',
+          conversations: { $push: '$$ROOT' },
+          totalCount: { $sum: 1 },
+          latestActivity: { $first: '$lastActivityAt' },
+        },
+      },
+      // Sort agent groups by most recent activity
+      { $sort: { latestActivity: -1 as const } },
+      {
+        $facet: {
+          metadata: [{ $count: 'totalAgentCount' }],
+          data: [
+            { $skip: agentSkip },
+            { $limit: agentLimit },
+            {
+              $project: {
+                agentKey: '$_id',
+                conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
+                totalCount: 1,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const totalAgentCount = aggregationResult[0]?.metadata[0]?.totalAgentCount ?? 0;
+    const rawGroups = aggregationResult[0]?.data ?? [];
+
+    // Apply computed fields (isOwner, accessLevel) to sliced conversations
+    const groups = rawGroups.map((g: any) => ({
+      agentKey: g.agentKey,
+      conversations: g.conversations.map((c: any) => ({
+        ...addComputedFields(c as IAgentConversation, userId),
+        archivedAt: c.updatedAt,
+        archivedBy: c.archivedBy,
+      })),
+      pagination: buildPaginationMetadata(g.totalCount, 1, AGENT_ARCHIVES_INITIAL_CHAT_LIMIT),
+    }));
+
+    logger.debug('Successfully fetched grouped archived agent conversations', {
+      requestId,
+      agentGroupCount: groups.length,
+      totalAgentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      groups,
+      agentPagination: {
+        page: agentPage,
+        limit: agentLimit,
+        totalCount: totalAgentCount,
+        totalPages: Math.ceil(totalAgentCount / agentLimit),
+        hasNextPage: agentPage * agentLimit < totalAgentCount,
+        hasPrevPage: agentPage > 1,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching grouped archived agent conversations', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};

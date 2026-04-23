@@ -140,6 +140,15 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Conversational Speech
+    description: |
+      Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
+
+      These endpoints are used by the chat frontend when an admin has configured a
+      TTS/STT provider under the AI Models configuration. When no provider is
+      configured the client falls back to the browser's native Web Speech API, so
+      callers should treat a `409` response as "unconfigured, use browser APIs"
+      rather than as a fatal error.
 
   # Connector Manager
   - name: Connector Registry
@@ -176,6 +185,8 @@ tags:
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
     description: Manage individual AI model providers - add, update, delete, and set defaults.
+  - name: Configuration Manager
+    description: Manage organization-level configuration including Slack bot integration, AI models, and metrics collection.
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Metrics Collection
@@ -2225,7 +2236,7 @@ components:
           type: object
           nullable: true
           description: Ticket-specific metadata (present when recordType is TICKET)
-          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          additionalProperties: true
       required:
         - recordName
         - recordType
@@ -2638,6 +2649,13 @@ components:
 
     Filters:
       type: object
+      description: |
+        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
+        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
+        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
+        to let the service use the agent’s stored knowledge and tool configuration. Sending
+        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
+        turn (it is not “full org default”).
       properties:
         apps:
           type: array
@@ -3248,6 +3266,83 @@ components:
         updatedAt:
           type: string
           format: date-time
+        startMessage:
+          type: string
+          description: Initial greeting shown when a conversation with this agent starts
+        instructions:
+          type: string
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          description: |
+            Configured model entries for this agent (may be strings or objects with
+            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                properties:
+                  modelKey:
+                    type: string
+                  modelName:
+                    type: string
+                  provider:
+                    type: string
+                  isReasoning:
+                    type: boolean
+        toolsets:
+          type: array
+          description: |
+            Toolset instances linked to the agent (GET /agents/{agentKey} graph projection).
+            Multiple instances of the same integration type are distinguished by `instanceId`
+            and optional `instanceName`.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Integration / toolset type key
+              displayName:
+                type: string
+              type:
+                type: string
+              instanceId:
+                type: string
+                description: Admin-created toolset instance id
+              instanceName:
+                type: string
+                description: Human-readable instance label (e.g. sidebar instance name)
+              iconPath:
+                type: string
+                description: Optional branded icon URL or path
+              tools:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    fullName:
+                      type: string
+                    description:
+                      type: string
+        knowledge:
+          type: array
+          description: Knowledge connectors and indexed scopes linked to the agent
+          items:
+            type: object
+            properties:
+              connectorId:
+                type: string
+              filters:
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - type: string
+        shareWithOrg:
+          type: boolean
+          description: Whether the agent is shared with the whole organization
 
     AgentTemplate:
       type: object
@@ -3379,6 +3474,161 @@ components:
         data:
           type: string
           description: JSON-encoded event payload
+
+    # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
+    SpeakRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: |
+            UTF-8 text to synthesize. Capped at 4096 characters to match the
+            underlying provider limit (OpenAI TTS) and avoid unbounded cost.
+          example: "Hello, this is a PipesHub voice test."
+        voice:
+          type: string
+          nullable: true
+          description: |
+            Provider voice override. If omitted, the voice configured by the
+            admin for the active TTS provider is used. For OpenAI: one of
+            `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+          example: "alloy"
+        format:
+          type: string
+          nullable: true
+          enum: [mp3, opus, aac, flac, wav, pcm]
+          description: |
+            Audio response format. Unknown values are silently coerced to
+            `mp3` server-side.
+          example: "mp3"
+        speed:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0.25
+          maximum: 4.0
+          description: |
+            Playback speed multiplier. Values outside the documented range
+            are clamped server-side.
+          example: 1.0
+
+    TranscriptionResponse:
+      type: object
+      description: |
+        Result of a successful call to `/chat/transcribe`. The server
+        always includes the provider and model that handled the request
+        so the client can display / log which backend produced the
+        transcript.
+      required:
+        - text
+        - provider
+        - model
+      properties:
+        text:
+          type: string
+          description: |
+            Transcribed text. May be an empty string for silence,
+            unintelligible audio, or when the provider returned no
+            content.
+          example: "Turn on the office lights."
+        provider:
+          type: string
+          description: |
+            Provider id that handled the transcription. One of
+            `openAI`, `whisper` (self-hosted `faster-whisper`),
+            `wispr` (Wispr Flow), or `gemini`.
+          enum: [openAI, whisper, wispr, gemini]
+          example: "openAI"
+        model:
+          type: string
+          description: |
+            Model id that handled the transcription. Examples:
+            `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`,
+            `base`/`small`/`medium`/`large-v3` for self-hosted
+            `faster-whisper`, `flow` for Wispr, or `gemini-2.5-flash` /
+            `gemini-2.5-pro` for Gemini multimodal.
+          example: "gpt-4o-mini-transcribe"
+
+    SpeechCapabilitySummary:
+      type: object
+      description: |
+        Public summary of an active speech provider. Secrets (api keys,
+        organization ids, etc.) are never included. The server always picks
+        the config flagged `isDefault` in `aiModels`; when no entry is
+        flagged, the first configured entry is used and `isDefault` is
+        reported as `false` so the chat UI can surface the fallback.
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          description: Provider id (e.g. `openAI`, `gemini`, `whisper`, `wispr`).
+          example: "openAI"
+        model:
+          type: string
+          nullable: true
+          description: |
+            Active (default) model id the server will dispatch to. Same
+            value as `defaultModel`; retained for backwards compatibility
+            with older chat clients.
+          example: "gpt-4o-mini-tts"
+        defaultModel:
+          type: string
+          nullable: true
+          description: |
+            Model id the server will use when no explicit `model` is passed
+            to `/chat/speak` or `/chat/transcribe`. Chosen as the first
+            entry from the configured comma-separated `configuration.model`
+            list.
+          example: "gpt-4o-mini-tts"
+        models:
+          type: array
+          items:
+            type: string
+          description: |
+            All model ids the active provider config exposes. Order matches
+            the admin's comma-separated `configuration.model` value; the
+            first entry is the default.
+          example: ["gpt-4o-mini-tts", "tts-1"]
+        isDefault:
+          type: boolean
+          description: |
+            `true` when the returned config was picked because it is
+            flagged `isDefault` in `aiModels`; `false` when no entry was
+            flagged and the server fell back to the first configured one.
+          example: true
+        modelKey:
+          type: string
+          nullable: true
+          description: |
+            Stable identifier assigned to the config entry by the admin
+            UI. Useful for tying the capability summary back to a specific
+            row under `/services/aiModels`.
+        friendlyName:
+          type: string
+          nullable: true
+          description: Optional display name configured by the admin.
+          example: "Production TTS"
+
+    SpeechCapabilitiesResponse:
+      type: object
+      description: |
+        Reports whether the server has a TTS/STT provider configured. When a
+        bucket is `null` the chat UI falls back to the browser's Web Speech
+        API for that capability.
+      properties:
+        tts:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
+        stt:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpeechCapabilitySummary'
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -3996,7 +4246,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4067,6 +4317,20 @@ components:
             $ref: '#/components/schemas/AIModelProviderConfig'
         multiModal:
           type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        imageGeneration:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        tts:
+          type: array
+          description: Text-to-Speech providers used to generate chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        stt:
+          type: array
+          description: Speech-to-Text providers used to transcribe chat audio.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
@@ -5348,7 +5612,11 @@ paths:
         Send a password reset link to the user's email.
         The link contains a time-limited token that can be used to reset the password.
         <br><br>
-        <b>Note:</b> This endpoint always returns 200 even if the email doesn't exist (to prevent email enumeration).
+        <b>Note:</b> To prevent account enumeration, this endpoint always returns
+        200 with the same generic message regardless of whether the supplied
+        email is registered. If the account exists a reset link is sent;
+        otherwise the request is silently ignored. Internal lookup or mail
+        delivery failures are logged server-side and do not change the response.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -5360,19 +5628,19 @@ paths:
         required: true
       responses:
         '200':
-          description: Password reset email sent successfully (or email not found - same response for security)
+          description: Request accepted. Same response is returned whether the email is registered or not.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  message:
+                  data:
                     type: string
-                    example: "Password reset email sent"
+                    example: "If an account exists for this email, a password reset link has been sent."
         '400':
-          description: Invalid request
-        '429':
-          description: Too many requests - rate limited
+          description: Missing or invalid email in the request body
+        '401':
+          description: CAPTCHA verification failed (when Turnstile is configured)
 
   /userAccount/password/reset/token:
     post:
@@ -12313,6 +12581,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: Updated record metadata and content
         content:
           application/json:
             schema:
@@ -13311,6 +13580,117 @@ paths:
         '401':
           description: Unauthorized
 
+  /conversations/show/archives/search:
+    get:
+      tags:
+        - Conversations
+      summary: Search archived conversations
+      description: |
+        Search across all archived conversations (assistant and agent) for the authenticated user.<br><br>
+        <b>Overview:</b><br>
+        Performs a case-insensitive full-text search against conversation titles and message content
+        across both assistant and agent archived conversations.<br><br>
+        <b>Search parameter:</b><br>
+        The <code>search</code> query parameter is required. Maximum 1000 characters.<br><br>
+        <b>Pagination:</b><br>
+        Results are paginated. Use <code>page</code> and <code>limit</code> query parameters.
+      operationId: searchArchivedConversations
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: search
+          in: query
+          required: true
+          description: Search term to match against conversation titles and message content
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+        - name: page
+          in: query
+          description: Page number (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Search results across archived conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Conversation'
+                        - type: object
+                          properties:
+                            source:
+                              type: string
+                              enum: [assistant, agent]
+                              description: Origin of the conversation
+                            agentKey:
+                              type: string
+                              description: Present when source is agent
+                            archivedAt:
+                              type: string
+                              format: date-time
+                            archivedBy:
+                              type: string
+                              format: objectId
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  summary:
+                    type: object
+                    properties:
+                      totalMatches:
+                        type: integer
+                      assistantMatches:
+                        type: integer
+                      agentMatches:
+                        type: integer
+                      searchQuery:
+                        type: string
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Bad request - search parameter missing or invalid
+        '401':
+          description: Unauthorized
+
   /conversations/{conversationId}:
     get:
       tags:
@@ -13892,6 +14272,229 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+
+  # -------------------- Conversational Speech --------------------
+  /chat/transcribe:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Transcribe an audio clip (Speech-to-Text)
+      description: |
+        Upload a short audio recording and receive its transcript from the
+        configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
+        a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
+        models such as `gemini-2.5-flash`).<br><br>
+        <b>Overview:</b><br>
+        The chat UI captures audio via the browser's `MediaRecorder` and
+        POSTs it here as `multipart/form-data`. If no STT provider is
+        configured the endpoint returns <code>409</code> and the client falls
+        back to the browser's native Web Speech Recognition.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Audio payload is capped at 25 MB (matches OpenAI's
+              <code>audio.transcriptions.create</code> limit).</li>
+          <li>Supported MIME types include <code>audio/webm</code>,
+              <code>audio/ogg</code>, <code>audio/mp4</code>,
+              <code>audio/mpeg</code>, <code>audio/wav</code>, and
+              <code>audio/flac</code>.</li>
+        </ul>
+      operationId: transcribeChatAudio
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Audio clip (multipart/form-data) to transcribe, with an optional language hint.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: |
+                    Recorded audio clip. Must be ≤ 25 MB. Supported MIME
+                    types include `audio/webm`, `audio/ogg`, `audio/mp4`,
+                    `audio/m4a`, `audio/mpeg`, `audio/wav`, and
+                    `audio/flac`. The browser's `MediaRecorder` default
+                    (`audio/webm;codecs=opus`) is recommended.
+                language:
+                  type: string
+                  nullable: true
+                  description: |
+                    Optional ISO-639-1 language hint forwarded to the
+                    provider (e.g. `en`, `fr`). When omitted the provider
+                    auto-detects. The `wispr` provider treats this as a
+                    property hint; Gemini appends it to the transcription
+                    prompt.
+                  example: "en"
+      responses:
+        '200':
+          description: Transcription succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+              examples:
+                openai:
+                  summary: OpenAI `gpt-4o-mini-transcribe`
+                  value:
+                    text: "Turn on the office lights."
+                    provider: "openAI"
+                    model: "gpt-4o-mini-transcribe"
+                wispr:
+                  summary: Wispr Flow
+                  value:
+                    text: "Summarize today's standup notes."
+                    provider: "wispr"
+                    model: "flow"
+                gemini:
+                  summary: Gemini multimodal
+                  value:
+                    text: "Create a ticket to fix the login bug."
+                    provider: "gemini"
+                    model: "gemini-2.5-flash"
+        '400':
+          description: Empty audio payload (`file` read returned 0 bytes).
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Speech-to-Text provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: |
+            Audio payload exceeds the 25 MB limit. This matches OpenAI's
+            `audio.transcriptions.create` ceiling and the soft cap enforced
+            by the node proxy (`multer` `fileSize`).
+        '500':
+          description: |
+            Runtime error — for example the optional `faster-whisper`
+            package is not installed for the `whisper` provider, or
+            `ffmpeg` is missing on the host for the `wispr` provider
+            (required to transcode audio to 16 kHz WAV).
+        '502':
+          description: Upstream provider failure (message is intentionally
+            generic; see server logs for details).
+
+  /chat/speak:
+    post:
+      tags:
+        - Conversational Speech
+      summary: Synthesize audio for a message (Text-to-Speech)
+      description: |
+        Generate audio for the supplied text using the configured Text-to-Speech
+        provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
+        `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
+        The response body is
+        the raw audio bytes in the requested format.<br><br>
+        <b>Overview:</b><br>
+        The chat UI calls this when the user clicks "Read aloud" on an
+        assistant message. If no TTS provider is configured the endpoint
+        returns <code>409</code> and the client falls back to the browser's
+        <code>speechSynthesis</code> API.<br><br>
+        <b>Limits:</b><br>
+        <ul>
+          <li>Input text is capped at 4096 characters.</li>
+          <li><code>speed</code> is clamped to the range
+              [<code>0.25</code>, <code>4.0</code>].</li>
+          <li>Unknown <code>format</code> values silently fall back to
+              <code>mp3</code>.</li>
+        </ul>
+      operationId: synthesizeChatSpeech
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Text to synthesize and optional voice, format, and speed parameters.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeakRequest'
+      responses:
+        '200':
+          description: |
+            Raw audio bytes in the negotiated format. Response headers
+            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            the provider/model that produced the audio.
+          headers:
+            X-TTS-Provider:
+              schema:
+                type: string
+              description: Provider id that produced the audio.
+            X-TTS-Model:
+              schema:
+                type: string
+              description: Model id that produced the audio.
+            Cache-Control:
+              schema:
+                type: string
+              description: Always <code>no-store</code>.
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/pcm:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Request body missing or `text` is empty / whitespace.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '409':
+          description: |
+            No Text-to-Speech provider is configured. The client should fall
+            back to the browser Web Speech API.
+        '413':
+          description: Text exceeds the 4096-character limit.
+        '502':
+          description: Upstream provider failure.
+
+  /chat/speech/capabilities:
+    get:
+      tags:
+        - Conversational Speech
+      summary: Report configured TTS/STT providers
+      description: |
+        Lightweight probe that tells the chat UI whether to use the server
+        speech routes or the browser Web Speech API. Only public provider
+        metadata is returned; API keys and organization ids are never
+        exposed.
+      operationId: getChatSpeechCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      responses:
+        '200':
+          description: Current TTS/STT capability summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechCapabilitiesResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
   /search:
@@ -15318,6 +15921,423 @@ paths:
         '404':
           description: Agent, conversation, or message not found
 
+  /agents/conversations/show/archives:
+    get:
+      tags:
+        - Agent Conversations
+      summary: List all archived agent conversations grouped by agent
+      description: |
+        Retrieve all archived agent conversations for the authenticated user, grouped by agent.<br><br>
+        <b>Overview:</b><br>
+        Returns archived conversations from every agent the user has interacted with,
+        grouped into per-agent buckets. Each group includes the most recent conversations
+        and a total count so the client can load more on demand.<br><br>
+        <b>Agent-level pagination:</b><br>
+        Use <code>agentPage</code> and <code>agentLimit</code> to page through agent groups
+        (defaults: page 1, limit 10).<br><br>
+        <b>Note:</b><br>
+        Conversations whose agent has been deleted are excluded automatically.
+      operationId: listAllAgentsArchivedConversationsGrouped
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentPage
+          in: query
+          description: Page number for agent-group pagination (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: agentLimit
+          in: query
+          description: Number of agent groups per page (default 10, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        '200':
+          description: Archived agent conversations grouped by agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agentKey:
+                          type: string
+                          description: Agent identifier
+                        conversations:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/AgentConversation'
+                          description: Initial slice of archived conversations for this agent
+                        pagination:
+                          type: object
+                          description: Pagination metadata for this agent's archived conversations
+                          properties:
+                            page:
+                              type: integer
+                            limit:
+                              type: integer
+                            totalCount:
+                              type: integer
+                            totalPages:
+                              type: integer
+                            hasNextPage:
+                              type: boolean
+                            hasPrevPage:
+                              type: boolean
+                  agentPagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/conversations/show/archives:
+    get:
+      tags:
+        - Agent Conversations
+      summary: List archived conversations for a specific agent
+      description: |
+        Retrieve all archived conversations the user has had with a specific agent.<br><br>
+        <b>Overview:</b><br>
+        Returns paginated archived conversations for the given agent. Only conversations
+        owned by the authenticated user are returned.<br><br>
+        <b>Unarchiving:</b><br>
+        Use <code>POST /agents/{agentKey}/conversations/{conversationId}/unarchive</code>
+        to restore a conversation to the active list.
+      operationId: listAllArchivesAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (default 1)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          description: Field to sort by (default lastActivityAt)
+          schema:
+            type: string
+            default: lastActivityAt
+        - name: sortOrder
+          in: query
+          description: Sort direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: List of archived agent conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentConversation'
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
+                  filters:
+                    type: object
+                    description: Applied and available filters
+                  summary:
+                    type: object
+                    properties:
+                      totalArchived:
+                        type: integer
+                      oldestArchive:
+                        type: string
+                        format: date-time
+                      newestArchive:
+                        type: string
+                        format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent not found
+
+  /agents/{agentKey}/conversations/{conversationId}/archive:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Archive an agent conversation
+      description: |
+        Archive an agent conversation to hide it from the active list.<br><br>
+        <b>Overview:</b><br>
+        Archived conversations are preserved but hidden from the default conversation list.
+        Use archiving to clean up your workspace without permanently deleting conversations.<br><br>
+        <b>Retrieval:</b><br>
+        View archived conversations using
+        <code>GET /agents/{agentKey}/conversations/show/archives</code>.
+      operationId: archiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Agent conversation archived successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: objectId
+                  status:
+                    type: string
+                    example: archived
+                  archivedBy:
+                    type: string
+                    format: objectId
+                  archivedAt:
+                    type: string
+                    format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Conversation is already archived
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/unarchive:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Unarchive an agent conversation
+      description: |
+        Restore an archived agent conversation to the active list.<br><br>
+        <b>Overview:</b><br>
+        Removes the archived flag, making the conversation visible in the main list again.
+      operationId: unarchiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Agent conversation unarchived successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: objectId
+                  status:
+                    type: string
+                    example: unarchived
+                  unarchivedBy:
+                    type: string
+                    format: objectId
+                  unarchivedAt:
+                    type: string
+                    format: date-time
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Conversation is not archived
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/title:
+    patch:
+      tags:
+        - Agent Conversations
+      summary: Update agent conversation title
+      description: |
+        Update the title of an agent conversation.<br><br>
+        <b>Overview:</b><br>
+        Agent conversation titles are auto-generated from the first query by default.
+        Use this endpoint to set a custom, more descriptive title.<br><br>
+        <b>Title Limits:</b><br>
+        <ul>
+        <li>Minimum: 1 character (non-empty after trimming)</li>
+        <li>Maximum: 200 characters</li>
+        </ul>
+      operationId: updateAgentConversationTitle
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Agent conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: New title for the agent conversation
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: New conversation title
+                  example: "Q4 Planning with Sales Agent"
+      responses:
+        '200':
+          description: Title updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: Invalid title - must be non-empty
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found
+
   /agents/{agentKey}/unshare:
     post:
       tags:
@@ -16509,6 +17529,7 @@ paths:
         - oauth2: [connector:write]
       requestBody:
         required: true
+        description: Google OAuth authorization code received from the consent flow.
         content:
           application/json:
             schema:
@@ -16681,6 +17702,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -16813,6 +17835,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -16848,6 +17871,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated toolset authentication configuration and optional base URL.
         content:
           application/json:
             schema:
@@ -17298,6 +18322,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate agent toolset instance
+      description: Authenticate an agent-bound toolset instance using the provided credentials.
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17314,6 +18339,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17336,6 +18362,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update agent toolset credentials
+      description: Update the stored credentials for an agent-bound toolset instance.
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17352,6 +18379,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the agent-bound toolset instance.
         content:
           application/json:
             schema:
@@ -17383,6 +18411,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove agent toolset credentials
+      description: Delete the stored credentials for an agent-bound toolset instance.
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
@@ -17412,6 +18441,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark agent instance for reauthentication
+      description: Flag an agent-bound toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
@@ -17441,6 +18471,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for agent instance
+      description: Build the OAuth authorization URL to start the consent flow for an agent-bound toolset instance.
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
@@ -17505,6 +18536,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
         content:
           application/json:
             schema:
@@ -17544,6 +18576,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get toolset instance
+      description: Retrieve a single toolset instance by its identifier.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -17564,6 +18597,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
+      description: Update an existing toolset instance's configuration (admin only).
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -17575,6 +18609,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated fields for the toolset instance.
         content:
           application/json:
             schema:
@@ -17593,6 +18628,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
+      description: Delete a toolset instance and its associated configuration (admin only).
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -17617,6 +18653,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Authenticate toolset instance
+      description: Authenticate a toolset instance using the provided credentials.
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17628,6 +18665,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Authentication payload for the toolset instance.
         content:
           application/json:
             schema:
@@ -17648,6 +18686,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset credentials
+      description: Update the stored credentials for a toolset instance.
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
@@ -17659,6 +18698,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: New credentials to apply to the toolset instance.
         content:
           application/json:
             schema:
@@ -17688,6 +18728,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Remove toolset credentials
+      description: Delete the stored credentials for a toolset instance.
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
@@ -17710,6 +18751,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Mark instance for reauthentication
+      description: Flag the toolset instance as requiring the user to re-authenticate.
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
@@ -17732,6 +18774,7 @@ paths:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for instance
+      description: Build the OAuth authorization URL to start the consent flow for a toolset instance.
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
@@ -17761,6 +18804,7 @@ paths:
       tags:
         - Toolset Instances
       summary: Get instance authentication status
+      description: Report whether the toolset instance is configured and authenticated.
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
@@ -17783,6 +18827,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: List OAuth configs by toolset type
+      description: List OAuth client configurations registered for a specific toolset type.
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
@@ -17805,6 +18850,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Update OAuth config
+      description: Update an OAuth client configuration for a specific toolset type.
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -17821,6 +18867,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: Updated OAuth client configuration fields.
         content:
           application/json:
             schema:
@@ -17839,6 +18886,7 @@ paths:
       tags:
         - OAuth Configuration
       summary: Delete OAuth config
+      description: Delete an OAuth client configuration for a specific toolset type.
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
@@ -20475,6 +21523,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
+        description: MCP JSON-RPC 2.0 request object with method, params, and id.
         content:
           application/json:
             schema:

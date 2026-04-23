@@ -15,6 +15,7 @@ import {
   SSEAnswerChunkEvent,
   SSECompleteEvent,
   SSEErrorEvent,
+  SSEArtifactEvent,
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
@@ -26,6 +27,7 @@ export interface StreamMessageCallbacks {
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
   onComplete?: (data: SSECompleteEvent) => void;
+  onArtifact?: (data: SSEArtifactEvent) => void;
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onError?: (error: Error) => void;
@@ -180,6 +182,13 @@ export const ChatApi = {
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
+      const f = request.filters;
+      const apps = (f?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const kb = (f?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
       payload = {
         query: request.query,
         modelKey: request.modelKey,
@@ -188,20 +197,10 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone,
         currentTime: new Date().toISOString(),
-        tools: request.agentStreamTools ?? [],
+        tools: [...(request.agentStreamTools ?? [])],
+        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
+        filters: { apps, kb },
       };
-      // Omit filters when empty so the Python agent stream treats scope as
-      // "derive from agent knowledge" — `{ apps: [], kb: [] }` means explicit no scope.
-      const f = request.filters;
-      const apps = (f?.apps ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      const kb = (f?.kb ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      if (apps.length > 0 || kb.length > 0) {
-        payload.filters = { apps, kb };
-      }
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
@@ -244,6 +243,9 @@ export const ChatApi = {
               break;
             case 'metadata':
               // Citations / enrichment hints — UI uses answer_chunk + complete; ignore payload
+              break;
+            case 'artifact':
+              callbacks.onArtifact?.(event.data as SSEArtifactEvent);
               break;
             case 'error':
               // SSE error events may be non-fatal — the backend might still
@@ -474,15 +476,20 @@ export const ChatApi = {
    * extract them into a messagesMap keyed by conversation ID. This lets
    * the archived-chats page load message detail without a second API call.
    */
-  async fetchArchivedConversations(): Promise<{
+  async fetchArchivedConversations(params?: { page?: number; limit?: number; conversationId?: string }): Promise<{
     conversations: Conversation[];
     messagesMap: Record<string, ConversationMessage[]>;
     pagination: ConversationsListResponse['pagination'];
   }> {
+    const query: Record<string, string | number> = {};
+    if (params?.page != null) query.page = params.page;
+    if (params?.limit != null) query.limit = params.limit;
+    if (params?.conversationId) query.conversationId = params.conversationId;
+
     const { data } = await apiClient.get<{
       conversations: (ConversationApiResponse & { messages?: ConversationMessage[] })[];
       pagination: ConversationsListResponse['pagination'];
-    }>('/api/v1/conversations/show/archives');
+    }>('/api/v1/conversations/show/archives', { params: query });
 
     const raw = data.conversations ?? [];
     const messagesMap: Record<string, ConversationMessage[]> = {};
@@ -494,6 +501,57 @@ export const ChatApi = {
       conversations: raw.map(transformConversation),
       messagesMap,
       pagination: data.pagination,
+    };
+  },
+
+  /**
+   * Search across all archived conversations (both assistant and agent).
+   * Endpoint: GET /api/v1/conversations/show/archives/search
+   *
+   * Returns a unified, paginated list sorted by lastActivityAt desc.
+   * Each result includes a `source` field ('assistant' | 'agent') and
+   * optionally `agentKey` for agent conversations.
+   */
+  async searchArchivedConversations(params: {
+    search: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    conversations: (Conversation & { source: 'assistant' | 'agent'; agentKey?: string })[];
+    pagination: ConversationsListResponse['pagination'];
+    summary: {
+      totalMatches: number;
+      assistantMatches: number;
+      agentMatches: number;
+      searchQuery: string;
+    };
+  }> {
+    const query: Record<string, string | number> = { search: params.search };
+    if (params.page != null) query.page = params.page;
+    if (params.limit != null) query.limit = params.limit;
+
+    const { data } = await apiClient.get<{
+      conversations: (ConversationApiResponse & {
+        source: 'assistant' | 'agent';
+        agentKey?: string;
+      })[];
+      pagination: ConversationsListResponse['pagination'];
+      summary: {
+        totalMatches: number;
+        assistantMatches: number;
+        agentMatches: number;
+        searchQuery: string;
+      };
+    }>('/api/v1/conversations/show/archives/search', { params: query });
+
+    return {
+      conversations: (data.conversations ?? []).map((c) => ({
+        ...transformConversation(c),
+        source: c.source,
+        agentKey: c.agentKey,
+      })),
+      pagination: data.pagination,
+      summary: data.summary,
     };
   },
 
@@ -514,7 +572,6 @@ export const ChatApi = {
           limit: 100,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
-          origins: 'KB',
         },
       }
     );

@@ -24,8 +24,8 @@ interface CitationsPanelProps {
  *   – Active citation auto-scrolls into view (delayed 350ms for smooth UX)
  *   – Clicking a card triggers `onCitationClick` (parent navigates PDF)
  *
- * Visible only when `citations` is non-empty; the parent layout is
- * responsible for hiding this panel otherwise.
+ * Visible only when `citations` is non-empty; the parent layout
+ * (fixed-width column) sizes this panel — it fills the column width.
  */
 export function CitationsPanel({
   citations,
@@ -54,7 +54,9 @@ export function CitationsPanel({
     <Flex
       direction="column"
       style={{
-        width: '260px',
+        width: '100%',
+        minWidth: 0,
+        alignSelf: 'stretch',
         flexShrink: 0,
         height: '100%',
         overflow: 'hidden',

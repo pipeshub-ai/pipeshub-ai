@@ -3,10 +3,15 @@
 import React, { useState } from 'react';
 import { Flex, Text, Checkbox } from '@radix-ui/themes';
 import { KnowledgeItemIcon } from '@/app/components/ui/knowledge-item-icon';
+import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import { AGENT_KNOWLEDGE_FALLBACK_ICON } from '@/app/(main)/agents/agent-builder/display-utils';
 
 interface CollectionRowProps {
   id: string;
   name: string;
+  /** Knowledge graph entry `type` (e.g. `KB`, `Jira`) — selects row icon. */
+  sourceType?: string;
   isSelected: boolean;
   onToggle: (id: string) => void;
   counts?: {
@@ -15,12 +20,38 @@ interface CollectionRowProps {
   };
 }
 
+const CHECKBOX_ALIGN: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  lineHeight: 0,
+};
+
+function CollectionLeadingIcon({ sourceType, size = 20 }: { sourceType?: string; size?: number }) {
+  if (!sourceType?.trim()) {
+    return <KnowledgeItemIcon kind="collection" size={size} />;
+  }
+  const normalized = sourceType.trim();
+  if (normalized.toUpperCase() === 'KB') {
+    return (
+      <ThemeableAssetIcon
+        src={AGENT_KNOWLEDGE_FALLBACK_ICON}
+        size={size}
+        {...themeableAssetIconPresets.agentBuilderCategoryRow}
+      />
+    );
+  }
+  return <ConnectorIcon type={resolveConnectorType(normalized)} size={size} />;
+}
+
 /**
  * A single selectable collection row with checkbox, folder icon, and name.
  */
 export function CollectionRow({
   id,
   name,
+  sourceType,
   isSelected,
   onToggle,
   counts,
@@ -35,9 +66,9 @@ export function CollectionRow({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
-        height: '40px',
-        backgroundColor: isHovered ? 'var(--slate-3)' : 'var(--slate-2)',
-        border: '1px solid var(--slate-3)',
+        height: 'var(--space-7)',
+        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         paddingLeft: 'var(--space-3)',
         paddingRight: 'var(--space-2)',
@@ -48,15 +79,16 @@ export function CollectionRow({
     >
       {/* Left: checkbox + icon + name */}
       <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-        <Checkbox
-          size="1"
-          variant="classic"
-          checked={isSelected}
-          onCheckedChange={() => onToggle(id)}
-          onClick={(e) => e.stopPropagation()}
-          style={{ flexShrink: 0 }}
-        />
-        <KnowledgeItemIcon kind="collection" size={20} />
+        <span style={CHECKBOX_ALIGN}>
+          <Checkbox
+            size="1"
+            variant="classic"
+            checked={isSelected}
+            onCheckedChange={() => onToggle(id)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </span>
+        <CollectionLeadingIcon sourceType={sourceType} size={20} />
         <Text
           size="2"
           weight="medium"

@@ -56,7 +56,9 @@ export function ChatInputExpansionPanel({
   return (
     <Flex direction="column" gap="2" style={{ height, minHeight, overflow: 'hidden' }}>
       {header}
-      {children}
+      <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {children}
+      </Flex>
     </Flex>
   );
 }

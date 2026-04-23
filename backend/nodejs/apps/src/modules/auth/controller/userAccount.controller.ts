@@ -187,6 +187,7 @@ export class UserAccountController {
         await userCredentials.save();
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
+        const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
 
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
@@ -196,8 +197,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user?.fullName,
           },
         });
         throw new UnauthorizedError(
@@ -462,15 +463,21 @@ export class UserAccountController {
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    // Always responds 200 with the same generic message regardless of whether
+    // the email is registered, so the response cannot be used to enumerate
+    // accounts. Validation and CAPTCHA failures still surface as errors.
+    const genericResponse = {
+      data: 'If an account exists for this email, a password reset link has been sent.',
+    };
+
     try {
       const { email, 'cf-turnstile-response': turnstileToken } = req.body;
       if (!email) {
         throw new BadRequestError('Email is required');
       }
 
-      // Verify Turnstile token
       const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
-      if (turnstileSecretKey) { // Only verify if secret key is configured
+      if (turnstileSecretKey) {
         const isValid = await verifyTurnstileToken(
           turnstileToken,
           turnstileSecretKey,
@@ -482,19 +489,23 @@ export class UserAccountController {
         }
       }
 
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
-      const user = await this.iamService.getUserByEmail(email, authToken);
+      try {
+        const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+        const user = await this.iamService.getUserByEmail(email, authToken);
 
-      if (user.statusCode !== 200) {
-        throw new BadRequestError(user.data);
+        if (user.statusCode === 200 && user.data) {
+          await this.sendForgotPasswordEmail(user.data);
+        }
+      } catch (lookupOrSendError) {
+        this.logger.warn('forgotPasswordEmail: suppressing internal error', {
+          error:
+            lookupOrSendError instanceof Error
+              ? lookupOrSendError.message
+              : lookupOrSendError,
+        });
       }
-      this.logger.debug('user', user);
 
-      const result = await this.sendForgotPasswordEmail(user.data);
-      if (result.statusCode !== 200) {
-        throw new BadRequestError(result.data!);
-      }
-      res.status(200).send({ data: 'password reset mail sent' });
+      res.status(200).send(genericResponse);
       return;
     } catch (error) {
       next(error);
@@ -1020,8 +1031,8 @@ export class UserAccountController {
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
           templateData: {
-            link: this.config.frontendUrl,
             orgName: org?.shortName || org?.registeredName,
+            name: user.fullName,
           },
         });
       }

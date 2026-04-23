@@ -191,6 +191,7 @@ class TestAbstractMethodInventory:
         "update_node",
         # Edge operations
         "batch_create_edges",
+        "batch_delete_edges",
         "get_edge",
         "delete_edge",
         "delete_edges_from",
@@ -204,6 +205,7 @@ class TestAbstractMethodInventory:
         "remove_nodes_by_field",
         "get_edges_to_node",
         "get_edges_from_node",
+        "get_edges_from_node_with_target_name",
         "get_related_nodes",
         "get_related_node_field",
         # Query operations
@@ -214,6 +216,9 @@ class TestAbstractMethodInventory:
         "get_record_by_path",
         "get_record_by_external_id",
         "get_record_by_external_revision_id",
+        "get_child_record_ids_by_relation_type",
+        "get_parent_record_ids_by_relation_type",
+        "get_virtual_record_ids_for_record_ids",
         "get_record_key_by_external_id",
         "get_records_by_status",
         "get_records",

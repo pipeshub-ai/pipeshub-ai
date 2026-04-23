@@ -9,7 +9,13 @@ import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { ChatSuggestion } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
-import { AgentsApi } from '@/app/(main)/agents/api';
+import {
+  AgentsApi,
+  buildAgentChatToolGroups,
+  extractAgentKnowledgeDefaults,
+  extractAgentKnowledgeConnectors,
+  extractAgentKnowledgeCollectionRows,
+} from '@/app/(main)/agents/api';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
@@ -30,52 +36,12 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
-
-// Background decorative pattern
-const BackgroundPattern = ({ showNewChatView }: { showNewChatView: boolean }) => (
-  <Box
-    style={{
-      position: 'absolute',
-      inset: 0,
-      overflow: 'hidden',
-      pointerEvents: 'none',
-    }}
-  >
-    {showNewChatView ? (
-      <img
-        src="/background/chat-bg.svg"
-        alt=""
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '100%',
-          height: 'auto',
-          opacity: 1,
-        }}
-      />
-    ) : (
-      <Box
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '200%',
-          height: '300px',
-          opacity: 0.3,
-          background: 'radial-gradient(ellipse at center bottom, rgba(11, 122, 89, 0.15) 0%, transparent 70%)',
-        }}
-      />
-    )}
-  </Box>
-);
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -318,7 +284,7 @@ function ChatContent() {
     setConversationsError(null);
 
     try {
-      const result = await ChatApi.fetchConversations();
+      const result = await ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE);
       setConversations(result.conversations);
       setSharedConversations(result.sharedConversations);
       setPagination(result.pagination);
@@ -357,15 +323,36 @@ function ChatContent() {
         try {
           const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
           if (cancelled) return;
-          store.setAgentStreamTools(toolFullNames);
+          const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
+          const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+          const kbIds =
+            collectionRows.length > 0
+              ? collectionRows.map((r) => r.id)
+              : knowledgeDefaults.kb;
+          const knowledgeDefaultsForStore = {
+            apps: knowledgeDefaults.apps,
+            kb: kbIds,
+          };
+          const connectors = extractAgentKnowledgeConnectors(agent);
+          const toolGroups = buildAgentChatToolGroups(agent);
+          store.hydrateAgentChatResources({
+            toolCatalogFullNames: toolFullNames,
+            toolGroups,
+            connectors,
+            kbIds,
+            knowledgeCollectionRows: collectionRows,
+            knowledgeDefaults: knowledgeDefaultsForStore,
+          });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
         } catch (error) {
           if (!cancelled) {
             console.error('Failed to fetch agent details:', error);
+            store.hydrateAgentChatResources(null);
+            store.setAgentContextDisplayName(null);
           }
         }
       } else {
-        store.setAgentStreamTools([]);
+        store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
       }
 
@@ -425,10 +412,12 @@ function ChatContent() {
       const urlAgentId = agentId;
       const existing = store.getSlotByConvId(conversationId, { forAgentId: urlAgentId });
       if (existing) {
-        const toolsPatch =
-          urlAgentId && store.agentStreamTools.length > 0
-            ? { agentStreamTools: [...store.agentStreamTools] }
-            : {};
+        const toolsPatch = urlAgentId
+          ? {
+              agentStreamTools:
+                store.agentStreamTools === null ? null : [...store.agentStreamTools],
+            }
+          : {};
         store.updateSlot(existing.slotId, {
           threadAgentId: urlAgentId || null,
           ...toolsPatch,
@@ -443,7 +432,7 @@ function ChatContent() {
           store.updateSlot(newSlotId, {
             threadAgentId: urlAgentId,
             agentStreamTools:
-              store.agentStreamTools.length > 0 ? [...store.agentStreamTools] : null,
+              store.agentStreamTools === null ? null : [...store.agentStreamTools],
           });
         }
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: newSlotId, convId: conversationId, newSlot: true });
@@ -541,7 +530,8 @@ function ChatContent() {
       if (agentId) {
         store.updateSlot(newSlotId, {
           threadAgentId: agentId,
-          agentStreamTools: [...store.agentStreamTools],
+          agentStreamTools:
+            store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
       }
     }
@@ -573,7 +563,8 @@ function ChatContent() {
     if (agentId) {
       store.updateSlot(slotId, {
         threadAgentId: agentId,
-        agentStreamTools: [...store.agentStreamTools],
+        agentStreamTools:
+          store.agentStreamTools === null ? null : [...store.agentStreamTools],
       });
     }
 
@@ -613,11 +604,6 @@ function ChatContent() {
       },
       startRun: true,
     });
-
-    // 4. Clear KB filters after send
-    if (collections.length > 0) {
-      store.setFilters({ ...store.settings.filters, kb: [] });
-    }
   }, [conversationId, threadRuntime, activeSlotId, agentId]);
 
   const isMobile = useIsMobile();
@@ -706,12 +692,9 @@ function ChatContent() {
     !activeSlotIsStreaming
   );
 
-  /** On the main new-chat landing, mount the input in the centered hero
-   * column (beside the greeting) rather than pinned at the bottom. It drops
-   * to its bottom position automatically once the first message is sent
-   * (i.e. when `showNewChatView` flips to false). Agent landings keep the
-   * input at the bottom. */
-  const isInputCentered = showNewChatView && !agentId;
+  /** New-chat landing (main or `?agentId=`): input sits in the centered hero with the greeting;
+   * after the first message it renders in the fixed bottom slot (`showNewChatView` false). */
+  const isInputCentered = showNewChatView;
 
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
@@ -741,7 +724,6 @@ function ChatContent() {
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
-      <BackgroundPattern showNewChatView={showNewChatView} />
 
       {historyAndShareAgentId && (
         <AgentChatHeader
@@ -818,7 +800,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isInputCentered ? (isMobile ? '20px' : '24px') : isMobile ? '32px' : '48px',
+              marginBottom: isInputCentered ? (isMobile ? 'var(--space-5)' : 'var(--space-6)') : isMobile ? 'var(--space-8)' : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -827,20 +809,19 @@ function ChatContent() {
               size="4"
               weight="medium"
               style={{
-                color: 'var(--slate-11)',
+                color: 'var(--slate-12)',
                 display: 'block',
                 marginBottom: 'var(--space-1)',
               }}
             >
               {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
             </Text>
-            <Text size="4" weight="medium" style={{ color: 'var(--slate-11)' }}>
+            <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('chat.greeting')}
             </Text>
           </Box>
 
-          {/* Centered chat input — stays here on the new-chat landing until
-              the first message is sent, then it's rendered at the bottom. */}
+          {/* Centered chat input — new-chat landing (assistant or agent); moves to bottom after first send. */}
           {isInputCentered && (
             <Box
               style={{
@@ -890,14 +871,11 @@ function ChatContent() {
         </Flex>
       )}
 
-      {/* Chat Input - Fixed at bottom, uses ChatInputWrapper to access runtime.
-          On the new-chat landing the input is rendered inline in the hero
-          column (see `isInputCentered`); this bottom slot then only carries
-          the footer links until the first message is sent. */}
+      {/* Chat input: fixed bottom when a thread has started; on new-chat landing it lives in the hero (`isInputCentered`). */}
       <Box
         style={{
           position: 'absolute',
-          bottom: isMobile ? 0 : '24px',
+          bottom: isMobile ? 0 : 'var(--space-4)',
           left: isMobile ? 0 : '50%',
           right: isMobile ? 0 : undefined,
           transform: isMobile ? undefined : 'translateX(-50%)',
@@ -929,6 +907,7 @@ function ChatContent() {
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
+          hideFileDetails={previewFile.hideFileDetails}
           defaultTab="preview"
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
@@ -956,7 +935,9 @@ function ChatContent() {
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
+          hideFileDetails={previewFile.hideFileDetails}
           defaultTab="preview"
+          onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}
         />
       )}

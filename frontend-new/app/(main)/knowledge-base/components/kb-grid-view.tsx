@@ -8,6 +8,7 @@ import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 
 import type { 
   KnowledgeBaseItem, 
@@ -141,6 +142,10 @@ function GridCard({
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
+      // No status from API — no badge (placeholder "-" is rendered by parent)
+      if (item.indexingStatus == null) {
+        return null;
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return (
@@ -184,6 +189,81 @@ function GridCard({
               }}
             >
               <MaterialIcon name="error_outline" size={12} color="var(--red-9)" />
+            </Flex>
+          );
+        case 'FILE_TYPE_NOT_SUPPORTED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--red-2)',
+                border: '1px solid var(--red-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('FILE_TYPE_NOT_SUPPORTED')} size={12} color="var(--red-9)" />
+            </Flex>
+          );
+        case 'NOT_STARTED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--slate-2)',
+                border: '1px solid var(--slate-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={12} color="var(--slate-11)" />
+            </Flex>
+          );
+        case 'QUEUED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--blue-2)',
+                border: '1px solid var(--blue-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
+            </Flex>
+          );
+        case 'AUTO_INDEX_OFF':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--olive-2)',
+                border: '1px solid var(--olive-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={12} color="var(--olive-11)" />
+            </Flex>
+          );
+        case 'EMPTY':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--slate-2)',
+                border: '1px solid var(--slate-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={12} color="var(--slate-11)" />
             </Flex>
           );
         default:
@@ -300,10 +380,10 @@ function GridCard({
           ? '1px solid var(--accent-5)'
           : '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        paddingLeft: '8px',
-        paddingRight: '16px',
-        paddingTop: '16px',
-        paddingBottom: '16px',
+        paddingLeft: 'var(--space-2)',
+        paddingRight: 'var(--space-4)',
+        paddingTop: 'var(--space-4)',
+        paddingBottom: 'var(--space-4)',
         cursor: 'pointer',
         userSelect: 'none',
         outline: 'none',
@@ -320,8 +400,8 @@ function GridCard({
       <Flex
         align="center"
         style={{
-          paddingTop: '4px',
-          paddingBottom: '4px',
+          paddingTop: 'var(--space-1)',
+          paddingBottom: 'var(--space-1)',
           flexShrink: 0,
           visibility: isHovered || isSelected ? 'visible' : 'hidden',
         }}
@@ -438,7 +518,7 @@ function GridCard({
                     whiteSpace: 'pre',
                     font: 'inherit',
                     fontSize: '14px',
-                    padding: '2px 6px',
+                    padding: 'var(--space-1) var(--space-2)',
                   }}
                 />
                 <input
@@ -462,7 +542,7 @@ function GridCard({
                     backgroundColor: 'var(--slate-1)',
                     border: '1px solid var(--accent-8)',
                     borderRadius: 'var(--radius-1)',
-                    padding: '2px 6px',
+                    padding: 'var(--space-1) var(--space-2)',
                     outline: 'none',
                     width: inputWidth ? `${inputWidth}px` : 'auto',
                     minWidth: '60px',
@@ -486,7 +566,7 @@ function GridCard({
                   wordBreak: 'break-word',
                   lineHeight: 'var(--line-height-2)',
                   cursor: onRename ? 'text' : 'default',
-                  padding: '2px 6px',
+                  padding: 'var(--space-1) var(--space-2)',
                   border: '1px solid transparent',
                 }}
               >
@@ -501,7 +581,7 @@ function GridCard({
                 background: 'var(--surface-1)',
                 border: '1px solid var(--slate-a7)',
                 borderRadius: 'var(--radius-2)',
-                padding: '4px 8px',
+                padding: 'var(--space-1) var(--space-2)',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
                 maxWidth: 'fit-content',
@@ -527,7 +607,7 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {getStatusBadge() || (
+          {isFolder ? null : (getStatusBadge() || (
             <Text
               size="2"
               weight="medium"
@@ -538,7 +618,7 @@ function GridCard({
             >
               -
             </Text>
-          )}
+          ))}
         </Flex>
       </Flex>
     </Flex>
@@ -593,7 +673,7 @@ export function KbGridView({
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '16px',
+          padding: 'var(--space-4)',
         }}
       >
         {/* Grid container - 3 columns with gap */}
@@ -601,7 +681,7 @@ export function KbGridView({
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: '12px',
+            gap: 'var(--space-3)',
           }}
         >
           {items.map((item) => (
@@ -630,7 +710,7 @@ export function KbGridView({
           justify="between"
           align="center"
           style={{
-            padding: '8px 16px',
+            padding: 'var(--space-2) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--olive-2)',
@@ -660,7 +740,7 @@ export function KbGridView({
             {/* Page Number Box */}
             <Box
               style={{
-                padding: '4px 12px',
+                padding: 'var(--space-1) var(--space-3)',
                 backgroundColor: 'var(--slate-3)',
                 borderRadius: 'var(--radius-2)',
                 minWidth: '32px',
@@ -698,7 +778,7 @@ export function KbGridView({
                   gap="1"
                   style={{
                     cursor: 'pointer',
-                    padding: '4px 8px',
+                    padding: 'var(--space-1) var(--space-2)',
                     backgroundColor: 'var(--slate-3)',
                     borderRadius: 'var(--radius-2)',
                   }}

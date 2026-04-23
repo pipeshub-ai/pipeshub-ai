@@ -17,10 +17,8 @@ interface SettingsTabProps {
   config?: ConnectorConfig | null;
   /** Opens remove confirmation (parent owns the dialog). */
   onRequestRemoveConnector?: () => void;
-  /** When true, remove control is disabled (e.g. sync still on, or already deleting). */
-  removeConnectorDisabled?: boolean;
-  /** Shown when remove is disabled. */
-  removeConnectorDisabledReason?: string | null;
+  removeDisabled?: boolean;
+  removeDisabledTooltip?: string;
 }
 
 // ========================================
@@ -31,8 +29,8 @@ export function SettingsTab({
   instance,
   config,
   onRequestRemoveConnector,
-  removeConnectorDisabled,
-  removeConnectorDisabledReason,
+  removeDisabled = false,
+  removeDisabledTooltip,
 }: SettingsTabProps) {
   const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
@@ -40,7 +38,6 @@ export function SettingsTab({
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
   const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
 
-  const removeDisabled = Boolean(removeConnectorDisabled);
   const removeConnectorButton = onRequestRemoveConnector ? (
     <Button
       type="button"
@@ -51,18 +48,19 @@ export function SettingsTab({
         alignSelf: 'flex-start',
         cursor: removeDisabled ? 'not-allowed' : 'pointer',
       }}
-      onClick={removeDisabled ? undefined : () => onRequestRemoveConnector()}
+      onClick={() => {
+        if (removeDisabled) return;
+        onRequestRemoveConnector();
+      }}
     >
       Remove connector instance
     </Button>
   ) : null;
 
   const removeConnectorControl =
-    removeConnectorButton &&
-    removeDisabled &&
-    removeConnectorDisabledReason ? (
-      <Tooltip content={removeConnectorDisabledReason}>
-        <span style={{ alignSelf: 'flex-start', display: 'inline-flex' }}>{removeConnectorButton}</span>
+    removeConnectorButton && removeDisabled && removeDisabledTooltip ? (
+      <Tooltip content={removeDisabledTooltip}>
+        <span style={{ display: 'inline-flex' }}>{removeConnectorButton}</span>
       </Tooltip>
     ) : (
       removeConnectorButton

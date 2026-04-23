@@ -4645,6 +4645,42 @@ class TestReindexSingleRecord:
             assert result["success"] is False
             assert result["code"] == 403
 
+    @pytest.mark.asyncio
+    async def test_upload_origin_with_depth_routes_to_sync_events(self, connected_provider):
+        with patch.object(
+            connected_provider, "get_document",
+            new_callable=AsyncMock,
+            return_value={
+                "id": "r1",
+                "origin": "UPLOAD",
+                "connectorName": "KB",
+                "connectorId": "c1",
+                "recordName": "Folder A",
+                "recordType": "FILE",
+            }
+        ), patch.object(
+            connected_provider, "get_user_by_user_id",
+            new_callable=AsyncMock,
+            return_value={"_key": "u1", "userId": "u1"}
+        ), patch.object(
+            connected_provider, "_get_kb_context_for_record",
+            new_callable=AsyncMock,
+            return_value={"kb_id": "kb1", "id": "kb1"}
+        ), patch.object(
+            connected_provider, "get_user_kb_permission",
+            new_callable=AsyncMock,
+            return_value="OWNER"
+        ), patch.object(
+            connected_provider, "_reset_indexing_status_to_queued",
+            new_callable=AsyncMock
+        ):
+            result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=100)
+
+        assert result["success"] is True
+        assert result["eventData"]["topic"] == "sync-events"
+        assert result["eventData"]["eventType"] == "kb.reindex"
+        assert result["eventData"]["payload"]["depth"] == 100
+
 
 # ---------------------------------------------------------------------------
 # _ensure_indexes

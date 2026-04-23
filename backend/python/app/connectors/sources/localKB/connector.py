@@ -261,16 +261,14 @@ class KnowledgeBaseConnector(BaseConnector):
         self.logger.info("✅ Knowledge Base connector cleanup completed")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        """
-        Reindex KB records.
-
-        This delegates to existing KB reindexing logic if available.
-        For now, it's a placeholder that can be extended.
-        """
-        self.logger.info(f"Reindexing {len(record_results)} KB records")
-        # TODO: Implement KB-specific reindexing logic if needed
-        # This could delegate to KB service or trigger indexing events
-        pass
+        """Reindex KB records by publishing them to the indexing service."""
+        # Exclude folders — they can't be indexed
+        file_records = [r for r in record_results if r.mime_type != "application/vnd.folder"]
+        self.logger.info(
+            f"Reindexing {len(file_records)} KB records "
+            f"({len(record_results) - len(file_records)} folders excluded)"
+        )
+        await self.data_entities_processor.reindex_existing_records(file_records)
 
     @classmethod
     async def create_connector(

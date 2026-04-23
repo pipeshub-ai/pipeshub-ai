@@ -31,6 +31,7 @@ interface WorkspaceRightPanelProps {
   /** Panel header */
   title: string;
   icon?: React.ReactNode;
+  iconSize?: number;
   /** Optional React node to replace the plain title text (e.g. an instance switcher dropdown) */
   titleNode?: React.ReactNode;
 
@@ -58,6 +59,8 @@ interface WorkspaceRightPanelProps {
   /** Tooltip shown on the primary button when it is disabled */
   primaryTooltip?: string;
 
+  /** Override styles for the Dialog.Content container */
+  style?: React.CSSProperties;
   /** Secondary (Cancel) button style — `ghost` for text-like actions */
   secondaryVariant?: 'outline' | 'ghost';
 }
@@ -158,6 +161,7 @@ export function WorkspaceRightPanel({
   onOpenChange,
   title,
   icon,
+  iconSize = 24,
   titleNode,
   headerActions,
   children,
@@ -169,6 +173,7 @@ export function WorkspaceRightPanel({
   onSecondaryClick,
   hideFooter = false,
   primaryTooltip,
+  style,
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
   const { t } = useTranslation();
@@ -263,6 +268,7 @@ export function WorkspaceRightPanel({
           display: 'flex',
           flexDirection: 'column',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
+          ...style,
           pointerEvents: 'auto',
         }}
       >
@@ -274,7 +280,7 @@ export function WorkspaceRightPanel({
           align="center"
           justify="between"
           style={{
-            padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
@@ -284,7 +290,7 @@ export function WorkspaceRightPanel({
           <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
             {icon && (
               typeof icon === 'string'
-                ? <MaterialIcon name={icon} size={20} color="var(--slate-12)" />
+                ? <MaterialIcon name={icon} size={iconSize} color="var(--slate-12)"/>
                 : icon
             )}
             {titleNode ?? (
@@ -313,7 +319,7 @@ export function WorkspaceRightPanel({
           style={{
             flex: 1,
             overflow: 'auto',
-            padding: '16px',
+            padding: 'var(--space-4)',
             background: 'var(--effects-translucent)',
             minHeight: 0,
           }}
@@ -332,7 +338,7 @@ export function WorkspaceRightPanel({
             wrap="wrap"
             gap="2"
             style={{
-              padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
               borderTop: '1px solid var(--olive-3)',
               background: 'var(--effects-translucent)',
               backdropFilter: 'blur(8px)',

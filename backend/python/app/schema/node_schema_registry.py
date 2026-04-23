@@ -19,6 +19,7 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
+    artifact_record_schema,
     comment_record_schema,
     department_schema,
     file_record_schema,
@@ -104,6 +105,7 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.SYNC_POINTS.value: None,  # No schema
     CollectionNames.TEAMS.value: adapt_schema(team_schema),
     CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: None,  # No schema
+    CollectionNames.ARTIFACTS.value: adapt_schema(artifact_record_schema),
 }
 
 

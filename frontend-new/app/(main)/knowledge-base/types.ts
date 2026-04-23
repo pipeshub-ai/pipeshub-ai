@@ -103,10 +103,18 @@ export interface UploadFilePayload {
 // ============================================================================
 
 export type NodeType = 'kb' | 'app' | 'recordGroup' | 'folder' | 'record';
-export type NodeOrigin = 'KB' | 'CONNECTOR';
+export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
 export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
-export type IndexingStatus = 'COMPLETED' | 'IN_PROGRESS' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'NOT_STARTED' | 'AUTO_INDEX_OFF' | 'QUEUED';
+export type IndexingStatus =
+  | 'COMPLETED'
+  | 'IN_PROGRESS'
+  | 'FAILED'
+  | 'FILE_TYPE_NOT_SUPPORTED'
+  | 'NOT_STARTED'
+  | 'AUTO_INDEX_OFF'
+  | 'QUEUED'
+  | 'EMPTY';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -151,7 +159,7 @@ export interface KnowledgeHubQueryParams {
   // Node filters (comma-separated)
   nodeTypes?: string;         // Filter by node types (max 100 items)
   recordTypes?: string;       // 'FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET' (max 100)
-  origins?: string;           // 'KB', 'CONNECTOR' (max 100)
+  origins?: string;           // 'COLLECTION', 'CONNECTOR' (max 100)
   connectorIds?: string;      // Connector UUIDs (max 100)
   kbIds?: string;             // KB UUIDs (max 100) - used for sidebar expansion
   indexingStatus?: string;    // 'COMPLETED', 'IN_PROGRESS', 'FAILED' (max 100)
@@ -313,6 +321,8 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   permission?: NodePermission;
   origin?: NodeOrigin;
   connector?: string;
+  extension?: string | null;
+  mimeType?: string | null;
 }
 
 export type SidebarSection = 'shared' | 'private';
@@ -374,7 +384,6 @@ export interface AllRecordsFilter {
 
   // Source filters (specific to All Records mode)
   origins?: NodeOrigin[];         // Aligned with API: replaces 'sources'
-  collectionIds?: string[];       // Maps to kbIds parameter
   connectorIds?: string[];
 
   // Size filter
@@ -396,7 +405,9 @@ export interface AllRecordsFilter {
 export type AllRecordsSidebarSelection =
   | { type: 'all' }
   | { type: 'collection'; id: string; name: string }
-  | { type: 'connector'; connectorType: ConnectorType; itemId?: string; itemName?: string };
+  | { type: 'connector'; connectorType: ConnectorType; itemId?: string; itemName?: string }
+  /** Browsing a connector/KB tree by URL or folder row — not "All", not a legacy connector list row */
+  | { type: 'explorer' };
 
 // All Record item (extends table node with source info for display)
 export interface AllRecordItem extends KnowledgeHubNode {
@@ -450,12 +461,16 @@ export interface RecordDetailsResponse {
     sourceLastModifiedTimestamp: number;
     isDeleted: boolean;
     isArchived: boolean;
-    indexingStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
+    indexingStatus: IndexingStatus;
+    reason?: string;
+    connectorName?: string;
+    hideWeburl?: boolean;
+    previewRenderable?: boolean;
     version: number;
     webUrl: string;
     mimeType: string;
     connectorId: string;
-    sizeInBytes: number;
+    sizeInBytes?: number | null;
     md5Checksum: string;
     extractionStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
     isDirty: boolean;

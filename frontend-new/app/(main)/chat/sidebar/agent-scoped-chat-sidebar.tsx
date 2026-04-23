@@ -12,7 +12,7 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { buildChatHref, openFreshAgentChat } from '@/chat/build-chat-url';
+import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
@@ -21,7 +21,7 @@ import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 import { SidebarItem } from './sidebar-item';
 import { AgentMoreChatsSidebar } from './agent-more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
-import { AGENT_CONVERSATIONS_PAGE_SIZE, MAX_VISIBLE_CHATS } from '../constants';
+import { SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE, MAX_VISIBLE_CHATS } from '../constants';
 
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
@@ -54,6 +54,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
   const agentConversations = useChatStore((s) => s.agentConversations);
+  const agentConversationsPagination = useChatStore((s) => s.agentConversationsPagination);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
@@ -78,9 +79,9 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     try {
       const [agentRes, conv] = await Promise.all([
         AgentsApi.getAgent(agentId),
-        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: AGENT_CONVERSATIONS_PAGE_SIZE }),
+        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE }),
       ]);
-      setAgentStreamTools(agentRes.toolFullNames);
+      setAgentStreamTools(null);
       setAgentContextAccess(
         agentRes.agent ? getAgentSidebarRowMenuAccess(agentRes.agent) : null,
       );
@@ -90,7 +91,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       setAgentConversationsError(t('chat.failedToLoad'));
       setAgentConversations([]);
       setAgentConversationsPagination(null);
-      setAgentStreamTools([]);
+      setAgentStreamTools(null);
       setAgentContextAccess(null);
     } finally {
       setIsAgentConversationsLoading(false);
@@ -113,7 +114,6 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const handleBackHome = () => {
     if (isMobile) closeMobile();
     closeAgentsSidebar();
-    router.push('/chat/');
   };
 
   const handleNewAgentChat = () => {
@@ -121,12 +121,11 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     openFreshAgentChat(agentId, router);
   };
 
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = () => {
     if (isMobile) closeMobile();
-    router.push(buildChatHref({ agentId, conversationId: id }));
   };
 
-  const hasMoreYour = agentConversations.length > MAX_VISIBLE_CHATS;
+  const hasMoreYour = agentConversations.length > MAX_VISIBLE_CHATS || (agentConversationsPagination?.hasNextPage ?? false);
 
   const visibleYour = hasMoreYour
     ? agentConversations.slice(0, MAX_VISIBLE_CHATS)
@@ -160,6 +159,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
           label={t('chat.backToChatHome')}
+          href="/chat/"
           onClick={handleBackHome}
         />
 

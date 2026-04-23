@@ -58,9 +58,13 @@ export function useProfilePage() {
       const uid = getUserIdFromToken();
       setUserId(uid);
 
-      // Email from JWT (fast), refreshed via API below
+      // Get email from JWT
+      setEmailLoading(true);
       const emailFromToken = getUserEmailFromToken();
-      if (emailFromToken) setEmail(emailFromToken);
+      if (emailFromToken) {
+        setEmail(emailFromToken);
+      }
+      setEmailLoading(false);
 
       if (!uid) {
         setLoading(false);
@@ -81,12 +85,6 @@ export function useProfilePage() {
         if (avatarObjectUrl) setAvatarUrl(avatarObjectUrl);
 
         setLoading(false);
-
-        // Fetch email from API in background
-        setEmailLoading(true);
-        ProfileApi.getUserEmail(uid)
-          .then((apiEmail) => { if (apiEmail) setEmail(apiEmail); })
-          .finally(() => setEmailLoading(false));
 
         // Fetch groups + derive role from group membership (best-effort, non-blocking)
         getUserGroupsForProfile(uid).then((allGroups) => {

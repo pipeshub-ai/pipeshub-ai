@@ -186,6 +186,7 @@ dependencies = [
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
+    "docker>=7.0.0",
     "docling==2.60.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
@@ -204,6 +205,7 @@ dependencies = [
     "google-api-python-client==2.161.0",
     "google-auth-oauthlib==1.2.1",
     "google-cloud-storage==2.18.0",
+    "google-genai>=1.72.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
     "langchain-anthropic==1.2.0",
@@ -254,9 +256,14 @@ dependencies = [
     "python-arango==8.1.5",
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
-    "python-dotenv==1.1.0",
+    "python-dotenv==1.2.2",
     "redshift_connector==2.0.918",
     "pikepdf>=8.1.0,<9.0.0",
+    # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
+    # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
+    # when the agent declares packages=["reportlab"] / ["fpdf2"].
+    "reportlab>=4.0.0,<5.0.0",
+    "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.26",
     "qdrant-client==1.13.1",
@@ -272,6 +279,7 @@ dependencies = [
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
+    "psycopg2-binary==2.9.11",
 ]
 
 [tool.setuptools.packages.find]
@@ -286,6 +294,11 @@ module = "app.indexing_main:run"
 
 [project.optional-dependencies]
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
+# Optional: enable self-hosted Whisper Speech-to-Text (runs locally via faster-whisper + CTranslate2).
+# Not installed by default because the runtime pulls in CTranslate2 binaries and downloads
+# multi-hundred-MB model weights on first use. Enable with:
+#   pip install -e '.[whisper]'
+whisper = ["faster-whisper>=1.0.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"

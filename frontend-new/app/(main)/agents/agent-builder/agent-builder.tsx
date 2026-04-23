@@ -35,6 +35,7 @@ import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-contex
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { toast } from '@/lib/store/toast-store';
+import { normalizeToolsetTypeKey } from './sidebar-toolset-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -406,22 +407,32 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     void router.replace(rest ? `${path}?${rest}` : path);
   }, [editingKey, router, setSuccess]);
 
-  const activeToolsetTypes = useMemo(
+  /** Configured toolset instances already on the canvas (same type, different instance = allowed). */
+  const activeToolsetInstanceIds = useMemo(
     () =>
-      Array.from(
-        new Set(
-          nodes
-            .filter((n) => n.data?.type?.startsWith('toolset-'))
-            .map((n) => {
-              const cfg = n.data.config || {};
-              const name =
-                (cfg.toolsetName as string) ||
-                String(n.data.type || '').replace(/^toolset-/, '');
-              return name.toLowerCase().replace(/[^a-z0-9]/g, '');
-            })
-            .filter(Boolean)
-        )
-      ),
+      nodes
+        .filter((n) => String(n.data?.type ?? '').startsWith('toolset-'))
+        .map((n) => String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim())
+        .filter(Boolean),
+    [nodes]
+  );
+
+  /** Legacy / non-instance nodes: block a second palette row that has no instanceId when this type is already placed. */
+  const activeToolsetTypeKeysWithoutInstance = useMemo(
+    () =>
+      nodes
+        .filter((n) => {
+          if (!String(n.data?.type ?? '').startsWith('toolset-')) return false;
+          const id = String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim();
+          return !id;
+        })
+        .map((n) => {
+          const cfg = (n.data?.config || {}) as Record<string, unknown>;
+          const name =
+            (cfg.toolsetName as string) || String(n.data?.type || '').replace(/^toolset-/, '');
+          return normalizeToolsetTypeKey(String(name));
+        })
+        .filter(Boolean),
     [nodes]
   );
 
@@ -721,7 +732,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             nodeTemplates={nodeTemplates}
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
-            activeToolsetTypes={activeToolsetTypes}
+            activeToolsetInstanceIds={activeToolsetInstanceIds}
+            activeToolsetTypeKeysWithoutInstance={activeToolsetTypeKeysWithoutInstance}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}

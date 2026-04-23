@@ -12,6 +12,11 @@ import ChangePassword from '../forms/change-password';
 import { decodeJwtUser } from '@/lib/utils/auth-helpers';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import { useAuthStore } from '@/lib/store/auth-store';
+import {
+  PASSWORD_RESET_FAILURE_VARIANT,
+  INVITE_VS_RESET_LIFETIME_CUTOFF_SECONDS,
+} from './constants';
+import type { PasswordResetFailureVariant } from './types';
 
 // ─── Inner component ─────────────────────────────────────────────────────────
 
@@ -24,6 +29,14 @@ function ResetPasswordContent() {
   const [user, setUser] = useState<JwtUser>({});
   const [ready, setReady] = useState(false);
   const [success, setSuccess] = useState(false);
+  // Checked once when the token is decoded on mount; avoids calling Date.now()
+  // during render. A token that expires after mount is still caught on submit
+  // via onInvalidToken → tokenInvalidated.
+  const [tokenExpiredOnMount, setTokenExpiredOnMount] = useState(false);
+  // Set when the backend rejects the token because the user no longer exists
+  // (cancelled invite or deleted account). JWTs are stateless, so expiry alone
+  // can't tell us this — we learn about it on submit and lift it up here.
+  const [tokenInvalidated, setTokenInvalidated] = useState(false);
 
   // If the user is already logged in, send them to the app
   useEffect(() => {
@@ -40,7 +53,11 @@ function ResetPasswordContent() {
     const t = hashMatch ? decodeURIComponent(hashMatch[1]) : null;
     if (t) {
       setToken(t);
-      setUser(decodeJwtUser(t));
+      const decoded = decodeJwtUser(t);
+      setUser(decoded);
+      if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+        setTokenExpiredOnMount(true);
+      }
     }
     setReady(true);
   // window.location.hash is stable on mount; no reactive deps needed.
@@ -51,6 +68,26 @@ function ResetPasswordContent() {
 
   // Already authenticated — redirect effect will fire, render nothing
   if (isAuthenticated) return null;
+
+  // Decide which screen to show: no token, expired token (invite vs reset),
+  // server-invalidated token (cancelled invite / deleted account), or the
+  // password form. We gate expiry before the form so users don't have to
+  // submit a password just to discover the link is dead.
+  const tokenLifetimeSeconds = user.iat && user.exp ? user.exp - user.iat : 0;
+  const isInviteToken = tokenLifetimeSeconds > INVITE_VS_RESET_LIFETIME_CUTOFF_SECONDS;
+
+  let failureVariant: PasswordResetFailureVariant | null = null;
+  if (!token) {
+    failureVariant = PASSWORD_RESET_FAILURE_VARIANT.MISSING_TOKEN;
+  } else if (tokenExpiredOnMount) {
+    failureVariant = isInviteToken
+      ? PASSWORD_RESET_FAILURE_VARIANT.INVITE_EXPIRED
+      : PASSWORD_RESET_FAILURE_VARIANT.RESET_EXPIRED;
+  } else if (tokenInvalidated) {
+    failureVariant = isInviteToken
+      ? PASSWORD_RESET_FAILURE_VARIANT.INVITE_EXPIRED
+      : PASSWORD_RESET_FAILURE_VARIANT.RESET_EXPIRED;
+  }
 
   return (
     <Flex
@@ -65,14 +102,15 @@ function ResetPasswordContent() {
       <FormPanel splitLayout={splitLayout}>
         {success ? (
           <PasswordResetSuccess />
-        ) : !token ? (
-          <PasswordResetFailure />
+        ) : failureVariant ? (
+          <PasswordResetFailure variant={failureVariant} />
         ) : (
           <ChangePassword
-            token={token}
+            token={token!}
             user={user}
             disabled={false}
             onSuccess={() => setSuccess(true)}
+            onInvalidToken={() => setTokenInvalidated(true)}
           />
         )}
       </FormPanel>

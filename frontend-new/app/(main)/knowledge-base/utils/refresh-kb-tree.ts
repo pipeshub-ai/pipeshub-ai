@@ -21,6 +21,7 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
 
   if (kbApp) {
     const response = await KnowledgeHubApi.getNodeChildren('app', kbApp.id, {
+      onlyContainers: true,
       page: 1,
       limit: 50,
     });

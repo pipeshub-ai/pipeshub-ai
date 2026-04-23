@@ -35,6 +35,17 @@ export interface User {
   isBlocked?: boolean;
 }
 
+/**
+ * One document from POST /api/v1/users/by-ids (raw `users` collection / Mongoose JSON).
+ * Differs from {@link User}: mongo `_id` and `fullName` instead of `userId` / `name`.
+ */
+export interface UserByIdsDoc {
+  _id: string | { toString(): string };
+  fullName?: string;
+  email?: string;
+  hasLoggedIn?: boolean;
+}
+
 /** Single row from GET /api/v1/users?blocked=true */
 export interface BlockedUserRecord {
   _id: string;

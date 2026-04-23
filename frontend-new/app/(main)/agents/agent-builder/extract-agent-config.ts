@@ -7,6 +7,7 @@ interface ToolsetDataInternal {
   displayName: string;
   type: string;
   instanceId?: string;
+  instanceName?: string;
   tools: { name: string; fullName: string; description?: string }[];
 }
 
@@ -57,7 +58,8 @@ export function extractAgentConfigFromFlow(
     displayName: string,
     toolsetType: string,
     toolsToAdd: { name: string; fullName: string; description?: string }[],
-    instanceId?: string
+    instanceId?: string,
+    instanceName?: string
   ) => {
     if (!toolsetName || toolsToAdd.length === 0) return;
     const normalizedName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -70,12 +72,17 @@ export function extractAgentConfigFromFlow(
           toolsetsInternal[existingIndex].tools.push(tool);
         }
       });
+      const inName = instanceName?.trim();
+      if (inName && !toolsetsInternal[existingIndex].instanceName) {
+        toolsetsInternal[existingIndex].instanceName = inName;
+      }
     } else {
       toolsetsInternal.push({
         name: normalizedName,
         displayName: displayName || toolsetName,
         type: toolsetType || 'app',
         instanceId: instanceId || undefined,
+        instanceName: instanceName?.trim() || undefined,
         tools: toolsToAdd,
       });
     }
@@ -135,7 +142,8 @@ export function extractAgentConfigFromFlow(
       (toolsetConfig.name as string) ||
       node.data.label ||
       '';
-    const displayName = (toolsetConfig.displayName as string) || node.data.label || toolsetName;
+    const productDisplayName = (toolsetConfig.displayName as string) || toolsetName;
+    const instanceName = String(toolsetConfig.instanceName ?? '').trim() || undefined;
     const toolsetType = (toolsetConfig.type as string) || (toolsetConfig.category as string) || 'app';
     const instanceId = toolsetConfig.instanceId as string | undefined;
     const toolsFromConfig: { name: string; fullName: string; description?: string }[] = [];
@@ -168,7 +176,7 @@ export function extractAgentConfigFromFlow(
       });
     }
     if (toolsFromConfig.length > 0) {
-      addToolsetWithTools(toolsetName, displayName, toolsetType, toolsFromConfig, instanceId);
+      addToolsetWithTools(toolsetName, productDisplayName, toolsetType, toolsFromConfig, instanceId, instanceName);
     }
   });
 
@@ -306,6 +314,7 @@ export function extractAgentConfigFromFlow(
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
     id: ts.instanceId || ts.name,
     instanceId: ts.instanceId,
+    instanceName: ts.instanceName,
     name: ts.name,
     displayName: ts.displayName,
     type: ts.type,

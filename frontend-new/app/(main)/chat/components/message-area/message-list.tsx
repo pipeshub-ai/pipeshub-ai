@@ -10,6 +10,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import type { ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions } from './response-tabs/citations';
@@ -19,6 +20,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
+const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
 const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
@@ -84,6 +86,9 @@ export function MessageList() {
   const currentStatusMessage = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.currentStatusMessage ?? null : null
   );
+  const streamingArtifacts = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
+  );
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[chat] [MessageList]');
@@ -126,6 +131,8 @@ export function MessageList() {
   const hasPerformedInitialScrollRef = useRef(false);
   const prevActiveSlotIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(isStreaming);
+  /** Detects isStreaming false→true so we clear scroll lock before tail sync (layout phase). */
+  const prevIsStreamingForLockRef = useRef(false);
   // Render-time sync (not useEffect) so the value is current when
   // synchronous ResizeObserver callbacks fire in the same commit phase.
   const isStreamingRef = useRef(isStreaming);
@@ -136,6 +143,8 @@ export function MessageList() {
   // grows scrollHeight an instant after the user reaches the bottom, then
   // inertia scroll events see distFromBottom > 150 and wrongly re-lock.
   const lockClearedAtMsRef = useRef<number>(0);
+  /** Coalesces ResizeObserver bursts to one layout pass per animation frame */
+  const streamingLayoutRafRef = useRef<number | null>(null);
 
   // Render-time: record scroll position on every render during streaming so
   // the useLayoutEffect below always has the freshest value to restore from.
@@ -265,7 +274,7 @@ export function MessageList() {
   // in the DOM (never conditionally rendered) so the ref is stable.
   const recalcSpacerHeight = useCallback(() => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no messages or no container → height=0');
       return;
     }
@@ -274,7 +283,7 @@ export function MessageList() {
     const container = scrollContainerRef.current;
 
     if (!element) {
-      if (spacerRef.current) spacerRef.current.style.minHeight = '0px';
+      if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no element for last message → height=0');
       return;
     }
@@ -301,36 +310,28 @@ export function MessageList() {
   }, []);
 
   // ── User scroll detection ─────────────────────────────────────────
-  // Tracks whether the user has manually scrolled up. When true,
-  // `executeScroll` will bail out (unless `chatBecameActive` overrides).
+  // Tracks whether the user has left the live tail. When true, streaming
+  // auto-scroll must not run (see throttledResize + executeScroll).
   //
-  // Thresholds are intentionally generous to avoid false positives:
-  //   • "at bottom" zone: ≤ 80px  — clears the lock (was 30px)
-  //   • "scrolled up" zone: > 150px — sets the lock (was 50px)
-  // The dead-band between 80px and 150px prevents rapid lock oscillation
-  // when the container is growing (programmatic scroll may land a few
-  // pixels short of the true bottom before the next ResizeObserver tick).
+  // Tight hysteresis (72 / 108) avoids a dead band: previously 80–150px left
+  // the lock false while the user had clearly moved up to read the answer,
+  // so ResizeObserver kept snapping them back to the bottom.
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
+    if (isAutoScrollingRef.current) return;
+
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
     const distFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    if (distFromBottom <= 80) {
+    if (distFromBottom <= 72) {
       isScrolledUpRef.current = false;
-      // Record the timestamp so we can apply a grace period below.
       lockClearedAtMsRef.current = Date.now();
-    } else if (distFromBottom > 150 && !isAutoScrollingRef.current) {
-      // Only set scrolled-up if we're NOT in a programmatic animation AND
-      // we're outside the grace period.
-      //
-      // Grace period (500 ms): after the user reaches the bottom the
-      // streaming content can grow scrollHeight immediately, making
-      // distFromBottom jump past 150 before throttledResize has had a
-      // chance to call executeScroll (which would set isAutoScrollingRef).
-      // Trackpad inertia then fires additional scroll events that would
-      // re-engage the lock — defeating the user's intent to resume tailing.
+      return;
+    }
+
+    if (distFromBottom >= 108) {
       const msSinceClear = Date.now() - lockClearedAtMsRef.current;
-      if (msSinceClear > 500) {
+      if (msSinceClear > 200) {
         isScrolledUpRef.current = true;
       }
     }
@@ -386,23 +387,29 @@ export function MessageList() {
       targetScrollTop = container.scrollHeight - container.clientHeight;
     }
 
-    // Guard ALL programmatic scrolls from false-triggering the user scroll-lock
-    // detector. For smooth / 80-20-jump animations we need a long window (500ms)
-    // because the browser reports intermediate scroll events throughout the
-    // animation. For instant 'auto' scrolls we only need a short window (~100ms)
-    // to cover the single async scroll event that fires after the synchronous
-    // DOM update — but it is CRITICAL to guard these too. Without it, the
-    // Streaming Tracker's `executeScroll({ behavior: 'auto' })` call would
-    // scroll to 'top-of-last-message' (not the bottom), handleScroll would
-    // fire with isAutoScrollingRef=false and distFromBottom > threshold, and
-    // incorrectly set isScrolledUpRef=true — killing all further auto-scroll.
-    const guardMs = (options.behavior === 'smooth' || options.behavior === '80/20-jump') ? 500 : 100;
-    if (autoScrollTimeoutRef.current) clearTimeout(autoScrollTimeoutRef.current);
-    isAutoScrollingRef.current = true;
-    autoScrollTimeoutRef.current = setTimeout(() => {
-      isAutoScrollingRef.current = false;
-      autoScrollTimeoutRef.current = null;
-    }, guardMs);
+    // Guard programmatic scrolls so handleScroll does not treat them as the user
+    // leaving the tail. Smooth / 80-20 need a long window (500ms) for in-flight
+    // animation events. Instant tail-follow runs every rAF during streaming — a
+    // 100ms timeout kept isAutoScrollingRef true almost continuously and made
+    // scroll feel sticky; a macrotask deferral is enough for sync scroll events.
+    if (options.behavior === 'smooth' || options.behavior === '80/20-jump') {
+      if (autoScrollTimeoutRef.current) clearTimeout(autoScrollTimeoutRef.current);
+      isAutoScrollingRef.current = true;
+      autoScrollTimeoutRef.current = setTimeout(() => {
+        isAutoScrollingRef.current = false;
+        autoScrollTimeoutRef.current = null;
+      }, 500);
+    } else {
+      if (autoScrollTimeoutRef.current) {
+        clearTimeout(autoScrollTimeoutRef.current);
+        autoScrollTimeoutRef.current = null;
+      }
+      isAutoScrollingRef.current = true;
+      autoScrollTimeoutRef.current = setTimeout(() => {
+        isAutoScrollingRef.current = false;
+        autoScrollTimeoutRef.current = null;
+      }, 0);
+    }
 
     // Execute the scroll
     if (options.behavior === '80/20-jump') {
@@ -411,79 +418,98 @@ export function MessageList() {
       requestAnimationFrame(() => {
         container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
       });
+    } else if (options.behavior === 'auto') {
+      // Direct assignment: avoids global `scroll-behavior: smooth` affecting scrollTo
+      container.scrollTop = targetScrollTop;
     } else {
       container.scrollTo({ top: targetScrollTop, behavior: options.behavior });
     }
   }, []);
 
-  // ── Throttled resize handler for ResizeObserver ──
-  // Handles spacer recalc + scroll tracking on every DOM size change.
+  /**
+   * Instant tail-follow while SSE is active: runs after DOM/layout knows the new
+   * message height, without going through executeScroll’s timers. Paired with
+   * useLayoutEffect (same frame as streaming markdown commit) so the viewport
+   * does not paint one frame “behind” the growing answer.
+   */
+  const syncStreamingMessageTail = useCallback(() => {
+    if (!isStreamingRef.current || isScrolledUpRef.current) return;
+
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) return;
+
+    recalcSpacerHeight();
+
+    const msgHeight = lastEl.getBoundingClientRect().height;
+    const chatInputReserved = isMobileRef.current ? 120 : CHAT_INPUT_RESERVED;
+    const visibleHeight = container.clientHeight - chatInputReserved;
+
+    isAutoScrollingRef.current = true;
+    let nextTop: number;
+    if (msgHeight <= visibleHeight) {
+      const containerRect = container.getBoundingClientRect();
+      const elementRect = lastEl.getBoundingClientRect();
+      const topBuffer = parseFloat(window.getComputedStyle(container).paddingTop) || 0;
+      nextTop = Math.max(0, elementRect.top - containerRect.top + container.scrollTop - topBuffer);
+    } else {
+      nextTop = container.scrollHeight - container.clientHeight;
+    }
+    container.scrollTop = nextTop;
+    queueMicrotask(() => {
+      isAutoScrollingRef.current = false;
+    });
+  }, [recalcSpacerHeight]);
+
+  // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
+  // so the first tail sync is not skipped. On every streaming commit, pin the tail
+  // before paint so the viewport never lags one frame behind the markdown.
+  useLayoutEffect(() => {
+    if (isStreaming && !prevIsStreamingForLockRef.current) {
+      isScrolledUpRef.current = false;
+    }
+    prevIsStreamingForLockRef.current = isStreaming;
+
+    if (!isStreaming) return;
+    syncStreamingMessageTail();
+  }, [
+    isStreaming,
+    streamingContent,
+    currentStatusMessage?.id,
+    currentStatusMessage?.message,
+    streamingCitationMaps,
+    syncStreamingMessageTail,
+  ]);
+
+  // ── rAF-coalesced resize handler for ResizeObserver ───────────────
+  // Spacer + tail on size changes that are not always tied to store updates
+  // (code blocks, images, fonts). While streaming, tail sync also runs from
+  // useLayoutEffect above; this path catches layout-only growth the same frame.
   //
-  // During streaming (isStreamingRef.current === true): implements the
-  // Streaming Tracker from the spec (points 3 & 4):
-  //   - message height ≤ viewport → snap title to top
-  //   - message height > viewport → track the bottom edge
-  //
-  // After streaming ends: only recalculates the spacer. The one-time
-  // scroll to reveal Ask More is handled by effect #5.
-  const THROTTLE_MS = 100;
+  // Streaming Tracker: short message → title at top; tall → bottom edge.
   const throttledResize = useMemo(() => {
-    let lastCall = 0;
-    let pending: ReturnType<typeof setTimeout> | null = null;
     return () => {
-      const now = Date.now();
-      const run = () => {
-        lastCall = Date.now();
-        recalcSpacerHeight();
-
-        // Only drive scroll during active streaming.
-        if (!isStreamingRef.current) {
-          console.log('[debugging] [throttledResize] skip — not streaming');
-          return;
-        }
-        if (isScrolledUpRef.current) {
-          console.log('[debugging] [throttledResize] skip — user scrolled up');
-          return;
-        }
-
-        // Streaming Tracker 3 & 4: choose target based on message size.
-        // Choose scroll target based on whether the message fits in the viewport.
-        const container = scrollContainerRef.current;
-        const lastEl = lastMessageKeyRef.current
-          ? messageRefs.current.get(lastMessageKeyRef.current)
-          : null;
-        if (!container || !lastEl) {
-          console.log('[debugging] [throttledResize] skip — no container or lastEl', { container: !!container, lastEl: !!lastEl, lastKey: lastMessageKeyRef.current });
-          return;
-        }
-
-        const msgHeight = lastEl.getBoundingClientRect().height;
-        const chatInputReserved = isMobileRef.current ? 120 : CHAT_INPUT_RESERVED;
-        const visibleHeight = container.clientHeight - chatInputReserved;
-        console.log('[debugging] [throttledResize] scroll →', msgHeight <= visibleHeight ? 'top-of-last-message' : 'bottom-of-container', { msgHeight, visibleHeight });
-        if (msgHeight <= visibleHeight) {
-          // Short message: keep title pinned to the top of the viewport
-          executeScroll({ target: 'top-of-last-message', behavior: 'auto' });
+      if (streamingLayoutRafRef.current !== null) return;
+      streamingLayoutRafRef.current = requestAnimationFrame(() => {
+        streamingLayoutRafRef.current = null;
+        if (isStreamingRef.current) {
+          syncStreamingMessageTail();
         } else {
-          // Tall message: track the growing bottom edge
-          executeScroll({ target: 'bottom-of-container', behavior: 'auto' });
+          recalcSpacerHeight();
         }
-      };
-      if (now - lastCall >= THROTTLE_MS) {
-        run();
-      } else if (!pending) {
-        pending = setTimeout(() => {
-          pending = null;
-          run();
-        }, THROTTLE_MS - (now - lastCall));
-      }
+      });
     };
-  }, [recalcSpacerHeight, executeScroll]);
+  }, [recalcSpacerHeight, syncStreamingMessageTail]);
 
   // ── Cleanup auto-scroll timeout on unmount ──
   useEffect(() => {
     return () => {
       if (autoScrollTimeoutRef.current) clearTimeout(autoScrollTimeoutRef.current);
+      if (streamingLayoutRafRef.current !== null) {
+        cancelAnimationFrame(streamingLayoutRafRef.current);
+        streamingLayoutRafRef.current = null;
+      }
     };
   }, []);
 
@@ -525,16 +551,6 @@ export function MessageList() {
 
     prevActiveSlotIdRef.current = currentSlotId;
   }, [activeSlotId]);
-
-  // ── 0b. Reset scroll lock when a new stream starts ─────────────────
-  // When the user hits Send, `isStreaming` transitions to true. Any
-  // manually-set scroll lock from the previous interaction should be
-  // cleared so the Streaming Tracker can take over immediately.
-  useEffect(() => {
-    if (isStreaming) {
-      isScrolledUpRef.current = false;
-    }
-  }, [isStreaming]);
 
   // ── 1. Initialization & Activation: first scroll for a slot ───────
   // Fires when messages become available (isInitialized + pairs > 0)
@@ -638,24 +654,18 @@ export function MessageList() {
     const lastPair = pairs[pairs.length - 1];
     lastMessageKeyRef.current = lastPair.key;
 
-    console.log('[debugging] [effect#2] setting up ResizeObserver for key', lastPair.key, 'pairCount', pairs.length);
-
     // Wait a frame for the element to be in the DOM
     const rafId = requestAnimationFrame(() => {
       const element = messageRefs.current.get(lastPair.key);
       if (!element) {
-        console.log('[debugging] [effect#2] rAF: element not found for key', lastPair.key);
         return;
       }
-
-      console.log('[debugging] [effect#2] rAF: observer connected for key', lastPair.key);
 
       // Initial calculation
       recalcSpacerHeight();
 
       // Observe size changes (streaming content growing) — throttled
       const observer = new ResizeObserver(() => {
-        console.log('[debugging] [ResizeObserver] fired for key', lastPair.key, 'isStreaming', isStreamingRef.current);
         throttledResize();
       });
       observer.observe(element);
@@ -664,6 +674,10 @@ export function MessageList() {
 
     return () => {
       cancelAnimationFrame(rafId);
+      if (streamingLayoutRafRef.current !== null) {
+        cancelAnimationFrame(streamingLayoutRafRef.current);
+        streamingLayoutRafRef.current = null;
+      }
       if (lastMessageObserverRef.current) {
         lastMessageObserverRef.current.disconnect();
         lastMessageObserverRef.current = null;
@@ -763,7 +777,7 @@ export function MessageList() {
     if (wasStreamingRef.current && !isStreaming) {
       // Reset scroll lock immediately. The streaming→final message swap can
       // cause scrollHeight changes that trick handleScroll into setting
-      // isScrolledUpRef=true (distFromBottom > 150 while isAutoScrolling=false).
+      // isScrolledUpRef=true (distFromBottom >= 108 while isAutoScrolling=false).
       // The user was tracking the stream, so we must clear this false lock.
       isScrolledUpRef.current = false;
 
@@ -835,6 +849,9 @@ export function MessageList() {
       style={{
         flex: 1,
         overflowY: 'auto',
+        overscrollBehavior: 'contain',
+        // Instant programmatic follow while tokens arrive; smooth when idle / completed.
+        scrollBehavior: isStreaming ? 'auto' : 'smooth',
         width: '100%',
         display: 'flex',
         flexDirection: 'column',
@@ -845,8 +862,8 @@ export function MessageList() {
           maxWidth: '50rem',
           width: '100%',
           margin: '0 auto',
-          paddingTop: '16px',
-          paddingBottom: isMobile ? '40px' : '100px',
+          paddingTop: 'var(--space-4)',
+          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
           paddingLeft: isMobile ? 'var(--space-4)' : undefined,
           paddingRight: isMobile ? 'var(--space-4)' : undefined,
         }}
@@ -880,6 +897,7 @@ export function MessageList() {
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

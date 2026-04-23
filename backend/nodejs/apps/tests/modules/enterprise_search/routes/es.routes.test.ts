@@ -179,6 +179,18 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/show/archives')
   })
 
+  it('should register archived conversations search route', () => {
+    const router = createConversationalRouter(container)
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: layer.route.methods,
+      }))
+    const searchArchives = routes.find((r: any) => r.path === '/show/archives/search' && r.methods.get)
+    expect(searchArchives).to.exist
+  })
+
   it('should register share/unshare routes', () => {
     const router = createConversationalRouter(container)
     const routes = router.stack
@@ -311,6 +323,25 @@ describe('Enterprise Search Routes', () => {
 
     expect(paths).to.include('/:agentKey/conversations/:conversationId/messages')
     expect(paths).to.include('/:agentKey/conversations/:conversationId/messages/stream')
+  })
+
+  it('should register agent grouped archives and per-agent archive routes', () => {
+    const router = createAgentConversationalRouter(container)
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+    expect(routes.find((r: any) => r.path === '/conversations/show/archives' && r.methods.get)).to.exist
+    expect(routes.find((r: any) => r.path === '/:agentKey/conversations/show/archives' && r.methods.get)).to.exist
+    expect(
+      routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/archive' && r.methods.post),
+    ).to.exist
+    expect(
+      routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/unarchive' && r.methods.post),
+    ).to.exist
+    expect(
+      routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/title' && r.methods.patch),
+    ).to.exist
   })
 
   it('should register internal agent stream route', () => {

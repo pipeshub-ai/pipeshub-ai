@@ -50,6 +50,12 @@ class AIModelField:
     is_secret: bool = False
     options: list[dict[str, str]] = field(default_factory=list)
     validation: dict[str, Any] = field(default_factory=dict)
+    # Labeled example values shown below the input in the UI as a small,
+    # copyable note. Each entry is ``{"label": str, "value": str}``. Use for
+    # fields where the placeholder alone is too long or too ambiguous to
+    # convey all the variants a user might need (e.g. Azure AI endpoints
+    # where the URL differs per model family).
+    examples: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -70,4 +76,6 @@ class AIModelField:
             result["options"] = self.options
         if self.validation:
             result["validation"] = self.validation
+        if self.examples:
+            result["examples"] = self.examples
         return result

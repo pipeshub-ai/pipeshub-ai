@@ -19,6 +19,7 @@ import {
   createConversationalRouter,
   createSemanticSearchRouter,
   createAgentConversationalRouter,
+  createChatSpeechRouter,
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
@@ -278,6 +279,20 @@ export class Application {
           );
           return;
         }
+
+        // `/record/<recordId>` URLs (shared links, backend citation links,
+        // etc.) can't be pre-rendered per id under `output: 'export'` since
+        // `generateStaticParams()` would have to enumerate every record id.
+        // Serve the single `/record/` HTML shell directly — the client reads
+        // the id from `window.location.pathname` — so the URL stays intact
+        // (no redirect, no visible `?recordId=` query param) and matches the
+        // pattern used above for OAuth callback slugs.
+        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        if (recordMatch) {
+          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          return;
+        }
+
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 
@@ -425,6 +440,12 @@ export class Application {
     this.app.use(
       '/api/v1/agents',
       createAgentConversationalRouter(this.esAgentContainer),
+    );
+
+    // chat speech (TTS/STT) proxy routes to the Python AI backend
+    this.app.use(
+      '/api/v1/chat',
+      createChatSpeechRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes

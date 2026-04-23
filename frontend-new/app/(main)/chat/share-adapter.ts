@@ -2,7 +2,7 @@ import { apiClient } from '@/lib/api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import type { User } from '@/app/(main)/workspace/users/types';
 import type { ShareAdapter, SharedMember, ShareSubmission, ShareUser } from '@/app/components/share/types';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useUserStore } from '@/lib/store/user-store';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { TeamsApi } from '@/app/(main)/workspace/teams/api';
 import type { SharedWithEntry } from './types';
@@ -61,7 +61,6 @@ export function createChatShareAdapter(
   conversationId: string,
   options?: CreateChatShareAdapterOptions
 ): ShareAdapter {
-  const currentUserId = useAuthStore.getState().user?.id;
   const agentId = options?.agentId;
 
   const conversationBasePath = agentId
@@ -76,6 +75,11 @@ export function createChatShareAdapter(
     supportsTeams: true,
 
     async getSharedMembers(): Promise<SharedMember[]> {
+      // Read lazily from UserStore — populated by UserProfileInitializer on every
+      // page load. useAuthStore.user is only set during the login flow itself and
+      // is null after a refresh, so it is not a reliable source here.
+      const currentUserId = useUserStore.getState().profile?.userId;
+
       let conversation: {
         sharedWith?: SharedWithEntry[];
         initiator?: string;
@@ -100,13 +104,13 @@ export function createChatShareAdapter(
       const idsToLookup = Array.from(
         new Set([...sharedWithMongoIds, ...(ownerId ? [ownerId] : [])])
       );
-      let enrichedUsers: User[] = [];
+      let users: User[] = [];
       try {
-        enrichedUsers = await UsersApi.getUsersByIds(idsToLookup);
+        users = await UsersApi.getUsersByIds(idsToLookup);
       } catch {
         // Fallback: show IDs only
       }
-      const userMap = new Map<string, User>(enrichedUsers.map((u) => [u.userId, u]));
+      const userMap = new Map<string, User>(users.map((u) => [u.userId, u]));
 
       // Build accessLevel lookup from sharedWith entries
       const accessMap = new Map(sharedWithEntries.map((entry: SharedWithEntry) => [entry.userId, entry.accessLevel]));
@@ -114,9 +118,9 @@ export function createChatShareAdapter(
 
       // Add owner
       if (ownerId) {
-        const ownerData = userMap.get(ownerId);
+        const ownerData = userMap.get(ownerId.toString());
         members.push({
-          id: ownerId,
+          id: ownerId.toString(),
           type: 'user',
           name: ownerData?.name ?? ownerData?.email ?? 'Owner',
           email: ownerData?.email,

@@ -4,7 +4,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.utils.llm import get_embedding_model_config, get_llm
+from app.utils.llm import (
+    get_embedding_model_config,
+    get_image_generation_config,
+    get_llm,
+    get_stt_config,
+    get_stt_model_instance,
+    get_tts_config,
+    get_tts_model_instance,
+)
 
 
 @pytest.fixture
@@ -183,3 +191,181 @@ class TestGetEmbeddingModelConfig:
 
         with pytest.raises(KeyError):
             await get_embedding_model_config(mock_config_service)
+
+
+class TestGetImageGenerationConfig:
+    """Tests for get_image_generation_config function."""
+
+    @pytest.mark.asyncio
+    async def test_returns_default_image_config(self, mock_config_service):
+        """Prefers isDefault=True over first entry."""
+        mock_config_service.get_config.return_value = {
+            "imageGeneration": [
+                {"provider": "openAI", "model": "dall-e-3"},
+                {"provider": "stability", "model": "sdxl", "isDefault": True},
+            ]
+        }
+
+        result = await get_image_generation_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "stability"
+        assert result["isDefault"] is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_first_when_no_default(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "imageGeneration": [
+                {"provider": "openAI", "model": "dall-e-3"},
+                {"provider": "stability", "model": "sdxl"},
+            ]
+        }
+
+        result = await get_image_generation_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "openAI"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_empty(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"imageGeneration": []}
+        result = await get_image_generation_config(mock_config_service)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_missing_key(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"llm": []}
+        result = await get_image_generation_config(mock_config_service)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_bucket_is_none(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"imageGeneration": None}
+        result = await get_image_generation_config(mock_config_service)
+        assert result is None
+
+
+class TestGetTtsConfig:
+    """Tests for get_tts_config and _get_speech_config."""
+
+    @pytest.mark.asyncio
+    async def test_returns_default_tts(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "tts": [
+                {"provider": "openAI", "model": "tts-1"},
+                {"provider": "eleven", "model": "v2", "isDefault": True},
+            ]
+        }
+        result = await get_tts_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "eleven"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_first_tts(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "tts": [{"provider": "openAI", "model": "tts-1"}]
+        }
+        result = await get_tts_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "openAI"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_ai_models_missing(self, mock_config_service):
+        """Brand-new install: entire aiModels blob is empty/falsy."""
+        mock_config_service.get_config.return_value = {}
+        result = await get_tts_config(mock_config_service)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_tts_bucket_empty(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"tts": []}
+        result = await get_tts_config(mock_config_service)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_tts_bucket_is_none(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"tts": None}
+        result = await get_tts_config(mock_config_service)
+        assert result is None
+
+
+class TestGetSttConfig:
+    """Tests for get_stt_config."""
+
+    @pytest.mark.asyncio
+    async def test_returns_default_stt(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "stt": [
+                {"provider": "openAI", "model": "whisper-1"},
+                {"provider": "deepgram", "model": "nova-2", "isDefault": True},
+            ]
+        }
+        result = await get_stt_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "deepgram"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_first_stt(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "stt": [{"provider": "openAI", "model": "whisper-1"}]
+        }
+        result = await get_stt_config(mock_config_service)
+        assert result is not None
+        assert result["provider"] == "openAI"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_empty(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"stt": []}
+        result = await get_stt_config(mock_config_service)
+        assert result is None
+
+
+class TestGetTtsModelInstance:
+    """Tests for get_tts_model_instance."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_config(self, mock_config_service):
+        mock_config_service.get_config.return_value = {"tts": []}
+        result = await get_tts_model_instance(mock_config_service)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_model_and_config(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "tts": [{"provider": "openAI", "isDefault": True, "model": "tts-1"}]
+        }
+        mock_model = MagicMock()
+        with patch("app.utils.llm.get_tts_model", return_value=mock_model) as mock_get:
+            result = await get_tts_model_instance(mock_config_service)
+
+        assert result is not None
+        model, config = result
+        assert model is mock_model
+        assert config["provider"] == "openAI"
+        mock_get.assert_called_once_with("openAI", config)
+
+
+class TestGetSttModelInstance:
+    """Tests for get_stt_model_instance."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_config(self, mock_config_service):
+        """When there is no STT config, returns None without calling get_stt_model."""
+        mock_config_service.get_config.return_value = {}
+        with patch("app.utils.llm.get_stt_model") as mock_get:
+            result = await get_stt_model_instance(mock_config_service)
+        assert result is None
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_model_and_config(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "stt": [{"provider": "deepgram", "model": "nova-2"}]
+        }
+        mock_model = MagicMock()
+        with patch("app.utils.llm.get_stt_model", return_value=mock_model) as mock_get:
+            result = await get_stt_model_instance(mock_config_service)
+
+        assert result is not None
+        model, config = result
+        assert model is mock_model
+        assert config["provider"] == "deepgram"
+        mock_get.assert_called_once_with("deepgram", config)

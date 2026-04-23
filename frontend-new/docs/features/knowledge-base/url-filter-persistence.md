@@ -15,7 +15,8 @@ Array values are comma-separated. Default values are omitted from the URL.
 | `recordTypes` | `recordTypes` | `FILE,WEBPAGE` | _(none)_ |
 | `indexingStatus` | `indexingStatus` | `COMPLETED,FAILED` | _(none)_ |
 | `sizeRanges` | `sizeRanges` | `lt1mb,1to10mb` | _(none)_ |
-| `origins` | `origins` (all-records only) | `KB,CONNECTOR` | _(none)_ |
+| `origins` | `origins` (all-records only) | `COLLECTION,CONNECTOR` | _(none)_ |
+| `connectorIds` | `connectorIds` (all-records only) | `uuid-one,uuid-two` | _(none)_ |
 | `createdAfter` | `createdAfter` | `2024-01-01` | _(none)_ |
 | `createdBefore` | `createdBefore` | `2024-12-31` | _(none)_ |
 | `createdDateType` | `createdDateType` | `on` \| `between` \| `before` \| `after` | _(none)_ |

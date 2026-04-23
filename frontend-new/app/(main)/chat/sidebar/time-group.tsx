@@ -11,6 +11,7 @@ import {
   TIME_GROUP_KEYS,
   type TimeGroupKey,
 } from '@/lib/utils/group-by-time';
+import { getConversationLastActivityMs } from '@/lib/utils/conversation-activity';
 import type { Conversation } from '@/chat/types';
 
 // Re-export for consumers that still import from here
@@ -19,6 +20,7 @@ export { TIME_GROUP_KEYS, type TimeGroupKey };
 /** Maps the fixed TimeGroupKey to its i18n translation key */
 const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Today': 'timeGroup.today',
+  'Yesterday': 'timeGroup.yesterday',
   'Previous 7 Days': 'timeGroup.previous7Days',
   'Older': 'timeGroup.older',
 };
@@ -30,9 +32,7 @@ const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
 export function groupConversationsByTime(
   conversations: Conversation[]
 ): Record<TimeGroupKey, Conversation[]> {
-  return groupByTime(conversations, (conv) =>
-    conv.lastActivityAt ?? new Date(conv.updatedAt).getTime()
-  );
+  return groupByTime(conversations, (conv) => getConversationLastActivityMs(conv));
 }
 
 /**
@@ -41,7 +41,7 @@ export function groupConversationsByTime(
 export function getNonEmptyGroups(
   groups: Record<TimeGroupKey, Conversation[]>
 ): Array<[TimeGroupKey, Conversation[]]> {
-  return getNonEmptyGroupsGeneric(groups);
+  return getNonEmptyGroupsGeneric(groups, getConversationLastActivityMs);
 }
 
 // ========================================
@@ -60,7 +60,7 @@ interface TimeGroupProps {
 }
 
 /**
- * TimeGroup — renders a time-period sub-heading ("Today", "Previous 7 Days")
+ * TimeGroup — renders a time-period sub-heading ("Today", "Yesterday", …)
  * followed by the list of chat items in that period.
  */
 export function TimeGroup({
@@ -82,14 +82,14 @@ export function TimeGroup({
         align="center"
         style={{
           height: ELEMENT_HEIGHT,
-          padding: '0 12px',
+          padding: '0 var(--space-3)',
         }}
       >
         <span
           style={{
             fontSize: 12,
             fontWeight: 400,
-            lineHeight: '16px',
+            lineHeight: 'var(--line-height-1)',
             letterSpacing: '0.04px',
             color: 'var(--slate-10)',
           }}

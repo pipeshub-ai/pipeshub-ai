@@ -223,6 +223,7 @@ export type SSEEventType =
   | 'complete'
   | 'tool_call'
   | 'tool_success'
+  | 'artifact'
   | 'tool_error'
   /** Internal tool round-trip — UI ignores (same as legacy chat) */
   | 'tool_calls'
@@ -231,6 +232,29 @@ export type SSEEventType =
   | 'metadata'
   | 'restreaming'
   | 'error';
+
+/** Artifact produced by a sandbox tool (coding/database). */
+export interface SSEArtifactEvent {
+  artifactId?: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+  downloadUrl: string;
+  artifactType?: string;
+  isTemporary?: boolean;
+  recordId?: string;
+}
+
+/** Artifact metadata attached to a chat slot for display. */
+export interface ChatArtifact {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  downloadUrl: string;
+  artifactType: string;
+  recordId?: string;
+}
 
 export interface SSEConnectedEvent {
   message: string;
@@ -406,7 +430,10 @@ export interface StreamChatRequest {
   conversationId?: string;
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
-  /** Jira-style tool fullNames from agent detail — agent streams only */
+  /**
+   * Agent streams only → JSON `tools`: every enabled tool `fullName` (resolved from the
+   * catalog when the UI means “all tools”; `[]` = none).
+   */
   agentStreamTools?: string[];
 }
 
@@ -521,6 +548,9 @@ export interface ChatSlot {
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
   pendingCollections: Array<{ id: string; name: string }>;
+
+  /** Artifacts produced during the current streaming response. */
+  artifacts: ChatArtifact[];
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;

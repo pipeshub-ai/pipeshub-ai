@@ -515,9 +515,9 @@ class TestGetDocumentIdByVirtualRecordId:
             return_value=[{"documentId": "doc-1", "fileSizeBytes": 1024}]
         )
         bs = _make_blob_storage(graph_provider=mock_gp)
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id == "doc-1"
-        assert size == 1024
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] == "doc-1"
+        assert result["fileSizeBytes"] == 1024
 
     @pytest.mark.asyncio
     async def test_found_by_key_fallback(self):
@@ -527,9 +527,9 @@ class TestGetDocumentIdByVirtualRecordId:
             return_value={"documentId": "doc-2", "fileSizeBytes": 2048}
         )
         bs = _make_blob_storage(graph_provider=mock_gp)
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id == "doc-2"
-        assert size == 2048
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] == "doc-2"
+        assert result["fileSizeBytes"] == 2048
 
     @pytest.mark.asyncio
     async def test_not_found(self):
@@ -537,9 +537,8 @@ class TestGetDocumentIdByVirtualRecordId:
         mock_gp.get_nodes_by_filters = AsyncMock(return_value=[])
         mock_gp.get_document = AsyncMock(return_value=None)
         bs = _make_blob_storage(graph_provider=mock_gp)
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id is None
-        assert size is None
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_found_but_no_document_id_field(self):
@@ -548,9 +547,9 @@ class TestGetDocumentIdByVirtualRecordId:
             return_value=[{"fileSizeBytes": 1024}]
         )
         bs = _make_blob_storage(graph_provider=mock_gp)
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id is None
-        assert size is None
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] is None
+        assert result["fileSizeBytes"] == 1024
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):

@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Box, Flex, Button, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'next/navigation';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import AuthTitleSection from '../components/auth-title-section';
@@ -53,6 +54,7 @@ export default function MultipleProviders({
   authProviders,
   onBack,
 }: MultipleProvidersProps) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [oauthError, setOauthError] = useState('');
@@ -102,8 +104,8 @@ export default function MultipleProviders({
 
   const dividerLabel =
     socialNames.length === 1
-      ? `or continue with ${socialNames[0]}`
-      : 'or continue with any one of them';
+      ? t('auth.common.orContinueWith', { provider: socialNames[0] })
+      : t('auth.common.orContinueWithAny');
 
   // ── Generic error ─────────────────────────────────────────────────────────
 
@@ -112,9 +114,9 @@ export default function MultipleProviders({
 
   const inlinePasswordError =
     auth.error?.type === 'wrongPassword'
-      ? 'Incorrect password.'
+      ? t('auth.common.incorrectPassword')
       : auth.error?.type === 'noPasswordSet'
-        ? 'No password set. Use Forgot Password below.'
+        ? t('auth.common.noPasswordSet')
         : undefined;
 
   // ── Password submit ───────────────────────────────────────────────────────
@@ -157,7 +159,7 @@ export default function MultipleProviders({
                 setAuthVariant('password');
               }}
             >
-              Sign in with password instead
+              {t('auth.common.signInWithPasswordInstead')}
             </Text>
           </Flex>
         </Box>
@@ -216,7 +218,7 @@ export default function MultipleProviders({
                 size="3"
                 disabled={!password}
                 loading={auth.loading}
-                loadingLabel="Signing in…"
+                loadingLabel={t('auth.common.signingIn')}
                 style={{
                   flex: 1,
                   backgroundColor: 'var(--accent-9)',
@@ -224,7 +226,7 @@ export default function MultipleProviders({
                   fontWeight: 500,
                 }}
               >
-                Sign In
+                {t('auth.common.signIn')}
               </LoadingButton>
             </Flex>
 
@@ -243,7 +245,7 @@ export default function MultipleProviders({
                     setAuthVariant('otp');
                   }}
                 >
-                  Sign in with email OTP
+                  {t('auth.common.signInWithEmailOtp')}
                 </Text>
               </Flex>
             )}
@@ -306,7 +308,7 @@ export default function MultipleProviders({
                   />
                 )}
                 {hasOAuth && (!oauthClientId || !oauthAuthUrl) && (
-                  <ErrorBanner message="OAuth sign-in is currently unavailable. Contact your administrator." />
+                  <ErrorBanner message={t('auth.common.oauthUnavailable')} />
                 )}
               </>
             )}
@@ -352,7 +354,7 @@ export default function MultipleProviders({
               hasSso && hasSocial
                 ? dividerLabel
                 : hasSso
-                  ? 'or continue with Single Sign-On'
+                  ? t('auth.common.orContinueWithSso')
                   : dividerLabel
             }
           />
@@ -393,14 +395,14 @@ export default function MultipleProviders({
         {hasSocial && hasSso && <Divider label={dividerLabel} />}
 
         {oauthError && <ErrorBanner message={oauthError} />}
-        {hasGoogle && !googleClientId && (
-          <ErrorBanner message="Google sign-in is currently unavailable. Contact your administrator." />
-        )}
-        {hasMicrosoft && !msClientId && (
-          <ErrorBanner message="Microsoft sign-in is currently unavailable. Contact your administrator." />
-        )}
+                {hasGoogle && !googleClientId && (
+                  <ErrorBanner message={t('auth.common.googleUnavailable')} />
+                )}
+                {hasMicrosoft && !msClientId && (
+                  <ErrorBanner message={t('auth.common.microsoftUnavailable')} />
+                )}
         {hasOAuth && (!oauthClientId || !oauthAuthUrl) && (
-          <ErrorBanner message="OAuth sign-in is currently unavailable. Contact your administrator." />
+          <ErrorBanner message={t('auth.common.oauthUnavailable')} />
         )}
 
         {hasGoogle && googleClientId && (

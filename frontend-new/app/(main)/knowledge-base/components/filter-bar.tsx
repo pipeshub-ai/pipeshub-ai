@@ -107,7 +107,9 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       label: opt.label,
       icon: getIconForRecordType(opt.id),
     }));
-  }, [availableFilters?.recordTypes]);
+  // Dep: whole `availableFilters` — React Compiler (react-hooks/preserve-manual-memoization)
+  // disagrees with optional-chained field deps like [availableFilters?.recordTypes].
+  }, [availableFilters]);
 
   // Dynamic status options from API
   const statusOptions = useMemo(() => {
@@ -121,17 +123,26 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         customIcon: <LapTimerIcon size={20} color={getColorForStatus(opt.id)}/>,
       }),
     }));
-  }, [availableFilters?.indexingStatus]);
+  }, [availableFilters]);
 
   // Dynamic source options from API (All Records only - origins only)
   const sourceOptions = useMemo(() => {
     if (!availableFilters?.origins) return [];
     return availableFilters.origins.map((opt) => ({
       value: opt.id,
-      label: opt.id === 'KB' ? 'Collections' : opt.label,
-      icon: opt.id === 'KB' ? 'folder' : 'cloud',
+      label: opt.id === 'COLLECTION' ? 'Collections' : opt.label,
+      icon: opt.id === 'COLLECTION' ? 'folder' : 'cloud',
     }));
-  }, [availableFilters?.origins]);
+  }, [availableFilters]);
+
+  const connectorOptions = useMemo(() => {
+    if (!availableFilters?.connectors) return [];
+    return availableFilters.connectors.map((opt) => ({
+      value: opt.id,
+      label: opt.label,
+      icon: 'hub',
+    }));
+  }, [availableFilters]);
 
   // Common size options (hardcoded - not from API)
   const SIZE_OPTIONS = [
@@ -146,6 +157,9 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const handleStatusChange = (values: string[]) => updateFilter({ indexingStatus: values as IndexingStatus[] });
 
   const handleSourceChange = (values: string[]) => updateFilter({ origins: values as NodeOrigin[] });
+
+  const handleConnectorChange = (values: string[]) =>
+    updateFilter({ connectorIds: values });
 
   const handleSizeChange = (values: string[]) => updateFilter({ sizeRanges: values as SizeRange[] });
 
@@ -189,6 +203,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     (activeFilter.recordTypes?.length ?? 0) > 0 ||
     (activeFilter.indexingStatus?.length ?? 0) > 0 ||
     (activeFilter.origins?.length ?? 0) > 0 ||
+    (activeFilter.connectorIds?.length ?? 0) > 0 ||
     (activeFilter.sizeRanges?.length ?? 0) > 0 ||
     activeFilter.createdAfter || activeFilter.createdBefore ||
     activeFilter.updatedAfter || activeFilter.updatedBefore
@@ -200,7 +215,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       gap="3"
       style={{
         minHeight: '40px',
-        padding: '6px 16px',
+        padding: 'var(--space-2) var(--space-4)',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
         backdropFilter: 'blur(8px)',
@@ -246,6 +261,22 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         />
       )}
 
+      {/* Connector instances — All Records only */}
+      {!isCollectionsMode && (
+        <FilterDropdown
+          label={t('filter.connector')}
+          icon="hub"
+          options={connectorOptions}
+          selectedValues={activeFilter.connectorIds || []}
+          onSelectionChange={handleConnectorChange}
+          searchable
+          disabled={
+            connectorOptions.length === 0 && (activeFilter.connectorIds?.length ?? 0) === 0
+          }
+          pluralLabel={t('filter.connectors')}
+        />
+      )}
+
       {/* Size Filter */}
       <FilterDropdown
         label={t('filter.size')}
@@ -287,7 +318,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           onClick={resetFilter}
           style={{
             height: '26px',
-            padding: '0 8px',
+            padding: '0 var(--space-2)',
             borderRadius: 'var(--radius-2)',
             border: '1px dashed var(--gray-a7)',
             cursor: 'pointer',

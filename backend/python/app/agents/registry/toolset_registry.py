@@ -378,6 +378,9 @@ class ToolsetRegistry:
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
             'app.agents.actions.knowledge_hub.knowledge_hub',
+            'app.agents.actions.coding_sandbox.coding_sandbox',
+            'app.agents.actions.database_sandbox.database_sandbox',
+            'app.agents.actions.image_generator.image_generator',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -398,7 +401,7 @@ class ToolsetRegistry:
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',
-            # 'app.agents.actions.microsoft.one_drive.one_drive',
+            'app.agents.actions.microsoft.one_drive.one_drive',
             # 'app.agents.actions.microsoft.sharepoint.sharepoint',
             'app.agents.actions.microsoft.teams.teams',
             'app.agents.actions.microsoft.outlook.outlook',

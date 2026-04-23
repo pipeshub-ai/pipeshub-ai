@@ -12,7 +12,6 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { buildStreamRequestModeFields, type ConversationMessage, type StreamChatRequest } from './types';
@@ -135,21 +134,14 @@ export function buildExternalStoreConfig(
       const slotAgent = currentSlot.threadAgentId?.trim() || null;
       const effectiveAgentId = slotAgent ?? agentIdFromUrl ?? undefined;
 
-      let agentStreamTools: string[] = [];
-      if (effectiveAgentId) {
-        if (currentSlot.agentStreamTools && currentSlot.agentStreamTools.length > 0) {
-          agentStreamTools = currentSlot.agentStreamTools;
-        } else if (agentIdFromUrl === effectiveAgentId) {
-          agentStreamTools = currentState.agentStreamTools ?? [];
-        } else {
-          try {
-            const { toolFullNames } = await AgentsApi.getAgent(effectiveAgentId);
-            agentStreamTools = toolFullNames ?? [];
-          } catch {
-            agentStreamTools = [];
-          }
-        }
-      }
+      const toolsSel = currentState.agentStreamTools;
+      const toolCatalog = currentState.agentToolCatalogFullNames;
+      /** Agent streams only: store `null` = all tools → full catalog `fullName`s; else explicit list. */
+      const streamTools = !effectiveAgentId
+        ? []
+        : toolsSel === null
+          ? [...toolCatalog]
+          : [...toolsSel];
 
       // Resolve the model for the CURRENT context (agent or assistant) so the
       // submitted payload matches exactly what the chat input pill shows.
@@ -160,22 +152,38 @@ export function buildExternalStoreConfig(
         modelFriendlyName: '',
       };
 
+      const isAgent = Boolean(effectiveAgentId);
+      const knowledgeScope = currentState.agentKnowledgeScope;
+      const knowledgeDefaults = currentState.agentKnowledgeDefaults;
+      /** UI “full knowledge” keeps `scope` null — still send explicit ids like the panel shows. */
+      const resolvedAgentKnowledge =
+        isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
+
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
-        filters: {
-          // KB-origin nodes from knowledge-hub/nodes have nodeType "app" and
-          // must go in the apps[] filter, not kb[]. The store still uses the
-          // "kb" key internally (UI naming) but the API contract is apps[].
-          apps: [...currentState.settings.filters.apps, ...kbFilter],
-          kb: [],
-        },
+        filters: isAgent
+          ? {
+              apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+                (id): id is string => typeof id === 'string' && id.trim().length > 0
+              ),
+              kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+                (id): id is string => typeof id === 'string' && id.trim().length > 0
+              ),
+            }
+          : {
+              // KB-origin nodes from knowledge-hub/nodes have nodeType "app" and
+              // must go in the apps[] filter, not kb[]. The store still uses the
+              // "kb" key internally (UI naming) but the API contract is apps[].
+              apps: [...currentState.settings.filters.apps, ...kbFilter],
+              kb: [],
+            },
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {
               agentId: effectiveAgentId,
-              agentStreamTools,
+              agentStreamTools: streamTools,
             }
           : {}),
       };
