@@ -11,6 +11,9 @@ const { buildCronFromSchedule } = require('./cron-from-schedule');
 
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
+const FULL_SYNC_MODE_DELTA = 'delta';
+const FULL_SYNC_MODE_REPLACE = 'replace';
+const RECOVERY_MODE_REPLAY_ONLY = 'replay-only';
 
 function encryptToken(value) {
   if (!value) return null;
@@ -61,6 +64,22 @@ function allowedExtensionSetFromMeta(meta) {
   return new Set(allowed.map((e) => String(e).toLowerCase().replace(/^\./, '')));
 }
 
+function buildFullSyncSignature(meta) {
+  if (!meta) return '';
+  const allowed = Array.isArray(meta.allowedExtensions)
+    ? [...meta.allowedExtensions]
+      .map((e) => String(e).toLowerCase().replace(/^\./, ''))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+    : [];
+  return JSON.stringify({
+    rootPath: path.resolve(String(meta.rootPath || '')),
+    apiBaseUrl: String(meta.apiBaseUrl || ''),
+    includeSubfolders: meta.includeSubfolders !== false,
+    allowedExtensions: allowed,
+  });
+}
+
 /** Collects file paths referenced by a single journal/replay event (non-directory). */
 function addKnownFilePathsFromEvent(ev, knownPaths) {
   if (!ev || ev.isDirectory) return;
@@ -83,6 +102,8 @@ class LocalSyncManager {
     // app launch before the window mounts the connector UI.
     this.retryTimers = new Map();
     this.retryAttempts = new Map();
+    this.retryModes = new Map();
+    this.lastReplaceSyncSignature = new Map();
     /** @type {Map<string, Promise<void>>} */
     this.fullSyncInFlight = new Map();
   }
@@ -95,21 +116,24 @@ class LocalSyncManager {
       //     already-synced ones — replaying stale rename/move events corrupts
       //     backend state when files have since been renamed again offline).
       //  2. If replay fails (still offline), arm the retry loop.
-      //  3. Full filesystem crawl is triggered via triggerBackendFullSync()
-      //     after start() so the backend reconciles against actual disk state.
+      //  3. Full filesystem crawl is triggered on startup as a replace-sync,
+      //     so the backend is rebuilt from the current disk snapshot.
       //  4. Watcher rescan+reconcile (offline FS deltas) runs inside
       //     watcher.start() when the renderer calls start().
       try {
         await this.replay(connectorId);
       } catch (error) {
         console.warn(`[local-sync] startup replay failed for ${connectorId}:`, error);
-        this.armRetry(connectorId);
+        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
       }
       // Full-sync: scan every file on disk and send to backend. This covers
       // files renamed/added/deleted while the app was closed.
-      this.triggerBackendFullSync(connectorId).catch((err) => {
+      this.triggerBackendFullSync(connectorId, { mode: FULL_SYNC_MODE_REPLACE }).then(() => {
+        const meta = this.journal.getMeta(connectorId);
+        this.lastReplaceSyncSignature.set(connectorId, buildFullSyncSignature(meta));
+      }).catch((err) => {
         console.warn(`[local-sync:${connectorId}] startup full-sync failed:`, err.message || err);
-        this.armRetry(connectorId);
+        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
       });
       // SCHEDULED strategy: the periodic timer lives on a runtime that the
       // renderer's start() will create. Replay + triggerBackendFullSync above
@@ -185,8 +209,12 @@ class LocalSyncManager {
       scheduleTimer: null,
     };
     this.runtimes.set(connectorId, runtime);
+    const currentMeta = this.journal.getMeta(connectorId);
+    const currentFullSyncSignature = buildFullSyncSignature(currentMeta);
+    const shouldRunReplaceFullSync = this.lastReplaceSyncSignature.get(connectorId) !== currentFullSyncSignature;
 
     const processBatch = async ({ batchId, timestamp, events, source }) => {
+      const backlogBeforeAppend = this.journal.getPendingOrFailedBatches(connectorId);
       // Pre-compute replayEvents for batches containing directory-level events,
       // using the watcher state as it looks right now. Mirrors CLI behavior:
       // if the directory is deleted before a replay happens, we still know
@@ -198,14 +226,24 @@ class LocalSyncManager {
       }
       this.journal.appendBatch(connectorId, { batchId, timestamp, events, source, replayEvents });
       this.emitStatus(connectorId);
-      try {
-        await this.dispatchFileEventBatch({
-          apiBaseUrl: runtime.apiBaseUrl,
-          accessToken: runtime.accessToken,
-          connectorId,
-          batchId, timestamp, events,
-        });
+      if (!events || events.length === 0) {
         this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
+        runtime.lastError = null;
+        this.emitStatus(connectorId);
+        return;
+      }
+      try {
+        if (backlogBeforeAppend.length > 0) {
+          await this.replay(connectorId);
+        } else {
+          await this.dispatchFileEventBatch({
+            apiBaseUrl: runtime.apiBaseUrl,
+            accessToken: runtime.accessToken,
+            connectorId,
+            batchId, timestamp, events,
+          });
+          this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
+        }
         runtime.lastError = null;
         // Only cancel retry if no other failed/pending batches remain — a live
         // success here doesn't mean the journal is drained. Cancelling
@@ -216,9 +254,13 @@ class LocalSyncManager {
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        this.journal.updateBatchStatus(connectorId, batchId, 'failed', { lastError: msg });
+        if (backlogBeforeAppend.length === 0) {
+          this.journal.updateBatchStatus(connectorId, batchId, 'failed', { lastError: msg });
+        }
         runtime.lastError = msg;
-        this.armRetry(connectorId);
+        if (backlogBeforeAppend.length === 0) {
+          this.armRetry(connectorId, RECOVERY_MODE_REPLAY_ONLY);
+        }
       }
       this.emitStatus(connectorId);
     };
@@ -245,12 +287,16 @@ class LocalSyncManager {
     // This covers the "app restart → full sync" edge case: the backend crawls
     // every file in the sync root and upserts/deletes as needed, independent
     // of journal history.
-    this.triggerBackendFullSync(connectorId).catch((err) => {
-      console.warn(`[local-sync:${connectorId}] backend full-sync trigger failed:`, err.message || err);
-      const rt = this.runtimes.get(connectorId);
-      if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
-      this.armRetry(connectorId);
-    });
+    if (shouldRunReplaceFullSync) {
+      this.triggerBackendFullSync(connectorId, { mode: FULL_SYNC_MODE_REPLACE }).then(() => {
+        this.lastReplaceSyncSignature.set(connectorId, currentFullSyncSignature);
+      }).catch((err) => {
+        console.warn(`[local-sync:${connectorId}] backend full-sync trigger failed:`, err.message || err);
+        const rt = this.runtimes.get(connectorId);
+        if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
+        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
+      });
+    }
 
     // Scheduled-sync tick (desktop-side mirror of the backend cron job).
     // Fires every `intervalMinutes`, runs replay + rescan — same work the
@@ -278,18 +324,18 @@ class LocalSyncManager {
   /**
    * Coalesces concurrent full-syncs (e.g. init + start) into one in-flight run per connector.
    */
-  async triggerBackendFullSync(connectorId) {
+  async triggerBackendFullSync(connectorId, opts) {
     if (!connectorId) return;
     let p = this.fullSyncInFlight.get(connectorId);
     if (p) return p;
-    p = this._triggerBackendFullSyncBody(connectorId).finally(() => {
+    p = this._triggerBackendFullSyncBody(connectorId, opts).finally(() => {
       this.fullSyncInFlight.delete(connectorId);
     });
     this.fullSyncInFlight.set(connectorId, p);
     return p;
   }
 
-  async _triggerBackendFullSyncBody(connectorId) {
+  async _triggerBackendFullSyncBody(connectorId, opts) {
     const meta = this.journal.getMeta(connectorId);
     if (!meta || !meta.rootPath || !meta.apiBaseUrl) return;
     const token = decryptToken(meta.accessTokenEnc) || meta.accessToken;
@@ -300,14 +346,15 @@ class LocalSyncManager {
 
     const includeSubfolders = meta.includeSubfolders !== false;
     const extSet = allowedExtensionSetFromMeta(meta);
+    const mode = opts && opts.mode === FULL_SYNC_MODE_REPLACE
+      ? FULL_SYNC_MODE_REPLACE
+      : FULL_SYNC_MODE_DELTA;
 
     const scan = await scanSyncRoot(rootPath, { includeSubfolders });
-    const currentFiles = new Set();
     const events = [];
     for (const [relPath, entry] of scan) {
       if (entry.isDirectory) continue;
       if (!fileMatchesAllowedExtensions(relPath, extSet)) continue;
-      currentFiles.add(relPath);
       events.push({
         type: 'CREATED',
         path: relPath,
@@ -317,54 +364,67 @@ class LocalSyncManager {
       });
     }
 
-    // Collect every file path the backend might have a record for: union of
-    // watcher state + all paths ever referenced in journal CREATED/MODIFIED/
-    // RENAMED/MOVED (including batch-level directory expansions). Then DELETE
-    // any that aren't currently on disk (for allowed extensions / scan depth).
-    const knownPaths = new Set();
+    if (mode === FULL_SYNC_MODE_DELTA) {
+      const currentFiles = new Set(events.map((event) => event.path));
 
-    const oldFiles = loadWatcherStateFiles(this.baseDir, connectorId);
-    for (const oldPath of Object.keys(oldFiles)) {
-      const entry = oldFiles[oldPath];
-      if (entry && !entry.isDirectory) knownPaths.add(oldPath);
-    }
+      // Collect every file path the backend might have a record for: union of
+      // watcher state + all paths ever referenced in journal CREATED/MODIFIED/
+      // RENAMED/MOVED (including batch-level directory expansions). Then DELETE
+      // any that aren't currently on disk (for allowed extensions / scan depth).
+      const knownPaths = new Set();
 
-    const journalBatches = this.journal.listBatches(connectorId);
-    for (const batch of journalBatches) {
-      for (const ev of (batch.events || [])) {
-        if (ev.isDirectory) continue;
-        addKnownFilePathsFromEvent(ev, knownPaths);
-        if (ev.replayEvents) {
-          for (const re of ev.replayEvents) {
+      const oldFiles = loadWatcherStateFiles(this.baseDir, connectorId);
+      for (const oldPath of Object.keys(oldFiles)) {
+        const entry = oldFiles[oldPath];
+        if (entry && !entry.isDirectory) knownPaths.add(oldPath);
+      }
+
+      const journalBatches = this.journal.listBatches(connectorId);
+      for (const batch of journalBatches) {
+        for (const ev of (batch.events || [])) {
+          if (ev.isDirectory) continue;
+          addKnownFilePathsFromEvent(ev, knownPaths);
+          if (ev.replayEvents) {
+            for (const re of ev.replayEvents) {
+              addKnownFilePathsFromEvent(re, knownPaths);
+            }
+          }
+        }
+        if (Array.isArray(batch.replayEvents)) {
+          for (const re of batch.replayEvents) {
             addKnownFilePathsFromEvent(re, knownPaths);
           }
         }
       }
-      if (Array.isArray(batch.replayEvents)) {
-        for (const re of batch.replayEvents) {
-          addKnownFilePathsFromEvent(re, knownPaths);
+
+      for (const oldPath of knownPaths) {
+        if (!currentFiles.has(oldPath)) {
+          events.push({
+            type: 'DELETED',
+            path: oldPath,
+            timestamp: Date.now(),
+            isDirectory: false,
+          });
         }
       }
     }
 
-    for (const oldPath of knownPaths) {
-      if (!currentFiles.has(oldPath)) {
-        events.push({
-          type: 'DELETED',
-          path: oldPath,
-          timestamp: Date.now(),
-          isDirectory: false,
-        });
-      }
-    }
-
-    if (events.length === 0) return;
-
     const pending = this.journal.getPendingOrFailedBatches(connectorId);
     const batchSize = 50;
     try {
-      for (let i = 0; i < events.length; i += batchSize) {
-        const chunk = events.slice(i, i + batchSize);
+      const batches = [];
+      if (events.length === 0 && mode === FULL_SYNC_MODE_REPLACE) {
+        batches.push({ events: [], resetBeforeApply: true });
+      } else {
+        for (let i = 0; i < events.length; i += batchSize) {
+          batches.push({
+            events: events.slice(i, i + batchSize),
+            resetBeforeApply: mode === FULL_SYNC_MODE_REPLACE && i === 0,
+          });
+        }
+      }
+
+      for (const batch of batches) {
         const batchId = `fullsync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         await this.dispatchFileEventBatch({
           apiBaseUrl: meta.apiBaseUrl,
@@ -372,7 +432,8 @@ class LocalSyncManager {
           connectorId,
           batchId,
           timestamp: Date.now(),
-          events: chunk,
+          events: batch.events,
+          resetBeforeApply: batch.resetBeforeApply,
         });
       }
     } catch (err) {
@@ -390,23 +451,39 @@ class LocalSyncManager {
     }
 
     this.cancelRetry(connectorId);
-    console.log(`[local-sync:${connectorId}] backend full-sync: sent ${events.length} file(s)`);
+    if (mode === FULL_SYNC_MODE_REPLACE) {
+      this.lastReplaceSyncSignature.set(connectorId, buildFullSyncSignature(meta));
+    }
+    console.log(`[local-sync:${connectorId}] backend full-sync (${mode}): sent ${events.length} file(s)`);
   }
 
   /**
-   * Replay pending/failed journal batches, then run a backend full-sync reconcile.
-   * Used by the retry timer so recovery works when only full-sync fails with an empty journal.
+   * Replay pending/failed journal batches from the journal. Only startup/restart
+   * recovery escalates to a replace full-sync; reconnect recovery stays journal-driven.
    */
   async runRecoveryTick(connectorId) {
-    await this.replay(connectorId);
-    await this.triggerBackendFullSync(connectorId);
+    const mode = this.retryModes.get(connectorId) || RECOVERY_MODE_REPLAY_ONLY;
+    const replayResult = await this.replay(connectorId);
+    if (mode === FULL_SYNC_MODE_REPLACE) {
+      await this.triggerBackendFullSync(connectorId, { mode: FULL_SYNC_MODE_REPLACE });
+    }
+    return replayResult;
   }
 
-  // Self-scheduling retry: when dispatch or full-sync fails, re-run replay then
-  // triggerBackendFullSync with exponential backoff. Keyed on connectorId so it
-  // works both while the watcher is running AND during pre-start() startup recovery.
-  armRetry(connectorId) {
-    if (!connectorId || this.retryTimers.has(connectorId)) return;
+  // Self-scheduling retry: when dispatch fails, re-run journal replay; when the
+  // startup replace-sync fails, replay first and then rebuild from disk.
+  // Keyed on connectorId so it works both while the watcher is running and
+  // during pre-start() startup recovery.
+  armRetry(connectorId, mode) {
+    if (!connectorId) return;
+    const nextMode = mode === FULL_SYNC_MODE_REPLACE
+      ? FULL_SYNC_MODE_REPLACE
+      : RECOVERY_MODE_REPLAY_ONLY;
+    const existingMode = this.retryModes.get(connectorId);
+    if (existingMode !== FULL_SYNC_MODE_REPLACE || nextMode === FULL_SYNC_MODE_REPLACE) {
+      this.retryModes.set(connectorId, nextMode);
+    }
+    if (this.retryTimers.has(connectorId)) return;
     const attempt = this.retryAttempts.get(connectorId) || 0;
     const delay = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS);
     this.retryAttempts.set(connectorId, attempt + 1);
@@ -414,7 +491,7 @@ class LocalSyncManager {
       this.retryTimers.delete(connectorId);
       this.runRecoveryTick(connectorId)
         .then(() => { this.retryAttempts.delete(connectorId); })
-        .catch(() => { this.armRetry(connectorId); });
+        .catch(() => { this.armRetry(connectorId, this.retryModes.get(connectorId)); });
     }, delay);
     if (timer.unref) timer.unref();
     this.retryTimers.set(connectorId, timer);
@@ -424,6 +501,7 @@ class LocalSyncManager {
     const timer = this.retryTimers.get(connectorId);
     if (timer) { clearTimeout(timer); this.retryTimers.delete(connectorId); }
     this.retryAttempts.delete(connectorId);
+    this.retryModes.delete(connectorId);
   }
 
   async runScheduledTick(connectorId) {
@@ -588,16 +666,18 @@ class LocalSyncManager {
 
     this.emitStatus(connectorId);
     if (rethrow) {
-      this.armRetry(connectorId);
+      this.armRetry(connectorId, RECOVERY_MODE_REPLAY_ONLY);
       throw rethrow;
     }
     if (replayedBatches > 0) this.cancelRetry(connectorId);
     return { replayedBatches, replayedEvents, skippedBatches };
   }
 
-  /** Full resync: same as {@link replay} but replays every journal line, including synced. */
+  /** Full resync: reset backend state from the current disk snapshot after replaying pending batches. */
   async fullResync(connectorId) {
-    return this.replay(connectorId, { includeSynced: true });
+    const replayResult = await this.replay(connectorId);
+    await this.triggerBackendFullSync(connectorId, { mode: FULL_SYNC_MODE_REPLACE });
+    return replayResult;
   }
 
   /** Stop all active watchers, draining pending dispatches. Called on app quit. */

@@ -3,10 +3,12 @@ const path = require('path');
 const chokidar = require('chokidar');
 const { EventCorrelator } = require('./event-correlator');
 const { BatchDispatcher } = require('./batch-dispatcher');
+const { expandWatchEventsForReplay } = require('./replayer');
 const {
   WatcherStateStore,
   scanSyncRoot,
   contentQuickHash,
+  normalizeRelKey,
 } = require('./watcher-state');
 const { IGNORED_PATTERNS } = require('./ignored-patterns');
 
@@ -53,6 +55,8 @@ class ConnectorFsWatcher {
     this.running = false;
     this.ready = false;
     this.stateSyncTimer = null;
+    this.syntheticSuppressionWindowMs = 1500;
+    this.suppressedEventKeys = new Map();
 
     this.stateStore = new WatcherStateStore({
       baseDir: this.baseDir,
@@ -93,8 +97,13 @@ class ConnectorFsWatcher {
     });
 
     this.correlator.setListener((events) => {
-      const filtered = this.applyFilters(events);
-      if (filtered.length > 0) this.dispatcher.push(filtered);
+      const filtered = this.dropSuppressedEvents(this.applyFilters(events));
+      const dispatchable = this.expandForDispatch(filtered);
+      if (dispatchable.length > 0) {
+        this.noteSyntheticFollowupSuppressions(dispatchable);
+        this.applyEventsToState(dispatchable).catch(() => { /* ignore */ });
+        this.dispatcher.push(dispatchable);
+      }
     });
   }
 
@@ -144,6 +153,100 @@ class ConnectorFsWatcher {
     });
   }
 
+  expandForDispatch(events, filesSnapshot) {
+    if (!events || events.length === 0) return [];
+    if (!events.some((event) => event.isDirectory)) return events;
+    return expandWatchEventsForReplay(
+      events,
+      filesSnapshot || this.stateStore.getSnapshot().files
+    );
+  }
+
+  dropSuppressedEvents(events) {
+    if (!events || events.length === 0) return [];
+    const now = Date.now();
+    for (const [key, expiresAt] of this.suppressedEventKeys) {
+      if (expiresAt <= now) this.suppressedEventKeys.delete(key);
+    }
+    return events.filter((event) => {
+      const key = `${event.type}:${event.path}`;
+      const expiresAt = this.suppressedEventKeys.get(key);
+      if (!expiresAt || expiresAt <= now) return true;
+      return false;
+    });
+  }
+
+  noteSyntheticFollowupSuppressions(events) {
+    if (!events || events.length === 0) return;
+    const expiresAt = Date.now() + this.syntheticSuppressionWindowMs;
+    for (const event of events) {
+      if (!event || (event.type !== 'RENAMED' && event.type !== 'MOVED')) continue;
+      if (event.oldPath) this.suppressedEventKeys.set(`DELETED:${event.oldPath}`, expiresAt);
+      if (event.path) this.suppressedEventKeys.set(`CREATED:${event.path}`, expiresAt);
+    }
+  }
+
+  async captureRawState(eventName, absPath, stats) {
+    if (!stats) return;
+    if (!['add', 'addDir'].includes(eventName)) return;
+    const relKey = normalizeRelKey(absPath, this.rootPath);
+    if (!relKey) return;
+
+    const isDirectory = typeof stats.isDirectory === 'function' ? stats.isDirectory() : eventName === 'addDir';
+    const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
+    const size = !isDirectory && typeof stats.size === 'number' ? stats.size : 0;
+    const mtimeMs = typeof stats.mtimeMs === 'number' ? stats.mtimeMs : Date.now();
+    const quickHash = isDirectory ? undefined : await contentQuickHash(absPath);
+
+    this.stateStore.getSnapshot().files[relKey] = {
+      inode,
+      size,
+      mtimeMs,
+      isDirectory,
+      quickHash,
+    };
+    this.stateStore.scheduleSave();
+  }
+
+  async applyEventsToState(events) {
+    if (!events || events.length === 0) return;
+    let touched = false;
+
+    for (const event of events) {
+      if (!event || event.isDirectory) continue;
+      const nextPath = String(event.path || '').trim();
+      if (!nextPath) continue;
+      if (event.oldPath) delete this.stateStore.getSnapshot().files[String(event.oldPath)];
+
+      if (event.type === 'DELETED') {
+        delete this.stateStore.getSnapshot().files[nextPath];
+        touched = true;
+        continue;
+      }
+
+      const absPath = path.resolve(this.rootPath, nextPath);
+      try {
+        const stats = await fs.promises.lstat(absPath);
+        if (!stats.isFile()) continue;
+        const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
+        const quickHash = await contentQuickHash(absPath);
+        this.stateStore.getSnapshot().files[nextPath] = {
+          inode,
+          size: stats.size,
+          mtimeMs: stats.mtimeMs,
+          isDirectory: false,
+          quickHash,
+        };
+        touched = true;
+      } catch {
+        delete this.stateStore.getSnapshot().files[nextPath];
+        touched = true;
+      }
+    }
+
+    if (touched) this.stateStore.scheduleSave();
+  }
+
   async start() {
     if (this.running) return;
     if (!fs.existsSync(this.rootPath)) {
@@ -163,12 +266,14 @@ class ConnectorFsWatcher {
 
     if (hasPreviousState) {
       this.log('Performing startup reconciliation...');
+      const replayFiles = { ...prevState.files };
       const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
       const filtered = this.applyFilters(offlineEvents);
-      if (filtered.length > 0) {
-        this.log(`Found ${filtered.length} change(s) since last run.`);
-        this.dispatcher.push(filtered, { source: 'reconcile' });
+      const dispatchable = this.expandForDispatch(filtered, replayFiles);
+      if (dispatchable.length > 0) {
+        this.log(`Found ${dispatchable.length} change(s) since last run.`);
+        this.dispatcher.push(dispatchable, { source: 'reconcile' });
       }
     }
 
@@ -187,9 +292,10 @@ class ConnectorFsWatcher {
       atomic: 200,
     });
 
-    this.watcher.on('all', (eventName, filePath, stats) => {
+    this.watcher.on('all', async (eventName, filePath, stats) => {
       if (!this.ready) return;
       if (!['add', 'addDir', 'unlink', 'unlinkDir', 'change'].includes(eventName)) return;
+      await this.captureRawState(filePath ? eventName : '', filePath, stats).catch(() => { /* ignore */ });
       this.scheduleStateSyncFromDisk();
       this.correlator.push(eventName, filePath, stats).catch(() => { /* ignore */ });
     });
@@ -245,12 +351,14 @@ class ConnectorFsWatcher {
   }
 
   async rescan() {
+    const replayFiles = { ...this.stateStore.getSnapshot().files };
     const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
     const filtered = this.applyFilters(events);
-    if (filtered.length > 0) this.dispatcher.push(filtered, { source: 'reconcile' });
-    return filtered;
+    const dispatchable = this.expandForDispatch(filtered, replayFiles);
+    if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
+    return dispatchable;
   }
 }
 
