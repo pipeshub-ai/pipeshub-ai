@@ -539,7 +539,11 @@ describe('index.ts - Application Bootstrap', () => {
   // =========================================================================
   // Application class import
   // =========================================================================
-  describe('Application class availability', () => {
+  describe('Application class availability', function () {
+    // Importing ../src/app pulls the full module graph; under parallel CI this
+    // can exceed Mocha's default 10s timeout on cold starts.
+    this.timeout(120000);
+
     it('should be importable from app module', () => {
       const { Application } = require('../src/app');
       expect(Application).to.be.a('function');

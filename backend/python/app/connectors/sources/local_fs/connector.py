@@ -750,12 +750,43 @@ class LocalFsConnector(BaseConnector):
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Not a Local FS file record or path missing",
             )
-        p = Path(record.path)
-        if not p.is_file():
+        await self._reload_sync_settings()
+        root_raw = self.sync_root_path.strip()
+        if not root_raw:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Local FS sync_root_path is not configured",
+            )
+        ok_path, detail = _validate_host_path(root_raw)
+        if not ok_path:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Local FS cannot use sync_root_path: {detail}",
+            )
+        root = Path(detail).resolve(strict=False)
+        raw_path = Path(record.path)
+        try:
+            if raw_path.is_absolute():
+                candidate = raw_path.expanduser().resolve(strict=False)
+            else:
+                candidate = (root / raw_path).resolve(strict=False)
+        except (OSError, ValueError) as e:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Invalid file path: {e}",
+            ) from e
+        if not candidate.is_relative_to(root):
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="File path is outside the configured Local FS folder",
+            )
+        if not candidate.is_file():
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="Local file not found for this record",
             )
+
+        p = candidate
 
         def _read() -> bytes:
             return p.read_bytes()
