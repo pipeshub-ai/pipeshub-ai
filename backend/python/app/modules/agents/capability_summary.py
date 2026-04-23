@@ -601,11 +601,8 @@ def build_capability_summary(state: dict[str, Any]) -> str:
 
     Shows:
     - Configured knowledge sources (from agent_knowledge)
-    - User-configured service tools grouped by domain (from state["tools"] / agent_toolsets)
-    - Retrieval capability (when knowledge is configured)
-
-    Internal utility tools (calculator, date_calculator, etc.) are NOT shown —
-    they are implementation details, not user-facing capabilities.
+    - All tools the runtime loads, grouped by domain — service connectors AND
+      built-ins (calculator, date_calculator, coding_sandbox, etc.), deduped.
     """
     parts: list[str] = ["## Capability Summary", ""]
 
@@ -731,84 +728,193 @@ def _build_actions_section(
 ) -> None:
     """Append available actions section to parts.
 
-    Only shows user-configured service tools (from toolsets) and retrieval.
-    Internal utility tools are excluded automatically.
+    Shows all tools the runtime loads — service connectors AND built-ins
+    (calculator, coding_sandbox, etc.), deduped by name.
+    Notes for non-obvious built-in tools are derived from tool.description —
+    no hardcoding required.
     """
-    service_domains = _get_service_tool_domains(state)
+    domains, domain_notes = _get_all_tool_domains(state)
 
-    # Add knowledge tools as visible actions when knowledge is configured
     if has_knowledge:
-        service_domains.setdefault("retrieval", []).append(
+        domains.setdefault("retrieval", []).append(
             "retrieval.search_internal_knowledge",
         )
-        service_domains.setdefault("knowledgehub", []).append(
+        domains.setdefault("knowledgehub", []).append(
             "knowledgehub.list_files",
         )
 
     parts.append("### Available Actions")
 
-    if not service_domains:
+    if not domains:
         parts.append("- No tools configured")
         parts.append("")
         return
 
-    for domain, tool_names in sorted(service_domains.items()):
+    for domain, actions in sorted(domains.items()):
         display = domain.replace("_", " ").title()
-        actions = [
-            (t.split(".", 1)[1] if "." in t else t).replace("_", " ")
-            for t in tool_names
-        ]
-        parts.append(f"- **{display}**: {', '.join(actions)}")
+        note = domain_notes.get(domain, "")
+        suffix = f" — {note}" if note else ""
+        parts.append(f"- **{display}**: {', '.join(actions)}{suffix}")
 
     parts.append("")
 
 
-def _get_service_tool_domains(state: dict[str, Any]) -> dict[str, list[str]]:
-    """
-    Get user-configured service tools grouped by domain.
+# Known compound-word domain prefixes for built-in tools whose runtime names
+# use underscores (e.g. "date_calculator_get_exclusion_dates"). Single-word
+# built-in domains (calculator, retrieval, knowledgehub, …) resolve via the
+# first-underscore split without needing an entry here.
+_BUILTIN_COMPOUND_DOMAINS = frozenset({
+    "date_calculator",
+    "coding_sandbox",
+    "image_generator",
+    "database_sandbox",
+})
 
-    Only returns tools from the agent's configured toolsets — NOT internal
-    utility tools. This means new internal tools (calculator, date_calculator,
-    web_search, etc.) are automatically excluded without code changes.
 
-    Sources (in priority order):
-    1. state["tools"] — canonical flat list from build_initial_state
-    2. state["agent_toolsets"] — raw toolset metadata fallback
+def _extract_domain_note(description: str, max_chars: int = 130) -> str:
     """
+    Extract a concise capability note from a tool's description string.
+
+    Preference order:
+    1. Clause starting with "Use this to …" or "Use ONLY for …" or "Useful for …"
+       (most explicit statement of what the tool does)
+    2. First sentence (up to first ". " or ".\n")
+
+    Returns an empty string when nothing useful can be extracted.
+    No hardcoded tool names — works for any tool automatically.
+    """
+    if not description:
+        return ""
+
+    for marker in ("Use this to ", "Use ONLY for ", "Useful for "):
+        idx = description.find(marker)
+        if idx == -1:
+            continue
+        rest = description[idx + len(marker):]
+        end = len(rest)
+        for sep in (". ", ".\n", "\n"):
+            s = rest.find(sep)
+            if 0 < s < end:
+                end = s
+        end = min(end, max_chars)
+        note = rest[:end].strip().rstrip(".")
+        if note:
+            return note
+
+    # First sentence fallback
+    for sep in (". ", ".\n"):
+        idx = description.find(sep)
+        if 0 < idx <= max_chars:
+            return description[:idx].strip()
+
+    return description[:max_chars].strip()
+
+
+def _get_all_tool_domains(
+    state: dict[str, Any],
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """
+    Get all loaded tools grouped by domain, deduped by name.
+
+    Returns:
+        (domains, domain_notes) where:
+        - domains:      {domain: [action_display, ...]}
+        - domain_notes: {domain: brief_capability_note} — only for built-in
+          (non-service) domains; extracted from tool.description, no hardcoding.
+
+    Primary: get_agent_tools_with_schemas(state) — includes built-ins and all
+    service connectors, already deduplicated by the tool registry.
+    Fallback: state["tools"] flat list (service tools only; deduped here).
+    """
+    # Build sanitized→dotted lookup for reversing Anthropic-style underscore names
+    state_dotted: list[str] = [
+        t for t in (state.get("tools") or [])
+        if isinstance(t, str) and "." in t
+    ]
+    sanitize_map: dict[str, str] = {t.replace(".", "_"): t for t in state_dotted}
+    # Service domains come from configured toolsets — their names are self-explanatory
+    service_domains: set[str] = {t.split(".", 1)[0] for t in state_dotted}
+
+    try:
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        runtime_tools = get_agent_tools_with_schemas(state)
+    except Exception:
+        runtime_tools = []
+
     domains: dict[str, list[str]] = {}
+    domain_notes: dict[str, str] = {}
 
-    # Primary: state["tools"] — populated by build_initial_state from toolsets
-    for tool_name in (state.get("tools") or []):
-        if not isinstance(tool_name, str) or "." not in tool_name:
+    if runtime_tools:
+        seen: set[str] = set()
+        for tool in runtime_tools:
+            raw = getattr(tool, "name", "")
+            if not raw or raw in seen:
+                continue
+            seen.add(raw)
+
+            if "." in raw:
+                domain, action = raw.split(".", 1)
+            else:
+                # Underscore name — try service-tool reverse lookup first
+                dotted = sanitize_map.get(raw, "")
+                if dotted:
+                    domain, action = dotted.split(".", 1)
+                else:
+                    # Built-in: check known compound prefixes, then first `_`
+                    matched = next(
+                        (p for p in _BUILTIN_COMPOUND_DOMAINS if raw.startswith(p + "_")),
+                        None,
+                    )
+                    if matched:
+                        domain, action = matched, raw[len(matched) + 1:]
+                    else:
+                        idx = raw.find("_")
+                        domain, action = (raw[:idx], raw[idx + 1:]) if idx > 0 else (raw, "")
+
+            action_display = action.replace("_", " ")
+            if action_display and action_display not in domains.get(domain, []):
+                domains.setdefault(domain, []).append(action_display)
+
+            # Derive a capability note from the tool's own description for
+            # built-in domains — service domain names speak for themselves.
+            if domain not in domain_notes and domain not in service_domains:
+                note = _extract_domain_note(getattr(tool, "description", ""))
+                if note:
+                    domain_notes[domain] = note
+
+        return domains, domain_notes
+
+    # Fallback: state["tools"] flat list with deduplication (no notes available)
+    seen_names: set[str] = set()
+    for t in state_dotted:
+        if t in seen_names:
             continue
-        domain = tool_name.split(".", 1)[0]
-        domains.setdefault(domain, []).append(tool_name)
+        seen_names.add(t)
+        domain, action = t.split(".", 1)
+        action_display = action.replace("_", " ")
+        if action_display not in domains.get(domain, []):
+            domains.setdefault(domain, []).append(action_display)
 
-    if domains:
-        return domains
-
-    # Fallback: agent_toolsets metadata from graph DB
-    for toolset in (state.get("agent_toolsets") or []):
-        if not isinstance(toolset, dict):
-            continue
-        toolset_name = toolset.get("name", "")
-        if not toolset_name:
-            continue
-
-        tool_names: list[str] = []
-
-        for t in (toolset.get("tools") or []):
-            if isinstance(t, dict):
-                name = t.get("fullName") or f"{toolset_name}.{t.get('name', '')}"
-                tool_names.append(name)
-
-        if not tool_names:
+    # Last resort: agent_toolsets metadata
+    if not domains:
+        for toolset in (state.get("agent_toolsets") or []):
+            if not isinstance(toolset, dict):
+                continue
+            ts_name = toolset.get("name", "")
+            if not ts_name:
+                continue
+            for t in (toolset.get("tools") or []):
+                if isinstance(t, dict):
+                    full = t.get("fullName") or f"{ts_name}.{t.get('name', '')}"
+                    act = full.split(".", 1)[1] if "." in full else full
+                    act_d = act.replace("_", " ")
+                    if act_d and act_d not in domains.get(ts_name, []):
+                        domains.setdefault(ts_name, []).append(act_d)
             for t in (toolset.get("selectedTools") or []):
                 if isinstance(t, str):
-                    name = t if "." in t else f"{toolset_name}.{t}"
-                    tool_names.append(name)
+                    act = t.split(".", 1)[1] if "." in t else t
+                    act_d = act.replace("_", " ")
+                    if act_d and act_d not in domains.get(ts_name, []):
+                        domains.setdefault(ts_name, []).append(act_d)
 
-        if tool_names:
-            domains.setdefault(toolset_name, []).extend(tool_names)
-
-    return domains
+    return domains, {}
