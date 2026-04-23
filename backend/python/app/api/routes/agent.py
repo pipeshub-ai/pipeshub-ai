@@ -3300,7 +3300,7 @@ async def get_assistant_agent(
             connector_name = connector.get("name", "")
             connector_type = connector.get("type", "")
 
-            if connector_type == Connectors.KNOWLEDGE_BASE.value:
+            if connector_type == Connectors.KNOWLEDGE_BASE.value or connector_type == Connectors.KNOWLEDGE_BASE:
                 continue
             # Build knowledge source entry
             knowledge_entry = {

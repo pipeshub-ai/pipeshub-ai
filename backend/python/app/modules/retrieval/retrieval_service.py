@@ -22,7 +22,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
-from app.models.blocks import GroupType
+from app.models.blocks import BlockType, GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -93,6 +93,14 @@ class RetrievalService:
         self.embedding_model = None
         self.embedding_size = None
         self.embedding_model_instance = None
+        # Cache signature for the currently-loaded embedding instance. A tuple
+        # of (provider, model_name, dimensions, is_default). Using a full
+        # signature (not just the model name) ensures the instance is
+        # rebuilt when the user changes dimensions, swaps providers, or flips
+        # the default flag — otherwise a dim-only change would reuse a stale
+        # instance and trigger "Existing Qdrant collection is configured for
+        # dense vectors with N dimensions" on the next query.
+        self.embedding_signature: Optional[tuple] = None
         # Serialize concurrent embedding model loads so we only build the model
         # once even if multiple requests race during warmup. Safe to create at
         # import-time on Python 3.10+ (no running loop required).
@@ -135,12 +143,63 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
+    async def _get_current_embedding_selection(
+        self, use_cache: bool = True
+    ) -> tuple[Optional[dict], Optional[str], tuple]:
+        """Return the currently-configured embedding config, its model name,
+        and a cache signature used to decide whether the in-memory instance
+        needs to be rebuilt.
+
+        Signature fields: (provider, model_name, dimensions, is_default).
+        When no embedding config exists we fall back to the built-in default
+        (HuggingFace BGE), and the signature reflects that so a later switch
+        to a real provider invalidates the cache.
+        """
+        try:
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value,
+                use_cache=use_cache,
+            )
+            if ai_models and ai_models.get("embedding"):
+                configs = ai_models["embedding"]
+                selected = next(
+                    (c for c in configs if c.get("isDefault", False)), None
+                )
+                if not selected:
+                    selected = configs[0]
+                provider = selected.get("provider")
+                configuration = selected.get("configuration") or {}
+                model_name = configuration.get("model")
+                dims = configuration.get("dimensions")
+                signature = (
+                    provider,
+                    model_name,
+                    dims,
+                    bool(selected.get("isDefault", False)),
+                )
+                return selected, model_name, signature
+        except Exception as e:
+            self.logger.error(
+                f"Error resolving current embedding selection: {str(e)}"
+            )
+        # Default fallback — encode it in the signature so switching away
+        # from default later rebuilds the instance.
+        return None, DEFAULT_EMBEDDING_MODEL, ("default", DEFAULT_EMBEDDING_MODEL, None, True)
+
     async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
         try:
-            embedding_model = await self.get_current_embedding_model_name(use_cache)
+            selected_config, embedding_model, signature = await self._get_current_embedding_selection(
+                use_cache
+            )
 
-            # Fast path: same model already loaded, no lock needed.
-            if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
+            # Fast path: identical signature already loaded, no lock needed.
+            # We key on the full signature (provider + model + dimensions +
+            # isDefault) so that a user flipping any one of these in the UI
+            # actually rebuilds the instance.
+            if (
+                self.embedding_signature == signature
+                and self.embedding_model_instance is not None
+            ):
                 return self.embedding_model_instance
 
             # Serialize the (potentially very slow) model load so concurrent
@@ -148,11 +207,18 @@ class RetrievalService:
             async with self._embedding_model_lock:
                 # Re-check after acquiring the lock in case another coroutine
                 # already finished loading while we were waiting.
-                if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
+                if (
+                    self.embedding_signature == signature
+                    and self.embedding_model_instance is not None
+                ):
                     return self.embedding_model_instance
 
                 try:
-                    if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
+                    if (
+                        not embedding_model
+                        or embedding_model == DEFAULT_EMBEDDING_MODEL
+                        or selected_config is None
+                    ):
                         self.logger.info("Using default embedding model")
                         effective_model = DEFAULT_EMBEDDING_MODEL
                         # HuggingFaceEmbeddings(...) may download ~1GB+ and load a
@@ -161,35 +227,17 @@ class RetrievalService:
                         dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
                     else:
                         self.logger.info(
-                            f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
+                            f"Using embedding model: {embedding_model} "
+                            f"(provider={selected_config.get('provider')}, dims={selected_config.get('configuration', {}).get('dimensions')})"
                         )
-                        ai_models = await self.config_service.get_config(
-                            config_node_constants.AI_MODELS.value
+                        # Provider clients (Bedrock/OpenAI/etc.) may also do
+                        # blocking I/O on construction, so offload here too.
+                        dense_embeddings = await asyncio.to_thread(
+                            get_embedding_model,
+                            selected_config["provider"],
+                            selected_config,
                         )
-                        dense_embeddings = None
                         effective_model = embedding_model
-                        if ai_models["embedding"]:
-                            self.logger.info(
-                                "No default embedding model found, using first available provider"
-                            )
-                            configs = ai_models["embedding"]
-                            selected_config = next(
-                                (c for c in configs if c.get("isDefault", False)), None
-                            )
-                            if not selected_config and configs:
-                                selected_config = configs[0]
-
-                            if selected_config:
-                                # Provider clients (Bedrock/OpenAI/etc.) may also do
-                                # blocking I/O on construction, so offload here too.
-                                dense_embeddings = await asyncio.to_thread(
-                                    get_embedding_model,
-                                    selected_config["provider"],
-                                    selected_config,
-                                )
-                                self.logger.info(
-                                    f"Embedding provider: {selected_config['provider']}"
-                                )
 
                 except Exception as e:
                     self.logger.error(f"Error creating embedding model: {str(e)}")
@@ -202,30 +250,67 @@ class RetrievalService:
                 )
                 self.embedding_model = embedding_model
                 self.embedding_model_instance = dense_embeddings
+                self.embedding_signature = signature
                 return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
     async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
-        """Get the current embedding model name from configuration or instance."""
-        try:
-            # First try to get from AI_MODELS config
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
-            )
-            if ai_models and "embedding" in ai_models and ai_models["embedding"]:
-                for config in ai_models["embedding"]:
-                    # Only one embedding model is supported
-                    if "configuration" in config and "model" in config["configuration"]:
-                        return config["configuration"]["model"]
+        """Get the current embedding model name from configuration or instance.
 
-            # Return default model if no embedding config found
+        When AI_MODELS.embedding contains multiple entries, prefer the one
+        flagged ``isDefault: True`` — that is the model actually in use and
+        the one that would have built any existing index. Fall back to the
+        first configured entry for backward compatibility with configs that
+        predate the flag.
+        """
+        try:
+            default = await self.get_current_embedding_config(use_cache=use_cache)
+            if default and default.get("configuration", {}).get("model"):
+                return default["configuration"]["model"]
             return DEFAULT_EMBEDDING_MODEL
         except Exception as e:
             self.logger.error(f"Error getting current embedding model name: {str(e)}")
             return DEFAULT_EMBEDDING_MODEL
+
+    async def get_current_embedding_config(
+        self, use_cache: bool = True
+    ) -> Optional[dict]:
+        """Return the active embedding config entry from AI_MODELS.
+
+        Picks the entry marked ``isDefault: True`` when present; otherwise
+        falls back to the first entry that has ``configuration.model`` set.
+        Returns ``None`` if no valid entry exists.
+        """
+        try:
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value,
+                use_cache=use_cache,
+            )
+            embeddings = (ai_models or {}).get("embedding") or []
+            if not embeddings:
+                return None
+
+            def _has_model(cfg: dict) -> bool:
+                return bool(
+                    isinstance(cfg, dict)
+                    and cfg.get("configuration")
+                    and cfg["configuration"].get("model")
+                )
+
+            for cfg in embeddings:
+                if _has_model(cfg) and cfg.get("isDefault") is True:
+                    return cfg
+
+            for cfg in embeddings:
+                if _has_model(cfg):
+                    return cfg
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting current embedding config: {str(e)}")
+            return None
 
     def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
         if hasattr(dense_embeddings, "model_name"):
@@ -257,15 +342,121 @@ class RetrievalService:
             self.logger.error(f"Error in query preprocessing: {str(e)}")
             return query.strip()
 
+    # Base64 alphabet, including URL-safe variants and padding. Kept at
+    # module/class scope so membership checks don't rebuild a set on every
+    # call.
+    _BASE64_ALPHABET = frozenset(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=-_"
+    )
+    # Only treat a string as a bare-base64 image blob when it's at least
+    # this long AND passes every structural check below. Tuned to sit
+    # comfortably above real-world JWTs (~1–2KB) without being so large
+    # that we miss small inline thumbnails: legacy image payloads that
+    # made it into ``page_content`` were typically ≥ tens of KB.
+    _MIN_BARE_BASE64_LEN = 4096
+
+    @classmethod
+    def _looks_like_base64_image(cls, value: Any) -> bool:
+        """Best-effort detection for a legacy image point that stored the
+        base64 image URI directly in ``page_content``.
+
+        Deliberately conservative: a false negative just means a legacy
+        blob is surfaced as-is (same as the old behaviour), while a
+        false positive would silently drop user-visible text (e.g. a
+        long JWT, hex dump, or minified payload in a real document).
+
+        Accepts two shapes:
+          * ``data:image/...;base64,...`` — unambiguous.
+          * A bare base64 string that passes **all** of:
+              - long enough to plausibly be an image (≥ 4KB);
+              - no whitespace anywhere;
+              - every character is in the base64 (or URL-safe) alphabet,
+                not just the first 256 — the previous prefix-only check
+                mis-classified mixed content whose tail contained
+                non-base64 punctuation;
+              - length is a multiple of 4 (real base64 is always padded);
+              - padding (``=``), if present, only appears at the end.
+
+        These together rule out JWTs (contain ``.``), minified JSON/JS
+        (contain ``{}:,;``), hex dumps shorter than 4KB, and generally
+        any natural-language chunk.
+        """
+        if not isinstance(value, str):
+            return False
+        if value.startswith("data:image/"):
+            return True
+
+        stripped = value.strip()
+        if len(stripped) < cls._MIN_BARE_BASE64_LEN:
+            return False
+        if len(stripped) % 4 != 0:
+            return False
+        if any(c.isspace() for c in stripped):
+            return False
+
+        alphabet = cls._BASE64_ALPHABET
+        first_pad = stripped.find("=")
+        if first_pad != -1:
+            # Once padding starts it must run to the end, and padding is
+            # at most 2 characters.
+            tail = stripped[first_pad:]
+            if len(tail) > 2 or any(c != "=" for c in tail):
+                return False
+            body = stripped[:first_pad]
+        else:
+            body = stripped
+
+        return all(ch in alphabet for ch in body)
+
+    @classmethod
+    def _normalise_image_result(cls, metadata: dict, content: Any) -> tuple[dict, str]:
+        """Make sure image hits never carry a base64 blob as ``content``.
+
+        The Qdrant payload for image points is deliberately minimal —
+        the actual bytes/URI live in blob storage and are resolved
+        downstream via ``block.data.uri`` using
+        ``virtualRecordId`` + ``blockId``. So all this formatter has to
+        do is:
+
+          * New-style: ``metadata.blockType == "image"``. Blank
+            ``content`` (it's already empty in the payload, but some
+            legacy writers may have left stray text — drop it).
+          * Legacy pre-cleanup: no ``blockType`` but ``content`` is a
+            base64 blob. Tag it as an image and blank ``content`` so
+            the blob never reaches the LLM or the search response.
+            Downstream renderers will re-resolve the image from the
+            record graph regardless.
+          * Plain text: no mutation.
+        """
+        if not isinstance(metadata, dict):
+            return (metadata or {}), (content if isinstance(content, str) else "")
+
+        block_type = metadata.get("blockType")
+
+        if block_type == BlockType.IMAGE.value:
+            return metadata, ""
+
+        if cls._looks_like_base64_image(content):
+            metadata = {
+                **metadata,
+                "blockType": BlockType.IMAGE.value,
+            }
+            return metadata, ""
+
+        return metadata, content if isinstance(content, str) else ""
+
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
         for doc, score in results:
+            metadata, content = self._normalise_image_result(
+                dict(doc.metadata or {}), doc.page_content
+            )
             formatted_result = {
                 "score": float(score),
                 "citationType": "vectordb|document",
-                "metadata": doc.metadata,
-                "content": doc.page_content
+                "metadata": metadata,
+                "content": content,
             }
             formatted_results.append(formatted_result)
         return formatted_results
@@ -348,7 +539,10 @@ class RetrievalService:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
-            self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
+            self.logger.info(
+                f"[retrieval] accessible virtualRecordIds count={len(accessible_virtual_id_to_record_id)} "
+                f"(user_id={user_id}, org_id={org_id})"
+            )
 
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
@@ -362,10 +556,20 @@ class RetrievalService:
             search_results = await self._execute_parallel_searches(queries, filter, limit)
 
             if not search_results:
-                self.logger.debug("No search results found")
+                # Promoted from debug -> info so operators can see the zero-hit
+                # path without flipping log levels. Accompanied by the filter
+                # cardinality so "is it the filter or the vector similarity?"
+                # is answerable from a single log line.
+                self.logger.info(
+                    f"[retrieval] Qdrant returned 0 hits. "
+                    f"must.orgId={org_id}, "
+                    f"should.virtualRecordId count="
+                    f"{len(accessible_virtual_id_to_record_id) if not virtual_record_ids_from_tool else len(virtual_record_ids_from_tool or [])}, "
+                    f"collection={self.collection_name}, queries={len(queries)}"
+                )
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
-            self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
+            self.logger.info(f"[retrieval] Qdrant raw hits={len(search_results)}")
 
             self.logger.debug("Extracting virtualRecordIds from Qdrant results")
             returned_virtual_record_ids = list({
@@ -377,7 +581,9 @@ class RetrievalService:
                 and result["metadata"].get("virtualRecordId") is not None
             })
 
-            self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
+            self.logger.info(
+                f"[retrieval] Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds"
+            )
 
             if not returned_virtual_record_ids:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -391,7 +597,9 @@ class RetrievalService:
                 if vid in accessible_virtual_id_to_record_id
             })
 
-            self.logger.debug(f"Fetching {len(record_ids_to_fetch)} records by permission-verified record IDs")
+            self.logger.info(
+                f"[retrieval] Fetching {len(record_ids_to_fetch)} records by permission-verified recordIds"
+            )
             fetched_records = await self.graph_provider.get_records_by_record_ids(
                 record_ids_to_fetch, org_id
             )
@@ -591,17 +799,36 @@ class RetrievalService:
             # Filter out incomplete results to prevent citation validation failures
             required_fields = ['origin', 'recordName', 'recordId', 'mimeType', "orgId"]
             complete_results = []
+            dropped_empty = 0
+            dropped_missing_fields = 0
 
             for result in final_search_results:
-                if result.get("content") is None or result.get("content") == "":
+                metadata = result.get('metadata', {}) or {}
+                # Image points deliberately carry empty ``content`` — the
+                # URI/bytes live in blob storage and downstream renderers
+                # resolve them via ``block.data.uri`` using
+                # ``virtualRecordId`` + ``blockId``. Skip the empty-content
+                # gate for those so they survive to the UI.
+                is_image_result = (
+                    metadata.get("blockType") == BlockType.IMAGE.value
+                )
+                content = result.get("content")
+                if not is_image_result and (content is None or content == ""):
+                    dropped_empty += 1
                     continue
-                metadata = result.get('metadata', {})
                 if all(field in metadata and metadata[field] is not None for field in required_fields):
                     complete_results.append(result)
                 else:
+                    dropped_missing_fields += 1
                     self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
 
             search_results = complete_results
+            self.logger.info(
+                f"[retrieval] post-filter tally: kept={len(complete_results)}, "
+                f"dropped_empty_content={dropped_empty}, "
+                f"dropped_missing_required_fields={dropped_missing_fields}, "
+                f"pre_filter={len(final_search_results)}"
+            )
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,
@@ -740,8 +967,10 @@ class RetrievalService:
             requests=query_requests,
         )
         seen_points = set()
+        per_query_hits = []
         for r in search_results:
                 points = r.points
+                per_query_hits.append(len(points) if points else 0)
                 for point in points:
                     if point.id in seen_points:
                         continue
@@ -755,6 +984,13 @@ class RetrievalService:
                     score = point.score
                     all_results.append((doc, score))
 
+        # Report raw Qdrant return shape before _format_results so a downstream
+        # "0 hits" investigation can distinguish "Qdrant returned nothing" from
+        # "we dropped everything in post-processing".
+        self.logger.info(
+            f"[retrieval] Qdrant query_batch_points returned per-query hits={per_query_hits}, "
+            f"total_unique={len(all_results)}"
+        )
         return self._format_results(all_results)
 
     def _create_empty_response(self, message: str, status: Status) -> dict[str, Any]:

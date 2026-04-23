@@ -1,3 +1,4 @@
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple, Union
@@ -23,7 +24,13 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.const.const import (
+    COLLECTION_SIGNATURE_KIND,
+    COLLECTION_SIGNATURE_KIND_FIELD,
+    COLLECTION_SIGNATURE_VERSION,
+    VECTOR_DB_COLLECTION_NAME,
+    collection_signature_point_id,
+)
 from app.services.vector_db.interface.vector_db import FilterValue, IVectorDBService
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
@@ -468,3 +475,151 @@ class QdrantService(IVectorDBService):
             ),
         )
         logger.info(f"✅ Deleted points from collection '{collection_name}'")
+
+    async def set_collection_signature(
+        self,
+        collection_name: str,
+        signature: Dict[str, Union[str, int, float, bool]],
+        embedding_size: int,
+    ) -> None:
+        """Upsert a deterministic sentinel point whose payload records which
+        embedding model built the collection. The sentinel:
+          * has a deterministic UUID derived from the collection name, so
+            repeated writes are idempotent;
+          * carries a tiny non-zero dense vector (cosine distance is
+            undefined for the zero vector) sized to the collection's dims;
+          * is never returned by user-facing queries because those always
+            filter by orgId / virtualRecordId, which the sentinel lacks.
+        """
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        if embedding_size <= 0:
+            raise ValueError(
+                f"Invalid embedding_size={embedding_size} for collection signature"
+            )
+
+        # Tiny non-zero vector so cosine distance is well defined. The sentinel
+        # will never score against a real query because normal queries always
+        # constrain by orgId, which the sentinel's payload does not carry.
+        sentinel_vector = [0.0] * embedding_size
+        sentinel_vector[0] = 1.0
+
+        payload = {
+            COLLECTION_SIGNATURE_KIND_FIELD: COLLECTION_SIGNATURE_KIND,
+            "signature_version": COLLECTION_SIGNATURE_VERSION,
+            **{k: v for k, v in signature.items() if v is not None},
+        }
+
+        point = PointStruct(
+            id=collection_signature_point_id(collection_name),
+            vector={"dense": sentinel_vector},
+            payload=payload,
+        )
+
+        # Use the raw client upsert (not upsert_points) so we bypass the
+        # batching/parallelism designed for bulk ingestion. Both sync and
+        # async Qdrant clients expose .upsert() with the same signature.
+        result = self.client.upsert(collection_name=collection_name, points=[point])
+        if asyncio.iscoroutine(result):
+            await result
+        logger.info(
+            f"✅ Wrote collection signature for '{collection_name}': "
+            f"provider={signature.get('embedding_provider')}, "
+            f"model={signature.get('embedding_model')}, "
+            f"dims={signature.get('embedding_dimension')}"
+        )
+
+    async def get_collection_signature(
+        self,
+        collection_name: str,
+    ) -> Optional[Dict[str, Union[str, int, float, bool]]]:
+        """Retrieve the signature payload, or None if the sentinel is absent.
+
+        Legacy collections created before signature tracking existed will
+        simply return None here; callers must treat that as "unknown".
+        """
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        point_id = collection_signature_point_id(collection_name)
+        try:
+            result = self.client.retrieve(
+                collection_name=collection_name,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception as e:
+            logger.warning(
+                f"Failed to retrieve collection signature for '{collection_name}': {e}"
+            )
+            return None
+
+        if not result:
+            return None
+
+        first = result[0]
+        payload = getattr(first, "payload", None) or {}
+        if payload.get(COLLECTION_SIGNATURE_KIND_FIELD) != COLLECTION_SIGNATURE_KIND:
+            # Another point happens to share this id (shouldn't happen under
+            # normal use, but be defensive rather than returning garbage).
+            return None
+        return payload
+
+    async def count_user_points(
+        self,
+        collection_name: str,
+    ) -> int:
+        """Return the number of non-sentinel points in the collection.
+
+        Uses Qdrant's `count` API with an exact filter that excludes any
+        point carrying our signature-sentinel marker. Falls back to raw
+        points_count minus the sentinel (if present) when the filtered
+        count call is unavailable for any reason.
+        """
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        try:
+            from qdrant_client.http.models import (  # type: ignore
+                FieldCondition,
+                Filter as QFilter,
+                MatchValue,
+            )
+
+            exclude_signature = QFilter(
+                must_not=[
+                    FieldCondition(
+                        key=COLLECTION_SIGNATURE_KIND_FIELD,
+                        match=MatchValue(value=COLLECTION_SIGNATURE_KIND),
+                    )
+                ]
+            )
+            result = self.client.count(
+                collection_name=collection_name,
+                count_filter=exclude_signature,
+                exact=True,
+            )
+            if asyncio.iscoroutine(result):
+                result = await result
+            return int(getattr(result, "count", 0))
+        except Exception as e:
+            logger.warning(
+                f"count_user_points filtered count failed for '{collection_name}' "
+                f"({e}); falling back to points_count - sentinel."
+            )
+            try:
+                info_result = self.client.get_collection(collection_name)
+                if asyncio.iscoroutine(info_result):
+                    info_result = await info_result
+                total = int(getattr(info_result, "points_count", 0) or 0)
+                sig = await self.get_collection_signature(collection_name)
+                return max(total - (1 if sig else 0), 0)
+            except Exception as inner:
+                logger.error(
+                    f"count_user_points fallback failed for '{collection_name}': {inner}"
+                )
+                raise

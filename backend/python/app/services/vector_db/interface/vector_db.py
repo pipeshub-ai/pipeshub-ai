@@ -101,3 +101,37 @@ class IVectorDBService(ABC):
     ) -> None:
         """Upsert points"""
         raise NotImplementedError("upsert() is not implemented")
+
+    @abstractmethod
+    async def set_collection_signature(
+        self,
+        collection_name: str,
+        signature: Dict[str, Union[str, int, float, bool]],
+        embedding_size: int,
+    ) -> None:
+        """Persist an embedding-model signature on the collection so later
+        health checks can authoritatively identify which embedding model
+        produced the stored vectors. Implementations should store this in a
+        way that does not pollute user-content queries.
+        """
+        raise NotImplementedError("set_collection_signature() is not implemented")
+
+    @abstractmethod
+    async def get_collection_signature(
+        self,
+        collection_name: str,
+    ) -> Optional[Dict[str, Union[str, int, float, bool]]]:
+        """Return the previously persisted collection signature, or None if
+        none has been written yet (legacy/missing collection).
+        """
+        raise NotImplementedError("get_collection_signature() is not implemented")
+
+    @abstractmethod
+    async def count_user_points(
+        self,
+        collection_name: str,
+    ) -> int:
+        """Count "real" user points in the collection, excluding any internal
+        bookkeeping points (e.g. the collection-signature sentinel). Intended
+        for health-check-style decisions like "is the collection empty?"."""
+        raise NotImplementedError("count_user_points() is not implemented")

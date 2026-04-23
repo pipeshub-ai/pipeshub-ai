@@ -1,13 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flex, Text, Popover } from '@radix-ui/themes';
-import { CitationPopoverContent } from './citation-popover';
-import {
-  CITATION_POPOVER_WIDTH,
-  CITATION_POPOVER_MAX_WIDTH,
-  CITATION_POPOVER_Z_INDEX,
-} from './constants';
+import React, { useRef, useState, useCallback } from 'react';
+import { Flex, Text } from '@radix-ui/themes';
 import type { CitationData, CitationCallbacks } from './types';
 import {
   useCitationMessageRowKeyForInline,
@@ -30,8 +24,17 @@ interface CitationNumberCircleProps {
 }
 
 /**
- * Compact circular numbered citation badge used inside an InlineCitationGroup.
- * Clicking/hovering opens the same CitationPopoverContent as the full badge.
+ * Compact circular numbered citation badge used inside an `InlineCitationBadge`
+ * or an `InlineCitationGroup`.
+ *
+ * The circle is a plain button — clicking it toggles the single
+ * `InlineCitationPopoverHost` (mounted once per `MessageList`), which anchors
+ * to this circle via a Zustand store. Rendering the popover outside the
+ * inline markdown tree guarantees at most one popover is ever visible, even
+ * when multiple citation circles are on the page (this used to produce two
+ * overlapping cards because each circle rendered its own `Popover.Root` and
+ * Radix's `modal={false}` dismiss-layer treated other Radix triggers as safe
+ * targets, leaving the previous popover briefly open).
  */
 export function CitationNumberCircle({
   chunkIndex,
@@ -40,121 +43,103 @@ export function CitationNumberCircle({
   callbacks,
 }: CitationNumberCircleProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const messageRowKey = useCitationMessageRowKeyForInline();
-  const useListControlled = Boolean(
-    messageRowKey != null && String(messageRowKey).length > 0,
-  );
-  const instanceKey = useListControlled
-    ? buildInlineCitationInstanceKey(messageRowKey!, chunkIndex, occurrenceKey)
-    : null;
-  // Subscribes to `activeKey` only; each badge re-renders when *its* open state flips.
-  const isOpen = useInlineCitationPopoverStore(
-    (s) =>
-      useListControlled && instanceKey ? s.activeKey === instanceKey : false,
-  );
-  const setActiveKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
-  const handleListOpenChange = (open: boolean) => {
-    if (!useListControlled || !instanceKey) return;
-    if (open) {
-      setActiveKey(instanceKey);
-    } else if (useInlineCitationPopoverStore.getState().activeKey === instanceKey) {
-      setActiveKey(null);
-    }
-  };
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
 
-  const circleElement = (
-    <Flex
-      as="span"
-      align="center"
-      justify="center"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        display: 'inline-flex',
-        minWidth: '16px',
-        height: '16px',
-        padding: '0 4px',
-        borderRadius: '999px',
-        background: isHovered ? 'var(--accent-9)' : 'var(--accent-3)',
-        border: `1px solid ${isHovered ? 'var(--accent-9)' : 'var(--accent-a6)'}`,
-        color: isHovered ? 'white' : 'var(--accent-11)',
-        cursor: 'pointer',
-        verticalAlign: 'middle',
-        // Short transition — long transitions feel laggy on first click
-        transition:
-          'background 0.08s ease, border-color 0.08s ease, color 0.08s ease, box-shadow 0.08s ease, transform 0.08s ease',
-        transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
-        boxShadow: isHovered ? '0 2px 6px rgba(0, 0, 0, 0.12)' : 'none',
-        lineHeight: 1,
-        flexShrink: 0,
-      }}
-    >
-      <Text
-        size="1"
-        weight="bold"
-        style={{
-          color: 'inherit',
-          fontSize: '10px',
-          lineHeight: 1,
-        }}
-      >
-        {chunkIndex}
-      </Text>
-    </Flex>
+  const messageRowKey = useCitationMessageRowKeyForInline();
+  // Always produce a stable instance key so read-only / archived views still
+  // toggle the popover. The store's single-active-key invariant is what
+  // prevents duplicate cards — not the row scoping itself.
+  const instanceKey = buildInlineCitationInstanceKey(
+    messageRowKey && messageRowKey.length > 0 ? messageRowKey : 'orphan',
+    chunkIndex,
+    occurrenceKey,
+  );
+
+  const isOpen = useInlineCitationPopoverStore((s) => s.activeKey === instanceKey);
+  const openPopover = useInlineCitationPopoverStore((s) => s.open);
+  const closePopover = useInlineCitationPopoverStore((s) => s.close);
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      // Prevent bubbling so we don't accidentally trigger the host's
+      // outside-click handler in the same tick.
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (!buttonRef.current) return;
+      const state = useInlineCitationPopoverStore.getState();
+      if (state.activeKey === instanceKey) {
+        closePopover(instanceKey);
+      } else {
+        openPopover({
+          key: instanceKey,
+          anchor: buttonRef.current,
+          citation,
+          callbacks,
+        });
+      }
+    },
+    [instanceKey, citation, callbacks, openPopover, closePopover],
   );
 
   return (
-    <Popover.Root
-      modal={false}
-      {...(useListControlled && instanceKey
-        ? { open: isOpen, onOpenChange: handleListOpenChange }
-        : {})}
+    <button
+      ref={buttonRef}
+      type="button"
+      onClick={handleClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      aria-haspopup="dialog"
+      aria-expanded={isOpen}
+      style={{
+        border: 'none',
+        background: 'none',
+        padding: 0,
+        margin: 0,
+        cursor: 'pointer',
+        font: 'inherit',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        lineHeight: 0,
+        verticalAlign: 'middle',
+      }}
     >
-      <Popover.Trigger
-        type="button"
+      <Flex
+        as="span"
+        align="center"
+        justify="center"
         style={{
-          border: 'none',
-          background: 'none',
-          padding: 0,
-          margin: 0,
-          cursor: 'pointer',
-          font: 'inherit',
           display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          lineHeight: 0,
+          minWidth: '16px',
+          height: '16px',
+          padding: '0 4px',
+          borderRadius: '999px',
+          background: isHovered || isOpen ? 'var(--accent-9)' : 'var(--accent-3)',
+          border: `1px solid ${isHovered || isOpen ? 'var(--accent-9)' : 'var(--accent-a6)'}`,
+          color: isHovered || isOpen ? 'white' : 'var(--accent-11)',
+          cursor: 'pointer',
           verticalAlign: 'middle',
+          transition:
+            'background 0.08s ease, border-color 0.08s ease, color 0.08s ease, box-shadow 0.08s ease, transform 0.08s ease',
+          transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
+          boxShadow: isHovered ? '0 2px 6px rgba(0, 0, 0, 0.12)' : 'none',
+          lineHeight: 1,
+          flexShrink: 0,
         }}
       >
-        {circleElement}
-      </Popover.Trigger>
-
-      <Popover.Content
-        side="top"
-        sideOffset={6}
-        align="start"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        style={{
-          zIndex: CITATION_POPOVER_Z_INDEX,
-          width: CITATION_POPOVER_WIDTH,
-          maxWidth: CITATION_POPOVER_MAX_WIDTH,
-          backgroundColor: 'var(--effects-translucent)',
-          // Lighter blur than 16px — much cheaper to composite on open
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
-          border: '1px solid var(--olive-3)',
-          boxShadow: '0 24px 52px 0 rgba(0, 0, 0, 0.12)',
-          borderRadius: 'var(--radius-1)',
-          animation: 'none',
-          transition: 'none',
-        }}
-      >
-        <CitationPopoverContent
-          citation={citation}
-          onPreview={callbacks?.onPreview}
-          onOpenInCollection={callbacks?.onOpenInCollection}
-        />
-      </Popover.Content>
-    </Popover.Root>
+        <Text
+          size="1"
+          weight="bold"
+          style={{
+            color: 'inherit',
+            fontSize: '10px',
+            lineHeight: 1,
+          }}
+        >
+          {chunkIndex}
+        </Text>
+      </Flex>
+    </button>
   );
 }

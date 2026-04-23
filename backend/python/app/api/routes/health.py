@@ -1,14 +1,18 @@
 import asyncio
 import os
 from logging import Logger
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
 from langchain_core.messages import HumanMessage  #type: ignore
 
-from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.const.const import (
+    ORG_ID_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+    normalize_identity as _normalize_identity,
+)
 from app.utils.aimodels import (
     ImageGenerationProvider,
     STTProvider,
@@ -26,6 +30,168 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
+
+
+async def _resolve_stored_embedding_identity(
+    retrieval_service,
+    logger: Logger,
+) -> Tuple[Optional[dict], str]:
+    """Resolve the embedding identity that was used to build the existing
+    collection.
+
+    Returns ``(identity, source)`` where:
+      * ``identity`` is a dict with ``embedding_provider`` and
+        ``embedding_model`` keys (normalized), or ``None`` if it can't be
+        determined.
+      * ``source`` is one of:
+          - ``"collection"`` — signature stored on the vector collection
+            itself (authoritative).
+          - ``"config"``     — legacy path: read the currently configured
+            model from AI_MODELS. Only meaningful when the health check is
+            invoked *before* saving the new config; the caller must treat
+            this as less trustworthy and block on ambiguous cases.
+          - ``"unknown"``    — no signature on the collection and no config
+            either.
+
+    Preferring the collection signature over config is the whole point of
+    this helper: the config is exactly what the user is trying to change,
+    so it is a correlated, not causal, source of truth.
+    """
+    vector_db_service = getattr(retrieval_service, "vector_db_service", None)
+    collection_name = getattr(retrieval_service, "collection_name", None)
+
+    if vector_db_service is not None and collection_name:
+        getter = getattr(vector_db_service, "get_collection_signature", None)
+        if callable(getter):
+            try:
+                stored = await getter(collection_name)
+                # Only accept a proper dict payload. Guard against AsyncMock-
+                # style test doubles returning a MagicMock for any attribute.
+                if isinstance(stored, dict) and stored:
+                    identity = {
+                        "embedding_provider": _normalize_identity(
+                            stored.get("embedding_provider")
+                        ),
+                        "embedding_model": _normalize_identity(
+                            stored.get("embedding_model")
+                        ),
+                        "embedding_dimension": stored.get("embedding_dimension"),
+                    }
+                    # ``is_multimodal`` is only present on collections
+                    # written by signature-aware code. Surface it so the
+                    # same-dimension identity check can catch a flip of
+                    # the ``isMultimodal`` toggle on the same model.
+                    if "is_multimodal" in stored:
+                        identity["is_multimodal"] = bool(stored.get("is_multimodal"))
+                    return identity, "collection"
+            except Exception as e:
+                logger.warning(
+                    f"Stored collection signature lookup failed: {e}"
+                )
+
+    # Legacy fallback: read the default entry from AI_MODELS config. This
+    # is what was used historically; keep it so pre-signature collections
+    # still work. Prefer the richer ``get_current_embedding_config`` so we
+    # can surface the provider too (pulled from the entry flagged
+    # ``isDefault: True``), and fall back to the plain model-name getter
+    # for older retrieval services that don't expose the new method.
+    current_model: Optional[str] = None
+    current_provider: Optional[str] = None
+
+    get_default_cfg = getattr(
+        retrieval_service, "get_current_embedding_config", None
+    )
+    if callable(get_default_cfg):
+        try:
+            default_cfg = await get_default_cfg()
+            if isinstance(default_cfg, dict):
+                current_model = (
+                    (default_cfg.get("configuration") or {}).get("model")
+                )
+                current_provider = default_cfg.get("provider")
+        except Exception as e:
+            logger.warning(f"get_current_embedding_config failed: {e}")
+
+    if not current_model:
+        try:
+            current_model = await retrieval_service.get_current_embedding_model_name()
+        except Exception as e:
+            logger.warning(f"get_current_embedding_model_name failed: {e}")
+            current_model = None
+
+    if isinstance(current_model, str) and current_model:
+        return (
+            {
+                "embedding_provider": _normalize_identity(current_provider)
+                or None,
+                "embedding_model": _normalize_identity(current_model),
+                "embedding_dimension": None,
+            },
+            "config",
+        )
+
+    return None, "unknown"
+
+
+async def _count_user_points(
+    retrieval_service, raw_points_count, logger: Optional[Logger] = None
+) -> int:
+    """Prefer the vector DB's own "exclude sentinel" counter; fall back to
+    the raw Qdrant ``points_count`` minus the signature sentinel if one
+    exists. This matters because our signature sentinel inflates the raw
+    count by one even on an otherwise-empty collection.
+
+    We use strict ``isinstance(..., int)`` checks rather than ``int(...)``
+    because ``MagicMock.__int__`` is preconfigured to return ``1``, which
+    would otherwise silently turn every test-double call into "there is
+    user data" and flip all identity-check branches.
+
+    ``logger`` is optional so the helper stays easy to call from tests,
+    but in the request path callers should pass the scoped logger so
+    fallback events show up in health-check diagnostics instead of being
+    silently swallowed.
+    """
+    vector_db_service = getattr(retrieval_service, "vector_db_service", None)
+    collection_name = getattr(retrieval_service, "collection_name", None)
+
+    counter = getattr(vector_db_service, "count_user_points", None)
+    if callable(counter) and collection_name:
+        try:
+            count = await counter(collection_name)
+            if isinstance(count, int) and not isinstance(count, bool):
+                return count
+        except Exception as exc:
+            # Don't fail the health check on counter issues, but do
+            # surface them — a permanently-failing filtered count means
+            # every invocation will pay the fallback cost and operators
+            # should know.
+            if logger is not None:
+                logger.warning(
+                    "count_user_points failed for '%s'; falling back to "
+                    "points_count minus sentinel. Error: %s",
+                    collection_name,
+                    exc,
+                )
+
+    sig_getter = getattr(vector_db_service, "get_collection_signature", None)
+    if callable(sig_getter) and collection_name:
+        try:
+            sig = await sig_getter(collection_name)
+            if isinstance(sig, dict) and sig and isinstance(raw_points_count, int):
+                return max(raw_points_count - 1, 0)
+        except Exception as exc:
+            if logger is not None:
+                logger.warning(
+                    "get_collection_signature fallback failed for '%s'; "
+                    "returning raw points_count=%s. Error: %s",
+                    collection_name,
+                    raw_points_count,
+                    exc,
+                )
+
+    if isinstance(raw_points_count, int) and not isinstance(raw_points_count, bool):
+        return raw_points_count
+    return 0
 
 
 def _extract_error_message(e: Exception) -> str:
@@ -167,43 +333,133 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
 
 async def handle_model_change(
     retrieval_service,
-    current_model_name: str,
-    new_model_name: str,
+    current_model_name: Optional[str],
+    new_model_name: Optional[str],
     qdrant_vector_size: int,
     points_count: int,
     embedding_size: int,
-    logger
+    logger,
+    *,
+    current_provider: Optional[str] = None,
+    new_provider: Optional[str] = None,
+    identity_source: str = "config",
 ) -> None:
-    """Handle embedding model changes and collection recreation if needed."""
-    if current_model_name is not None:
-        current_model_name = current_model_name.removeprefix("models/")
-    if new_model_name is not None:
-        new_model_name = new_model_name.removeprefix("models/")
+    """Decide whether an embedding-model change is compatible with the
+    existing collection, and act on it.
 
-    if (current_model_name is not None and
-        new_model_name is not None and
-        current_model_name.lower() != new_model_name.lower()):
+    Policy:
+      * If both current and new identity are known and **differ** (either
+        by provider or by normalized model name), and the collection has
+        user data → reject: cross-model mixing silently corrupts search.
+      * If identities differ but the collection has no user data → drop
+        and recreate so the new model can index cleanly.
+      * If identities match → nothing to do.
+      * ``identity_source="collection"`` means the "current" identity came
+        from the collection signature and is authoritative; otherwise it
+        came from config (best-effort, legacy fallback).
 
+    Historical args ``current_model_name`` / ``new_model_name`` are kept
+    for backward compatibility; when ``current_provider`` and
+    ``new_provider`` are supplied they additionally participate in the
+    identity comparison — which is the whole point of this refactor,
+    since two different providers can ship same-named models that produce
+    incompatible vector spaces.
+    """
+    current_normalized = _normalize_identity(current_model_name)
+    new_normalized = _normalize_identity(new_model_name)
+    current_provider_norm = _normalize_identity(current_provider)
+    new_provider_norm = _normalize_identity(new_provider)
 
+    # Compute a tri-state for identity comparison:
+    #   True  -> known difference (block/recreate)
+    #   False -> known match
+    #   None  -> insufficient info to decide (treat as match = no action)
+    identity_differs: Optional[bool]
+    if not current_normalized or not new_normalized:
+        identity_differs = None
+    else:
+        model_differs = current_normalized != new_normalized
+        provider_differs = bool(
+            current_provider_norm
+            and new_provider_norm
+            and current_provider_norm != new_provider_norm
+        )
+        identity_differs = model_differs or provider_differs
 
-        logger.warning("Detected embedding model change attempt")
+    if identity_differs is None:
+        # Missing either the current or the new model name. Log explicitly
+        # so an operator can tell this apart from a genuine "identities
+        # match" no-op — the two look identical from the outside and the
+        # first is almost always a caller bug (e.g. a legacy call site
+        # forgot to plumb through the new model name).
+        logger.info(
+            "handle_model_change: insufficient info to compare identities "
+            f"(source={identity_source}, "
+            f"current={current_provider_norm or '?'}/{current_normalized or '?'}, "
+            f"new={new_provider_norm or '?'}/{new_normalized or '?'}). "
+            "Skipping identity check."
+        )
+        return
 
-        if qdrant_vector_size != 0 and points_count > 0:
-            logger.error("Rejected embedding model change due to non-empty existing collection")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "status": "not healthy",
-                    "error": "Policy Rejection: Embedding model configuration cannot be changed while vector store collection contains data. Please ensure you are using the original embedding configuration.",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                }
-            )
+    if not identity_differs:
+        return
 
-        if qdrant_vector_size != 0 and points_count == 0:
-            await recreate_collection(retrieval_service, embedding_size, logger)
+    logger.warning(
+        "Detected embedding model change attempt "
+        f"(source={identity_source}, "
+        f"current={current_provider_norm or '?'}/{current_normalized}, "
+        f"new={new_provider_norm or '?'}/{new_normalized})"
+    )
 
-async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Recreate the collection with new parameters."""
+    if qdrant_vector_size != 0 and points_count > 0:
+        logger.error(
+            "Rejected embedding model change due to non-empty existing collection"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "status": "not healthy",
+                "error": (
+                    "Policy Rejection: Embedding model configuration cannot be "
+                    "changed while vector store collection contains data. Even "
+                    "when vector dimensions match, different embedding models "
+                    "produce incompatible vector spaces and mixing them will "
+                    "silently corrupt search results. Please re-index or use "
+                    "the original embedding configuration."
+                ),
+                "details": {
+                    "existing_provider": current_provider_norm or None,
+                    "existing_model": current_normalized or None,
+                    "new_provider": new_provider_norm or None,
+                    "new_model": new_normalized or None,
+                    "points_count": points_count,
+                    "identity_source": identity_source,
+                },
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+        )
+
+    if qdrant_vector_size != 0 and points_count == 0:
+        await recreate_collection(
+            retrieval_service,
+            embedding_size,
+            logger,
+            new_provider=new_provider,
+            new_model_name=new_model_name,
+        )
+
+async def recreate_collection(
+    retrieval_service,
+    embedding_size: int,
+    logger,
+    *,
+    new_provider: Optional[str] = None,
+    new_model_name: Optional[str] = None,
+    new_is_multimodal: Optional[bool] = None,
+) -> None:
+    """Recreate the collection with new parameters. If provider and model
+    are supplied, also write a fresh collection signature so future health
+    checks can authoritatively tell which model built this collection."""
     try:
         await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
@@ -227,6 +483,35 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
                 "type": "keyword",
             }
         )
+
+        if new_provider and new_model_name:
+            setter = getattr(
+                retrieval_service.vector_db_service,
+                "set_collection_signature",
+                None,
+            )
+            if callable(setter):
+                signature: Dict[str, Any] = {
+                    "embedding_provider": _normalize_identity(new_provider),
+                    "embedding_model": _normalize_identity(new_model_name),
+                    "embedding_dimension": int(embedding_size),
+                }
+                if new_is_multimodal is not None:
+                    signature["is_multimodal"] = bool(new_is_multimodal)
+                try:
+                    await setter(
+                        collection_name=retrieval_service.collection_name,
+                        signature=signature,
+                        embedding_size=embedding_size,
+                    )
+                except Exception as sig_err:
+                    # Don't fail the recreate just because the signature
+                    # write failed; log loudly so it's discoverable.
+                    logger.error(
+                        f"Failed to write collection signature after recreate: {sig_err}",
+                        exc_info=True,
+                    )
+
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:
         logger.error(f"Failed to recreate collection: {str(e)}", exc_info=True)
@@ -236,21 +521,72 @@ async def check_collection_info(
     retrieval_service,
     dense_embeddings,
     embedding_size,
-    logger
+    logger,
+    *,
+    new_provider: Optional[str] = None,
+    new_model_name: Optional[str] = None,
 ) -> None:
-    """Check and validate collection information."""
+    """Check and validate collection information.
+
+    Resolution order for "which model built the existing collection":
+      1. Signature stored on the collection (authoritative).
+      2. AI_MODELS config (legacy fallback).
+      3. Unknown (treated as legacy; no identity check performed).
+
+    ``new_provider`` / ``new_model_name`` come from the incoming request
+    config. If omitted (legacy callers / tests), we fall back to
+    ``retrieval_service.get_embedding_model_name(dense_embeddings)``, which
+    cannot supply a provider and so behaves exactly like before.
+    """
     try:
         collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
         qdrant_vector_size = collection_info.config.params.vectors.get("dense").size
-        points_count = collection_info.points_count
+        raw_points_count = collection_info.points_count
+        points_count = await _count_user_points(
+            retrieval_service, raw_points_count, logger=logger
+        )
 
-        current_model_name = await retrieval_service.get_current_embedding_model_name()
-        new_model_name = retrieval_service.get_embedding_model_name(dense_embeddings)
+        if not new_model_name:
+            new_model_name = retrieval_service.get_embedding_model_name(dense_embeddings)
 
-        logger.info(f"Current model name: {current_model_name}")
-        logger.info(f"New model name: {new_model_name}")
-        logger.info(f"Collection points count: {points_count}")
+        current_identity, identity_source = await _resolve_stored_embedding_identity(
+            retrieval_service, logger
+        )
+        current_model_name = (
+            current_identity.get("embedding_model") if current_identity else None
+        )
+        current_provider = (
+            current_identity.get("embedding_provider") if current_identity else None
+        )
 
+        logger.info(
+            f"Embedding identity: source={identity_source}, "
+            f"current_provider={current_provider}, current_model={current_model_name}, "
+            f"new_provider={new_provider}, new_model={new_model_name}"
+        )
+        logger.info(
+            f"Collection points: raw={raw_points_count}, user={points_count}"
+        )
+
+        # Signature-source path: we KNOW what built the collection.
+        # No need to defer to the legacy "current model from config" heuristic.
+        if identity_source == "collection":
+            await handle_model_change(
+                retrieval_service,
+                current_model_name,
+                new_model_name,
+                qdrant_vector_size,
+                points_count,
+                embedding_size,
+                logger,
+                current_provider=current_provider,
+                new_provider=new_provider,
+                identity_source="collection",
+            )
+            return
+
+        # Legacy path: fall back to the config-derived current model. Keep
+        # the historical behaviour so pre-signature collections keep working.
         await handle_model_change(
             retrieval_service,
             current_model_name,
@@ -258,7 +594,10 @@ async def check_collection_info(
             qdrant_vector_size,
             points_count,
             embedding_size,
-            logger
+            logger,
+            current_provider=current_provider,
+            new_provider=new_provider,
+            identity_source=identity_source,
         )
 
     except grpc._channel._InactiveRpcError as e:
@@ -288,6 +627,30 @@ async def check_collection_info(
             }
         )
 
+def _pick_new_embedding_identity(embedding_configs: list[dict]) -> Tuple[Optional[str], Optional[str]]:
+    """Choose the (provider, model_name) the caller is asking us to validate.
+
+    Mirrors ``initialize_embedding_model``'s "default first, else first"
+    selection so the identity we compare against matches the embedding we
+    actually built.
+    """
+    if not embedding_configs:
+        return None, None
+    chosen = next(
+        (c for c in embedding_configs if c.get("isDefault", False)),
+        embedding_configs[0],
+    )
+    provider = chosen.get("provider")
+    model_str = (chosen.get("configuration") or {}).get("model", "")
+    # AI_MODELS allows a comma-separated list for some providers; take the
+    # first non-empty entry, matching the runtime behaviour elsewhere.
+    model_name = next(
+        (n.strip() for n in str(model_str).split(",") if n.strip()),
+        None,
+    )
+    return provider, model_name
+
+
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate embedding configurations."""
@@ -298,8 +661,19 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         # Verify embedding health
         embedding_size = await verify_embedding_health(dense_embeddings, logger)
 
+        # Pull out provider+model from the incoming config so the identity
+        # check compares against (provider, model), not just model name.
+        new_provider, new_model_name = _pick_new_embedding_identity(embedding_configs)
+
         # Check collection info and handle model changes
-        await check_collection_info(retrieval_service, dense_embeddings, embedding_size, logger)
+        await check_collection_info(
+            retrieval_service,
+            dense_embeddings,
+            embedding_size,
+            logger,
+            new_provider=new_provider,
+            new_model_name=new_model_name,
+        )
 
         # Initialize vector store as None
         retrieval_service.vector_store = None
@@ -540,6 +914,14 @@ async def perform_embedding_health_check(
 
             # Policy: reject if the existing non-empty collection was built
             # with a different model OR a different vector size.
+            #
+            # Identity resolution order (authoritative -> heuristic):
+            #   1. Signature stored on the Qdrant collection itself.
+            #   2. AI_MODELS config (legacy; correlated with what the user is
+            #      trying to change, so not reliable on its own).
+            # When neither is available and the collection has user data,
+            # we conservatively refuse because a silent pass here can
+            # corrupt an existing index on a same-dimension model swap.
             try:
                 retrieval_service = await request.app.container.retrieval_service()
                 collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
@@ -551,60 +933,238 @@ async def perform_embedding_health_check(
                     if qdrant_vector_size is None:
                         raise Exception("Qdrant vector size not found")
 
-                    points_count = getattr(collection_info, "points_count", 0)
+                    raw_points_count = getattr(collection_info, "points_count", 0)
+                    points_count = await _count_user_points(
+                        retrieval_service, raw_points_count, logger=logger
+                    )
 
                     if points_count > 0:
-                        # Check dimension mismatch
+                        # Resolve the stored embedding identity up-front so
+                        # *both* the dimension-mismatch branch and the
+                        # same-dimension branch can report which model built
+                        # the existing collection. Without this, a dimension
+                        # mismatch error can only say "a different model",
+                        # which isn't actionable.
+                        new_provider = embedding_config.get("provider", "")
+                        new_model = model_name
+                        new_provider_norm = _normalize_identity(new_provider)
+                        new_model_norm = _normalize_identity(new_model)
+                        # Read isMultimodal from the request config so we
+                        # can compare against a stored ``is_multimodal``
+                        # signature. When the saved config is text-only
+                        # this reliably returns False.
+                        new_is_multimodal = bool(
+                            embedding_config.get("isMultimodal")
+                            or (embedding_config.get("configuration") or {}).get(
+                                "isMultimodal"
+                            )
+                        )
+
+                        current_identity, identity_source = (
+                            await _resolve_stored_embedding_identity(
+                                retrieval_service, logger
+                            )
+                        )
+                        cur_provider = (
+                            (current_identity or {}).get("embedding_provider") or ""
+                        )
+                        cur_model = (
+                            (current_identity or {}).get("embedding_model") or ""
+                        )
+                        # Only populated when the collection was written
+                        # by signature-aware code that knew the flag.
+                        cur_is_multimodal = (
+                            (current_identity or {}).get("is_multimodal")
+                            if current_identity
+                            else None
+                        )
+
+                        # Check dimension mismatch first. Dimensions differing
+                        # is an unambiguous "cannot coexist" signal.
                         if qdrant_vector_size != embedding_dimension:
+                            existing_desc = (
+                                f"provider='{cur_provider}', model='{cur_model}'"
+                                if cur_model
+                                else "an unknown embedding model"
+                            )
+                            details = {
+                                "existing_vector_size": qdrant_vector_size,
+                                "new_embedding_size": embedding_dimension,
+                                "points_count": points_count,
+                                "identity_source": identity_source,
+                            }
+                            if cur_model:
+                                details["existing_model"] = cur_model
+                            if cur_provider:
+                                details["existing_provider"] = cur_provider
+                            details["new_model"] = new_model_norm
+                            details["new_provider"] = new_provider_norm
+
                             return JSONResponse(
                                 status_code=400,
                                 content={
                                     "status": "error",
-                                    "message": "Embedding model dimension mismatch with existing non-empty collection",
-                                    "details": {
-                                        "existing_vector_size": qdrant_vector_size,
-                                        "new_embedding_size": embedding_dimension,
-                                        "points_count": points_count,
-                                    },
+                                    "message": (
+                                        f"{points_count} chunk(s) are already indexed using {existing_desc} "
+                                        f"(vector dimension {qdrant_vector_size}). The selected model "
+                                        f"'{new_model_norm or model_name}' (provider: "
+                                        f"'{new_provider_norm or 'unknown'}') produces vectors of dimension "
+                                        f"{embedding_dimension}, which is incompatible. Please either switch "
+                                        f"back to the exact embedding model that was originally used to build "
+                                        f"this index, or re-index your documents with the new model. Note: "
+                                        f"matching the vector dimension alone is not sufficient — different "
+                                        f"embedding models produce incompatible vector spaces even at the same "
+                                        f"dimension."
+                                    ),
+                                    "details": details,
                                     "timestamp": get_epoch_timestamp_in_ms(),
                                 },
                             )
 
-                        # Check model identity — same dimensions but different
-                        # model means incompatible vector spaces.
-                        current_model_name = await retrieval_service.get_current_embedding_model_name()
-                        new_provider = embedding_config.get("provider", "")
-                        new_model = model_name
-
-                        if current_model_name:
-                            current_normalized = current_model_name.removeprefix("models/").strip().lower()
-                            new_normalized = (new_model or "").removeprefix("models/").strip().lower()
-
-                            if current_normalized and new_normalized and current_normalized != new_normalized:
+                        # Same dimension — the case the original code missed.
+                        # Two different models can share a dimension but produce
+                        # incompatible vector spaces. Use the stored signature
+                        # when available; fall back to config otherwise.
+                        if identity_source == "collection" and current_identity:
+                            # Authoritative: compare (provider, model, and
+                            # — when known on both sides — is_multimodal).
+                            # Any differ blocks the change. (``cur_provider``
+                            # / ``cur_model`` were resolved above for the
+                            # dimension-mismatch branch.)
+                            multimodal_flip = (
+                                cur_is_multimodal is not None
+                                and bool(cur_is_multimodal) != bool(new_is_multimodal)
+                            )
+                            mismatch = (
+                                cur_model != new_model_norm
+                                or (cur_provider and new_provider_norm and cur_provider != new_provider_norm)
+                                or multimodal_flip
+                            )
+                            if mismatch:
+                                if multimodal_flip and cur_model == new_model_norm:
+                                    # Same provider/model but the user
+                                    # toggled ``isMultimodal``. Make the
+                                    # message explicit so the fix is
+                                    # obvious (re-index, or un-toggle).
+                                    message = (
+                                        f"Embedding identity mismatch: the existing collection was built with "
+                                        f"provider='{cur_provider}', model='{cur_model}', "
+                                        f"isMultimodal={bool(cur_is_multimodal)}. The new configuration sets "
+                                        f"isMultimodal={bool(new_is_multimodal)} on the same model — text-only "
+                                        f"and multimodal modes of the same model produce incompatible vector "
+                                        f"spaces. Please re-index, or leave isMultimodal unchanged for this "
+                                        f"collection."
+                                    )
+                                else:
+                                    message = (
+                                        f"Embedding model mismatch: the existing collection was built with "
+                                        f"provider='{cur_provider}', model='{cur_model}'. Switching to "
+                                        f"provider='{new_provider_norm}', model='{new_model_norm}' would "
+                                        f"corrupt search results even though vector dimensions match. "
+                                        f"Please re-index or use the same model."
+                                    )
+                                details = {
+                                    "existing_provider": cur_provider,
+                                    "existing_model": cur_model,
+                                    "new_provider": new_provider_norm,
+                                    "new_model": new_model_norm,
+                                    "points_count": points_count,
+                                    "identity_source": "collection",
+                                }
+                                if cur_is_multimodal is not None:
+                                    details["existing_is_multimodal"] = bool(
+                                        cur_is_multimodal
+                                    )
+                                    details["new_is_multimodal"] = bool(
+                                        new_is_multimodal
+                                    )
+                                return JSONResponse(
+                                    status_code=400,
+                                    content={
+                                        "status": "error",
+                                        "message": message,
+                                        "details": details,
+                                        "timestamp": get_epoch_timestamp_in_ms(),
+                                    },
+                                )
+                        elif identity_source == "config" and current_identity:
+                            # Legacy: we only have the saved AI_MODELS config
+                            # (no collection signature yet). It's best-effort
+                            # because that config is what the user is about to
+                            # change, so it's correlated with "what built the
+                            # index" rather than causal. Still, when the saved
+                            # config carries a ``provider``, compare it too:
+                            # swapping ``ollama/nomic-embed-text`` for
+                            # ``openai/nomic-embed-text`` shares the model
+                            # string but produces incompatible vectors, and is
+                            # exactly the case this endpoint exists to catch.
+                            model_differs = (
+                                bool(cur_model)
+                                and bool(new_model_norm)
+                                and cur_model != new_model_norm
+                            )
+                            provider_differs = (
+                                bool(cur_provider)
+                                and bool(new_provider_norm)
+                                and cur_provider != new_provider_norm
+                            )
+                            if model_differs or provider_differs:
                                 return JSONResponse(
                                     status_code=400,
                                     content={
                                         "status": "error",
                                         "message": (
-                                            f"Embedding model mismatch: the existing collection was built with "
-                                            f"'{current_model_name}'. Switching to '{new_model}' (provider: "
-                                            f"{new_provider}) would corrupt search results. Please re-index "
-                                            f"or use the same model."
+                                            f"Embedding model mismatch: the existing collection appears to have "
+                                            f"been built with provider='{cur_provider or 'unknown'}', "
+                                            f"model='{cur_model or 'unknown'}'. Switching to provider='"
+                                            f"{new_provider_norm or 'unknown'}', model='{new_model_norm or 'unknown'}' "
+                                            f"would corrupt search results even though vector dimensions match. "
+                                            f"Please re-index or use the same model."
                                         ),
                                         "details": {
-                                            "current_model": current_model_name,
-                                            "new_model": new_model,
-                                            "new_provider": new_provider,
+                                            "existing_provider": cur_provider or None,
+                                            "existing_model": cur_model,
+                                            "new_provider": new_provider_norm,
+                                            "new_model": new_model_norm,
                                             "points_count": points_count,
+                                            "identity_source": "config",
                                         },
                                         "timestamp": get_epoch_timestamp_in_ms(),
                                     },
                                 )
+                        else:
+                            # No authoritative source and no config either,
+                            # but the collection has user data. A silent pass
+                            # here is exactly the bug we're fixing: we cannot
+                            # rule out a same-dim model swap, so refuse.
+                            return JSONResponse(
+                                status_code=400,
+                                content={
+                                    "status": "error",
+                                    "message": (
+                                        f"Cannot verify that '{new_model_norm}' (provider: "
+                                        f"{new_provider_norm}) matches the embedding model that built the "
+                                        f"existing collection ({points_count} indexed chunks). Dimension "
+                                        f"alone is insufficient — different models with the same dimension "
+                                        f"produce incompatible vector spaces. Please re-index before "
+                                        f"switching embedding models."
+                                    ),
+                                    "details": {
+                                        "new_provider": new_provider_norm,
+                                        "new_model": new_model_norm,
+                                        "points_count": points_count,
+                                        "identity_source": "unknown",
+                                    },
+                                    "timestamp": get_epoch_timestamp_in_ms(),
+                                },
+                            )
             except grpc._channel._InactiveRpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
                     logger.info("Collection not found - acceptable for health check")
                 else:
                     raise
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"Collection lookup failed: {str(e)}")
                 return JSONResponse(

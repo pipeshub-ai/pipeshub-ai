@@ -1651,3 +1651,621 @@ class TestLoadTestImageFullCoverage:
             with pytest.raises(FileNotFoundError):
                 from app.api.routes.health import _load_test_image
                 _load_test_image()
+
+
+# =============================================================================
+# Collection-signature-aware identity check
+#
+# These tests cover the behaviour that makes the health check robust against
+# "same vector dimension, different embedding model" swaps: when the vector
+# collection itself carries a signature, it wins over the AI_MODELS config.
+# =============================================================================
+
+
+def _make_retrieval_svc_for_signature_check(
+    *,
+    stored_signature=None,
+    current_config_model=None,
+    points_count=100,
+    dense_size=768,
+):
+    """Helper that builds a retrieval_service mock with explicit signature /
+    config / points_count behaviour."""
+    dense_vec = MagicMock()
+    dense_vec.size = dense_size
+    vectors = MagicMock()
+    vectors.get.return_value = dense_vec
+    coll_info = MagicMock()
+    coll_info.config.params.vectors = vectors
+    coll_info.points_count = points_count
+
+    svc = AsyncMock()
+    svc.collection_name = "coll"
+    svc.vector_db_service = AsyncMock()
+    svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+    svc.vector_db_service.get_collection_signature = AsyncMock(
+        return_value=stored_signature
+    )
+    svc.vector_db_service.count_user_points = AsyncMock(return_value=points_count)
+    svc.get_current_embedding_model_name = AsyncMock(return_value=current_config_model)
+    return svc
+
+
+class TestPerformEmbeddingCheckSignatureAware:
+    @pytest.mark.asyncio
+    async def test_stored_signature_match_with_data_returns_200(self, mock_request):
+        """Stored signature matches (provider, model) -> allow."""
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "text-embedding-3-small"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 768,
+            },
+            points_count=100,
+            dense_size=768,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_stored_signature_mismatch_same_dim_returns_400(self, mock_request):
+        """Stored signature disagrees with new (provider, model) but dims match
+        -> block. This is the case the original dimension-only check missed."""
+        logger = MagicMock()
+        config = {
+            "provider": "voyageai",
+            "configuration": {"model": "voyage-3"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 768,
+            },
+            points_count=100,
+            dense_size=768,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 400
+        body = resp.body.decode()
+        assert "mismatch" in body.lower()
+        assert "openai" in body
+
+    @pytest.mark.asyncio
+    async def test_stored_signature_same_model_different_provider_returns_400(
+        self, mock_request
+    ):
+        """Same model name but different provider must still be rejected."""
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "nomic-embed-text"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "ollama",
+                "embedding_model": "nomic-embed-text",
+                "embedding_dimension": 768,
+            },
+            points_count=50,
+            dense_size=768,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_identity_nonempty_collection_blocks(self, mock_request):
+        """No stored signature AND no config -> cannot verify -> refuse."""
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "text-embedding-3-small"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature=None,
+            current_config_model=None,  # also no config hint
+            points_count=100,
+            dense_size=768,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 400
+        body = resp.body.decode()
+        assert "cannot verify" in body.lower()
+
+    @pytest.mark.asyncio
+    async def test_signature_excludes_sentinel_from_user_count(self, mock_request):
+        """When a signature is stored on an otherwise-empty collection,
+        `count_user_points` returns 0 and the check should pass."""
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "text-embedding-3-small"},
+        }
+        mock_embed = MagicMock()
+
+        # Raw points_count is 1 (just the sentinel) but count_user_points is 0.
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 768,
+            },
+            points_count=1,
+            dense_size=768,
+        )
+        retrieval_svc.vector_db_service.count_user_points = AsyncMock(return_value=0)
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_models_prefix_and_case_normalized(self, mock_request):
+        """``models/Foo-Bar`` should match ``foo-bar``."""
+        logger = MagicMock()
+        config = {
+            "provider": "GoogleAI",
+            "configuration": {"model": "models/text-embedding-004"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "googleai",
+                "embedding_model": "text-embedding-004",
+                "embedding_dimension": 768,
+            },
+            points_count=100,
+            dense_size=768,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_flip_same_model_returns_400(self, mock_request):
+        """Same (provider, model, dimension) but the stored signature says
+        ``is_multimodal=True`` while the new config is text-only. Text-only
+        and multimodal modes of the same model produce incompatible vector
+        spaces, so flipping the toggle on a populated collection must be
+        blocked with a targeted message."""
+        logger = MagicMock()
+        config = {
+            "provider": "voyageai",
+            "isMultimodal": False,
+            "configuration": {"model": "voyage-multimodal-3"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "voyageai",
+                "embedding_model": "voyage-multimodal-3",
+                "embedding_dimension": 1024,
+                "is_multimodal": True,
+            },
+            points_count=100,
+            dense_size=1024,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 1024]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 400
+        body = resp.body.decode()
+        assert "isMultimodal" in body
+        assert "voyage-multimodal-3" in body
+        # Detail payload must carry both flags so callers can render a diff.
+        assert "existing_is_multimodal" in body
+        assert "new_is_multimodal" in body
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_matches_returns_200(self, mock_request):
+        """Same (provider, model, dimension, is_multimodal) is the happy
+        path — no mismatch should be raised."""
+        logger = MagicMock()
+        config = {
+            "provider": "voyageai",
+            "isMultimodal": True,
+            "configuration": {"model": "voyage-multimodal-3"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "voyageai",
+                "embedding_model": "voyage-multimodal-3",
+                "embedding_dimension": 1024,
+                "is_multimodal": True,
+            },
+            points_count=100,
+            dense_size=1024,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 1024]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_missing_on_stored_treated_as_unknown(self, mock_request):
+        """Legacy collections written before the signature tracked
+        ``is_multimodal`` won't have the flag. A new config that toggles
+        isMultimodal must NOT be blocked on that axis alone — we only
+        compare when both sides are known."""
+        logger = MagicMock()
+        config = {
+            "provider": "voyageai",
+            "isMultimodal": True,  # user now wants multimodal...
+            "configuration": {"model": "voyage-multimodal-3"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                # ...and the legacy signature pre-dates the flag.
+                "embedding_provider": "voyageai",
+                "embedding_model": "voyage-multimodal-3",
+                "embedding_dimension": 1024,
+            },
+            points_count=100,
+            dense_size=1024,
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 1024]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200, resp.body.decode()
+
+
+class TestResolveStoredEmbeddingIdentityMultimodal:
+    """Targeted tests for the new ``is_multimodal`` surfacing behaviour
+    in ``_resolve_stored_embedding_identity``. Kept separate from the
+    integration-style tests above so regressions in the helper itself
+    are easy to triage."""
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_true_surfaced(self):
+        logger = MagicMock()
+        retrieval_svc = MagicMock()
+        retrieval_svc.collection_name = "coll"
+        retrieval_svc.vector_db_service = MagicMock()
+        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
+            return_value={
+                "embedding_provider": "voyageai",
+                "embedding_model": "voyage-multimodal-3",
+                "embedding_dimension": 1024,
+                "is_multimodal": True,
+            }
+        )
+
+        from app.api.routes.health import _resolve_stored_embedding_identity
+        identity, source = await _resolve_stored_embedding_identity(
+            retrieval_svc, logger
+        )
+
+        assert source == "collection"
+        assert identity["is_multimodal"] is True
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_false_surfaced(self):
+        logger = MagicMock()
+        retrieval_svc = MagicMock()
+        retrieval_svc.collection_name = "coll"
+        retrieval_svc.vector_db_service = MagicMock()
+        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
+            return_value={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 1536,
+                "is_multimodal": False,
+            }
+        )
+
+        from app.api.routes.health import _resolve_stored_embedding_identity
+        identity, source = await _resolve_stored_embedding_identity(
+            retrieval_svc, logger
+        )
+
+        assert source == "collection"
+        assert identity["is_multimodal"] is False
+
+    @pytest.mark.asyncio
+    async def test_is_multimodal_absent_is_not_surfaced(self):
+        """A legacy signature (pre-flag) must not synthesize an
+        ``is_multimodal`` key — callers rely on the key's absence to
+        know the flag is unknown."""
+        logger = MagicMock()
+        retrieval_svc = MagicMock()
+        retrieval_svc.collection_name = "coll"
+        retrieval_svc.vector_db_service = MagicMock()
+        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
+            return_value={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 1536,
+            }
+        )
+
+        from app.api.routes.health import _resolve_stored_embedding_identity
+        identity, source = await _resolve_stored_embedding_identity(
+            retrieval_svc, logger
+        )
+
+        assert source == "collection"
+        assert "is_multimodal" not in identity
+
+
+class TestHandleModelChangeProviderAware:
+    @pytest.mark.asyncio
+    async def test_same_model_different_provider_is_rejected_with_data(self):
+        """``handle_model_change`` must treat different providers as a mismatch
+        even when the model names happen to match."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_model_change(
+                retrieval_svc,
+                "nomic-embed-text",
+                "nomic-embed-text",
+                768,
+                100,
+                768,
+                logger,
+                current_provider="ollama",
+                new_provider="openai",
+                identity_source="collection",
+            )
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_same_model_same_provider_allows(self):
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        await handle_model_change(
+            retrieval_svc,
+            "text-embedding-3-small",
+            "text-embedding-3-small",
+            768,
+            100,
+            768,
+            logger,
+            current_provider="openai",
+            new_provider="openai",
+            identity_source="collection",
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_new_provider_falls_back_to_model_only(self):
+        """If the new provider is unknown (legacy call) the comparison should
+        fall back to model-name-only -- i.e. the pre-refactor behaviour."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        await handle_model_change(
+            retrieval_svc,
+            "same-model",
+            "same-model",
+            768,
+            100,
+            768,
+            logger,
+            current_provider="ollama",
+            new_provider=None,
+        )
+
+
+# =============================================================================
+# Regression tests for the review fixes:
+#   1. empty-but-signed collection must NOT be flagged as "has user data"
+#   2. legacy config-source path must compare provider too
+#   3. handle_model_change must log when it can't compare identities
+# =============================================================================
+
+
+class TestEmptyButSignedCollection:
+    """``vectors_count`` in Qdrant counts the signature sentinel, so a
+    collection whose only point is the sentinel would previously look
+    non-empty and falsely block a model swap. The authoritative
+    ``count_user_points`` helper is the single source of truth."""
+
+    @pytest.mark.asyncio
+    async def test_empty_signed_collection_allows_model_swap(self, mock_request):
+        """count_user_points = 0 -> health check passes even though the raw
+        points_count / vectors_count are non-zero because of the sentinel."""
+        logger = MagicMock()
+        config = {
+            "provider": "voyageai",
+            "configuration": {"model": "voyage-3"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 768,
+            },
+            # Only the sentinel is in the collection.
+            points_count=1,
+            dense_size=768,
+        )
+        retrieval_svc.vector_db_service.count_user_points = AsyncMock(return_value=0)
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200, (
+            "Empty-but-signed collection must not block model swap. "
+            f"Body: {resp.body.decode()}"
+        )
+
+
+class TestLegacyConfigProviderCompare:
+    """When only AI_MODELS config is available (no collection signature yet),
+    the legacy compare must still catch provider-only swaps — e.g. switching
+    ``ollama/nomic-embed-text`` to ``openai/nomic-embed-text``: the model
+    string matches but the vector spaces are incompatible."""
+
+    @pytest.mark.asyncio
+    async def test_same_model_different_provider_rejected_in_config_path(
+        self, mock_request
+    ):
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "nomic-embed-text"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature=None,
+            # Legacy saved config: ollama-backed. No collection signature yet.
+            current_config_model="nomic-embed-text",
+            points_count=50,
+            dense_size=768,
+        )
+        retrieval_svc.get_current_embedding_config = AsyncMock(
+            return_value={
+                "provider": "ollama",
+                "configuration": {"model": "nomic-embed-text"},
+                "isDefault": True,
+            }
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 400
+        body = resp.body.decode()
+        assert "ollama" in body
+        assert "openai" in body
+        # Make sure the response surfaces "identity_source: config" so the
+        # origin of the decision is auditable.
+        assert "config" in body
+
+    @pytest.mark.asyncio
+    async def test_same_provider_same_model_allowed_in_config_path(
+        self, mock_request
+    ):
+        """Control: identical (provider, model) in config must pass even on
+        the legacy path (no stored signature)."""
+        logger = MagicMock()
+        config = {
+            "provider": "openai",
+            "configuration": {"model": "text-embedding-3-small"},
+        }
+        mock_embed = MagicMock()
+
+        retrieval_svc = _make_retrieval_svc_for_signature_check(
+            stored_signature=None,
+            current_config_model="text-embedding-3-small",
+            points_count=50,
+            dense_size=768,
+        )
+        retrieval_svc.get_current_embedding_config = AsyncMock(
+            return_value={
+                "provider": "openai",
+                "configuration": {"model": "text-embedding-3-small"},
+                "isDefault": True,
+            }
+        )
+        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
+
+        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, logger)
+
+        assert resp.status_code == 200
+
+
+class TestHandleModelChangeInsufficientInfo:
+    @pytest.mark.asyncio
+    async def test_missing_model_names_logs_and_noops(self):
+        """Both model names empty → log info, do nothing, don't raise. This
+        is explicitly distinguished from the "identities match" no-op so
+        operators can see caller bugs in the logs."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        # Must not raise.
+        await handle_model_change(
+            retrieval_svc,
+            None,
+            None,
+            768,
+            100,
+            768,
+            logger,
+        )
+        # At least one info log call mentioning "insufficient info".
+        info_calls = [str(c) for c in logger.info.call_args_list]
+        assert any("insufficient info" in c for c in info_calls), info_calls

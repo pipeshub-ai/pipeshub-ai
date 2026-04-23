@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_core.documents import Document
 from langchain_experimental.text_splitter import SemanticChunker
@@ -17,7 +17,11 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.const.const import (
+    ORG_ID_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+    normalize_identity as _normalize_identity,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -362,9 +366,20 @@ class IndexingPipeline:
             )
 
     async def _initialize_collection(
-        self, embedding_size: int = 1024, sparse_idf: bool = False
+        self,
+        embedding_size: int = 1024,
+        sparse_idf: bool = False,
+        embedding_provider: Optional[str] = None,
+        embedding_model_name: Optional[str] = None,
     ) -> None:
-        """Initialize collection with proper configuration."""
+        """Initialize collection with proper configuration.
+
+        When ``embedding_provider`` and ``embedding_model_name`` are supplied
+        (and the underlying vector DB exposes :meth:`set_collection_signature`),
+        a collection signature is written so future health checks can
+        authoritatively tell which embedding model built this collection.
+        Kept optional so legacy callers / tests continue to work unchanged.
+        """
         try:
             collection_info = await self.vector_db_service.get_collection(self.collection_name)
             if not collection_info:
@@ -412,6 +427,54 @@ class IndexingPipeline:
                         "type": "keyword",
                     }
                 )
+                # Index the sentinel-marker field so the health-check
+                # flow's ``count_user_points`` can filter on an index
+                # rather than a full scan. Best-effort; mirrors the
+                # vectorstore path.
+                try:
+                    await self.vector_db_service.create_index(
+                        collection_name=self.collection_name,
+                        field_name="_kind",
+                        field_schema={"type": "keyword"},
+                    )
+                except Exception as idx_err:
+                    self.logger.warning(
+                        f"Failed to create '_kind' payload index on "
+                        f"{self.collection_name}: {idx_err}. "
+                        f"count_user_points will use the slower fallback."
+                    )
+
+                # Best-effort signature write. The vectorstore path does the
+                # same thing; keeping this branch in sync prevents collections
+                # bootstrapped through the indexing pipeline from being
+                # permanently "legacy-unknown" w.r.t. later identity checks.
+                if embedding_provider and embedding_model_name:
+                    setter = getattr(
+                        self.vector_db_service, "set_collection_signature", None
+                    )
+                    if callable(setter):
+                        try:
+                            await setter(
+                                collection_name=self.collection_name,
+                                signature={
+                                    "embedding_provider": _normalize_identity(
+                                        embedding_provider
+                                    ),
+                                    "embedding_model": _normalize_identity(
+                                        embedding_model_name
+                                    ),
+                                    "embedding_dimension": int(embedding_size),
+                                },
+                                embedding_size=embedding_size,
+                            )
+                        except Exception as sig_err:
+                            # Signature write is advisory; don't drop the
+                            # otherwise-valid collection just because this
+                            # failed. Log loudly so it's discoverable.
+                            self.logger.error(
+                                f"⚠️ Failed to write collection signature for "
+                                f"{self.collection_name}: {sig_err}"
+                            )
             except Exception as e:
                 self.logger.error(
                     f"❌ Error creating collection {self.collection_name}: {str(e)}"
@@ -429,14 +492,24 @@ class IndexingPipeline:
                 config_node_constants.AI_MODELS.value
             )
             embedding_configs = ai_models.get("embedding", [])
+            # Provider + configured model name are tracked separately from the
+            # SDK-reported ``model_name`` below. We persist the *configured*
+            # name in the collection signature so future health checks compare
+            # like-for-like against the same source of truth (AI_MODELS
+            # config), rather than against whatever the SDK happens to
+            # advertise as ``.model_name`` / ``.model`` / ``.model_id``.
+            config_provider: Optional[str] = None
+            config_model_name: Optional[str] = None
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
             else:
                 dense_embeddings = None
+                selected_config: Optional[dict] = None
                 for config in embedding_configs:
                     if config.get("isDefault", False):
                         provider = config["provider"]
                         dense_embeddings = get_embedding_model(provider, config)
+                        selected_config = config
                         break
 
                 if not dense_embeddings:
@@ -444,10 +517,28 @@ class IndexingPipeline:
                     for config in embedding_configs:
                         provider = config["provider"]
                         dense_embeddings = get_embedding_model(provider, config)
+                        selected_config = config
                         break
 
                 if not dense_embeddings:
                     raise IndexingError("No default embedding model found")
+
+                if selected_config:
+                    config_provider = selected_config.get("provider")
+                    configured_model_str = (
+                        selected_config.get("configuration", {}).get("model", "")
+                    )
+                    # AI_MODELS allows a comma-separated list for some
+                    # providers; take the first non-empty entry, matching
+                    # the behaviour elsewhere.
+                    config_model_name = next(
+                        (
+                            n.strip()
+                            for n in str(configured_model_str).split(",")
+                            if n.strip()
+                        ),
+                        None,
+                    )
 
             # Get the embedding dimensions from the model
             try:
@@ -462,7 +553,8 @@ class IndexingPipeline:
                     details={"error": str(e)},
                 )
 
-            # Get model name safely
+            # SDK-reported name, used only for logging. Do NOT use this for
+            # the signature — see note above `config_model_name`.
             model_name = None
             if hasattr(dense_embeddings, "model_name"):
                 model_name = dense_embeddings.model_name
@@ -475,8 +567,11 @@ class IndexingPipeline:
                 f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
             )
 
-            # Initialize collection with correct embedding size
-            await self._initialize_collection(embedding_size=embedding_size)
+            await self._initialize_collection(
+                embedding_size=embedding_size,
+                embedding_provider=config_provider,
+                embedding_model_name=config_model_name,
+            )
 
             # Initialize vector store with same configuration
             self.vector_store: QdrantVectorStore = QdrantVectorStore(
