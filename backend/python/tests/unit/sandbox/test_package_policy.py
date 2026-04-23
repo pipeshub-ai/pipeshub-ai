@@ -74,6 +74,14 @@ class TestAllowlistSeeds:
         for name in ["axios", "node-fetch", "got", "request"]:
             assert name not in NPM_PACKAGE_ALLOWLIST
 
+    def test_npm_document_generation_stack(self):
+        """Rich .pptx / .docx generation requires pptxgenjs + react family."""
+        for name in ["pptxgenjs", "docx", "react", "react-dom", "react-icons"]:
+            assert name in NPM_PACKAGE_ALLOWLIST, (
+                f"{name} must stay on the npm allowlist — the document design "
+                f"skill references it and the sandbox Dockerfile pre-installs it."
+            )
+
 
 class TestEnforcePackageAllowlist:
     def test_empty_is_allowed(self):

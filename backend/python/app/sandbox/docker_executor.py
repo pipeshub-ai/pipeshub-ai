@@ -183,10 +183,15 @@ class DockerExecutor(BaseExecutor):
             parts.append("python3 /src/main.py")
 
         elif language == SandboxLanguage.TYPESCRIPT:
-            script = os.path.join(src_dir, "main.ts")
+            # Use a `.mts` extension so tsx/esbuild treats the file as ESM.
+            # Plain `.ts` falls back to CJS (because there is no
+            # package.json with `"type": "module"` in /src), which would
+            # reject top-level `await` — pptxgenjs/docx-js examples and
+            # our pipeshub-slides helper all rely on it.
+            script = os.path.join(src_dir, "main.mts")
             with open(script, "w") as f:
                 f.write(code)
-            parts.append("npx tsx /src/main.ts")
+            parts.append("npx tsx /src/main.mts")
 
         elif language == SandboxLanguage.SQLITE:
             sql_file = os.path.join(src_dir, "query.sql")
@@ -230,24 +235,30 @@ class DockerExecutor(BaseExecutor):
         try:
             network_name = self._ensure_egress_network(client)
 
+            # Install into a writable location under /tmp. The sandbox image
+            # runs as a non-root user whose home isn't on the container root,
+            # so directories like /install or /deps at "/" aren't writable.
+            # /tmp is world-writable and ephemeral, which is exactly what we
+            # want for a throw-away install container.
             if language == SandboxLanguage.PYTHON:
                 cmd = [
                     "sh", "-c",
-                    f"pip install --quiet --no-cache-dir --target /deps "
+                    f"mkdir -p /tmp/deps && "
+                    f"pip install --quiet --no-cache-dir --target /tmp/deps "
                     f"--index-url {_DEFAULT_PIP_INDEX_URL} "
                     + " ".join(packages),
                 ]
-                extract_path = "/deps"
+                extract_path = "/tmp/deps"
                 mount_point = "/deps"
             elif language == SandboxLanguage.TYPESCRIPT:
                 cmd = [
                     "sh", "-c",
-                    f"mkdir -p /install && cd /install && "
-                    f"npm install --prefix /install --no-save --loglevel=error "
+                    f"mkdir -p /tmp/install && cd /tmp/install && "
+                    f"npm install --prefix /tmp/install --no-save --loglevel=error "
                     f"--registry={_DEFAULT_NPM_REGISTRY} "
                     + " ".join(packages),
                 ]
-                extract_path = "/install/node_modules"
+                extract_path = "/tmp/install/node_modules"
                 mount_point = "/node_modules"
             else:
                 raise ValueError(f"Cannot install packages for language: {language}")

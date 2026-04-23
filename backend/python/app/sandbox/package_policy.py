@@ -115,6 +115,11 @@ PYTHON_PACKAGE_ALLOWLIST: frozenset[str] = (
 )
 
 #: Default npm allowlist (no authoritative Claude reference; curated locally).
+#: Includes document-generation stack: pptxgenjs + docx (docx-js) for new
+#: .pptx / .docx from scratch, react + react-dom + react-icons to rasterise
+#: icons into slides, and sharp for image processing. pipeshub-slides /
+#: pipeshub-docs are shipped as internal modules inside the sandbox image and
+#: therefore do not need to be on the installable allowlist.
 NPM_PACKAGE_ALLOWLIST: frozenset[str] = frozenset({
     "fs-extra",
     "sharp",
@@ -127,6 +132,10 @@ NPM_PACKAGE_ALLOWLIST: frozenset[str] = frozenset({
     "jsdom",
     "xlsx",
     "papaparse",
+    "pptxgenjs",
+    "react",
+    "react-dom",
+    "react-icons",
 })
 
 

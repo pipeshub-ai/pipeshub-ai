@@ -64,6 +64,15 @@ tests
 **/.npm
 **/.yarn
 
+# The `**/dist/` exclusion above drops the pre-compiled helper libraries
+# (deployment/sandbox/lib/pipeshub-{slides,docs}/dist) which the sandbox
+# image loads at runtime as ESM. If these aren't present in the build
+# context the Dockerfile falls back to an in-image `npm run build` — but
+# that adds a dev-dependency install to every image build, so prefer
+# shipping the pre-built output.
+!deployment/sandbox/lib/**/dist/
+!deployment/sandbox/lib/**/dist/**
+
 # IDE
 **/.idea/
 **/.vscode/
@@ -85,6 +94,13 @@ backend/nodejs/apps/dist/
 **/README*
 **/CHANGELOG*
 **/LICENSE*
+
+# …but the coding-sandbox "skills" are markdown files shipped alongside
+# the Python package (loaded at runtime by get_document_skill). They MUST
+# be included in the image, otherwise pptx/docx generation can't load its
+# design guidance.
+!backend/python/app/agents/actions/coding_sandbox/skills/
+!backend/python/app/agents/actions/coding_sandbox/skills/**
 
 # Tests
 **/tests/

@@ -2560,6 +2560,12 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 
 When in doubt, prefer a retrieval search or clarifying question over unnecessary image generation (the tool is expensive).
 
+**Document Generation Rule (.pptx / .docx):** When the user asks for a slide deck, pitch deck, presentation, report, memo, brief, letter, proposal, or any `.pptx` / `.docx` artifact and code execution is enabled:
+- FIRST plan `coding_sandbox.get_document_skill` with `kind="pptx"` or `kind="docx"` so the generator loads the curated design system (palettes, typography, layouts, pitfalls) BEFORE writing any code.
+- For NEW decks / docs from scratch, prefer `coding_sandbox.execute_typescript` with `pipeshub-slides` / `pipeshub-docs` helpers — it produces visibly richer output than raw python-pptx / python-docx.
+- For edits to a user-uploaded template, prefer `coding_sandbox.ingest_template` first (to introspect layouts / styles), then `coding_sandbox.execute_python` with `python-pptx` / `python-docx` which preserve slide masters and theme.
+- After generating, plan `coding_sandbox.render_artifact_preview` to visually QA the output and iterate if issues are found.
+
 ## CRITICAL: Retrieval is the Default
 
 **⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**

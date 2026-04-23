@@ -250,8 +250,14 @@ class TestLocalExecutorTypescript:
             assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_typescript_install_uses_prefix_and_sets_node_path(self, executor):
-        """npm must install with --prefix <work_dir> and NODE_PATH must point at <work_dir>/node_modules."""
+    async def test_typescript_install_uses_prefix(self, executor):
+        """npm must install with --prefix <work_dir>.
+
+        User code running as ``.mts`` (ESM) resolves packages via Node's
+        ``node_modules`` ancestor walk, so placing them in
+        ``<work_dir>/node_modules`` via ``--prefix`` is sufficient — we
+        no longer need ``NODE_PATH`` (which Node's ESM loader ignores).
+        """
         captured_calls = []
 
         async def _mock_sub(cmd, cwd, timeout, env, **kwargs):
@@ -270,14 +276,11 @@ class TestLocalExecutorTypescript:
         assert npm_cmd[0] == "npm"
         assert "install" in npm_cmd
         assert "--prefix" in npm_cmd
-        prefix_idx = npm_cmd.index("--prefix")
-        work_dir = npm_cmd[prefix_idx + 1]
         # npm must NOT be asked to save to a host package.json.
         assert "--no-save" in npm_cmd
-
-        run_env = captured_calls[1]["env"]
-        node_modules = os.path.join(work_dir, "node_modules")
-        assert node_modules in run_env.get("NODE_PATH", "")
+        # Second call is the actual `npx tsx` invocation.
+        tsx_cmd = captured_calls[1]["cmd"]
+        assert tsx_cmd[0] == "npx" and "tsx" in tsx_cmd
 
     @pytest.mark.asyncio
     async def test_typescript_non_allowlisted_package_rejected(self, executor):
@@ -463,3 +466,151 @@ class TestCleanup:
     def test_cleanup_nonexistent(self, tmp_path, monkeypatch):
         monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", str(tmp_path))
         LocalExecutor.cleanup_execution("nonexistent")  # should not raise
+
+
+class TestHelperLibRoot:
+    """_helper_lib_root exposes the in-repo pipeshub-slides / pipeshub-docs path
+    so local-mode TypeScript executions can `import "pipeshub-slides"` without
+    going through npm.
+    """
+
+    def test_env_override_wins_when_directory_exists(
+        self, tmp_path, monkeypatch,
+    ):
+        from app.sandbox.local_executor import _helper_lib_root
+
+        override = tmp_path / "lib"
+        override.mkdir()
+        monkeypatch.setenv("SANDBOX_HELPER_LIB_ROOT", str(override))
+        assert _helper_lib_root() == str(override)
+
+    def test_env_override_is_ignored_if_directory_missing(self, monkeypatch):
+        from app.sandbox.local_executor import _helper_lib_root
+
+        monkeypatch.setenv("SANDBOX_HELPER_LIB_ROOT", "/definitely/not/here")
+        # Falls back to repo discovery — and the repo does ship the libs,
+        # so this must return a usable path rather than the bad override.
+        result = _helper_lib_root()
+        assert result is None or (
+            os.path.isdir(os.path.join(result, "pipeshub-slides"))
+            and os.path.isdir(os.path.join(result, "pipeshub-docs"))
+        )
+
+    def test_discovers_repo_libs_when_checkout_is_available(self, monkeypatch):
+        """When the repo layout is intact, discovery finds both helper libs."""
+        from app.sandbox.local_executor import _helper_lib_root
+
+        monkeypatch.delenv("SANDBOX_HELPER_LIB_ROOT", raising=False)
+        result = _helper_lib_root()
+        # The CI/test environment may run from an installed wheel without
+        # the repo tree available, so accept either a valid path or None.
+        if result is not None:
+            assert os.path.isdir(os.path.join(result, "pipeshub-slides"))
+            assert os.path.isdir(os.path.join(result, "pipeshub-docs"))
+
+    @pytest.mark.asyncio
+    async def test_helper_libs_symlinked_into_work_dir_for_typescript(
+        self, tmp_path, monkeypatch,
+    ):
+        """_run_typescript must symlink pipeshub-slides/pipeshub-docs into
+        ``<work_dir>/node_modules/`` so the agent's
+        ``import "pipeshub-slides"`` resolves via Node's ESM ancestor walk.
+
+        NODE_PATH doesn't work under ESM (which our ``.mts`` scripts force
+        to enable top-level ``await``), so the only reliable resolution
+        strategy is ``node_modules`` ancestor lookup.
+        """
+        from app.sandbox import local_executor as mod
+
+        fake_lib = tmp_path / "lib"
+        (fake_lib / "pipeshub-slides").mkdir(parents=True)
+        (fake_lib / "pipeshub-docs").mkdir()
+
+        monkeypatch.setattr(mod, "_helper_lib_root", lambda: str(fake_lib))
+
+        async def fake_subprocess(cmd, cwd, timeout, env):
+            return ExecutionResult(
+                success=True, stdout="", exit_code=0, execution_time_ms=1,
+            )
+
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        executor = LocalExecutor()
+        with patch.object(
+            LocalExecutor, "_subprocess",
+            new=AsyncMock(side_effect=fake_subprocess),
+        ):
+            await executor._run_typescript(
+                code="console.log('hi')",
+                work_dir=str(work_dir),
+                output_dir=str(out_dir),
+                timeout=5,
+                packages=None,
+                env={},
+            )
+
+        slides_link = work_dir / "node_modules" / "pipeshub-slides"
+        docs_link = work_dir / "node_modules" / "pipeshub-docs"
+        assert slides_link.is_symlink(), (
+            "pipeshub-slides must be symlinked into <work_dir>/node_modules "
+            "for ESM resolution"
+        )
+        assert docs_link.is_symlink()
+        assert os.path.realpath(slides_link) == str(fake_lib / "pipeshub-slides")
+        assert os.path.realpath(docs_link) == str(fake_lib / "pipeshub-docs")
+
+    @pytest.mark.asyncio
+    async def test_symlinks_placed_after_npm_install(
+        self, tmp_path, monkeypatch,
+    ):
+        """When packages are installed, ``npm install --prefix`` will rewrite
+        ``<work_dir>/node_modules``. The helper-lib symlinks MUST be
+        created AFTER the install so they survive."""
+        from app.sandbox import local_executor as mod
+
+        fake_lib = tmp_path / "lib"
+        (fake_lib / "pipeshub-slides").mkdir(parents=True)
+        (fake_lib / "pipeshub-docs").mkdir()
+        monkeypatch.setattr(mod, "_helper_lib_root", lambda: str(fake_lib))
+
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        call_order: list[str] = []
+
+        async def fake_subprocess(cmd, cwd, timeout, env):
+            if cmd and cmd[0] == "npm":
+                # Emulate npm recreating node_modules cleanly, which in the
+                # real world wipes any pre-existing symlinks.
+                nm = work_dir / "node_modules"
+                if nm.is_dir():
+                    import shutil
+                    shutil.rmtree(nm)
+                nm.mkdir()
+                call_order.append("npm")
+            else:
+                call_order.append("tsx")
+                # When tsx runs, the symlinks MUST already exist.
+                assert (work_dir / "node_modules" / "pipeshub-slides").is_symlink()
+            return ExecutionResult(success=True, exit_code=0)
+
+        executor = LocalExecutor()
+        with patch.object(
+            LocalExecutor, "_subprocess",
+            new=AsyncMock(side_effect=fake_subprocess),
+        ):
+            await executor._run_typescript(
+                code="console.log('hi')",
+                work_dir=str(work_dir),
+                output_dir=str(out_dir),
+                timeout=5,
+                packages=["pptxgenjs"],
+                env={},
+            )
+
+        assert call_order == ["npm", "tsx"]

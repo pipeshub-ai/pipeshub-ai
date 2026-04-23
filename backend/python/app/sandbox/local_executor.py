@@ -69,6 +69,74 @@ def _looks_offline(stderr: str) -> bool:
     return any(signal in stderr for signal in _PIP_OFFLINE_SIGNALS)
 
 
+def _helper_lib_root() -> str | None:
+    """Return the filesystem path where pipeshub-slides / pipeshub-docs live.
+
+    Set ``SANDBOX_HELPER_LIB_ROOT`` explicitly to override; otherwise we try
+    to discover ``deployment/sandbox/lib`` relative to the installed
+    ``app`` package by walking upwards. Returns ``None`` if the directory
+    can't be found — callers treat that as "no helper libs available".
+    """
+    env_override = os.environ.get("SANDBOX_HELPER_LIB_ROOT")
+    if env_override and os.path.isdir(env_override):
+        return env_override
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return None
+    cursor = here
+    for _ in range(8):
+        candidate = os.path.join(cursor, "deployment", "sandbox", "lib")
+        if (
+            os.path.isdir(os.path.join(candidate, "pipeshub-slides"))
+            and os.path.isdir(os.path.join(candidate, "pipeshub-docs"))
+        ):
+            return candidate
+        parent = os.path.dirname(cursor)
+        if parent == cursor:
+            break
+        cursor = parent
+    return None
+
+
+def _link_helper_libs_into_work_dir(work_dir: str) -> None:
+    """Symlink ``pipeshub-slides`` and ``pipeshub-docs`` into ``<work_dir>/node_modules/``.
+
+    Node's module resolver walks **filesystem ancestors** of the script
+    looking for ``node_modules/<name>``. This works in both CJS and ESM
+    mode, whereas ``NODE_PATH`` only works in CJS — so this symlink
+    approach is the only one that keeps ``.mts`` (top-level await) AND
+    helper-lib imports working at the same time.
+
+    Called every time a TypeScript script is about to run; cheap because
+    `os.symlink` short-circuits if the target link already exists and the
+    per-execution ``work_dir`` is usually fresh anyway.
+    """
+    helper_lib_dir = _helper_lib_root()
+    if helper_lib_dir is None:
+        return
+    node_modules = os.path.join(work_dir, "node_modules")
+    try:
+        os.makedirs(node_modules, exist_ok=True)
+    except OSError:
+        return
+    for name in ("pipeshub-slides", "pipeshub-docs"):
+        src = os.path.join(helper_lib_dir, name)
+        if not os.path.isdir(src):
+            continue
+        dst = os.path.join(node_modules, name)
+        try:
+            # ``symlink`` fails if the link already exists; tolerate that
+            # and move on so repeated executions in the same work_dir
+            # (theoretically possible with a pooled sandbox) don't break.
+            if not os.path.lexists(dst):
+                os.symlink(src, dst)
+        except OSError as exc:
+            logger.warning(
+                "Could not symlink helper lib %s -> %s: %s", dst, src, exc,
+            )
+
+
 class LocalExecutor(BaseExecutor):
     """Execute code in a local subprocess (developer mode)."""
 
@@ -257,13 +325,22 @@ class LocalExecutor(BaseExecutor):
                 npm_result.execution_time_ms = _now_ms() - start_ms
                 npm_result.error = f"npm install failed: {npm_result.stderr}"
                 return npm_result
-            node_modules_dir = os.path.join(work_dir, "node_modules")
-            existing = run_env.get("NODE_PATH", "")
-            run_env["NODE_PATH"] = (
-                f"{node_modules_dir}{os.pathsep}{existing}" if existing else node_modules_dir
-            )
 
-        script_path = os.path.join(work_dir, "main.ts")
+        # Make the in-repo helper libraries (pipeshub-slides / pipeshub-docs)
+        # resolvable in local mode. We MUST do this via ``node_modules``
+        # ancestor-walk — NODE_PATH is silently ignored by Node's ESM
+        # resolver, and our scripts run as ``.mts`` (ESM) so top-level
+        # await works. Symlinking into ``<work_dir>/node_modules/`` lets
+        # both ESM and CJS resolve the import. **Run AFTER ``npm install``**
+        # because npm will clean / rewrite the prefix's ``node_modules``
+        # and silently drop any pre-existing symlinks.
+        _link_helper_libs_into_work_dir(work_dir)
+
+        # `.mts` makes tsx/esbuild treat the file as ESM regardless of the
+        # surrounding package.json, which enables top-level `await` — all
+        # pptxgenjs / docx-js idioms (and our pipeshub-slides helper)
+        # rely on being able to `await deck.save(...)` at the top level.
+        script_path = os.path.join(work_dir, "main.mts")
         with open(script_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(code)
 

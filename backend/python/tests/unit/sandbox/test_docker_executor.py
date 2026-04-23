@@ -126,13 +126,17 @@ class TestBuildCommand:
         assert os.path.isfile(os.path.join(src_dir, "main.py"))
 
     def test_typescript_command_is_clean(self, executor, tmp_path):
-        """TypeScript run command must NOT include any npm install anymore."""
+        """TypeScript run command must NOT include any npm install anymore.
+
+        The script is written as ``main.mts`` so tsx treats it as ESM
+        and top-level ``await`` works (pptxgenjs / docx-js all use it).
+        """
         src_dir = str(tmp_path / "src")
         os.makedirs(src_dir, exist_ok=True)
         cmd = executor._build_command("console.log(1)", SandboxLanguage.TYPESCRIPT, src_dir)
-        assert "npx tsx /src/main.ts" in cmd[2]
+        assert "npx tsx /src/main.mts" in cmd[2]
         assert "npm install" not in cmd[2]
-        assert os.path.isfile(os.path.join(src_dir, "main.ts"))
+        assert os.path.isfile(os.path.join(src_dir, "main.mts"))
 
     def test_sqlite(self, executor, tmp_path):
         src_dir = str(tmp_path / "src")
@@ -438,7 +442,11 @@ class TestInstallPhase:
         # Command uses pip --target /deps with an allowlisted package.
         cmd_str = " ".join(install_kwargs["command"])
         assert "pip install" in cmd_str
-        assert "--target /deps" in cmd_str
+        # The install target lives under /tmp because the sandbox image's
+        # default user can't write to the container root ("/"). Verify the
+        # --target is under /tmp specifically; a bare "/deps" would
+        # regress to "mkdir: Permission denied" in production.
+        assert "--target /tmp/deps" in cmd_str
         assert "pandas" in cmd_str
 
     def test_install_npm_uses_prefix_and_egress_network(self, executor):
@@ -452,7 +460,10 @@ class TestInstallPhase:
         assert install_kwargs["network"] == "pipeshub_sandbox_egress"
         cmd_str = " ".join(install_kwargs["command"])
         assert "npm install" in cmd_str
-        assert "--prefix /install" in cmd_str
+        # Same reason as the pip path: /install at container root isn't
+        # writable for the sandbox user, so the install must happen under
+        # /tmp. This assertion guards against regressions.
+        assert "--prefix /tmp/install" in cmd_str
         assert "chart.js" in cmd_str
 
     def test_install_failure_raises(self, executor):

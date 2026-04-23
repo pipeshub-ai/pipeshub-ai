@@ -284,6 +284,13 @@ dependencies = [
 [tool.setuptools.packages.find]
 exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 
+# Non-Python files that MUST ship with the installed package. The coding
+# sandbox loads its design guidance from `skills/*.md` at runtime — if we
+# forget these here, `pip install` drops them and get_document_skill
+# raises FileNotFoundError in production.
+[tool.setuptools.package-data]
+"app.agents.actions.coding_sandbox" = ["skills/*.md"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"

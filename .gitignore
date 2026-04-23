@@ -23,6 +23,17 @@ wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
+
+# The Python-style `lib/` and `dist/` patterns above are too aggressive for
+# the sandbox helper libraries: `deployment/sandbox/lib/pipeshub-*` ships
+# TypeScript source, and its compiled `dist/*.js` output is what Docker and
+# the local executor actually load at runtime (Node ESM can't execute .ts
+# on its own). Force-include them so clones / CI have the files.
+!deployment/sandbox/lib/
+!deployment/sandbox/lib/**
+# …but still ignore per-lib transient build inputs.
+deployment/sandbox/lib/*/node_modules/
+deployment/sandbox/lib/*/package-lock.json
 *.egg
 MANIFEST
 

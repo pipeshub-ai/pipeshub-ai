@@ -1,0 +1,31 @@
+{
+  "name": "pipeshub-docs",
+  "version": "0.1.0",
+  "description": "High-level Word document primitives built on docx-js for the pipeshub coding sandbox.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "license": "UNLICENSED",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "docx": ">=8.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  }
+}
