@@ -218,8 +218,17 @@ interface ChatState {
   setActiveSlot: (slotId: string) => void;
   /** Remove a slot from the dictionary entirely. */
   evictSlot: (slotId: string) => void;
-  /** Assign a real convId to a temp slot (after server responds). */
-  resolveSlotConvId: (slotId: string, realConvId: string) => void;
+  /**
+   * Assign a real convId to a temp slot. After SSE `complete`, prefer calling
+   * without `keepTemp` so `isTemp` becomes false. When the server sends
+   * `conversationId` early in the `connected` event, use `keepTemp: true` so
+   * URL "new chat" handling (`isTemp`) stays correct until the stream finishes.
+   */
+  resolveSlotConvId: (
+    slotId: string,
+    realConvId: string,
+    options?: { keepTemp?: boolean }
+  ) => void;
   /** Find a slot by its convId. O(n) scan but n ≤ MAX_SLOTS. */
   getSlotByConvId: (
     convId: string,
@@ -483,14 +492,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  resolveSlotConvId: (slotId, realConvId) => {
+  resolveSlotConvId: (slotId, realConvId, options) => {
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
+      const keepTemp = options?.keepTemp === true;
       return {
         slots: {
           ...state.slots,
-          [slotId]: { ...existing, convId: realConvId, isTemp: false },
+          [slotId]: {
+            ...existing,
+            convId: realConvId,
+            isTemp: keepTemp ? true : false,
+          },
         },
       };
     });

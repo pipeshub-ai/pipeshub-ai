@@ -31,6 +31,8 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useTranslation } from 'react-i18next';
+import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
+import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
@@ -62,6 +64,11 @@ interface ChatResponseProps {
   streamingCitationMaps?: CitationMaps | null;
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
+  /**
+   * Thread row key (`messagePairs[].key`) for list-scoped inline-citation
+   * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
+   */
+  citationMessageRowKey?: string;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -80,6 +87,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
+  citationMessageRowKey,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
 
@@ -160,6 +168,15 @@ export const ChatResponse = React.memo(function ChatResponse({
       updateSlot(activeSlotId, { activeExpandedMessageId: messageId ?? null });
     }
   }, [activeSlotId, messageId, updateSlot]);
+
+  const setInlineCitationKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
+  const prevLocalTabForCite = useRef<ResponseTab>('answer');
+  useEffect(() => {
+    if (prevLocalTabForCite.current === 'answer' && localTab !== 'answer') {
+      setInlineCitationKey(null);
+    }
+    prevLocalTabForCite.current = localTab;
+  }, [localTab, setInlineCitationKey]);
 
   // Merge streaming citations when streaming, fall back to metadata citations
   const effectiveCitationMaps = isStreaming && streamingCitationMaps
@@ -336,7 +353,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming]);
 
-  return (
+  const shell = (
     <Box style={{ width: '100%' }}>
       {/* Question Header with hover edit icon */}
       <Flex
@@ -418,4 +435,13 @@ export const ChatResponse = React.memo(function ChatResponse({
       )}
     </Box>
   );
+
+  if (citationMessageRowKey) {
+    return (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>
+        {shell}
+      </CitationMessageRowKeyContext.Provider>
+    );
+  }
+  return shell;
 });

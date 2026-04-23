@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { memo } from 'react';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { getConnectorConfig } from './utils';
@@ -16,7 +16,7 @@ interface CitationPopoverContentProps {
 /**
  * Expanded citation preview shown inside a HoverCard.
  */
-export function CitationPopoverContent({
+function CitationPopoverContentInner({
   citation,
   onPreview,
   onOpenInCollection,
@@ -160,3 +160,5 @@ export function CitationPopoverContent({
     </Flex>
   );
 }
+
+export const CitationPopoverContent = memo(CitationPopoverContentInner);
