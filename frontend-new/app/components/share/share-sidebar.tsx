@@ -426,6 +426,7 @@ export function ShareSidebar({
                     <>
                       <Text
                         size="1"
+                        weight="medium"
                         style={{
                           color: 'var(--slate-11)',
                           marginTop: 8,
@@ -433,7 +434,6 @@ export function ShareSidebar({
                           display: 'block',
                           // textTransform: 'uppercase',
                           letterSpacing: '0.05em',
-                          fontWeight: 500,
                           fontStyle: 'normal',
                         }}
                       >
@@ -465,6 +465,7 @@ export function ShareSidebar({
                     <>
                       <Text
                         size="1"
+                        weight="medium"
                         style={{
                           color: 'var(--slate-11)',
                           marginTop: 16,
@@ -472,7 +473,6 @@ export function ShareSidebar({
                           display: 'block',
                           // textTransform: 'uppercase',
                           letterSpacing: '0.05em',
-                          fontWeight: 500,
                           fontStyle: 'normal',
                         }}
                       >
