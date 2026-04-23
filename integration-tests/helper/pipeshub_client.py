@@ -55,6 +55,35 @@ class PipeshubClient:
                 "PIPESHUB_BASE_URL must be set in integration-tests/.env to talk to test.pipeshub.com"
             )
 
+    def _use_connector_direct_api(self) -> bool:
+        """True when ``base_url`` targets the Python connector app (8088), not the Node gateway."""
+        explicit = os.getenv("PIPESHUB_USE_CONNECTOR_API", "").strip().lower()
+        if explicit in ("1", "true", "yes"):
+            return True
+        if explicit in ("0", "false", "no"):
+            return False
+        try:
+            if urlparse(self.base_url).port == 8088:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _reindex_record_path(self, record_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/records/{record_id}/reindex"
+        return f"/api/v1/knowledgeBase/reindex/record/{record_id}"
+
+    def _reindex_record_group_path(self, record_group_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/record-groups/{record_group_id}/reindex"
+        return f"/api/v1/knowledgeBase/reindex/record-group/{record_group_id}"
+
+    def _stream_record_path(self, record_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/stream/record/{record_id}"
+        return f"/api/v1/knowledgeBase/stream/record/{record_id}"
+
     # --------------------------------------------------------------------- #
     # JWT claim helpers — mirrors the backend's extractOrgId/extractUserId
     # which read orgId/userId straight off the request's token payload.
@@ -351,3 +380,185 @@ class PipeshubClient:
     def get_connector_status(self, connector_id: str) -> Dict[str, Any]:
         """Get connector status including isActive and sync timestamps."""
         return self.get_connector(connector_id)
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Reindex
+    # --------------------------------------------------------------------- #
+    def reindex_record(self, record_id: str) -> Dict[str, Any]:
+        """
+        Trigger reindex for a specific record.
+        
+        Args:
+            record_id: Internal record ID (_key)
+            
+        Returns:
+            API response with success status
+        """
+        resp = requests.post(
+            self._url(self._reindex_record_path(record_id)),
+            headers=self._headers(),
+            timeout=self.timeout_seconds,
+        )
+        return self._handle_response(resp)
+    
+    def reindex_record_group(self, record_group_id: str, depth: int = 0) -> Dict[str, Any]:
+        """
+        Trigger reindex for a record group and its children.
+        
+        Args:
+            record_group_id: Internal record group ID (_key)
+            depth: How many levels of children to reindex (0 = group only)
+            
+        Returns:
+            API response with success status
+        """
+        resp = requests.post(
+            self._url(self._reindex_record_group_path(record_group_id)),
+            headers=self._headers(),
+            json={"depth": depth},
+            timeout=self.timeout_seconds,
+        )
+        return self._handle_response(resp)
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Config Management
+    # --------------------------------------------------------------------- #
+    def update_connector_config(
+        self, connector_id: str, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Update connector configuration including filters.
+        
+        Args:
+            connector_id: Connector ID
+            config: Configuration object with filters, auth, etc.
+            
+        Returns:
+            Updated connector document
+        """
+        resp = requests.put(
+            self._url(f"/api/v1/connectors/{connector_id}/config"),
+            headers=self._headers(),
+            json=config,
+            timeout=self.timeout_seconds,
+        )
+        return self._handle_response(resp)
+    
+    def update_connector_filters_sync_config(
+        self, connector_id: str, filters: Optional[Dict[str, Any]] = None, 
+        sync: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Update connector filters and sync configuration using the filters-sync endpoint.
+        
+        Note: Backend requires connector to be disabled before updating filters/sync.
+        Use update_connector_filters_sync_safe() for automatic disable/enable handling.
+        
+        Args:
+            connector_id: Connector ID
+            filters: Filter configuration (optional)
+            sync: Sync configuration (optional)
+            
+        Returns:
+            API response with syncFiltersChanged flag
+        """
+        if not filters and not sync:
+            raise PipeshubClientError("Either filters or sync configuration must be provided")
+        
+        payload: Dict[str, Any] = {}
+        if filters:
+            payload["filters"] = filters
+        if sync:
+            payload["sync"] = sync
+        
+        resp = requests.put(
+            self._url(f"/api/v1/connectors/{connector_id}/config/filters-sync"),
+            headers=self._headers(),
+            json=payload,
+            timeout=self.timeout_seconds,
+        )
+        return self._handle_response(resp)
+    
+    def update_connector_filters_sync_safe(
+        self, connector_id: str, filters: Optional[Dict[str, Any]] = None,
+        sync: Optional[Dict[str, Any]] = None, wait_before_enable: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Safely update connector filters and sync configuration.
+        
+        This method handles the backend requirement that connectors must be disabled
+        before updating filters/sync configuration. It:
+        1. Checks if connector is currently active
+        2. Disables connector if active
+        3. Updates filters and/or sync configuration
+        4. Re-enables connector if it was originally active
+        
+        This pattern mirrors the frontend's approach and ensures integration tests
+        can update filters/sync without violating backend constraints.
+        
+        Args:
+            connector_id: Connector ID
+            filters: Filter configuration (optional)
+            sync: Sync configuration (optional)
+            wait_before_enable: Seconds to wait before re-enabling (default 3)
+            
+        Returns:
+            API response from the filters-sync update call
+            
+        Example:
+            # Update space filter for Confluence connector
+            client.update_connector_filters_sync_safe(
+                connector_id,
+                filters={
+                    "space_keys": {
+                        "operator": "IN",
+                        "values": ["MYSPACE"]
+                    }
+                }
+            )
+        """
+        # Get current connector status
+        connector = self.get_connector(connector_id)
+        was_active = bool(connector.get("isActive"))
+        
+        # Disable if active
+        if was_active:
+            logger.info(f"Connector {connector_id} is active, disabling before config update")
+            self.toggle_sync(connector_id, enable=False)
+            self.wait(wait_before_enable)
+        
+        # Update filters and sync configuration
+        logger.info(f"Updating filters/sync config for connector {connector_id}")
+        response = self.update_connector_filters_sync_config(
+            connector_id, filters=filters, sync=sync
+        )
+        
+        # Re-enable if it was originally active
+        if was_active:
+            logger.info(f"Re-enabling connector {connector_id}")
+            self.wait(wait_before_enable)
+            self.toggle_sync(connector_id, enable=True)
+        
+        return response
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Stream Content
+    # --------------------------------------------------------------------- #
+    def stream_record(self, record_id: str) -> requests.Response:
+        """
+        Stream record content (for testing streaming responses).
+        
+        Args:
+            record_id: Internal record ID (_key)
+            
+        Returns:
+            Response object (caller can iterate over response.iter_content())
+        """
+        resp = requests.get(
+            self._url(self._stream_record_path(record_id)),
+            headers=self._headers(),
+            timeout=self.timeout_seconds,
+            stream=True,
+        )
+        resp.raise_for_status()
+        return resp
