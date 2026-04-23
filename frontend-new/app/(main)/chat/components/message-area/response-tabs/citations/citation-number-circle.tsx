@@ -18,6 +18,11 @@ import { useInlineCitationPopoverStore } from './citation-popover-store';
 interface CitationNumberCircleProps {
   /** The `[N]` number from the markdown text (used as the circle label) */
   chunkIndex: number;
+  /**
+   * Stable id for this marker instance in the message (e.g. parser `${indexInText}-${chunkIndex}`).
+   * Required for correct popover state when the same number appears more than once.
+   */
+  occurrenceKey?: string;
   /** Full citation data — required to open the popover */
   citation: CitationData;
   /** Interaction callbacks (forwarded to popover) */
@@ -30,6 +35,7 @@ interface CitationNumberCircleProps {
  */
 export function CitationNumberCircle({
   chunkIndex,
+  occurrenceKey,
   citation,
   callbacks,
 }: CitationNumberCircleProps) {
@@ -39,7 +45,7 @@ export function CitationNumberCircle({
     messageRowKey != null && String(messageRowKey).length > 0,
   );
   const instanceKey = useListControlled
-    ? buildInlineCitationInstanceKey(messageRowKey!, chunkIndex)
+    ? buildInlineCitationInstanceKey(messageRowKey!, chunkIndex, occurrenceKey)
     : null;
   // Subscribes to `activeKey` only; each badge re-renders when *its* open state flips.
   const isOpen = useInlineCitationPopoverStore(

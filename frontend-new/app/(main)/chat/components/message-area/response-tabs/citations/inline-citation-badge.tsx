@@ -9,6 +9,8 @@ import type { CitationData, CitationCallbacks } from './types';
 interface InlineCitationBadgeProps {
   /** The `[N]` number from the markdown text */
   chunkIndex: number;
+  /** Per-occurrence key when the same number appears multiple times in one message */
+  occurrenceKey?: string;
   /** Full citation data — may be undefined while streaming before data arrives */
   citation?: CitationData;
   /** Interaction callbacks */
@@ -20,6 +22,7 @@ interface InlineCitationBadgeProps {
  */
 export function InlineCitationBadge({
   chunkIndex,
+  occurrenceKey,
   citation,
   callbacks,
 }: InlineCitationBadgeProps) {
@@ -108,6 +111,7 @@ export function InlineCitationBadge({
       {/* Citation number circle (also acts as popover trigger) */}
       <CitationNumberCircle
         chunkIndex={chunkIndex}
+        occurrenceKey={occurrenceKey}
         citation={citation}
         callbacks={callbacks}
       />

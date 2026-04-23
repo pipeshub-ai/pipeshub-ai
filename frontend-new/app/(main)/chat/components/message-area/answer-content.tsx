@@ -39,6 +39,7 @@ function emitRun(
         key={`cite-group-${run[0].key}`}
         items={run.map((m) => ({
           chunkIndex: m.chunkIndex,
+          occurrenceKey: m.key,
           citation: m.citation as CitationData,
         }))}
         callbacks={citationCallbacks}
@@ -51,6 +52,7 @@ function emitRun(
     <InlineCitationBadge
       key={`cite-${only.key}`}
       chunkIndex={only.chunkIndex}
+      occurrenceKey={only.key}
       citation={only.citation}
       callbacks={citationCallbacks}
     />

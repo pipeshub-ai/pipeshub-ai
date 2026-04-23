@@ -16,12 +16,19 @@ export function useCitationMessageRowKeyForInline(): string | null {
 
 /**
  * @see `useInlineCitationPopoverStore` — list-scoped open key (Zustand) for performance.
+ *
+ * The same display number (e.g. two `[1]` markers) can appear multiple times in one
+ * answer; `chunkIndex` alone is not unique. Pass `occurrenceKey` (e.g. `${charIndex}-${chunkIndex}`
+ * from the parser) so only one popover opens per click.
  */
-
 export function buildInlineCitationInstanceKey(
   messageRowKey: string,
   chunkIndex: number,
+  occurrenceKey?: string | null,
 ): string {
+  if (occurrenceKey != null && String(occurrenceKey).length > 0) {
+    return `${messageRowKey}::c${chunkIndex}@${String(occurrenceKey)}`;
+  }
   return `${messageRowKey}::${chunkIndex}`;
 }
 
