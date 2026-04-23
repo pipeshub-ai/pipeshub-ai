@@ -226,6 +226,8 @@ export function CollectionsTab({
       if (restrict && restrictToKbIds) {
         const allow = new Set(restrictToKbIds);
         const seen = new Set<string>();
+        /** Ids from `allow` seen in fetched pages — stop paging once all are found. */
+        const foundAllowed = new Set<string>();
         const mergedItems: CollectionSelectItem[] = [];
         let page = 1;
         let prevMeta: ChildListMeta | null = null;
@@ -239,10 +241,12 @@ export function CollectionsTab({
             if (seen.has(c.id)) continue;
             seen.add(c.id);
             mergedItems.push(c);
+            if (allow.has(c.id)) foundAllowed.add(c.id);
           }
           prevMeta = mergeRootsListMeta(res, res.knowledgeBases.length, prevMeta);
           hasMore = prevMeta.hasMore;
           page = prevMeta.nextPage;
+          if (foundAllowed.size >= allow.size) break;
         }
         const items = mergedItems.filter((c) => allow.has(c.id));
         setCollections(items);
