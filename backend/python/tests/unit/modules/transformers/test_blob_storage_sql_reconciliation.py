@@ -86,6 +86,36 @@ class TestUploadNextVersionLocal:
                     {"data": "hello"}, "vr-1",
                 )
 
+    @pytest.mark.asyncio
+    async def test_local_non_versioned_document_raises_specific_error(self):
+        bs = _make_bs()
+        _configure_auth(bs, "local")
+
+        err_resp = _resp(
+            400,
+            {
+                "error": {
+                    "code": "HTTP_BAD_REQUEST",
+                    "message": "This document cannot be versioned",
+                }
+            },
+        )
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=err_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            with pytest.raises(Exception, match="This document cannot be versioned"):
+                await bs.upload_next_version(
+                    "org-1", "rec-1", "doc-legacy",
+                    {"data": "hello"}, "vr-1",
+                )
+
 
 class TestUploadNextVersionS3:
     @pytest.mark.asyncio
@@ -214,6 +244,27 @@ class TestSaveReconciliationMetadata:
 
         with pytest.raises(RuntimeError, match="boom"):
             await bs.save_reconciliation_metadata("org", "rec", "vr", {})
+
+    @pytest.mark.asyncio
+    async def test_existing_non_versioned_metadata_falls_back_to_create(self):
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"record_metadata_doc_id": "legacy-meta"}
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        bs = _make_bs(graph_provider=graph_provider)
+        bs.upload_next_version = AsyncMock(
+            side_effect=Exception("This document cannot be versioned")
+        )
+        bs._create_metadata_document = AsyncMock(return_value="meta-new")
+
+        result = await bs.save_reconciliation_metadata(
+            "org", "rec", "vr", {"k": "v"},
+        )
+
+        assert result == "meta-new"
+        bs._create_metadata_document.assert_awaited_once()
+        graph_provider.batch_upsert_nodes.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

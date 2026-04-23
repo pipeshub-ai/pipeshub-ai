@@ -599,6 +599,44 @@ class TestNormalizeCitationsAndChunks:
         _, citations = normalize_citations_and_chunks(answer, [], records=[])
         assert len(citations) == 0
 
+    def test_record_fallback_via_virtual_record_id_to_result(self):
+        """Chat normalize should fallback via virtual_record_id_to_result when records/docs miss."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{"type": BlockType.TEXT.value, "data": "vrid fallback text", "index": 0}]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            result_text, citations = normalize_citations_and_chunks(
+                answer,
+                final_results=[],
+                records=[],
+                virtual_record_id_to_result=vrid_map,
+            )
+
+        assert "[1]" in result_text
+        assert len(citations) == 1
+        assert citations[0]["content"] == "vrid fallback text"
+
+    def test_none_virtual_record_id_to_result_defaults_to_empty(self):
+        """Passing None for virtual_record_id_to_result should not break chat normalize."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "content", block_web_url=url)]
+        answer = f"See [1]({url})."
+        _, citations = normalize_citations_and_chunks(
+            answer,
+            docs,
+            virtual_record_id_to_result=None,
+        )
+        assert len(citations) == 1
+
     def test_tuple_content_in_doc_unpacked(self):
         """When a doc has tuple content (e.g. table summary), the first item is used."""
         url = _url(REC1, 0)

@@ -221,6 +221,7 @@ def normalize_citations_and_chunks(
     final_results: list[dict[str, Any]],
     records: list[dict[str, Any]] = None,
     ref_to_url: dict[str, str] | None = None,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
@@ -231,11 +232,17 @@ def normalize_citations_and_chunks(
 
     if records is None:
         records = []
+    if virtual_record_id_to_result is None:
+        virtual_record_id_to_result = {}
 
     md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
 
     if md_matches:
-        return _normalize_markdown_link_citations(answer_text, md_matches, final_results, records, ref_to_url=ref_to_url)
+        return _normalize_markdown_link_citations(
+            answer_text, md_matches, final_results, records,
+            ref_to_url=ref_to_url,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+        )
 
     return answer_text, []
 
@@ -246,6 +253,7 @@ def _normalize_markdown_link_citations(
     final_results: list[dict[str, Any]],
     records: list[dict[str, Any]],
     ref_to_url: dict[str, str] | None = None,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize markdown link citations [text](target) where target is a tiny ref or full URL.
@@ -295,6 +303,7 @@ def _normalize_markdown_link_citations(
                 content = _safe_stringify_content(value=content)
 
             if not content:
+                logger.warning("🔎 [KB-CITE] normalize(chat): empty content for matched URL | url=%s", url)
                 continue
 
             new_citations.append({
@@ -310,6 +319,7 @@ def _normalize_markdown_link_citations(
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
             if record_id is not None and block_index is not None:
+                _matched = False
                 for r in records:
                     if r.get("id") == record_id:
                         block_container = r.get("block_containers", {}) or {}
@@ -324,6 +334,10 @@ def _normalize_markdown_link_citations(
                             elif block_type == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
                             if not data:
+                                logger.warning(
+                                    "🔎 [KB-CITE] normalize(chat): records fallback empty data | record_id=%s block_index=%s block_type=%s",
+                                    record_id, block_index, block_type,
+                                )
                                 continue
                             citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                             if not citation_content:
@@ -336,7 +350,51 @@ def _normalize_markdown_link_citations(
                             })
                             url_to_citation_num[url] = new_citation_num
                             new_citation_num += 1
+                            _matched = True
                         break
+
+                if not _matched and virtual_record_id_to_result:
+                    for rec in virtual_record_id_to_result.values():
+                        if rec and rec.get("id") == record_id:
+                            block_container = rec.get("block_containers", {}) or {}
+                            blocks = block_container.get("blocks", []) or []
+
+                            if 0 <= block_index < len(blocks):
+                                block = blocks[block_index]
+                                enhanced_metadata = get_enhanced_metadata(rec, block, {})
+                                block_type = block.get("type")
+                                data = block.get("data")
+                                if block_type == BlockType.TABLE_ROW.value:
+                                    data = data.get("row_natural_language_text", "")
+                                elif block_type == BlockType.IMAGE.value:
+                                    data = data.get("uri", "")
+                                if not data:
+                                    logger.warning(
+                                        "🔎 [KB-CITE] normalize(chat): vrid_map fallback empty data | record_id=%s block_index=%s block_type=%s",
+                                        record_id, block_index, block_type,
+                                    )
+                                    continue
+                                citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
+                                if not citation_content:
+                                    continue
+                                new_citations.append({
+                                    "content": citation_content,
+                                    "chunkIndex": new_citation_num,
+                                    "metadata": enhanced_metadata,
+                                    "citationType": "vectordb|document",
+                                })
+                                url_to_citation_num[url] = new_citation_num
+                                new_citation_num += 1
+                                _matched = True
+                            break
+
+                if not _matched:
+                    logger.error(
+                        "🔎 [KB-CITE] normalize(chat): DROPPED citation | url=%s record_id=%s block_index=%s records_len=%d vrid_map_len=%d",
+                        url, record_id, block_index,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
 
 
     answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
@@ -534,6 +592,13 @@ def _normalize_markdown_link_citations_for_agent(
                                 url_to_citation_num[url] = new_citation_num
                                 new_citation_num += 1
                             break
+                if url not in url_to_citation_num:
+                    logger.warning(
+                        "🔎 [KB-CITE] normalize(agent): DROPPED citation | url=%s record_id=%s block_index=%s records_len=%d vrid_map_len=%d",
+                        url, record_id, block_index,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
                 continue
 
 
