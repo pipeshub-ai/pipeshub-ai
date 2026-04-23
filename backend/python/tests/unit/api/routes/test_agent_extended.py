@@ -1002,3 +1002,356 @@ class TestConditionalOrchestrationHelpers:
         with pytest.raises(InvalidRequestError) as exc_info:
             _build_conditional_orchestration_graph(agent)
         assert "both pass and fail outputs connected" in str(exc_info.value)
+
+
+class TestConditionalOrchestrationHelpersExtended:
+    def test_should_use_linear_orchestration_requires_agent_node(self):
+        from app.api.routes.agent import _should_use_linear_orchestration
+
+        agent = {
+            "orchestrationMode": "linear",
+            "flow": {
+                "nodes": [{"id": "response", "data": {"type": "chat-response"}}],
+                "edges": [],
+            },
+        }
+
+        assert _should_use_linear_orchestration(agent) is False
+
+    def test_should_use_conditional_orchestration_requires_condition_node(self):
+        from app.api.routes.agent import _should_use_conditional_orchestration
+
+        agent = {
+            "orchestrationMode": "conditional",
+            "flow": {
+                "nodes": [{"id": "agent-1", "data": {"type": "agent-core"}}],
+                "edges": [],
+            },
+        }
+
+        assert _should_use_conditional_orchestration(agent) is False
+
+    @pytest.mark.parametrize(
+        ("rule", "result_text", "response_data", "expected"),
+        [
+            ({"mode": "not_contains", "expectedValue": "error"}, "all good", {}, True),
+            ({"mode": "equals", "expectedValue": "Done"}, "done", {}, True),
+            ({"mode": "not_equals", "expectedValue": "pending"}, "done", {}, True),
+            ({"mode": "starts_with", "expectedValue": "task"}, "Task complete", {}, True),
+            ({"mode": "ends_with", "expectedValue": "complete"}, "task complete", {}, True),
+            ({"mode": "min_length", "minLength": 5}, "  hello  ", {}, True),
+            ({"mode": "max_length", "maxLength": 5}, " hey ", {}, True),
+            ({"mode": "max_length"}, "long enough", {}, True),
+            ({"mode": "is_empty"}, "   ", {}, True),
+            ({"mode": "not_empty"}, "value", {}, True),
+            (
+                {"mode": "json_path_equals", "jsonPath": "result.status", "expectedValue": "ok"},
+                "ignored",
+                {"result": {"status": "ok"}},
+                True,
+            ),
+        ],
+    )
+    def test_evaluate_single_condition_rule_modes(self, rule, result_text, response_data, expected):
+        from app.api.routes.agent import _evaluate_single_condition_rule
+
+        assert _evaluate_single_condition_rule(rule, result_text, response_data) is expected
+
+    def test_evaluate_single_condition_rule_regex_without_pattern_returns_false(self):
+        from app.api.routes.agent import _evaluate_single_condition_rule
+
+        assert _evaluate_single_condition_rule({"mode": "regex"}, "hello", {}) is False
+
+    def test_evaluate_single_condition_rule_json_path_requires_dict(self):
+        from app.api.routes.agent import _evaluate_single_condition_rule
+
+        assert _evaluate_single_condition_rule(
+            {"mode": "json_path_equals", "jsonPath": "a.b", "expectedValue": "1"},
+            "ignored",
+            "not-a-dict",
+        ) is False
+
+    def test_evaluate_single_condition_rule_invalid_mode_raises(self):
+        from app.api.routes.agent import InvalidRequestError, _evaluate_single_condition_rule
+
+        with pytest.raises(InvalidRequestError, match="Unsupported condition mode"):
+            _evaluate_single_condition_rule({"mode": "bogus"}, "hello", {})
+
+    def test_evaluate_condition_node_with_no_valid_rules_uses_pass_on_empty(self):
+        from app.api.routes.agent import _evaluate_condition_node
+
+        assert _evaluate_condition_node({"rules": [None, "bad"], "passOnEmpty": True}, "hello", {}) is True
+
+    def test_build_conditional_orchestration_graph_requires_condition_block(self):
+        from app.api.routes.agent import InvalidRequestError, _build_conditional_orchestration_graph
+
+        agent = {
+            "flow": {
+                "nodes": [{"id": "a1", "data": {"type": "agent-core", "label": "Agent 1", "config": {}}}],
+                "edges": [],
+            }
+        }
+
+        with pytest.raises(InvalidRequestError, match="requires at least one condition block"):
+            _build_conditional_orchestration_graph(agent)
+
+    def test_build_conditional_orchestration_graph_rejects_invalid_condition_handle(self):
+        from app.api.routes.agent import InvalidRequestError, _build_conditional_orchestration_graph
+
+        agent = {
+            "flow": {
+                "nodes": [
+                    {"id": "a1", "data": {"type": "agent-core", "label": "Agent 1", "config": {}}},
+                    {"id": "cond1", "data": {"type": "conditional-check", "label": "Check", "config": {}}},
+                    {"id": "a2", "data": {"type": "agent-core", "label": "Agent 2", "config": {}}},
+                    {"id": "out1", "data": {"type": "chat-response", "label": "Output", "config": {}}},
+                ],
+                "edges": [
+                    {"source": "a1", "sourceHandle": "response", "target": "cond1", "targetHandle": "input"},
+                    {"source": "cond1", "sourceHandle": "maybe", "target": "out1", "targetHandle": "response"},
+                    {"source": "cond1", "sourceHandle": "fail", "target": "a2", "targetHandle": "input"},
+                ],
+            }
+        }
+
+        with pytest.raises(InvalidRequestError, match="pass/fail outputs"):
+            _build_conditional_orchestration_graph(agent)
+
+
+class TestAgentStepHelpers:
+    def test_extract_text_from_response_data_prefers_answer_field(self):
+        from app.api.routes.agent import _extract_text_from_response_data
+
+        response = JSONResponse(content={"answer": "resolved"})
+        assert _extract_text_from_response_data(response) == "resolved"
+
+    def test_extract_text_from_response_data_handles_invalid_json_body(self):
+        from app.api.routes.agent import _extract_text_from_response_data
+
+        response = JSONResponse(content={"message": "ok"})
+        response.body = b"not-json"
+        assert _extract_text_from_response_data(response) == ""
+
+    @pytest.mark.parametrize(
+        ("model_value", "expected"),
+        [
+            ({"modelKey": "mk", "modelName": "gpt-4"}, ("mk", "gpt-4")),
+            ("mk_gpt-4", ("mk", "gpt-4")),
+            ("mk", ("mk", None)),
+            (None, (None, None)),
+        ],
+    )
+    def test_parse_model_selection(self, model_value, expected):
+        from app.api.routes.agent import _parse_model_selection
+
+        assert _parse_model_selection(model_value) == expected
+
+    def test_filter_toolsets_by_enabled_tools_keeps_matching_tools_only(self):
+        from app.api.routes.agent import _filter_toolsets_by_enabled_tools
+
+        toolsets = [
+            {
+                "name": "slack",
+                "tools": [
+                    {"fullName": "slack.send"},
+                    {"fullName": "slack.read"},
+                ],
+            },
+            {
+                "name": "jira",
+                "tools": [{"fullName": "jira.search"}],
+            },
+        ]
+
+        filtered = _filter_toolsets_by_enabled_tools(toolsets, ["slack.send"])
+
+        assert filtered == [{"name": "slack", "tools": [{"fullName": "slack.send"}]}]
+
+    @pytest.mark.asyncio
+    async def test_load_authenticated_toolsets_builds_user_error_message(self):
+        from app.api.routes.agent import _load_authenticated_toolsets
+
+        config_service = AsyncMock()
+
+        async def _get_config(path):
+            if path.endswith("slack-inst/user-1"):
+                return {"isAuthenticated": True}
+            if path.endswith("jira-inst/user-1"):
+                return {"isAuthenticated": False}
+            return None
+
+        config_service.get_config.side_effect = _get_config
+        logger = MagicMock()
+        toolsets = [
+            {"name": "slack", "displayName": "Slack", "instanceId": "slack-inst", "tools": []},
+            {"name": "jira", "displayName": "Jira", "instanceId": "jira-inst", "tools": []},
+            {"name": "confluence", "displayName": "Confluence", "instanceId": "conf-inst", "tools": []},
+        ]
+
+        with patch("app.agents.constants.toolset_constants.get_toolset_config_path", side_effect=lambda lookup_key, user_id: f"/toolsets/{lookup_key}/{user_id}"):
+            configured, configs, error_message = await _load_authenticated_toolsets(
+                toolsets,
+                agent_id="agent-1",
+                user_context={"userId": "user-1"},
+                agent={"isServiceAccount": False},
+                config_service=config_service,
+                logger=logger,
+            )
+
+        assert configured == [toolsets[0]]
+        assert configs == {"slack-inst": {"isAuthenticated": True}}
+        assert "not configured" in error_message
+        assert "not authenticated" in error_message
+        assert "Settings -> Toolsets" in error_message
+
+    @pytest.mark.asyncio
+    async def test_load_authenticated_toolsets_service_account_message(self):
+        from app.api.routes.agent import _load_authenticated_toolsets
+
+        config_service = AsyncMock()
+        config_service.get_config.return_value = None
+        logger = MagicMock()
+
+        with patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/toolsets/slack-inst/agent-1"):
+            configured, configs, error_message = await _load_authenticated_toolsets(
+                [{"name": "slack", "displayName": "Slack", "instanceId": "slack-inst", "tools": []}],
+                agent_id="agent-1",
+                user_context={"userId": "user-1"},
+                agent={"isServiceAccount": True},
+                config_service=config_service,
+                logger=logger,
+            )
+
+        assert configured == []
+        assert configs == {}
+        assert "Agent Builder -> Manage Credentials" in error_message
+
+    def test_derive_filters_from_knowledge_defaults_apps_kb_and_placeholder(self):
+        from app.api.routes.agent import NO_KB_SELECTED_FILTER, _derive_filters_from_knowledge
+
+        knowledge = [
+            {"connectorId": "slack-inst"},
+            {"connectorId": "knowledgeBase_1", "filters": json.dumps({"recordGroups": ["rg-1"]})},
+        ]
+
+        filters = _derive_filters_from_knowledge(knowledge, None, "agent-1")
+
+        assert filters == {"apps": ["slack-inst"], "kb": ["rg-1"]}
+        placeholder_filters = _derive_filters_from_knowledge([], None, "agent-1")
+        assert placeholder_filters["kb"] == [NO_KB_SELECTED_FILTER]
+
+    def test_derive_filters_from_knowledge_preserves_requested_keys(self):
+        from app.api.routes.agent import _derive_filters_from_knowledge
+
+        knowledge = [{"connectorId": "slack-inst"}]
+        filters = _derive_filters_from_knowledge(knowledge, {"apps": ["manual"], "kb": None}, "agentIdPlaceholder")
+
+        assert filters["apps"] == ["manual"]
+        assert filters["kb"] == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_llm_for_step_returns_fallback_when_no_model_needed(self):
+        from app.api.routes.agent import _resolve_llm_for_step
+
+        fallback_llm = MagicMock()
+        chat_query = MagicMock(modelKey=None, modelName=None, chatMode="balanced")
+
+        llm = await _resolve_llm_for_step(
+            {},
+            chat_query,
+            {"models": []},
+            MagicMock(),
+            fallback_llm,
+            require_reasoning=False,
+        )
+
+        assert llm is fallback_llm
+
+    @pytest.mark.asyncio
+    async def test_resolve_llm_for_step_requires_reasoning_model(self):
+        from app.api.routes.agent import ReasoningModelRequiredError, _resolve_llm_for_step
+
+        chat_query = MagicMock(modelKey=None, modelName=None, chatMode="balanced")
+
+        with patch("app.api.routes.agent.get_llm_for_chat", new=AsyncMock(return_value=(MagicMock(), {"isReasoning": False}))):
+            with pytest.raises(ReasoningModelRequiredError):
+                await _resolve_llm_for_step(
+                    {},
+                    chat_query,
+                    {"models": []},
+                    MagicMock(),
+                    MagicMock(),
+                    require_reasoning=True,
+                )
+
+    @pytest.mark.asyncio
+    async def test_build_step_execution_context_success(self):
+        from app.api.routes.agent import ChatQuery, _build_step_execution_context
+
+        chat_query = ChatQuery(
+            query="Find docs",
+            filters=None,
+            tools=["slack.send"],
+            quickMode=True,
+            chatMode="balanced",
+            retrievalMode="hybrid",
+            previousConversations=[{"role": "user_query", "content": "Earlier"}],
+            conversationId="conv-1",
+        )
+        step = {
+            "toolsets": [{"name": "slack", "tools": [{"fullName": "slack.send"}, {"fullName": "slack.read"}]}],
+            "knowledge": [
+                {"connectorId": "slack-inst"},
+                {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg-1"]}},
+            ],
+            "systemPrompt": "step prompt",
+            "instructions": "step instructions",
+        }
+        fallback_llm = MagicMock(name="fallback_llm")
+
+        with patch("app.api.routes.agent._load_authenticated_toolsets", new=AsyncMock(return_value=([{"name": "slack", "tools": [{"fullName": "slack.send"}]}], {"slack": {"isAuthenticated": True}}, None))), \
+             patch("app.api.routes.agent.fetch_connector_configs", new=AsyncMock(return_value={"slack-inst": {"sync": {}, "indexing": {}}})), \
+             patch("app.api.routes.agent._resolve_llm_for_step", new=AsyncMock(return_value=fallback_llm)):
+            query_info, llm, error_message = await _build_step_execution_context(
+                step=step,
+                chat_query=chat_query,
+                current_query="Find docs",
+                agent={"systemPrompt": "agent prompt", "instructions": "agent instructions", "isServiceAccount": True},
+                agent_id="agent-1",
+                user_context={"userId": "user-1"},
+                config_service=MagicMock(),
+                logger=MagicMock(),
+                fallback_llm=fallback_llm,
+                include_previous_conversations=True,
+                require_reasoning=False,
+            )
+
+        assert error_message is None
+        assert llm is fallback_llm
+        assert query_info["filters"] == {"apps": ["slack-inst"], "kb": ["rg-1"]}
+        assert query_info["systemPrompt"] == "step prompt"
+        assert query_info["instructions"] == "step instructions"
+        assert query_info["connector_configs"] == {"slack-inst": {"sync": {}, "indexing": {}}}
+        assert query_info["is_service_account"] is True
+
+    @pytest.mark.asyncio
+    async def test_build_step_execution_context_returns_toolset_error(self):
+        from app.api.routes.agent import ChatQuery, _build_step_execution_context
+
+        with patch("app.api.routes.agent._load_authenticated_toolsets", new=AsyncMock(return_value=([], {}, "missing creds"))):
+            query_info, llm, error_message = await _build_step_execution_context(
+                step={"toolsets": [], "knowledge": []},
+                chat_query=ChatQuery(query="test"),
+                current_query="test",
+                agent={},
+                agent_id="agent-1",
+                user_context={"userId": "user-1"},
+                config_service=MagicMock(),
+                logger=MagicMock(),
+                fallback_llm=MagicMock(name="fallback_llm"),
+                include_previous_conversations=False,
+                require_reasoning=False,
+            )
+
+        assert query_info == {}
+        assert error_message == "missing creds"

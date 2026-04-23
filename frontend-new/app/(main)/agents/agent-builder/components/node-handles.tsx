@@ -30,6 +30,11 @@ function ConnectedHandle({
   const connections = useNodeConnections({ handleType: type, handleId: id });
   const isConnected = connections.length > 0;
   const meta = isConditional ? CONDITIONAL_HANDLE_META[id] : undefined;
+  const resolvedBackgroundColor =
+    meta?.color ?? (typeof style.background === 'string' ? style.background : undefined);
+  const resolvedBorderColor = meta
+    ? `rgba(${parseInt(meta.color.slice(1, 3), 16)}, ${parseInt(meta.color.slice(3, 5), 16)}, ${parseInt(meta.color.slice(5, 7), 16)}, 0.35)`
+    : 'var(--gray-7)';
 
   return (
     <Handle
@@ -40,8 +45,8 @@ function ConnectedHandle({
       data-connected={isConnected ? 'true' : 'false'}
       style={{
         ...style,
-        backgroundColor: meta ? meta.color : style.background,
-        borderColor: meta ? `rgba(${parseInt(meta.color.slice(1, 3), 16)}, ${parseInt(meta.color.slice(3, 5), 16)}, ${parseInt(meta.color.slice(5, 7), 16)}, 0.35)` : '1.5px solid var(--gray-7)',
+        backgroundColor: resolvedBackgroundColor,
+        borderColor: resolvedBorderColor,
       }}
     />
   );
