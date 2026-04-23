@@ -1556,7 +1556,9 @@ class TestIndexDocumentsExceptions:
             "app.modules.transformers.vectorstore.get_llm",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            # Inner try/except wraps _create_embeddings errors as
+            # EmbeddingError (subclass of IndexingError).
+            with pytest.raises(IndexingError, match="Failed to create or store embeddings"):
                 await vs.index_documents(
                     BlocksContainer(blocks=[text_block], block_groups=[]),
                     "org-1", "rec-1", "vr-1", "text/plain",

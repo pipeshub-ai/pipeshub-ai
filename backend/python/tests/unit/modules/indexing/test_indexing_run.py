@@ -338,7 +338,8 @@ class TestIndexingPipelineInitializeCollection:
         await pipeline._initialize_collection(embedding_size=768)
 
         pipeline.vector_db_service.create_collection.assert_awaited_once()
-        assert pipeline.vector_db_service.create_index.call_count == 2
+        # 3 indexes: virtualRecordId, orgId, and _kind (sentinel-marker)
+        assert pipeline.vector_db_service.create_index.call_count == 3
 
     @pytest.mark.asyncio
     async def test_recreates_on_mismatch(self):

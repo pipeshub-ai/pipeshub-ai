@@ -206,14 +206,31 @@ export const ChatApi = {
         timezone,
         currentTime: new Date().toISOString(),
         tools: [...(request.agentStreamTools ?? [])],
-        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
-        filters: { apps, kb },
       };
+      // Only send `filters` when the user has explicitly selected apps or KBs.
+      // Empty selections must omit the key so the backend applies no scope.
+      if (apps.length > 0 || kb.length > 0) {
+        (payload as Record<string, unknown>).filters = { apps, kb };
+      }
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/conversations/stream`;
-      payload = request as unknown as Record<string, unknown>;
+      const { filters: reqFilters, ...rest } = request as unknown as Record<string, unknown> & {
+        filters?: { apps?: string[]; kb?: string[] };
+      };
+      const assistantApps = (reqFilters?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const assistantKb = (reqFilters?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      payload = { ...rest } as Record<string, unknown>;
+      // Only attach `filters` when the user has explicitly selected apps or KBs.
+      // Empty selections must omit the key so the backend applies no knowledge scope.
+      if (assistantApps.length > 0 || assistantKb.length > 0) {
+        (payload as Record<string, unknown>).filters = { apps: assistantApps, kb: assistantKb };
+      }
     }
 
     // Track whether a complete event was received and the last SSE error
@@ -309,15 +326,26 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
+    const regenApps = (request.filters?.apps ?? []).filter(
+      (id): id is string => typeof id === 'string' && id.trim().length > 0
+    );
+    const regenKb = (request.filters?.kb ?? []).filter(
+      (id): id is string => typeof id === 'string' && id.trim().length > 0
+    );
+    const regeneratePayload: Record<string, unknown> = {
+      modelKey: request.modelKey,
+      modelName: request.modelName,
+      modelFriendlyName: request.modelFriendlyName,
+      chatMode: request.chatMode,
+    };
+    // Only include `filters` when the user has explicitly selected apps or KBs.
+    if (regenApps.length > 0 || regenKb.length > 0) {
+      regeneratePayload.filters = { apps: regenApps, kb: regenKb };
+    }
+
     await streamSSERequest(
       endpoint,
-      {
-        modelKey: request.modelKey,
-        modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName,
-        chatMode: request.chatMode,
-        filters: request.filters,
-      } as unknown as Record<string, unknown>,
+      regeneratePayload,
       {
         onEvent: (event: SSEEvent) => {
           switch (event.event as SSEEventType) {

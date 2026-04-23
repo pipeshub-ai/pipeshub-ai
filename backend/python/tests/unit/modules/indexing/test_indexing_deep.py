@@ -151,8 +151,8 @@ class TestInitializeCollection:
 
         await pipeline._initialize_collection(embedding_size=1024)
 
-        # Should create 2 indexes (virtualRecordId and orgId)
-        assert pipeline.vector_db_service.create_index.await_count == 2
+        # Should create 3 indexes (virtualRecordId, orgId, _kind)
+        assert pipeline.vector_db_service.create_index.await_count == 3
 
 
 # ===================================================================
@@ -183,7 +183,11 @@ class TestGetEmbeddingModelInstance:
             result = await pipeline.get_embedding_model_instance()
 
         assert result is True
-        pipeline._initialize_collection.assert_awaited_once_with(embedding_size=1024)
+        pipeline._initialize_collection.assert_awaited_once_with(
+            embedding_size=1024,
+            embedding_provider=None,
+            embedding_model_name=None,
+        )
 
     @pytest.mark.asyncio
     async def test_configured_default_model(self):

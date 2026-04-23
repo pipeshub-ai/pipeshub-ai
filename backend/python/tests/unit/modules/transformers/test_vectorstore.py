@@ -946,7 +946,10 @@ class TestIndexDocuments:
 
         with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            # _create_embeddings failures are wrapped in EmbeddingError (a
+            # subclass of IndexingError) by the inner embedding try/except
+            # before reaching the outer "unexpected" fallback.
+            with pytest.raises(IndexingError, match="Failed to create or store embeddings"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
 
     @pytest.mark.asyncio
@@ -1329,13 +1332,17 @@ class TestGetEmbeddingModelInstance:
 
     @pytest.mark.asyncio
     async def test_model_name_fallback_to_unknown(self):
-        """When dense_embeddings has no name attr, should use 'unknown'."""
+        """When dense_embeddings has no name attr AND no configured model
+        name is available, should use 'unknown'."""
         vs = _make_vectorstore()
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
         mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
 
+        # Empty embedding configs → default embedding path, which leaves
+        # ``configured_model_name`` as None so the SDK fallback ("unknown")
+        # is surfaced as ``vs.model_name``.
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
@@ -1784,7 +1791,9 @@ class TestIndexDocumentsAdditional:
 
         with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            # Inner try/except wraps _create_embeddings errors as
+            # EmbeddingError (subclass of IndexingError).
+            with pytest.raises(IndexingError, match="Failed to create or store embeddings"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
 
 
@@ -2074,12 +2083,21 @@ class TestGetEmbeddingModelInstanceUnknown:
 
     @pytest.mark.asyncio
     async def test_model_name_fallback_to_unknown(self):
-        """Falls back to 'unknown' when no model attributes exist."""
+        """Falls back to 'unknown' when no model attributes exist AND no
+        configured model name is available.
+
+        The production code now prefers the configured model name (from
+        AI_MODELS) over the SDK-reported ``model_name`` for identity
+        purposes, so triggering the 'unknown' fallback requires the
+        configured name to also be absent (empty ``configuration.model``).
+        """
         vs = _make_vectorstore()
 
         config = {
             "provider": "openai",
-            "configuration": {"apiKey": "key", "model": "test"},
+            # Empty ``model`` → configured_model_name resolves to None so
+            # the SDK fallback ("unknown") is what ends up on vs.model_name.
+            "configuration": {"apiKey": "key", "model": ""},
             "isDefault": True,
             "isMultimodal": False,
         }

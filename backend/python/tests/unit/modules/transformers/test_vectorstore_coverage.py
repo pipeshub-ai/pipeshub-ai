@@ -925,12 +925,21 @@ class TestGetEmbeddingModelInstanceBedrock:
 
     @pytest.mark.asyncio
     async def test_model_name_fallback_to_unknown(self):
-        """When none of model_name, model, or model_id attributes exist, falls back to 'unknown'."""
+        """When none of model_name, model, or model_id attributes exist and
+        no configured model name is available, falls back to 'unknown'.
+
+        The production code now prefers the configured model name (from
+        AI_MODELS) over the SDK-reported attributes for identity purposes.
+        To exercise the SDK ``unknown`` fallback we leave the configured
+        ``model`` empty so ``configured_model_name`` resolves to None.
+        """
         vs = _make_vectorstore()
 
         config = {
             "provider": "openai",
-            "configuration": {"apiKey": "key", "model": "test"},
+            # Empty ``model`` ensures configured_model_name is None so the
+            # SDK fallback ("unknown") is what lands on vs.model_name.
+            "configuration": {"apiKey": "key", "model": ""},
             "isDefault": True,
             "isMultimodal": False,
         }
