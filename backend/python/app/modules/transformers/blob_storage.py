@@ -447,7 +447,11 @@ class BlobStorage(Transformer):
                         self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
                                         response.status, error_response)
                         if isinstance(error_response, dict):
-                            error_detail = str(error_response.get("error", {}).get("message", "")).strip()
+                            error_obj = error_response.get("error")
+                            if isinstance(error_obj, dict):
+                                error_detail = str(error_obj.get("message", "")).strip()
+                            elif error_obj is not None:
+                                error_detail = str(error_obj).strip()
                             if not error_detail:
                                 error_detail = str(error_response)
                         else:
