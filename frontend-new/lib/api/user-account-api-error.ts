@@ -5,6 +5,9 @@ export interface UserAccountApiErrorBody {
   error?: {
     code?: string;
     message?: string;
+    metadata?: {
+      blockedUntil?: string;
+    };
   };
   message?: string;
 }
@@ -30,4 +33,12 @@ export function getUserAccountApiErrorMessage(
   if (fromBody) return fromBody;
   if (err instanceof Error && err.message) return err.message;
   return fallback;
+}
+
+export function getUserAccountBlockedUntil(err: unknown): string | undefined {
+  const ax = err as AxiosError<UserAccountApiErrorBody>;
+  const blockedUntil = ax?.response?.data?.error?.metadata?.blockedUntil;
+  return typeof blockedUntil === 'string' && blockedUntil.trim()
+    ? blockedUntil.trim()
+    : undefined;
 }
