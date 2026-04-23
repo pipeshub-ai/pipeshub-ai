@@ -430,6 +430,7 @@ function KnowledgeBasePageContent() {
     isLoading?: boolean;
     error?: string;
     recordDetails?: RecordDetailsResponse;
+    webUrl?: string;
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
@@ -1093,7 +1094,7 @@ function KnowledgeBasePageContent() {
       // Inside a KB/folder - create folder within it
       const kbId = tableData.breadcrumbs[1].id;
       const currentNode = tableData.currentNode;
-      
+
       // Determine parent ID:
       // - If current node is a folder, use it as parent (nested folder)
       // - If current node is the KB itself, parentId should be null (root folder)
@@ -1136,7 +1137,7 @@ function KnowledgeBasePageContent() {
           );
 
           // Show success toast
-            toast.success('Folder created successfully', {
+          toast.success('Folder created successfully', {
             description: `"${name.trim()}" has been created`,
           });
 
@@ -1386,7 +1387,7 @@ function KnowledgeBasePageContent() {
     }
     shareAdapter.getSharedMembers().then((members) => {
       setSharedMembers(
-      members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
+        members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
       );
     }).catch(async (error) => {
       setSharedMembers([]);
@@ -1402,13 +1403,13 @@ function KnowledgeBasePageContent() {
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
-    
+
     if (isKnowledgeHubNode) {
       // Only preview record type nodes (files)
       if (item.nodeType !== 'record') {
         return;
       }
-      
+
       try {
         // 1. Show loading state immediately
         setPreviewFile({
@@ -1418,6 +1419,7 @@ function KnowledgeBasePageContent() {
           type: item.mimeType || item.extension || '',
           size: item.sizeInBytes || undefined,
           isLoading: true,
+          webUrl: item.webUrl,
         });
         setPreviewMode('sidebar');
 
@@ -1463,6 +1465,7 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          webUrl: recordDetails.record.webUrl || undefined,
         });
 
       } catch (error) {
@@ -1530,8 +1533,9 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          webUrl: recordDetails.record.webUrl || undefined,
         });
-        
+
       } catch (error) {
         console.error('Failed to load file preview:', error);
         setPreviewFile(prev => prev ? {
@@ -1796,7 +1800,7 @@ function KnowledgeBasePageContent() {
   const handleReplaceConfirm = useCallback(
     async (item: KnowledgeHubNode, newFile: File) => {
       setIsReplacing(true);
-      
+
       try {
         // Call API to replace the file
         await KnowledgeBaseApi.replaceRecord(
@@ -1821,7 +1825,7 @@ function KnowledgeBasePageContent() {
         await refreshData();
       } catch (error: unknown) {
         console.error('Failed to replace file:', error);
-        
+
         // Show error toast
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
@@ -2210,6 +2214,7 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -2238,6 +2243,7 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}

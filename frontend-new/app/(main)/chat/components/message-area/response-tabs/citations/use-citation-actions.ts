@@ -156,6 +156,7 @@ export function useCitationActions(): CitationCallbacks {
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         // 4. Update state with actual file URL and/or blob and record details
+        const webUrl = recordDetails.record.webUrl ?? undefined;
         setPreviewFile({
           id: citation.recordId,
           name: citation.recordName,
@@ -165,6 +166,7 @@ export function useCitationActions(): CitationCallbacks {
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
+          webUrl,
           initialPage,
           highlightBox,
           citations: recordCitations,

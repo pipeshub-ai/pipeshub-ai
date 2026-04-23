@@ -899,6 +899,7 @@ function ChatContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            webUrl: previewFile.webUrl,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -927,6 +928,7 @@ function ChatContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            webUrl: previewFile.webUrl,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}

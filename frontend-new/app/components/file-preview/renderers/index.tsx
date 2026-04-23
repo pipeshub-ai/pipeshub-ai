@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { isLegacyWordDocFile } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
@@ -97,7 +97,39 @@ export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRend
   );
 }
 
-export function UnknownPreview({ fileName, fileUrl }: FilePreviewRendererProps) {
+export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl }: FilePreviewRendererProps) {
+  const [blobUrl, setBlobUrl] = useState('');
+
+  useEffect(() => {
+    if (fileUrl?.trim()) {
+      setBlobUrl('');
+      return;
+    }
+    if (!fileBlob || fileBlob.size === 0) {
+      setBlobUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(fileBlob);
+    setBlobUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [fileUrl, fileBlob]);
+
+  const downloadHref = (fileUrl && fileUrl.trim() !== '') ? fileUrl : blobUrl;
+
+  const buttonStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 'var(--space-2)',
+    padding: 'var(--space-2) var(--space-4)',
+    borderRadius: 'var(--radius-2)',
+    textDecoration: 'none',
+    fontSize: 'var(--font-size-2)',
+    fontWeight: 500,
+    transition: 'background-color 0.15s ease',
+  };
+
   return (
     <Flex
       direction="column"
@@ -121,36 +153,45 @@ export function UnknownPreview({ fileName, fileUrl }: FilePreviewRendererProps) 
       <Text size="2" color="gray" style={{ textAlign: 'center', maxWidth: '400px' }}>
         Preview not available for this file type
       </Text>
-      {fileUrl && fileUrl.trim() !== '' && (
-        <a
-          href={fileUrl}
-          download={fileName}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-            padding: 'var(--space-2) var(--space-4)',
-            backgroundColor: 'var(--accent-9)',
-            color: 'white',
-            borderRadius: 'var(--radius-2)',
-            textDecoration: 'none',
-            fontSize: 'var(--font-size-2)',
-            fontWeight: 500,
-            transition: 'background-color 0.15s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = 'var(--accent-10)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'var(--accent-9)';
-          }}
-        >
-          <span className="material-icons-outlined" style={{ fontSize: '18px' }}>
-            download
-          </span>
-          Download File
-        </a>
-      )}
+      <Flex gap="3">
+        {downloadHref && downloadHref.trim() !== '' && (
+          <a
+            href={downloadHref}
+            download={fileName}
+            style={{ ...buttonStyle, backgroundColor: 'var(--accent-9)', color: 'white' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--accent-10)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--accent-9)';
+            }}
+          >
+            <span className="material-icons-outlined" style={{ fontSize: '18px' }}>
+              download
+            </span>
+            Download File
+          </a>
+        )}
+        {webUrl && webUrl.trim() !== '' && (
+          <a
+            href={webUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ ...buttonStyle, backgroundColor: 'var(--olive-4)', color: 'var(--olive-12)', border: '1px solid var(--olive-6)' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--olive-5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--olive-4)';
+            }}
+          >
+            <span className="material-icons-outlined" style={{ fontSize: '18px' }}>
+              open_in_new
+            </span>
+            Open in Browser
+          </a>
+        )}
+      </Flex>
     </Flex>
   );
 }

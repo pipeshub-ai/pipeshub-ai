@@ -87,6 +87,11 @@ export interface FilePreviewProps {
      * avoids an unnecessary re-`fetch` on a `URL.createObjectURL` blob URL.
      */
     blob?: Blob;
+    /**
+     * External URL for connector records (e.g. Jira ticket, Confluence page).
+     * Used by UnknownPreview to open the source in a new browser tab.
+     */
+    webUrl?: string;
   };
   
   /** Initially active tab */
@@ -186,6 +191,12 @@ export interface FilePreviewRendererProps {
   activeCitationId?: string | null;
   /** Called when user clicks a highlight span in the rendered content */
   onHighlightClick?: (citationId: string) => void;
+  /**
+   * External URL for connector records (e.g. Jira ticket, Confluence page).
+   * Passed to UnknownPreview so the "Open in Browser" button links to the
+   * source rather than the internal blob URL.
+   */
+  webUrl?: string;
 }
 
 /**
