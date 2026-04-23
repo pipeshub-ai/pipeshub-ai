@@ -415,8 +415,13 @@ async def handle_model_change(
         logger.error(
             "Rejected embedding model change due to non-empty existing collection"
         )
+        # 400 Bad Request: this is a client-side configuration conflict
+        # (the proposed embedding model is incompatible with the data that
+        # already lives in the collection), not an internal server fault.
+        # Kept consistent with ``perform_embedding_health_check`` which
+        # returns 400 for the same class of rejection.
         raise HTTPException(
-            status_code=500,
+            status_code=400,
             detail={
                 "status": "not healthy",
                 "error": (

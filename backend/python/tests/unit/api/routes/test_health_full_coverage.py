@@ -146,7 +146,7 @@ class TestHandleModelChange:
         from app.api.routes.health import handle_model_change
         with pytest.raises(HTTPException) as exc_info:
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):

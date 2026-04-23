@@ -146,7 +146,7 @@ class TestHandleModelChange:
         from app.api.routes.health import handle_model_change
         with pytest.raises(HTTPException) as exc_info:
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):
@@ -787,7 +787,7 @@ class TestCheckCollectionInfoExtraEdgeCases:
         from app.api.routes.health import check_collection_info
         with pytest.raises(HTTPException) as exc_info:
             await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Policy Rejection" in str(exc_info.value.detail)
 
 
@@ -1091,7 +1091,7 @@ class TestHandleModelChangeFullCoverage:
         from app.api.routes.health import handle_model_change
         with pytest.raises(HTTPException) as exc_info:
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):
@@ -2073,7 +2073,7 @@ class TestHandleModelChangeProviderAware:
                 new_provider="openai",
                 identity_source="collection",
             )
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_same_model_same_provider_allows(self):
