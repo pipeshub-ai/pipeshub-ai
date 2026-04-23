@@ -2089,8 +2089,12 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
-            self.logger.warning(f"Failed to create typed record for {record_type}")
-            raise ValueError(f"Failed to create typed record for {record_type}: {str(e)}")
+            self.logger.warning(
+                f"Failed to create typed record for {record_type}: {str(e)}"
+            )
+            raise ValueError(
+                f"Failed to create typed record for {record_type}"
+            ) from e
 
     async def get_records_by_parent(
         self,
@@ -2273,11 +2277,8 @@ class Neo4jProvider(IGraphDBProvider):
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
 
                 WITH DISTINCT record
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+                MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
                 WHERE typeDoc.isFile = true OR NOT typeDoc:File
-                WITH record, typeDoc
-                
-                WHERE (typeDoc.isFile = true OR NOT typeDoc:File) AND typeDoc IS NOT NULL
                 WITH record, typeDoc
                 ORDER BY record.id
                 """
