@@ -1449,8 +1449,15 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP (additional)', () => {
-    it('should block account and send mail after 5 wrong OTPs', async () => {
+    it('should block account, set cooldown expiry and send mail after 5 wrong OTPs', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
+      const saveStub = sinon.stub().resolves();
+      const updatedCredential: any = {
+        wrongCredentialCount: 5,
+        isBlocked: false,
+        blockExpiresAt: null,
+        save: saveStub,
+      };
 
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: false,
@@ -1460,11 +1467,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
 
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
-        wrongCredentialCount: 5,
-        isBlocked: false,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
@@ -1477,6 +1480,9 @@ describe('UserAccountController', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as UnauthorizedError).message).to.include('Too many login attempts');
+        expect(saveStub.calledOnce).to.be.true;
+        expect(updatedCredential.isBlocked).to.equal(true);
+        expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
       }
     });
   });

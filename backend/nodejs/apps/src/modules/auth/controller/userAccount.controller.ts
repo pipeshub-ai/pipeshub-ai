@@ -143,17 +143,12 @@ export class UserAccountController {
       return undefined;
     }
 
-    const blockedUntilDate = new Date(blockExpiresAt);
+    const blockedUntilDate = blockExpiresAt;
     if (Number.isNaN(blockedUntilDate.getTime())) {
       return undefined;
     }
 
     return blockedUntilDate.toISOString();
-  }
-
-  private buildBlockedErrorMetadata(userCredentials: IUserCredentials) {
-    const blockedUntil = this.getBlockedUntilIso(userCredentials);
-    return blockedUntil ? { blockedUntil } : undefined;
   }
 
   private async ensureBlockStatus(
@@ -164,19 +159,13 @@ export class UserAccountController {
     }
 
     const now = Date.now();
-    const blockExpiresAtTime = userCredentials.blockExpiresAt
-      ? new Date(userCredentials.blockExpiresAt).getTime()
-      : null;
+    const blockExpiresAtTime = userCredentials.blockExpiresAt?.getTime() ?? null;
 
     if (blockExpiresAtTime && blockExpiresAtTime <= now) {
       userCredentials.isBlocked = false;
       userCredentials.wrongCredentialCount = 0;
       userCredentials.blockExpiresAt = null;
-
-      if (typeof userCredentials.save === 'function') {
-        await userCredentials.save();
-      }
-
+      await userCredentials.save();
       return false;
     }
 
@@ -199,9 +188,11 @@ export class UserAccountController {
       throw new BadRequestError('Please request OTP before login');
     }
     if (await this.ensureBlockStatus(userCredentials)) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentials);
       throw new BadRequestError(
-        'Your account has been disabled as you have entered incorrect OTP/Password too many times. Please reach out to your admin or reachout to contact@pipeshub.com',
-        this.buildBlockedErrorMetadata(userCredentials),
+        blockedUntil
+          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
+          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
       );
     }
     if (!userCredentials.otpValidity || !userCredentials.hashedOTP) {
@@ -466,9 +457,11 @@ export class UserAccountController {
       });
 
       if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+        const blockedUntil = this.getBlockedUntilIso(userCredentialData);
         throw new BadRequestError(
-          'You cannot change you password as your account is blocked due to multiple incorrect logins',
-          this.buildBlockedErrorMetadata(userCredentialData),
+          blockedUntil
+            ? `You cannot change you password as your account is blocked due to multiple incorrect logins [blockedUntil:${blockedUntil}]`
+            : 'You cannot change you password as your account is blocked due to multiple incorrect logins',
         );
       }
       if (!userCredentialData) {
@@ -855,9 +848,11 @@ export class UserAccountController {
     const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
     if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentialData);
       throw new ForbiddenError(
-        'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. Please reach out to your admin or reachout to contact@pipeshub.com to get it restored.',
-        this.buildBlockedErrorMetadata(userCredentialData),
+        blockedUntil
+          ? `OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. [blockedUntil:${blockedUntil}]`
+          : 'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled.',
       );
     }
 
@@ -987,9 +982,11 @@ export class UserAccountController {
       }
 
       if (await this.ensureBlockStatus(userCredential as IUserCredentials)) {
+        const blockedUntil = this.getBlockedUntilIso(userCredential as IUserCredentials);
         throw new BadRequestError(
-          'Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored.',
-          this.buildBlockedErrorMetadata(userCredential as IUserCredentials),
+          blockedUntil
+            ? `Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored. [blockedUntil:${blockedUntil}]`
+            : 'Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored.',
         );
       }
 
@@ -1050,9 +1047,11 @@ export class UserAccountController {
       throw new BadRequestError('Incorrect password, please try again.');
     }
     if (await this.ensureBlockStatus(userCredentials)) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentials);
       throw new BadRequestError(
-        'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
-        this.buildBlockedErrorMetadata(userCredentials),
+        blockedUntil
+          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
+          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
       );
     }
 
