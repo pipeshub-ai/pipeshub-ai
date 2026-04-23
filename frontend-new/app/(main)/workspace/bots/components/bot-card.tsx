@@ -147,7 +147,7 @@ function ManageButton({ onClick }: { onClick: () => void }) {
         justifyContent: 'center',
         gap: 'var(--space-2)',
         width: '100%',
-        height: 'var(--space-8)',
+        height: 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-a4)' : 'var(--accent-a3)',
         cursor: 'pointer',

@@ -506,7 +506,7 @@ export default function GeneralPage() {
                 <Switch
                   checked={form.dataCollection}
                   onCheckedChange={(checked) => setField('dataCollection', checked)}
-                  size="2"
+                  size="1"
                 />
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.general.enableDataCollection')}
