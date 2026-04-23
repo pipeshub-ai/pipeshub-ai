@@ -55,10 +55,6 @@ TOOL_RESULT_TUPLE_LENGTH = 2
 MAX_PARALLEL_TOOLS = 10
 TOOL_TIMEOUT_SECONDS = 60.0
 RETRIEVAL_TIMEOUT_SECONDS = 45.0  # Faster timeout for retrieval
-# Generative image models (OpenAI gpt-image / DALL-E, Gemini Imagen) can take
-# well over a minute — especially when n > 1 — so give them a much larger
-# budget than generic tools.
-IMAGE_GENERATION_TIMEOUT_SECONDS = 300.0
 
 # Response formatting constants
 # NOTE: Truncation limits are set high to preserve context. Only truncate if absolutely necessary.
