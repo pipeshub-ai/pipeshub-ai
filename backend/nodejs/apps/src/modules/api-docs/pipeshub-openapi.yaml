@@ -4116,6 +4116,9 @@ components:
         timestamp:
           type: integer
           format: int64
+        resetBeforeApply:
+          type: boolean
+          description: When true, clear existing Local FS records before applying this batch
           description: Batch timestamp in epoch milliseconds
 
     LocalFsFileEventStats:

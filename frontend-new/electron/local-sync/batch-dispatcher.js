@@ -93,7 +93,10 @@ class BatchDispatcher {
       const renameOrMove = pathEvents.find((e) =>
         e.type === 'RENAMED' || e.type === 'MOVED' || e.type === 'DIR_RENAMED' || e.type === 'DIR_MOVED'
       );
-      if (renameOrMove && types.has('MODIFIED')) { result.push(renameOrMove); continue; }
+      if (renameOrMove && (types.has('MODIFIED') || types.has('CREATED'))) {
+        result.push(renameOrMove);
+        continue;
+      }
       if (pathEvents.every((e) => e.type === 'MODIFIED')) { result.push(last); continue; }
       result.push(last);
     }
