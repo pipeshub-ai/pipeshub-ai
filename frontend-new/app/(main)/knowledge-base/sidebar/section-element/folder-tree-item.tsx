@@ -267,6 +267,7 @@ export function FolderTreeItem({
               isKnowledgeHub
               nodeType={enhancedNode.nodeType}
               connector={enhancedNode.connector}
+              subType={enhancedNode.subType}
               extension={enhancedNode.extension}
               mimeType={enhancedNode.mimeType}
               name={node.name}

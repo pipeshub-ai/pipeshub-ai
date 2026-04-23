@@ -321,6 +321,7 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   permission?: NodePermission;
   origin?: NodeOrigin;
   connector?: string;
+  subType?: string;
   extension?: string | null;
   mimeType?: string | null;
 }

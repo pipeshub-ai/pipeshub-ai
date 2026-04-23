@@ -7,7 +7,7 @@ import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
-import type { SearchRequest } from '@/chat/types';
+import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -64,7 +64,7 @@ export function ChatInputWrapper() {
     store.setIsSearching(true);
     store.setSearchError(null);
 
-    const kbFilter = store.settings.filters.kb;
+    const streamFilters = buildAssistantApiFilters(store.settings.filters);
     const request: SearchRequest = {
       query,
       limit: 10,
@@ -72,8 +72,8 @@ export function ChatInputWrapper() {
         departments: [],
         moduleIds: [],
         appSpecificRecordTypes: [],
-        apps: [...store.settings.filters.apps, ...kbFilter],
-        kb: [],
+        apps: streamFilters.apps,
+        kb: streamFilters.kb,
       },
     };
 
@@ -128,10 +128,20 @@ export function ChatInputWrapper() {
     const { settings, collectionNamesCache } = store;
 
     // Collections for message metadata + slot UI; `settings.filters` is not cleared on send.
-    const collectionsAtSendTime = settings.filters.kb.map((id) => ({
-      id,
-      name: collectionNamesCache[id] || 'Collection',
-    }));
+    const hubApps = settings.filters.apps ?? [];
+    const recordGroups = settings.filters.kb ?? [];
+    const collectionsAtSendTime: ChatCollectionAttachment[] = [
+      ...hubApps.map((id) => ({
+        id,
+        name: collectionNamesCache[id] || 'Collection',
+        kind: 'collectionRoot' as const,
+      })),
+      ...recordGroups.map((id) => ({
+        id,
+        name: collectionNamesCache[id] || 'Collection',
+        kind: 'recordGroup' as const,
+      })),
+    ];
 
     if (collectionsAtSendTime.length > 0) {
       store.updateSlot(activeSlotId, {

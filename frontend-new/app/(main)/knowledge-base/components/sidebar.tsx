@@ -24,6 +24,7 @@ import type {
   ConnectorType,
   KnowledgeHubNode,
 } from '../types';
+import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 
 // Sidebar width constant
 const SIDEBAR_WIDTH = 233;
@@ -727,6 +728,7 @@ function AppSection({
   loadingNodeIds,
   currentFolderId,
 }: AppSectionProps) {
+  const isKb = isKbCollectionsHubApp(app);
   const connectorType = getAppConnectorType(app);
 
   return (
@@ -739,7 +741,11 @@ function AppSection({
           padding: '4px 8px',
         }}
       >
-        <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" />
+        {isKb ? (
+          <FolderIcon variant="default" size={16} color="var(--emerald-11)" style={{ flexShrink: 0 }} />
+        ) : (
+          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+        )}
         <Text
           size="2"
           weight="medium"

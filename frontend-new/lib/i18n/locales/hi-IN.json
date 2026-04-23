@@ -385,6 +385,7 @@
     "listening": "सुन रहे हैं...",
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
+    "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
     "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
     "agentResources": {
@@ -414,7 +415,7 @@
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
     "noChatsYet": "अभी तक कोई चैट नहीं",
-    "searchCollections": "कलेक्शन खोजें",
+    "searchCollections": "कनेक्टर्स और संग्रह खोजें",
     "loadingCollections": "कलेक्शन लोड हो रहे हैं…",
     "failedToLoadCollections": "कलेक्शन लोड करने में विफल",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",

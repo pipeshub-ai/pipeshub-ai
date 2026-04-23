@@ -5,6 +5,7 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { NodeType } from '../types';
+import { isKbCollectionsHubApp } from './all-records-transformer';
 
 const HUB_FOLDER_TYPES: readonly NodeType[] = ['kb', 'app', 'folder', 'recordGroup'];
 
@@ -17,6 +18,7 @@ export interface KbNodeNameIconProps {
   isKnowledgeHub: boolean;
   nodeType?: NodeType;
   connector?: string | null;
+  subType?: string | null;
   extension?: string | null;
   mimeType?: string | null;
   /** Legacy collections row (`KnowledgeBaseItem`) */
@@ -31,6 +33,7 @@ export function KbNodeNameIcon({
   isKnowledgeHub,
   nodeType,
   connector,
+  subType,
   extension,
   mimeType,
   legacyType,
@@ -50,6 +53,9 @@ export function KbNodeNameIcon({
   const isApp = isKnowledgeHub && nodeType === 'app';
 
   if (isFolder && isApp) {
+    if (isKbCollectionsHubApp({ connector, subType })) {
+      return <FolderIcon variant="default" size={size} color="var(--emerald-11)" />;
+    }
     const key = normalizeConnectorKey(connector);
     if (!key) {
       return (

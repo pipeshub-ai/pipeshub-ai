@@ -262,6 +262,9 @@
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
+    "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
+    "connectorsTooltip": "Konnektoren und Sammlungen",
+    "searchCollections": "Konnektoren und Sammlungen suchen",
     "toasts": {
       "stopStreamTitle": "Demnächst verfügbar",
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",

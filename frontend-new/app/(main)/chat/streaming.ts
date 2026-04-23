@@ -22,6 +22,7 @@ import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
+  buildAssistantApiFilters,
   buildStreamRequestModeFields,
   streamChatModeToAgentApiChatMode,
   type StreamChatRequest,
@@ -711,7 +712,7 @@ export async function streamRegenerateForSlot(
         modelName: resolvedModel.modelName,
         modelFriendlyName: resolvedModel.modelFriendlyName,
         chatMode,
-        filters: store.settings.filters,
+        filters: buildAssistantApiFilters(store.settings.filters),
       });
     }
   } catch (error) {

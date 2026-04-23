@@ -385,7 +385,8 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
-    "connectorsTooltip": "Connectors & Collections",
+    "connectorsCollectionsTitle": "Connectors and Collections",
+    "connectorsTooltip": "Connectors and Collections",
     "agentResourcesTooltip": "Connectors, collections & actions",
     "agentResources": {
       "sheetTitle": "Connectors, collections & actions",
@@ -414,7 +415,7 @@
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",
     "noChatsYet": "No chats yet",
-    "searchCollections": "Search Collections",
+    "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
     "noCollectionsAvailable": "No collections available",

@@ -174,15 +174,44 @@ export interface QueryModeConfig {
   enabled: boolean;
 }
 
+/**
+ * Assistant chat knowledge scope — **same shape as stream/search `filters`** (`apps` + `kb`).
+ *
+ * - **`apps`** — Ids sent as `filters.apps`: connector hub roots **and** collection/KB hub roots
+ *   (whole-subtree scope). Nested record groups do **not** go here.
+ * - **`kb`** — Record group ids sent as `filters.kb` (nested picks under an expanded hub root).
+ */
+export interface ChatKnowledgeFilters {
+  apps: string[];
+  kb: string[];
+}
+
+/** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
+export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): {
+  apps: string[];
+  kb: string[];
+} {
+  return {
+    apps: [...(filters.apps ?? [])],
+    kb: [...(filters.kb ?? [])],
+  };
+}
+
+/** Attached on send for replay + UI; `kind` defaults to `collectionRoot` when absent (legacy). */
+export type ChatCollectionAttachmentKind = 'collectionRoot' | 'recordGroup';
+
+export interface ChatCollectionAttachment {
+  id: string;
+  name: string;
+  kind?: ChatCollectionAttachmentKind;
+}
+
 export interface ChatSettings {
   mode: ChatMode;
   queryMode: QueryMode;
   /** Used when queryMode is 'agent'. */
   agentStrategy: AgentStrategy;
-  filters: {
-    apps: string[];
-    kb: string[];
-  };
+  filters: ChatKnowledgeFilters;
   /**
    * Per-context map of the model explicitly chosen by the user in the model
    * selector panel. The key is either ASSISTANT_CTX (for the non-agent chat) or
@@ -549,7 +578,7 @@ export interface ChatSlot {
    */
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
-  pendingCollections: Array<{ id: string; name: string }>;
+  pendingCollections: ChatCollectionAttachment[];
 
   /** Artifacts produced during the current streaming response. */
   artifacts: ChatArtifact[];
