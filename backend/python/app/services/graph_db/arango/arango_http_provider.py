@@ -643,40 +643,66 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         record_type = record_dict.get("recordType")
 
+        translated_record = self._translate_node_from_arango(record_dict)
+        record_candidates = self._record_payload_candidates(translated_record, record_dict)
+
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            return Record.from_arango_base_record(record_dict)
+            return self._build_base_record(record_candidates)
 
-        try:
-            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+        collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+        translated_type_doc = self._translate_node_from_arango(type_doc)
+        type_doc_candidates = self._record_payload_candidates(translated_type_doc, type_doc)
 
-            if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.LINKS.value:
-                return LinkRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.PROJECTS.value:
-                return ProjectRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.MEETINGS.value:
-                return MeetingRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.PRODUCTS.value:
-                return ProductRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.DEALS.value:
-                return DealRecord.from_arango_record(type_doc, record_dict)
-            return Record.from_arango_base_record(record_dict)
-        except Exception as e:
+        factory_by_collection = {
+            CollectionNames.FILES.value: FileRecord,
+            CollectionNames.MAILS.value: MailRecord,
+            CollectionNames.WEBPAGES.value: WebpageRecord,
+            CollectionNames.TICKETS.value: TicketRecord,
+            CollectionNames.COMMENTS.value: CommentRecord,
+            CollectionNames.LINKS.value: LinkRecord,
+            CollectionNames.PROJECTS.value: ProjectRecord,
+            CollectionNames.MEETINGS.value: MeetingRecord,
+            CollectionNames.PRODUCTS.value: ProductRecord,
+            CollectionNames.DEALS.value: DealRecord,
+        }
+        record_factory = factory_by_collection.get(collection)
+        if record_factory is None:
+            return self._build_base_record(record_candidates)
+
+        last_error: Exception | None = None
+        for typed_candidate in type_doc_candidates:
+            for record_candidate in record_candidates:
+                try:
+                    return record_factory.from_arango_record(typed_candidate, record_candidate)
+                except Exception as exc:  # noqa: PERF203
+                    last_error = exc
+
+        if last_error is not None:
             self.logger.warning(
                 "Failed to create typed record for %s, falling back to base Record: %s",
                 record_type,
-                str(e),
+                str(last_error),
             )
-            return Record.from_arango_base_record(record_dict)
+
+        return self._build_base_record(record_candidates)
+
+    def _record_payload_candidates(self, translated_doc: dict, raw_doc: dict) -> list[dict]:
+        if translated_doc == raw_doc:
+            return [translated_doc]
+        return [translated_doc, raw_doc]
+
+    def _build_base_record(self, record_candidates: list[dict]) -> Record:
+        last_error: Exception | None = None
+        for record_candidate in record_candidates:
+            try:
+                return Record.from_arango_base_record(record_candidate)
+            except Exception as exc:  # noqa: PERF203
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+
+        raise ValueError("Unable to construct base record from empty candidate list")
 
     async def get_record_by_id(
         self,
@@ -3121,63 +3147,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
             return []
-
-    def _create_typed_record_from_arango(self, record_dict: dict, type_doc: dict | None) -> Record:
-        """
-        Factory method to create properly typed Record instances from ArangoDB data.
-        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
-
-        Args:
-            record_dict: Dictionary from records collection
-            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
-
-        Returns:
-            Properly typed Record instance (FileRecord, MailRecord, etc.)
-        """
-        record_type = record_dict.get("recordType")
-
-        # Check if this record type has a type collection
-        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            # No type collection or no type doc - use base Record
-            record_data = self._translate_node_from_arango(record_dict)
-            return Record.from_arango_base_record(record_data)
-
-        try:
-            # Determine which collection this type uses
-            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
-
-            # Apply translation to both documents
-            type_doc_data = self._translate_node_from_arango(type_doc)
-            record_data = self._translate_node_from_arango(record_dict)
-
-            # Map collections to their corresponding Record classes
-            if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.PROJECTS.value:
-                return ProjectRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.PRODUCTS.value:
-                return ProductRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.LINKS.value:
-                return LinkRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.MEETINGS.value:
-                return MeetingRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.DEALS.value:
-                return DealRecord.from_arango_record(type_doc_data, record_data)
-            else:
-                # Unknown collection - fallback to base Record
-                return Record.from_arango_base_record(record_data)
-        except Exception as e:
-            self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
-            record_data = self._translate_node_from_arango(record_dict)
-            return Record.from_arango_base_record(record_data)
 
     async def get_record_by_conversation_index(
         self,
