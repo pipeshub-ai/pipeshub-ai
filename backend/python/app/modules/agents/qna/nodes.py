@@ -102,6 +102,10 @@ class NodeConfig:
     MAX_PARALLEL_TOOLS: int = 10
     TOOL_TIMEOUT_SECONDS: float = 60.0
     RETRIEVAL_TIMEOUT_SECONDS: float = 60.0  # Faster timeout for retrieval
+    # Generative image models can easily take 1-3 minutes per call, and
+    # multi-image requests (n > 1) stack that up further. Give them plenty
+    # of headroom.
+    IMAGE_GENERATION_TIMEOUT_SECONDS: float = 300.0
     PLANNER_TIMEOUT_SECONDS: float = 45.0
     REFLECTION_TIMEOUT_SECONDS: float = 8.0
 
@@ -1303,8 +1307,11 @@ class ToolExecutor:
 
             # Determine timeout based on tool type
             timeout = NodeConfig.TOOL_TIMEOUT_SECONDS
-            if "retrieval" in tool_name.lower():
+            tool_name_lower = tool_name.lower()
+            if "retrieval" in tool_name_lower:
                 timeout = NodeConfig.RETRIEVAL_TIMEOUT_SECONDS
+            elif "image_generator" in tool_name_lower or "generate_image" in tool_name_lower:
+                timeout = NodeConfig.IMAGE_GENERATION_TIMEOUT_SECONDS
 
             # Execute tool
             result = await asyncio.wait_for(
