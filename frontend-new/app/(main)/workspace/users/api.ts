@@ -129,6 +129,36 @@ export const UsersApi = {
   },
 
   /**
+   * Resolve graph users by graph UUIDs using the graph list endpoint.
+   * Paginates until all requested IDs are found (or data is exhausted).
+   */
+  async getGraphUsersByIds(ids: string[]): Promise<Record<string, User | null>> {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    const result: Record<string, User | null> = {};
+    for (const id of uniqueIds) result[id] = null;
+    if (uniqueIds.length === 0) return result;
+
+    const remaining = new Set(uniqueIds);
+    let page = 1;
+    const limit = 100;
+    let totalPages = 1;
+
+    while (page <= totalPages && remaining.size > 0) {
+      const { users, totalCount } = await UsersApi.listGraphUsers({ page, limit });
+      totalPages = Math.max(1, Math.ceil((totalCount || 0) / limit));
+
+      for (const user of users) {
+        if (!user.id || !remaining.has(user.id)) continue;
+        result[user.id] = user;
+        remaining.delete(user.id);
+      }
+      page += 1;
+    }
+
+    return result;
+  },
+
+  /**
    * Batch lookup users by their MongoDB IDs.
    * POST /api/v1/users/by-ids
    * Use this to enrich known user IDs with name/email without scanning

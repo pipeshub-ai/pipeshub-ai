@@ -30,6 +30,11 @@ interface RoleDropdownMenuProps {
    * gate outside-click handling on portaled elements.
    */
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Override the label + description for each role. Defaults to
+   * {@link SHARE_ROLE_LABELS}. Pass team-specific labels for team contexts.
+   */
+  labels?: Record<ShareRole, { label: string; description: string }>;
 }
 
 const SELECTABLE_ROLES: ShareRole[] = ['OWNER', 'WRITER', 'READER'];
@@ -37,7 +42,8 @@ const MENU_WIDTH = 292;
 const MIN_HORIZONTAL_MARGIN = 8;
 const MIN_VERTICAL_MARGIN = 8;
 
-export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange }: RoleDropdownMenuProps) {
+export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange, labels }: RoleDropdownMenuProps) {
+  const effectiveLabels = labels ?? SHARE_ROLE_LABELS;
   // Treat as no-roles when isTeam or noRolesInfo is provided
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? 'Team';
@@ -166,7 +172,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
           userSelect: 'none',
         }}
       >
-        {isNoRoles ? noRolesTitle : SHARE_ROLE_LABELS[role].label}
+        {isNoRoles ? noRolesTitle : effectiveLabels[role].label}
         <MaterialIcon name="expand_more" size={16} color="var(--slate-11)" />
       </button>
 
@@ -236,10 +242,10 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                   weight={r === role ? 'medium' : 'regular'}
                   style={{ color: 'var(--slate-12)', fontSize: 13, lineHeight: '16px' }}
                 >
-                  {SHARE_ROLE_LABELS[r].label}
+                  {effectiveLabels[r].label}
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-11)', fontSize: 12, lineHeight: '15px' }}>
-                  {SHARE_ROLE_LABELS[r].description}
+                  {effectiveLabels[r].description}
                 </Text>
               </Flex>
 
