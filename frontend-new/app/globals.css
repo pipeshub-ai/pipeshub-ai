@@ -1,6 +1,54 @@
 @import '@radix-ui/themes/styles.css';
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
 
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Extralight.otf') format('opentype');
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Semibold.otf') format('opentype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ========================
    Custom Accent Color Scale
    Base color: #047857 (Emerald)
@@ -241,6 +289,11 @@ body {
 /* Override Radix DropdownMenu item hover background */
 .radix-themes [role="menuitem"][data-highlighted] {
   background-color: var(--olive-6) !important;
+}
+
+/* Red hover for destructive (delete) menu items */
+.radix-themes [role="menuitem"][data-accent-color="red"][data-highlighted] {
+  background-color: var(--red-3) !important;
 }
 .rt-DropdownMenuViewport {
   padding: 4px !important;

@@ -100,6 +100,8 @@ interface ArchivedChatViewProps {
   messages: ConversationMessage[];
   isLoading: boolean;
   error: string | null;
+  /** If set, this is an agent conversation and API calls will use agent-scoped endpoints. */
+  agentKey?: string | null;
   /** Called after a successful restore — page should navigate to /chat */
   onRestored: (conversationId: string) => void;
   /** Called after a successful permanent delete — page selects next conv */
@@ -112,6 +114,7 @@ export function ArchivedChatView({
   messages,
   isLoading,
   error,
+  agentKey,
   onRestored,
   onDeleted,
 }: ArchivedChatViewProps) {
@@ -130,7 +133,11 @@ export function ArchivedChatView({
     if (isRestoring) return;
     setIsRestoring(true);
     try {
-      await ArchivedChatsApi.restoreConversation(conversationId);
+      if (agentKey) {
+        await ArchivedChatsApi.restoreAgentConversation(agentKey, conversationId);
+      } else {
+        await ArchivedChatsApi.restoreConversation(conversationId);
+      }
       addToast({
         variant: 'success',
         title: t('workspace.archivedChats.restoreSuccess'),
@@ -151,7 +158,11 @@ export function ArchivedChatView({
     if (isDeleting) return;
     setIsDeleting(true);
     try {
-      await ArchivedChatsApi.deleteConversation(conversationId);
+      if (agentKey) {
+        await ArchivedChatsApi.deleteAgentConversation(agentKey, conversationId);
+      } else {
+        await ArchivedChatsApi.deleteConversation(conversationId);
+      }
       setDeleteDialogOpen(false);
       addToast({
         variant: 'success',

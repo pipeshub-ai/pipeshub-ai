@@ -260,11 +260,6 @@ export function buildAllRecordsFilterParams(
     params.origins = filter.origins.join(',');
   }
 
-  // Collection IDs -> maps to kbIds parameter (CSV string)
-  if (filter.collectionIds?.length) {
-    params.kbIds = filter.collectionIds.join(',');
-  }
-
   // Connector IDs (CSV string)
   if (filter.connectorIds?.length) {
     params.connectorIds = filter.connectorIds.join(',');

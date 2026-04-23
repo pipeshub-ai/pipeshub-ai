@@ -1,6 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { mapApiConversationToConversation } from '@/chat/api';
-import type { ConversationsListResponse } from '@/chat/types';
+import type { ConversationsListResponse, Conversation } from '@/chat/types';
 import type {
   AgentDetail,
   AgentsListApiResponse,
@@ -25,6 +25,12 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 const AGENTS_BASE_URL = '/api/v1/agents';
 
 const KB_PAGE_MAX = 100;
+
+/**
+ * Fallback `agentPagination.limit` when the grouped archives response omits the envelope.
+ * Must match `AGENT_ARCHIVES_INITIAL_AGENT_LIMIT` in es_controller.ts (not the `parseInt(..., 10)` radix).
+ */
+const DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT = 5;
 
 /** Stable slug for `tool-*` node types; flow reconstruction matches on `full_name` first. */
 function catalogToolIdFromFullName(fullName: string): string {
@@ -418,6 +424,123 @@ export const AgentsApi = {
    */
   async deleteAgentConversation(agentId: string, conversationId: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`);
+  },
+
+  /**
+   * PATCH /api/v1/agents/:agentKey/conversations/:conversationId/title
+   */
+  async renameAgentConversation(agentId: string, conversationId: string, title: string): Promise<void> {
+    await apiClient.patch(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/title`, { title });
+  },
+
+  /**
+   * GET /api/v1/agents/conversations/show/archives
+   * Returns all archived agent conversations for the current user, grouped by agentKey.
+   */
+  async fetchAllAgentsArchivedConversations(params?: { agentPage?: number; agentLimit?: number }): Promise<{
+    groups: Array<{
+      agentKey: string;
+      conversations: Conversation[];
+      pagination: {
+        page: number;
+        limit: number;
+        totalCount: number;
+        totalPages: number;
+        hasNextPage: boolean;
+        hasPrevPage: boolean;
+      };
+    }>;
+    agentPagination: {
+      page: number;
+      limit: number;
+      totalCount: number;
+      totalPages: number;
+      hasNextPage: boolean;
+      hasPrevPage: boolean;
+    };
+  }> {
+    const query: Record<string, string | number> = {};
+    if (params?.agentPage != null) query.agentPage = params.agentPage;
+    if (params?.agentLimit != null) query.agentLimit = params.agentLimit;
+
+    const { data } = await apiClient.get<{
+      groups: Array<{
+        agentKey: string;
+        conversations: ReturnType<typeof mapApiConversationToConversation>[];
+        pagination: {
+          page: number;
+          limit: number;
+          totalCount: number;
+          totalPages: number;
+          hasNextPage: boolean;
+          hasPrevPage: boolean;
+        };
+      }>;
+      agentPagination: {
+        page: number;
+        limit: number;
+        totalCount: number;
+        totalPages: number;
+        hasNextPage: boolean;
+        hasPrevPage: boolean;
+      };
+    }>(`${AGENTS_BASE_URL}/conversations/show/archives`, { params: query });
+
+    return {
+      groups: (data?.groups ?? []).map((g) => ({
+        agentKey: g.agentKey,
+        conversations: g.conversations.map((c: any) => mapApiConversationToConversation(c)),
+        pagination: g.pagination,
+      })),
+      agentPagination: data?.agentPagination ?? {
+        page: 1,
+        limit: DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT,
+        totalCount: 0,
+        totalPages: 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      },
+    };
+  },
+
+  /**
+   * GET /api/v1/agents/:agentId/conversations/show/archives
+   * Returns archived conversations for a specific agent (for "See More" pagination).
+   */
+  async fetchAgentArchivedConversations(
+    agentId: string,
+    params?: { page?: number; limit?: number }
+  ): Promise<AgentConversationsListResult> {
+    const query: Record<string, string | number> = {};
+    if (params?.page != null) query.page = params.page;
+    if (params?.limit != null) query.limit = params.limit;
+
+    const { data } = await apiClient.get<{
+      conversations: any[];
+      pagination: ConversationsListResponse['pagination'];
+    }>(`${AGENTS_BASE_URL}/${agentId}/conversations/show/archives`, { params: query });
+
+    return {
+      conversations: (data?.conversations ?? []).map(mapApiConversationToConversation),
+      sharedConversations: [],
+      pagination: data?.pagination ?? {
+        page: 1, limit: 20, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false,
+      },
+    };
+  },
+
+  /**
+   * POST /api/v1/agents/:agentKey/conversations/:conversationId/archive
+   */
+  async archiveAgentConversation(agentId: string, conversationId: string): Promise<void> {
+    await apiClient.post(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/archive`);
+  },
+
+  /**
+   * POST /api/v1/agents/:agentKey/conversations/:conversationId/unarchive
+   */
+  async restoreAgentConversation(agentId: string, conversationId: string): Promise<void> {
+    await apiClient.post(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/unarchive`);
   },
 
   /** POST /api/v1/agents/create */

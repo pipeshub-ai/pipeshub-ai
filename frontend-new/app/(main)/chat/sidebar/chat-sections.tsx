@@ -42,13 +42,14 @@ export const ChatSections = React.memo(function ChatSections({
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
+  const pagination = useChatStore((s) => s.pagination);
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[sidebar] [ChatSections]');
   const prevChatSectionsRef = React.useRef<Record<string, unknown>>({});
   const currentSectionsVals: Record<string, unknown> = {
     currentConversationId, conversations, sharedConversations,
-    isConversationsLoading, conversationsError, pendingConversations,
+    isConversationsLoading, conversationsError, pendingConversations, pagination,
   };
   const sectionsReasons: string[] = [];
   for (const [k, v] of Object.entries(currentSectionsVals)) {
@@ -70,9 +71,10 @@ export const ChatSections = React.memo(function ChatSections({
     if (isMobile) closeMobileSidebar();
   };
 
-  // Overflow detection
-  const hasMoreShared = sharedConversations.length > MAX_VISIBLE_CHATS;
-  const hasMoreYour = conversations.length > MAX_VISIBLE_CHATS;
+  // Overflow detection — show "More" if there are more items than fit,
+  // OR if the server indicated there are additional pages to fetch.
+  const hasMoreShared = sharedConversations.length > MAX_VISIBLE_CHATS || (pagination?.hasNextPage ?? false);
+  const hasMoreYour = conversations.length > MAX_VISIBLE_CHATS || (pagination?.hasNextPage ?? false);
 
   // Slice for overflow limit
   const visibleShared = hasMoreShared

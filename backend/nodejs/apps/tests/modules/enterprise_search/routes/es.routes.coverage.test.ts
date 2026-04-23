@@ -244,6 +244,19 @@ describe('Enterprise Search Routes - handler coverage', () => {
 
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/message/:messageId/regenerate' && r.methods.post)).to.exist
     })
+
+    it('should register agent archive, rename, and archives listing routes', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/conversations/show/archives' && r.methods.get)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/show/archives' && r.methods.get)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/archive' && r.methods.post)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/unarchive' && r.methods.post)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/title' && r.methods.patch)).to.exist
+    })
   })
 
   describe('createConversationalRouter - additional coverage', () => {
@@ -317,6 +330,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/:conversationId/messages/stream' && r.methods.post)).to.exist
+    })
+
+    it('should register GET /show/archives/search route', () => {
+      const router = createConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/show/archives/search' && r.methods.get)).to.exist
     })
   })
 })

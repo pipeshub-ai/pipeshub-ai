@@ -2,9 +2,28 @@ import { apiClient } from '@/lib/api';
 import type {
   GraphUsersListResponse,
   User,
+  UserByIdsDoc,
   UsersListResponse,
   WithGroupsUser,
 } from './types';
+
+function mongoIdToString(id: UserByIdsDoc['_id']): string {
+  return typeof id === 'string' ? id : id.toString();
+}
+
+/** Maps POST /by-ids payload into the shared {@link User} shape used across the app. */
+function userFromByIdsDoc(doc: UserByIdsDoc): User {
+  const userId = mongoIdToString(doc._id);
+  return {
+    id: userId,
+    userId,
+    name: doc.fullName,
+    email: doc.email,
+    hasLoggedIn: doc.hasLoggedIn ?? false,
+    // Not merged with block list here; treat as active org member for display lookups.
+    isActive: true,
+  };
+}
 
 /**
  * Get all groups for a specific user by their MongoDB _id.
@@ -117,11 +136,11 @@ export const UsersApi = {
    */
   async getUsersByIds(userIds: string[]): Promise<User[]> {
     if (userIds.length === 0) return [];
-    const { data } = await apiClient.post<User[] | { users: User[] }>(
-      `${BASE_URL}/by-ids`,
-      { userIds }
-    );
-    return Array.isArray(data) ? data : data.users ?? [];
+    const { data } = await apiClient.post<
+      UserByIdsDoc[] | { users: UserByIdsDoc[] }
+    >(`${BASE_URL}/by-ids`, { userIds });
+    const raw = Array.isArray(data) ? data : data.users ?? [];
+    return raw.map(userFromByIdsDoc);
   },
 
   /**

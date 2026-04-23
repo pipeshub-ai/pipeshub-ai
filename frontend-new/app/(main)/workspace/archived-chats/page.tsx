@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, Suspense } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Box } from '@radix-ui/themes';
 import {
@@ -17,11 +17,13 @@ import type { Conversation } from './types';
  *
  * Layout: fixed-width left sidebar (archived chat list) + flex content area.
  *
- * URL pattern: /workspace/archived-chats?conversationId=xxx
+ * URL pattern: /workspace/archived-chats?conversationId=xxx[&agentKey=yyy]
  * - No conversationId → empty state ("Select an archived chat to preview")
- * - conversationId     → load and show that conversation read-only
+ * - conversationId only → assistant archived chat
+ * - conversationId + agentKey → agent archived chat
  *
- * After Restore: navigate to /chat?conversationId=xxx
+ * After Restore (assistant): navigate to /chat?conversationId=xxx
+ * After Restore (agent): navigate to /chat?conversationId=xxx&agentId=yyy
  * After Permanent Delete: select the next conversation in the list,
  *   or show empty state if none remain.
  */
@@ -29,53 +31,58 @@ function ArchivedChatsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const conversationId = searchParams.get('conversationId');
+  const agentKey = searchParams.get('agentKey');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Store slices
   const conversations = useArchivedChatsStore((s) => s.conversations);
+  const agentGroups = useArchivedChatsStore((s) => s.agentGroups);
   const isLoadingList = useArchivedChatsStore((s) => s.isLoadingList);
+  const isLoadingAgentGroups = useArchivedChatsStore((s) => s.isLoadingAgentGroups);
   const messagesMap = useArchivedChatsStore((s) => s.messagesMap);
   const selected = useArchivedChatsStore((s) => s.selected);
   const isLoadingConversation = useArchivedChatsStore((s) => s.isLoadingConversation);
   const conversationError = useArchivedChatsStore((s) => s.conversationError);
 
+  // Pagination state
+  const assistantPagination = useArchivedChatsStore((s) => s.assistantPagination);
+  const agentGroupsPagination = useArchivedChatsStore((s) => s.agentGroupsPagination);
+
   const loadArchivedConversations = useArchivedChatsStore((s) => s.loadArchivedConversations);
+  const loadAgentArchivedConversations = useArchivedChatsStore((s) => s.loadAgentArchivedConversations);
   const loadConversation = useArchivedChatsStore((s) => s.loadConversation);
+  const loadMoreForAgent = useArchivedChatsStore((s) => s.loadMoreForAgent);
+  const loadMoreAssistantChats = useArchivedChatsStore((s) => s.loadMoreAssistantChats);
+  const loadMoreAgentGroups = useArchivedChatsStore((s) => s.loadMoreAgentGroups);
   const removeConversation = useArchivedChatsStore((s) => s.removeConversation);
   const clearSelection = useArchivedChatsStore((s) => s.clearSelection);
 
-  // ── On mount: load the archived conversations list ──────────────────
+  // ── On mount: load both assistant and agent archived conversations ─────
   useEffect(() => {
     loadArchivedConversations();
-    // Cleanup: clear selection when leaving the page
+    loadAgentArchivedConversations();
     return () => clearSelection();
   }, []);
 
-  // ── URL → store sync: load conversation when URL conversationId changes ──
+  // ── URL → store sync: load conversation when URL params change ──────
   useEffect(() => {
     if (!conversationId) {
       clearSelection();
       return;
     }
-    // Title is resolved from the API response inside loadConversation
-    loadConversation(conversationId, '');
-  }, [conversationId]);
+    loadConversation(conversationId, '', agentKey ?? null);
+  }, [conversationId, agentKey]);
 
-  // ── Race-condition guard: re-try once the messages map is populated ──
-  // On direct navigation the conversationId effect fires before
-  // loadArchivedConversations finishes, so the messagesMap is empty and
-  // loadConversation can't resolve the messages. Once the map arrives,
-  // we check if the selection is still missing and retry.
+  // ── Race-condition guard for assistant conversations ───────────────────
   useEffect(() => {
-    if (!conversationId) return;
-    if (selected?.id === conversationId) return; // already resolved
+    if (!conversationId || agentKey) return;
+    if (selected?.id === conversationId) return;
     if (isLoadingConversation) return;
-    if (Object.keys(messagesMap).length === 0) return; // list not ready yet
+    if (Object.keys(messagesMap).length === 0) return;
     loadConversation(conversationId, '');
-    // intentionally only reacts to messagesMap transitions
   }, [messagesMap]);
 
-  // ── ⌘+K to open search modal ───────────────────────────────────────
+  // ── ⌘+K to open search modal ────────────────────────────────────────
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -87,58 +94,104 @@ function ArchivedChatsPageContent() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // ── Handlers ────────────────────────────────────────────────────────
+  // ── Handlers ─────────────────────────────────────────────────────────
 
   const handleSelect = useCallback(
-    (conversation: Conversation) => {
-      router.push(
-        `/workspace/archived-chats?conversationId=${conversation.id}`
-      );
+    (conversation: Conversation, selectedAgentKey?: string | null) => {
+      const params = new URLSearchParams();
+      params.set('conversationId', conversation.id);
+      if (selectedAgentKey) params.set('agentKey', selectedAgentKey);
+      router.push(`/workspace/archived-chats?${params.toString()}`);
     },
     [router]
   );
 
   const handleRestored = useCallback(
     (restoredId: string) => {
-      // Remove from archived list and navigate to the live chat
-      removeConversation(restoredId);
-      router.push(`/chat?conversationId=${restoredId}`);
+      removeConversation(restoredId, agentKey ?? null);
+      if (agentKey) {
+        router.push(`/chat?conversationId=${restoredId}&agentId=${agentKey}`);
+      } else {
+        router.push(`/chat?conversationId=${restoredId}`);
+      }
     },
-    [router, removeConversation]
+    [router, removeConversation, agentKey]
   );
 
   const handleDeleted = useCallback(
     (deletedId: string) => {
-      removeConversation(deletedId);
+      removeConversation(deletedId, agentKey ?? null);
 
-      // Find the next conversation to show
+      // Find the next conversation to show — prefer same section
+      if (agentKey) {
+        const group = agentGroups.find((g) => g.agentKey === agentKey);
+        const remaining = (group?.conversations ?? []).filter((c) => c.id !== deletedId);
+        if (remaining.length > 0) {
+          const deletedIdx = (group?.conversations ?? []).findIndex((c) => c.id === deletedId);
+          const nextIdx = Math.min(deletedIdx, remaining.length - 1);
+          const params = new URLSearchParams();
+          params.set('conversationId', remaining[nextIdx].id);
+          params.set('agentKey', agentKey);
+          router.push(`/workspace/archived-chats?${params.toString()}`);
+          return;
+        }
+        // No more in this agent group — check other sections
+      }
+
       const remaining = conversations.filter((c) => c.id !== deletedId);
       if (remaining.length > 0) {
-        // Navigate to the conversation that was above or below the deleted one
         const deletedIndex = conversations.findIndex((c) => c.id === deletedId);
         const nextIndex = Math.min(deletedIndex, remaining.length - 1);
         router.push(
           `/workspace/archived-chats?conversationId=${remaining[nextIndex].id}`
         );
       } else {
-        // No more archived conversations — show empty state
         router.push('/workspace/archived-chats');
       }
     },
-    [router, conversations, removeConversation]
+    [router, conversations, agentGroups, removeConversation, agentKey]
   );
 
-  // ── Render ──────────────────────────────────────────────────────────
+  // Flatten all conversations for the search modal
+  const allConversations = [
+    ...conversations,
+    ...agentGroups.flatMap((g) => g.conversations),
+  ];
+
+  // O(1) lookup: conversationId → agentKey, used by the search modal fallback path.
+  const agentKeyById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of agentGroups) {
+      for (const conv of group.conversations) {
+        map.set(conv.id, group.agentKey);
+      }
+    }
+    return map;
+  }, [agentGroups]);
+
+  // ── Render ────────────────────────────────────────────────────────────
 
   return (
     <Flex style={{ height: '100%', width: '100%', overflow: 'hidden' }}>
       {/* Left: archived chats list */}
       <ArchivedChatsSidebar
         conversations={conversations}
+        agentGroups={agentGroups}
         isLoading={isLoadingList}
+        isLoadingAgentGroups={isLoadingAgentGroups}
         selectedConversationId={conversationId}
+        selectedAgentKey={agentKey}
         onSelect={handleSelect}
         onSearchClick={() => setIsSearchOpen(true)}
+        onLoadMoreForAgent={loadMoreForAgent}
+        assistantChatsTotalCount={assistantPagination.totalCount}
+        assistantChatsHasMore={assistantPagination.hasMore}
+        isLoadingMoreAssistantChats={assistantPagination.isLoadingMore}
+        onLoadMoreAssistantChats={loadMoreAssistantChats}
+        agentGroupsTotalCount={agentGroupsPagination.totalCount}
+        agentGroupsHasMore={agentGroupsPagination.hasMore}
+        isLoadingMoreAgentGroups={agentGroupsPagination.isLoadingMore}
+        onLoadMoreAgentGroups={loadMoreAgentGroups}
       />
 
       {/* Right: conversation preview or empty state */}
@@ -150,24 +203,38 @@ function ArchivedChatsPageContent() {
             conversationId={conversationId}
             conversationTitle={selected?.title ?? ''}
             messages={selected?.messages ?? []}
-            // Show as loading whenever the selected conv doesn't match the URL
-            // (covers the gap between URL change and loadConversation starting)
             isLoading={isLoadingConversation || selected?.id !== conversationId}
             error={conversationError}
+            agentKey={agentKey}
             onRestored={handleRestored}
             onDeleted={handleDeleted}
           />
         )}
       </Box>
+
       {/* Search modal */}
       <ArchivedChatSearch
         open={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
-        conversations={conversations}
-        isLoading={isLoadingList}
-        onSelect={(id) =>
-          router.push(`/workspace/archived-chats?conversationId=${id}`)
-        }
+        conversations={allConversations}
+        isLoading={isLoadingList || isLoadingAgentGroups}
+        onSelect={(id, selectedAgentKey) => {
+          if (selectedAgentKey) {
+            router.push(
+              `/workspace/archived-chats?conversationId=${id}&agentKey=${selectedAgentKey}`
+            );
+            return;
+          }
+          // Fallback: check local agent groups for browse-mode selections
+          const foundAgentKey = agentKeyById.get(id);
+          if (foundAgentKey) {
+            router.push(
+              `/workspace/archived-chats?conversationId=${id}&agentKey=${foundAgentKey}`
+            );
+            return;
+          }
+          router.push(`/workspace/archived-chats?conversationId=${id}`);
+        }}
       />
     </Flex>
   );

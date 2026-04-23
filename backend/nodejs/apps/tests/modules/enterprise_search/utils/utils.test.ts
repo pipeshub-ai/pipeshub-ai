@@ -568,7 +568,8 @@ describe('Enterprise Search Utils', () => {
       expect(result).to.have.property('isDeleted', false)
       expect(result).to.have.property('isArchived', false)
       expect(result).to.have.property('initiator')
-      expect(result).to.have.property('$or')
+      expect(result).to.have.property('$and')
+      expect(result.$and).to.have.lengthOf(2)
     })
 
     it('should exclude conversations where user is initiator', () => {

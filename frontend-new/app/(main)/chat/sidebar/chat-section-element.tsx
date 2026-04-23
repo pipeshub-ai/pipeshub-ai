@@ -94,7 +94,11 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
     setIsSavingRename(true);
     try {
-      await ChatApi.renameConversation(conversation.id, trimmed);
+      if (agentId) {
+        await AgentsApi.renameAgentConversation(agentId, conversation.id, trimmed);
+      } else {
+        await ChatApi.renameConversation(conversation.id, trimmed);
+      }
       renameConversation(conversation.id, trimmed);
       bumpConversationsVersion();
     } catch {
@@ -148,10 +152,27 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const handleConfirmArchive = async () => {
     setIsArchiving(true);
     try {
-      await ChatApi.archiveConversation(conversation.id);
+      if (agentId) {
+        await AgentsApi.archiveAgentConversation(agentId, conversation.id);
+      } else {
+        await ChatApi.archiveConversation(conversation.id);
+      }
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setArchiveDialogOpen(false);
+      const urlConvId = searchParams.get('conversationId');
+      if (urlConvId === conversation.id) {
+        const store = useChatStore.getState();
+        const found = agentId
+          ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
+          : store.getSlotByConvId(conversation.id, { forAgentId: null });
+        if (found) {
+          store.evictSlot(found.slotId);
+        } else {
+          store.clearActiveSlot();
+        }
+        router.replace(agentId ? buildChatHref({ agentId }) : '/chat/');
+      }
     } catch {
       // keep dialog open on error
     } finally {
@@ -159,8 +180,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
   };
 
-  // Inline rename mode — render a plain input instead of SidebarItem (main chats only)
-  if (isRenaming && !agentId) {
+  // Inline rename mode — render a plain input instead of SidebarItem
+  if (isRenaming) {
     return (
       <Flex
         align="center"
@@ -218,8 +239,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
               onRename={handleStartRename}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
-              showRename={!agentId}
-              showArchive={!agentId}
+              showRename={true}
+              showArchive={true}
             />
           ) : undefined
         }
@@ -234,15 +255,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         isDeleting={isDeleting}
       />
 
-      {!agentId && (
-        <ArchiveChatDialog
-          open={archiveDialogOpen}
-          onOpenChange={setArchiveDialogOpen}
-          onConfirm={handleConfirmArchive}
-          chatTitle={conversation.title}
-          isArchiving={isArchiving}
-        />
-      )}
+      <ArchiveChatDialog
+        open={archiveDialogOpen}
+        onOpenChange={setArchiveDialogOpen}
+        onConfirm={handleConfirmArchive}
+        chatTitle={conversation.title}
+        isArchiving={isArchiving}
+      />
     </>
   );
 }

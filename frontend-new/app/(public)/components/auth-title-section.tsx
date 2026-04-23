@@ -4,6 +4,7 @@ import React from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { PipesHubIcon } from '@/app/components/ui';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -35,10 +36,8 @@ export default function AuthTitleSection({
   return (
     <Box style={{ marginBottom }}>
       {/* ── Logo mark ─────────────────────────────────────────── */}
-      <Box style={{ marginBottom: '16px' }}>
-       <PipesHubIcon
-        size={40}
-        color="var(--accent-8)" />
+      <Box style={{ marginBottom: 'var(--space-4)' }}>
+        <LottieLoader autoplay size={40} />
       </Box>
 
       {/* ── Heading + subtitle ────────────────────────────────── */}

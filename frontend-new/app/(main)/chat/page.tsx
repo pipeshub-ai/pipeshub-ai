@@ -36,6 +36,7 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
@@ -283,7 +284,7 @@ function ChatContent() {
     setConversationsError(null);
 
     try {
-      const result = await ChatApi.fetchConversations();
+      const result = await ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE);
       setConversations(result.conversations);
       setSharedConversations(result.sharedConversations);
       setPagination(result.pagination);

@@ -99,7 +99,7 @@ export default function MailPage() {
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <Box style={{ padding: '4em 6.25em 5em' }}>
         {/* ── Page header ── */}
         <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
@@ -169,14 +169,13 @@ export default function MailPage() {
                   align="center"
                   justify="center"
                   style={{
-                    width: 'var(--space-9)',
-                    height: 'var(--space-9)',
+                    padding: 'var(--space-2)',
                     borderRadius: 'var(--radius-2)',
-                    backgroundColor: 'var(--slate-3)',
+                    backgroundColor: 'var(--slate-a2)',
                     flexShrink: 0,
                   }}
                 >
-                  <MaterialIcon name="mail" size={18} color="var(--slate-11)" />
+                  <MaterialIcon name="mail" size={16} color="var(--slate-11)" />
                 </Flex>
 
                 {/* Label + description */}
