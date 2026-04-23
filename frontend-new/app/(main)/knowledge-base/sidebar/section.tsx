@@ -10,17 +10,14 @@ import { mapConnectorType } from '../utils/all-records-transformer';
 import { useTranslation } from 'react-i18next';
 import type {
   KnowledgeHubNode,
-  FolderTreeNode,
   EnhancedFolderTreeNode,
   NodeType,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
-/**
- * Convert KnowledgeHubNode to FolderTreeNode for use in FolderTreeItem
- */
-export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): FolderTreeNode & { nodeType?: NodeType; hasChildren?: boolean } {
+/** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
+export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
   return {
     id: node.id,
     name: node.name,
@@ -30,6 +27,11 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): Fo
     children: [],
     nodeType: node.nodeType,
     hasChildren: node.hasChildren,
+    permission: node.permission,
+    origin: node.origin,
+    connector: node.connector,
+    extension: node.extension,
+    mimeType: node.mimeType,
   };
 }
 
@@ -51,6 +53,8 @@ interface AppSectionProps {
   // (EnhancedFolderTreeNode[]) directly so that sub-folder children populated
   // by handleNodeExpand / mergeChildrenIntoTree are visible in the tree.
   categorizedTree?: EnhancedFolderTreeNode[];
+  /** Non-KB connector app: nested tree built from API + lazy merges (same UX as categorizedTree) */
+  connectorTree?: EnhancedFolderTreeNode[];
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -79,6 +83,7 @@ export function AppSection({
   loadingNodeIds,
   currentFolderId,
   categorizedTree,
+  connectorTree,
   onReindex,
   onRename,
   onDelete,
@@ -87,6 +92,7 @@ export function AppSection({
 }: AppSectionProps) {
   const isKbApp = app.connector === 'KB';
   const connectorType = !isKbApp ? mapConnectorType(app.connector || app.name) : 'generic';
+  const hierarchicalTree = categorizedTree ?? connectorTree;
 
   return (
     <Box style={{ marginBottom: `${SECTION_PADDING_BOTTOM}px` }}>
@@ -109,18 +115,18 @@ export function AppSection({
       </Flex>
 
       {/* Children — same tree structure as Collections */}
-      <Box className="no-scrollbar" style={{ overflowX: 'auto', marginTop: 'var(--space-1)' }}>
+      <Box
+        className="no-scrollbar"
+        style={{ overflowX: 'auto', marginTop: 'var(--space-1)', minWidth: 0 }}
+      >
       <Flex direction="column" gap="0">
         {isLoading ? (
           <Flex align="center" gap="2" style={{ padding: 'var(--space-2) var(--space-6)' }}>
             <LottieLoader variant="loader" size={16} />
           </Flex>
-        ) : categorizedTree ? (
-          // KB app in All Records mode: use the categorized tree directly so that
-          // children populated by handleNodeExpand (mergeChildrenIntoTree) are visible.
-          categorizedTree.length > 0 ? (
+        ) : hierarchicalTree && hierarchicalTree.length > 0 ? (
             <>
-              {(maxVisible ? categorizedTree.slice(0, maxVisible) : categorizedTree).map((node) => (
+              {(maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree).map((node) => (
                 <FolderTreeItem
                   key={node.id}
                   node={node}
@@ -143,21 +149,16 @@ export function AppSection({
                   onDelete={onDelete}
                 />
               ))}
-              {maxVisible && categorizedTree.length > maxVisible && (
+              {maxVisible && hierarchicalTree.length > maxVisible && (
                 <MoreButton onClick={onMore} />
               )}
             </>
-          ) : (
-            <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
-              No items
-            </Text>
-          )
         ) : children.length > 0 ? (
           <>
             {(maxVisible ? children.slice(0, maxVisible) : children).map((child) => (
               <FolderTreeItem
                 key={child.id}
-                node={convertToTreeNode(child, 1)}
+                node={convertToTreeNode(child, 0)}
                 isSelected={currentFolderId === child.id}
                 currentFolderId={currentFolderId}
                 onSelect={(id) => {

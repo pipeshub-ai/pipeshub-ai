@@ -33,6 +33,7 @@ interface AllRecordsModeProps {
   // Data
   appNodes: KnowledgeHubNode[];
   appChildrenCache: Map<string, KnowledgeHubNode[]>;
+  connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];
@@ -86,6 +87,7 @@ export function AllRecordsMode({
   onSelectConnectorItem,
   appNodes,
   appChildrenCache,
+  connectorAppTrees,
   loadingAppIds,
   connectors,
   moreConnectors,
@@ -141,6 +143,7 @@ export function AllRecordsMode({
       {appNodes.map((app) => {
         const isKbApp = app.connector === 'KB';
         const appChildren = appChildrenCache.get(app.id) || [];
+        const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
         // For the KB app, pass the categorized tree (shared + private) so that
         // sub-folder children populated by handleNodeExpand are visible in the tree.
         const categorizedTree = isKbApp
@@ -151,6 +154,7 @@ export function AllRecordsMode({
             key={app.id}
             app={app}
             childNodes={appChildren}
+            connectorTree={connectorTree}
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state
@@ -174,7 +178,7 @@ export function AllRecordsMode({
             categorizedTree={categorizedTree}
             onReindex={onReindex}
             onRename={onRename}
-            onDelete={onDelete}
+            onDelete={isKbApp ? onDelete : undefined}
             maxVisible={SIDEBAR_COLLECTION_LIMIT}
             onMore={() => onOpenMoreFolders?.(app.id, app.name, app.connector || app.name)}
           />

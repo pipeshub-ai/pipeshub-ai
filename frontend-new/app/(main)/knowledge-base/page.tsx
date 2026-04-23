@@ -39,7 +39,12 @@ import type {
   RecordDetailsResponse,
   Breadcrumb,
 } from './types';
-import { categorizeNodes, mergeChildrenIntoTree, categorizeNode } from './utils/tree-builder';
+import {
+  categorizeNodes,
+  mergeChildrenIntoTree,
+  categorizeNode,
+  buildConnectorAppSidebarTree,
+} from './utils/tree-builder';
 import {
   getSourceDisplay,
   buildKbLookup,
@@ -120,6 +125,7 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     cacheAppChildren,
+    setConnectorAppTree,
     setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
@@ -198,20 +204,27 @@ function KnowledgeBasePageContent() {
   ]);
 
   /**
-   * Single source of truth for the current Knowledge Base ID
-   * 
-   * Priority:
-   * 1. Extract from breadcrumbs (most reliable, always present when viewing content)
-   * 2. Fall back to URL param kbId (for backward compatibility)
-   * 
-   * Breadcrumbs are available in both Collections and All Records modes.
-   * The KB is at breadcrumbs[1] (index 0 is the root/workspace node).
+   * Single source of truth for the current Knowledge Base (collection) ID.
+   *
+   * Prefer matching the breadcrumb trail to KB roots in categorizedNodes (same
+   * rule as sidebar auto-expand) so we are not tied to breadcrumbs[1] shape.
+   * Fall back to breadcrumbs[1] then URL kbId for backward compatibility.
    */
   const selectedKbId = useMemo(() => {
     const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-    const kbIdFromBreadcrumbs = currentTableData?.breadcrumbs?.[1]?.id;
-    return kbIdFromBreadcrumbs || kbId;
-  }, [isAllRecordsMode, allRecordsTableData, tableData, kbId]);
+    const crumbs = currentTableData?.breadcrumbs;
+    if (crumbs?.length && categorizedNodes) {
+      const allRootNodes = [
+        ...(categorizedNodes.shared ?? []),
+        ...(categorizedNodes.private ?? []),
+      ];
+      const kbBreadcrumb = crumbs.find(
+        (b) => allRootNodes.some((n) => n.id === b.id) || b.nodeType === 'kb'
+      );
+      if (kbBreadcrumb) return kbBreadcrumb.id;
+    }
+    return crumbs?.[1]?.id || kbId;
+  }, [isAllRecordsMode, allRecordsTableData, tableData, kbId, categorizedNodes]);
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -430,12 +443,11 @@ function KnowledgeBasePageContent() {
   // in the sidebar slot. Skipping here prevents setCurrentFolderId(null) from
   // racing with and overwriting the sidebar slot's setCurrentFolderId(nodeId).
   useEffect(() => {
-    if (!isAllRecordsMode) {
-      setCurrentFolderId(folderId);
-    }
-  }, [folderId, isAllRecordsMode, setCurrentFolderId]);
+    if (isAllRecordsMode) return;
+    if (searchParams.get('nodeId')) return;
+    setCurrentFolderId(folderId);
+  }, [folderId, isAllRecordsMode, setCurrentFolderId, searchParams]);
 
-  // Load app nodes for sidebar (used by both Collections and All Records modes)
   useEffect(() => {
     async function fetchAppNodes() {
       try {
@@ -453,7 +465,6 @@ function KnowledgeBasePageContent() {
         setAppNodes([...kbApps, ...connectorApps]);
       } catch (error) {
         console.error('Error fetching app nodes:', error);
-        // Use toast rather than overwriting the table error state
         toast.error('Failed to load sidebar', {
           description: 'Could not load app sections. Please refresh the page.',
         });
@@ -484,6 +495,7 @@ function KnowledgeBasePageContent() {
       setAppLoading(app.id, true);
       try {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
+          onlyContainers: true,
           page: 1,
           limit: 50,
         });
@@ -496,6 +508,11 @@ function KnowledgeBasePageContent() {
           // KB children have parentId = "apps/<appId>" so pass it as rootParentId
           const categorized = categorizeNodes(response.items, `apps/${app.id}`);
           setCategorizedNodes(categorized);
+        } else {
+          // Non-KB apps (All Records): same nested sidebar model as KB via connectorAppTrees
+          addNodes(response.items);
+          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
+          setConnectorAppTree(app.id, connectorTree);
         }
       } catch (error) {
         console.error(`Error fetching children for app ${app.name}:`, error);
@@ -504,7 +521,16 @@ function KnowledgeBasePageContent() {
       }
     });
   // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [appNodes, isAllRecordsMode, setAppLoading, cacheAppChildren, setNodes, setCategorizedNodes]);
+  }, [
+    appNodes,
+    isAllRecordsMode,
+    setAppLoading,
+    cacheAppChildren,
+    setNodes,
+    setCategorizedNodes,
+    addNodes,
+    setConnectorAppTree,
+  ]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
@@ -641,7 +667,6 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
-      console.log('DEBUG::page::fetchTableData::start', { nodeType, nodeId });
       setIsLoadingTableData(true);
       setTableDataError(null);
 
@@ -661,12 +686,6 @@ function KnowledgeBasePageContent() {
           currentPagination
         );
 
-        console.log('DEBUG::page::fetchTableData::params', {
-          searchQuery: currentSearchQuery,
-          searchParam: params.q,
-          allParams: params
-        });
-
         const data = await KnowledgeHubApi.loadFolderData(
           nodeType as NodeType,
           nodeId,
@@ -681,24 +700,7 @@ function KnowledgeBasePageContent() {
         }
         setSelectedNode({ nodeType, nodeId });
 
-        console.log('DEBUG::page::fetchTableData::success', {
-          nodeType,
-          nodeId,
-          itemsCount: data.items?.length || 0,
-          hasBreadcrumbs: !!data.breadcrumbs,
-          breadcrumbsLength: data.breadcrumbs?.length || 0,
-          breadcrumbs: data.breadcrumbs?.map(b => ({ id: b.id, name: b.name, nodeType: b.nodeType })),
-          permissions: data.permissions,
-          currentNode: data.currentNode,
-        });
-
-        // NOTE: This is a "best-effort" expansion that only succeeds when
-        // categorizedNodes is already populated. If it's not ready yet (race
-        // condition on direct link navigation), the sidebar slot's dedicated
-        // auto-expansion effect (@sidebar/knowledge-base/page.tsx) will pick
-        // up the expansion once categorizedNodes arrives.
         if (data.breadcrumbs && data.breadcrumbs.length > 0) {
-          // Use fresh state for both cache checks and ID-based KB detection.
           const freshState = useKnowledgeBaseStore.getState();
           const allRootNodes = [
             ...(freshState.categorizedNodes?.shared ?? []),
@@ -727,9 +729,14 @@ function KnowledgeBasePageContent() {
               // Fetch KB children to populate sidebar
               try {
                 const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
+                  onlyContainers: true,
                   page: 1,
                   limit: 50,
                 });
+                const kbFoldersCount =
+                  kbChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
+                const kbEffectiveHasChildFolders = kbFoldersCount > 0;
+
                 cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
                 addNodes(kbChildren.items);
 
@@ -742,7 +749,8 @@ function KnowledgeBasePageContent() {
                     const updatedTree = mergeChildrenIntoTree(
                       latestState.categorizedNodes[section],
                       kbBreadcrumb.id,
-                      kbChildren.items
+                      kbChildren.items,
+                      kbEffectiveHasChildFolders
                     );
                     setCategorizedNodes({
                       ...latestState.categorizedNodes,
@@ -761,40 +769,43 @@ function KnowledgeBasePageContent() {
             const intermediates = pathAfterKb.filter((b) => b.id !== nodeId);
 
             for (const breadcrumb of intermediates) {
-              if (breadcrumb.nodeType === 'folder' || breadcrumb.nodeType === 'recordGroup') {
-                expandFolderExclusive(breadcrumb.id);
+              expandFolderExclusive(breadcrumb.id);
 
-                const iterState = useKnowledgeBaseStore.getState();
+              const iterState = useKnowledgeBaseStore.getState();
 
-                if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
-                  try {
-                    const folderChildren = await KnowledgeHubApi.getNodeChildren(
-                      breadcrumb.nodeType as NodeType,
-                      breadcrumb.id,
-                      { page: 1, limit: 50 }
-                    );
-                    cacheNodeChildren(breadcrumb.id, folderChildren.items);
-                    addNodes(folderChildren.items);
+              if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
+                try {
+                  const folderChildren = await KnowledgeHubApi.getNodeChildren(
+                    breadcrumb.nodeType as NodeType,
+                    breadcrumb.id,
+                    { onlyContainers: true, page: 1, limit: 50 }
+                  );
+                  const foldersCount =
+                    folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
+                  const effectiveHasChildFolders = foldersCount > 0;
 
-                    const mergeState = useKnowledgeBaseStore.getState();
-                    if (mergeState.categorizedNodes) {
-                      const parentNode = mergeState.nodes.find(n => n.id === breadcrumb.id);
-                      if (parentNode) {
-                        const section = categorizeNode(parentNode);
-                        const updatedTree = mergeChildrenIntoTree(
-                          mergeState.categorizedNodes[section],
-                          breadcrumb.id,
-                          folderChildren.items
-                        );
-                        setCategorizedNodes({
-                          ...mergeState.categorizedNodes,
-                          [section]: updatedTree,
-                        });
-                      }
+                  cacheNodeChildren(breadcrumb.id, folderChildren.items);
+                  addNodes(folderChildren.items);
+
+                  const mergeState = useKnowledgeBaseStore.getState();
+                  if (mergeState.categorizedNodes) {
+                    const parentNode = mergeState.nodes.find((n) => n.id === breadcrumb.id);
+                    if (parentNode) {
+                      const section = categorizeNode(parentNode);
+                      const updatedTree = mergeChildrenIntoTree(
+                        mergeState.categorizedNodes[section],
+                        breadcrumb.id,
+                        folderChildren.items,
+                        effectiveHasChildFolders
+                      );
+                      setCategorizedNodes({
+                        ...mergeState.categorizedNodes,
+                        [section]: updatedTree,
+                      });
                     }
-                  } catch (error) {
-                    console.error('Failed to fetch folder children for sidebar expansion', error);
                   }
+                } catch (error) {
+                  console.error('Failed to fetch folder children for sidebar expansion', error);
                 }
               }
             }
@@ -802,7 +813,6 @@ function KnowledgeBasePageContent() {
         }
 
       } catch (error) {
-        // ProcessedError from apiClient interceptor has statusCode (not response.status)
         const status = (error as { statusCode?: number })?.statusCode;
         if (status === 403) {
           await handleAccessRevoked();
@@ -815,8 +825,6 @@ function KnowledgeBasePageContent() {
         setIsLoadingTableData(false);
       }
     },
-    // Pagination/filter/sort read via getState() — keep this callback stable so the searchParams
-    // effect is the only collections refetch trigger (avoids double fetch with page/limit effects).
     [
       setTableData,
       setIsLoadingTableData,
@@ -844,7 +852,6 @@ function KnowledgeBasePageContent() {
   // When filters/sort/pagination change, the URL sync effect calls router.replace,
   // which updates searchParams and triggers this effect to refetch with latest store values.
   useEffect(() => {
-    // All Records mode has its own fetch effect below — skip here.
     if (isAllRecordsMode) return;
 
     const nodeType = searchParams.get('nodeType');
@@ -1979,11 +1986,20 @@ function KnowledgeBasePageContent() {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
+      } else if (allRecordsSidebarSelection.type === 'explorer') {
+        return allRecordsTableData?.currentNode?.name || 'All Records';
       }
       return 'All';
     }
     return tableData?.currentNode?.name || 'Collections';
-  }, [isAllRecordsMode, allRecordsSidebarSelection, tableData, allRecordsSearchQuery, searchQuery]);
+  }, [
+    isAllRecordsMode,
+    allRecordsSidebarSelection,
+    tableData,
+    allRecordsSearchQuery,
+    searchQuery,
+    allRecordsTableData?.currentNode?.name,
+  ]);
 
   // All Records mode: Prepend "All Records" root breadcrumb
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {

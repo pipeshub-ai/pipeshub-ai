@@ -321,6 +321,8 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   permission?: NodePermission;
   origin?: NodeOrigin;
   connector?: string;
+  extension?: string | null;
+  mimeType?: string | null;
 }
 
 export type SidebarSection = 'shared' | 'private';
@@ -403,7 +405,9 @@ export interface AllRecordsFilter {
 export type AllRecordsSidebarSelection =
   | { type: 'all' }
   | { type: 'collection'; id: string; name: string }
-  | { type: 'connector'; connectorType: ConnectorType; itemId?: string; itemName?: string };
+  | { type: 'connector'; connectorType: ConnectorType; itemId?: string; itemName?: string }
+  /** Browsing a connector/KB tree by URL or folder row — not "All", not a legacy connector list row */
+  | { type: 'explorer' };
 
 // All Record item (extends table node with source info for display)
 export interface AllRecordItem extends KnowledgeHubNode {
