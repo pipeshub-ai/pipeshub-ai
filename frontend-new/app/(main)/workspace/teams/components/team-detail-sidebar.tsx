@@ -669,7 +669,7 @@ export function TeamDetailSidebar({
             searchPlaceholder={t('workspace.teams.detail.searchMembers', 'Search members...')}
             emptyText={t('workspace.teams.detail.noMembers', 'No members in this team')}
             maxHeight={320}
-            listClassName="upload-scroll-area"
+            listClassName="team-member-scroll-area"
             onFetched={(items) => setTeamMembers(items)}
             renderItem={(member) => {
               const isPendingRemove = pendingRemoveUserIds.has(member.id);
@@ -814,7 +814,7 @@ export function TeamDetailSidebar({
                 <Flex
                   direction="column"
                   gap="1"
-                  className="upload-scroll-area"
+                  className="team-member-scroll-area"
                   style={{ maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}
                 >
                   {selectedAddsOrdered.map((user) => {

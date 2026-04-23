@@ -145,22 +145,20 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
     // re-applies the default to users already picked.
     const handleSelectionChange = useCallback(
       (ids: string[]) => {
-        setSelectedUserIds((prev) => {
-          const prevSet = new Set(prev);
-          const newlyAdded = ids.filter((id) => !prevSet.has(id));
-          if (newlyAdded.length > 0) {
-            setMemberRoles((prevRoles) => {
-              const next = { ...prevRoles };
-              for (const id of newlyAdded) {
-                if (!(id in next)) next[id] = defaultRole;
-              }
-              return next;
-            });
-          }
-          return ids;
-        });
+        const prevSet = new Set(selectedUserIds);
+        const newlyAdded = ids.filter((id) => !prevSet.has(id));
+        if (newlyAdded.length > 0) {
+          setMemberRoles((prevRoles) => {
+            const next = { ...prevRoles };
+            for (const id of newlyAdded) {
+              if (!(id in next)) next[id] = defaultRole;
+            }
+            return next;
+          });
+        }
+        setSelectedUserIds(ids);
       },
-      [defaultRole]
+      [defaultRole, selectedUserIds]
     );
 
     const applyRoleToAll = useCallback(() => {
@@ -374,7 +372,7 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
             <Flex
               direction="column"
               gap="1"
-              className="upload-scroll-area"
+              className="team-member-scroll-area"
               style={{ maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}
             >
               {selectedUsersOrdered.map((user) => {

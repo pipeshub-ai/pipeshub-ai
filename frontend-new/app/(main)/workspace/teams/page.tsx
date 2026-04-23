@@ -273,7 +273,7 @@ function TeamsPageContent() {
           router.replace('/workspace/teams/');
         });
     }
-  }, [teams, isLoading, searchParams, buildUrlKey]);
+  }, [teams, isLoading, searchParams, buildUrlKey, router]);
 
   // Store → URL: when store panel state changes, update the URL
   useEffect(() => {

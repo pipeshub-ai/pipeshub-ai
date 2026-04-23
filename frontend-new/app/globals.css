@@ -453,6 +453,33 @@ summary {
   background-clip: padding-box;
 }
 
+/* Team members list scrollbar (used in team create/edit panels). */
+.team-member-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--slate-8) var(--olive-3);
+}
+.team-member-scroll-area::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  -webkit-appearance: none;
+}
+.team-member-scroll-area::-webkit-scrollbar-track {
+  background: var(--olive-3);
+  border-radius: 8px;
+  margin: 2px 0;
+}
+.team-member-scroll-area::-webkit-scrollbar-thumb {
+  background-color: var(--slate-8);
+  border-radius: 8px;
+  border: 2px solid var(--olive-3);
+  background-clip: padding-box;
+  min-height: 32px;
+}
+.team-member-scroll-area::-webkit-scrollbar-thumb:hover {
+  background-color: var(--slate-10);
+  background-clip: padding-box;
+}
+
 .kb-search-input::placeholder {
   color: var(--gray-10);
 }
