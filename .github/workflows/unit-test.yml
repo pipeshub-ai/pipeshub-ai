@@ -12,7 +12,6 @@ on:
       - 'backend/nodejs/apps/tsconfig*.json'
       - 'backend/nodejs/apps/.mocharc.yaml'
       - 'backend/nodejs/apps/.c8rc.json'
-      - 'backend/nodejs/apps/pipeshub-cli/**'
       - 'backend/python/app/**'
       - 'backend/python/tests/**'
       - 'backend/python/pyproject.toml'
@@ -52,9 +51,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-          cache-dependency-path: |
-            backend/nodejs/apps/package-lock.json
-            backend/nodejs/apps/pipeshub-cli/package-lock.json
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install dependencies
         run: |
@@ -97,12 +94,6 @@ jobs:
           path: backend/nodejs/apps/coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
-
-      - name: Pipeshub CLI — install and unit tests
-        run: |
-          cd backend/nodejs/apps/pipeshub-cli
-          npm ci
-          npm run test:ci
 
   python-unit-tests:
     runs-on: ${{ matrix.os }}
