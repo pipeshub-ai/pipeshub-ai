@@ -132,7 +132,7 @@ export function SidebarItem({
         <div
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          style={sharedStyle}
+          style={{ ...sharedStyle, padding: 0 }}
         >
           <Link
             href={href}
@@ -143,6 +143,8 @@ export function SidebarItem({
               gap: 'var(--space-2)',
               flex: 1,
               minWidth: 0,
+              paddingLeft: 'var(--space-3)',
+              height: '100%',
               textDecoration: 'none',
               color: 'inherit',
               cursor: 'pointer',
@@ -152,7 +154,13 @@ export function SidebarItem({
             {labelContent}
           </Link>
           <span
-            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+            style={{ 
+              flexShrink: 0, 
+              display: 'inline-flex', 
+              alignItems: 'center',
+              paddingRight: 'var(--space-3)',
+              height: '100%'
+            }}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
