@@ -63,7 +63,7 @@ function CitationPopoverContentInner({
         </Flex>
 
         <Flex align="center" gap="2">
-          <Button
+          {!citation.hideWeburl && (<Button
             size="1"
             variant="outline"
             color="gray"
@@ -72,17 +72,19 @@ function CitationPopoverContentInner({
             style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
             {openInLabel}
-          </Button>
+          </Button>)}
 
-          <Button
-            size="1"
-            variant="solid"
-            tabIndex={-1}
-            onClick={handlePreview}
-            style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
-          >
-            Preview
-          </Button>
+          {citation.previewRenderable && (
+            <Button
+              size="1"
+              variant="solid"
+              tabIndex={-1}
+              onClick={handlePreview}
+              style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
+            >
+              Preview
+            </Button>
+          )}
         </Flex>
       </Flex>
 

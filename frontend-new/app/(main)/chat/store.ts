@@ -47,6 +47,11 @@ export interface ChatPreviewFile {
    */
   initialCitationId?: string;
   /**
+   * External URL for the record (e.g. Jira ticket, Confluence page).
+   * Used by UnknownPreview to open the source in a new browser tab.
+   */
+  webUrl?: string;
+  /**
    * Hide the "File Details" tab in the preview shell. Set for previews that
    * don't correspond to a KB record (e.g. chat-generated artifacts).
    */

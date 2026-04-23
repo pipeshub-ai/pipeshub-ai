@@ -514,6 +514,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                   fileName={fileName}
                   fileType={fileType}
                   fileBlob={fileBlob}
+                  webUrl={webUrl}
                   pagination={paginationControls}
                 />
               </div>

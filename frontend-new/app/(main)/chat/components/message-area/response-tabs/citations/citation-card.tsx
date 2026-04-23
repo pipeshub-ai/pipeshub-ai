@@ -126,18 +126,20 @@ export function ReferenceCard({
             {!isMobile && (
               <>
                 {/* "Open in {Source}" outline button */}
-                <Button
-                  size="1"
-                  variant="outline"
-                  color="gray"
-                  onClick={handleOpenInSource}
-                  style={{ cursor: 'pointer', whiteSpace: 'nowrap', border :`0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
-                >
-                  {openInLabel}
-                </Button>
+                {!citation.hideWeburl &&
+                  (<Button
+                    size="1"
+                    variant="outline"
+                    color="gray"
+                    onClick={handleOpenInSource}
+                    style={{ cursor: 'pointer', whiteSpace: 'nowrap', border: `0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
+                  >
+                    {openInLabel}
+                  </Button>)}
 
                 {/* "Preview" solid accent button */}
-                <Button
+                {citation.previewRenderable && (
+                  <Button
                   size="1"
                   variant="solid"
                   onClick={handlePreview}
@@ -145,6 +147,7 @@ export function ReferenceCard({
                 >
                   Preview
                 </Button>
+                )}
               </>
             )}
           </Flex>
@@ -272,7 +275,7 @@ export function ReferenceCard({
           {isMobile && (
             <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
               {/* "Open in {Source}" outline button */}
-              <Button
+              {!citation.hideWeburl && (<Button
                 size="1"
                 variant="outline"
                 color="gray"
@@ -280,7 +283,7 @@ export function ReferenceCard({
                 style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
               >
                 {openInLabel}
-              </Button>
+              </Button>)}
 
               {/* "Preview" button — only for previewable files */}
               {citation.previewRenderable && (
