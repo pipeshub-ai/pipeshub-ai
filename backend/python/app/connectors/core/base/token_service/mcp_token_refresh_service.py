@@ -17,6 +17,7 @@ import httpx
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_server_config_path,
+    get_mcp_server_dcr_client_path,
     get_mcp_server_instances_path,
     get_mcp_server_oauth_client_path,
     get_mcp_server_oauth_tokens_path,
@@ -403,6 +404,9 @@ class MCPTokenRefreshService:
         """
         Execute an OAuth token refresh and persist the new tokens.
 
+        Supports both DCR (checks for a persisted DCR client record) and standard
+        OAuth flows (uses template token URL + admin-provided client credentials).
+
         Returns the new `expires_at` (Unix epoch seconds) on success, or None on failure.
         """
         try:
@@ -414,95 +418,147 @@ class MCPTokenRefreshService:
 
             refresh_token = tokens["refresh_token"]
 
-            # 2. Load instance metadata to find serverType
-            instances_data = await self.configuration_service.get_config(
-                get_mcp_server_instances_path(), default=None
-            )
-            if not isinstance(instances_data, list):
-                self.logger.warning(
-                    f"Could not load MCP instances list for refresh of {config_path}"
-                )
-                return None
+            # 2. Detect DCR: check for a persisted DCR client record
+            dcr_client: dict | None = None
+            try:
+                dcr_path = get_mcp_server_dcr_client_path(instance_id, user_id)
+                candidate = await self.configuration_service.get_config(dcr_path, default=None)
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("client_id")
+                    and candidate.get("token_endpoint")
+                ):
+                    dcr_client = candidate
+            except Exception:
+                pass
 
-            instance = next(
-                (i for i in instances_data if i.get("_id") == instance_id), None
-            )
-            if not instance:
-                self.logger.warning(
-                    f"MCP instance {instance_id} not found in instances list"
-                )
-                return None
+            if dcr_client:
+                # ── DCR refresh ───────────────────────────────────────────────
+                from app.agents.mcp.dcr import refresh_dcr_token
 
-            server_type = instance.get("serverType", "")
+                token_url = dcr_client["token_endpoint"]
+                client_id = dcr_client["client_id"]
+                client_secret = dcr_client.get("client_secret", "")
 
-            # 3. Resolve token URL from registry template
-            from app.agents.mcp.registry import get_mcp_server_registry
-            registry = get_mcp_server_registry()
-            template = registry.get_template(server_type)
-            self.logger.info(f"Template: {template}")
-            if not template or not template.auth or not template.auth.oauth2_token_url:
-                self.logger.warning(
-                    f"No OAuth token URL in template for server type '{server_type}' "
-                    f"(instance {instance_id})"
-                )
-                return None
-
-            token_url = template.auth.oauth2_token_url
-
-            # 4. Load OAuth client credentials (clientId / clientSecret)
-            oauth_client = await self.configuration_service.get_config(
-                get_mcp_server_oauth_client_path(instance_id), default=None
-            )
-            if not isinstance(oauth_client, dict) or not oauth_client.get("clientId"):
-                self.logger.warning(
-                    f"No OAuth client credentials for MCP instance {instance_id}"
-                )
-                return None
-
-            client_id = oauth_client["clientId"]
-            client_secret = oauth_client.get("clientSecret", "")
-
-            # 5. Perform the token refresh HTTP call
-            self.logger.info(
-                f"Refreshing OAuth token for MCP instance {instance_id} "
-                f"(type: {server_type}, path: {config_path})"
-            )
-
-            refresh_payload = {
-                "grant_type": "refresh_token",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-            }
-
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.post(
-                    token_url,
-                    data=refresh_payload,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                self.logger.info(
+                    f"Refreshing DCR OAuth token for MCP instance {instance_id} "
+                    f"(path: {config_path}, token_endpoint: {token_url})"
                 )
 
-            if resp.status_code != 200:
-                self.logger.error(
-                    f"OAuth token refresh failed for MCP instance {instance_id}: "
-                    f"HTTP {resp.status_code} — {resp.text[:300]}"
+                try:
+                    token_data = await refresh_dcr_token(
+                        token_endpoint=token_url,
+                        refresh_token=refresh_token,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                    )
+                except RuntimeError as exc:
+                    self.logger.error(
+                        f"DCR token refresh failed for MCP instance {instance_id}: {exc}"
+                    )
+                    return None
+
+                access_token = token_data.get("access_token", "")
+                if not access_token:
+                    self.logger.error(
+                        f"DCR token refresh returned no access_token for MCP instance {instance_id}"
+                    )
+                    return None
+
+                new_refresh_token = token_data.get("refresh_token") or refresh_token
+                expires_in = int(token_data.get("expires_in", 3600))
+                new_expires_at = int(time.time()) + expires_in
+                scope = token_data.get("scope", tokens.get("scope", ""))
+
+            else:
+                # ── Standard OAuth refresh ────────────────────────────────────
+                # Load instance metadata to find serverType
+                instances_data = await self.configuration_service.get_config(
+                    get_mcp_server_instances_path(), default=None
                 )
-                return None
+                if not isinstance(instances_data, list):
+                    self.logger.warning(
+                        f"Could not load MCP instances list for refresh of {config_path}"
+                    )
+                    return None
 
-            token_data = resp.json()
-            access_token = token_data.get("access_token", "")
-            if not access_token:
-                self.logger.error(
-                    f"OAuth provider returned empty access_token for MCP instance {instance_id}"
+                instance = next(
+                    (i for i in instances_data if i.get("_id") == instance_id), None
                 )
-                return None
+                if not instance:
+                    self.logger.warning(
+                        f"MCP instance {instance_id} not found in instances list"
+                    )
+                    return None
 
-            new_refresh_token = token_data.get("refresh_token") or refresh_token
-            expires_in = int(token_data.get("expires_in", 3600))
-            new_expires_at = int(time.time()) + expires_in
-            scope = token_data.get("scope", tokens.get("scope", ""))
+                server_type = instance.get("serverType", "")
 
-            # 6. Persist updated tokens to oauth-tokens path
+                # Resolve token URL from registry template
+                from app.agents.mcp.registry import get_mcp_server_registry
+                registry = get_mcp_server_registry()
+                template = registry.get_template(server_type)
+                if not template or not template.auth or not template.auth.oauth2_token_url:
+                    self.logger.warning(
+                        f"No OAuth token URL in template for server type '{server_type}' "
+                        f"(instance {instance_id})"
+                    )
+                    return None
+
+                token_url = template.auth.oauth2_token_url
+
+                # Load OAuth client credentials (clientId / clientSecret)
+                oauth_client = await self.configuration_service.get_config(
+                    get_mcp_server_oauth_client_path(instance_id), default=None
+                )
+                if not isinstance(oauth_client, dict) or not oauth_client.get("clientId"):
+                    self.logger.warning(
+                        f"No OAuth client credentials for MCP instance {instance_id}"
+                    )
+                    return None
+
+                client_id = oauth_client["clientId"]
+                client_secret = oauth_client.get("clientSecret", "")
+
+                self.logger.info(
+                    f"Refreshing OAuth token for MCP instance {instance_id} "
+                    f"(type: {server_type}, path: {config_path})"
+                )
+
+                refresh_payload = {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                }
+
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.post(
+                        token_url,
+                        data=refresh_payload,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+
+                if resp.status_code != 200:
+                    self.logger.error(
+                        f"OAuth token refresh failed for MCP instance {instance_id}: "
+                        f"HTTP {resp.status_code} — {resp.text[:300]}"
+                    )
+                    return None
+
+                token_data = resp.json()
+                access_token = token_data.get("access_token", "")
+                if not access_token:
+                    self.logger.error(
+                        f"OAuth provider returned empty access_token for MCP instance {instance_id}"
+                    )
+                    return None
+
+                new_refresh_token = token_data.get("refresh_token") or refresh_token
+                expires_in = int(token_data.get("expires_in", 3600))
+                new_expires_at = int(time.time()) + expires_in
+                scope = token_data.get("scope", tokens.get("scope", ""))
+
+            # Persist updated tokens to oauth-tokens path
             new_tokens: dict[str, Any] = {
                 "access_token": access_token,
                 "refresh_token": new_refresh_token,

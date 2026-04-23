@@ -10,6 +10,7 @@ import {
   Separator,
   IconButton,
   Spinner,
+  Switch,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -169,6 +170,122 @@ function ApiTokenSection({
           variant="solid"
           onClick={isAuthenticated ? handleUpdate : handleSave}
           disabled={!token.trim() || isSaving}
+        >
+          {isSaving ? (
+            <Spinner size="1" />
+          ) : (
+            <MaterialIcon
+              name={isAuthenticated ? 'refresh' : 'key'}
+              size={14}
+              color="white"
+            />
+          )}
+          {isAuthenticated ? 'Update' : 'Authenticate'}
+        </Button>
+      </Flex>
+    </Flex>
+  );
+}
+
+// ============================================================================
+// Custom Headers Auth Section
+// ============================================================================
+
+interface HeadersAuthSectionProps {
+  instanceId: string;
+  isAuthenticated: boolean;
+  defaultHeaderName?: string;
+  onAuthSuccess: (updated: MCPServerInstance) => void;
+}
+
+function HeadersAuthSection({
+  instanceId,
+  isAuthenticated,
+  defaultHeaderName,
+  onAuthSuccess,
+}: HeadersAuthSectionProps) {
+  const [headerName, setHeaderName] = useState(defaultHeaderName || 'Authorization');
+  const [headerValue, setHeaderValue] = useState('');
+  const [showValue, setShowValue] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const addToast = useToastStore((s) => s.addToast);
+
+  const handleSave = async () => {
+    if (!headerValue.trim()) return;
+    setIsSaving(true);
+    try {
+      const auth = { headerName: headerName.trim() || 'Authorization', headerValue: headerValue.trim() };
+      if (isAuthenticated) {
+        await McpServersApi.updateCredentials(instanceId, auth);
+      } else {
+        await McpServersApi.authenticateInstance(instanceId, auth);
+      }
+      const { instance } = await McpServersApi.getInstance(instanceId);
+      addToast({ variant: 'success', title: isAuthenticated ? 'Credentials updated' : 'Authentication saved' });
+      onAuthSuccess(instance);
+      setHeaderValue('');
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to save credentials' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Flex direction="column" gap="3">
+      <Flex align="center" gap="2">
+        <FieldLabel
+          label={isAuthenticated ? 'Update Header Credentials' : 'Header Credentials'}
+          required={!isAuthenticated}
+        />
+        {isAuthenticated && (
+          <Badge color="green" variant="soft" size="1">
+            Authenticated
+          </Badge>
+        )}
+      </Flex>
+
+      <Flex direction="column" gap="2">
+        <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
+          Header Name
+        </Text>
+        <TextField.Root
+          placeholder="Authorization"
+          value={headerName}
+          onChange={(e) => setHeaderName(e.target.value)}
+        />
+      </Flex>
+
+      <Flex gap="2">
+        <TextField.Root
+          type={showValue ? 'text' : 'password'}
+          placeholder="Bearer sk-..."
+          value={headerValue}
+          onChange={(e) => setHeaderValue(e.target.value)}
+          style={{ flex: 1 }}
+        >
+          <TextField.Slot side="right">
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              onClick={() => setShowValue((v) => !v)}
+              type="button"
+            >
+              <MaterialIcon
+                name={showValue ? 'visibility_off' : 'visibility'}
+                size={14}
+                color="var(--gray-9)"
+              />
+            </IconButton>
+          </TextField.Slot>
+        </TextField.Root>
+
+        <Button
+          size="2"
+          variant="solid"
+          onClick={handleSave}
+          disabled={!headerValue.trim() || isSaving}
         >
           {isSaving ? (
             <Spinner size="1" />
@@ -488,6 +605,7 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
   const [clientSecret, setClientSecret] = useState('');
   const [apiToken, setApiToken] = useState('');
   const [showApiToken, setShowApiToken] = useState(false);
+  const [useAdminAuth, setUseAdminAuth] = useState(template.useAdminAuth ?? false);
   const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
@@ -519,8 +637,8 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
       setNameError('Instance name is required');
       return;
     }
-    if (isOAuth && !clientId.trim()) {
-      addToast({ variant: 'error', title: 'OAuth Client ID is required' });
+    if (isApiToken && useAdminAuth && !apiToken.trim()) {
+      setNameError('API token is required when "Use shared admin token" is enabled');
       return;
     }
     setIsCreating(true);
@@ -538,6 +656,7 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
         supportedAuthTypes: template.supportedAuthTypes,
         requiredEnv: template.requiredEnv,
         iconPath: template.iconPath,
+        useAdminAuth: isApiToken ? useAdminAuth : false,
       };
 
       if (isOAuth && clientId.trim()) {
@@ -550,9 +669,10 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
       }
 
       const { instance } = await McpServersApi.createInstance(body);
-      console.log('instance', instance);
 
-      if (isApiToken && apiToken.trim()) {
+      // When useAdminAuth=true the backend auto-authenticates the admin at creation time.
+      // When useAdminAuth=false and a token was supplied, authenticate now.
+      if (isApiToken && !useAdminAuth && apiToken.trim()) {
         try {
           await McpServersApi.authenticateInstance(instance.instanceId, {
             apiToken: apiToken.trim(),
@@ -606,8 +726,9 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
         <>
           <SectionDivider label="OAuth App Credentials" />
           <Text size="1" style={{ color: 'var(--gray-10)', marginTop: -8 }}>
-            Create an OAuth app with your provider and enter the credentials.
-            All users will authenticate through this OAuth app.
+            Some servers (e.g. Jira) register OAuth credentials automatically — you can leave these
+            blank. For others (e.g. Slack), create an OAuth app with your provider and enter the
+            credentials below. All users will authenticate through this OAuth app.
           </Text>
 
           {redirectUri && (
@@ -652,9 +773,9 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
           )}
 
           <Flex direction="column" gap="2">
-            <FieldLabel label="Client ID" required />
+            <FieldLabel label="Client ID" />
             <TextField.Root
-              placeholder="Enter your OAuth Client ID"
+              placeholder="Enter your OAuth Client ID (optional for DCR servers)"
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
             />
@@ -676,18 +797,49 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
       {isApiToken && (
         <>
           <SectionDivider label="API Token" />
-          <Text size="1" style={{ color: 'var(--gray-10)', marginTop: -8 }}>
-            Provide the API token for this server. You can also configure this later from My Servers.
-          </Text>
 
-          <Flex direction="column" gap="2">
-            <Flex gap="2">
+          {/* useAdminAuth toggle */}
+          <Flex
+            direction="column"
+            gap="3"
+            style={{
+              padding: 12,
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid var(--gray-a5)',
+              background: 'var(--gray-a2)',
+            }}
+          >
+            <Flex align="center" justify="between" gap="3">
+              <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+                  Use shared admin token
+                </Text>
+                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                  When enabled, you provide a service token now and all users automatically
+                  authenticate with it. When disabled, each user must supply their own token.
+                </Text>
+              </Flex>
+              <Switch
+                checked={useAdminAuth}
+                onCheckedChange={setUseAdminAuth}
+                size="2"
+              />
+            </Flex>
+
+            <Flex direction="column" gap="2">
+              <FieldLabel
+                label={useAdminAuth ? 'Service API Token' : 'API Token (optional)'}
+                required={useAdminAuth}
+              />
               <TextField.Root
                 type={showApiToken ? 'text' : 'password'}
-                placeholder="Enter API token..."
+                placeholder={
+                  useAdminAuth
+                    ? 'Enter the shared service token...'
+                    : 'Enter API token (optional — set later from My Servers)...'
+                }
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
-                style={{ flex: 1 }}
               >
                 <TextField.Slot side="right">
                   <IconButton
@@ -705,6 +857,11 @@ function CreateForm({ template, onCreated, onCancel }: CreateFormProps) {
                   </IconButton>
                 </TextField.Slot>
               </TextField.Root>
+              {!useAdminAuth && (
+                <Text size="1" style={{ color: 'var(--gray-9)' }}>
+                  Each user will be prompted to provide their own token when they authenticate.
+                </Text>
+              )}
             </Flex>
           </Flex>
         </>
@@ -774,8 +931,8 @@ export function McpServerConfigDialog({
   const [isDeleting, setIsDeleting] = useState(false);
 
   const isOAuth = (activeInstance?.authMode ?? template?.authMode) === 'oauth';
-  const isApiToken =
-    (activeInstance?.authMode ?? template?.authMode) === 'api_token';
+  const isApiToken = (activeInstance?.authMode ?? template?.authMode) === 'api_token';
+  const isHeaders = (activeInstance?.authMode ?? template?.authMode) === 'headers';
 
   const handleAuthSuccess = useCallback(
     (updated: MCPServerInstance) => {
@@ -864,11 +1021,73 @@ export function McpServerConfigDialog({
           {isApiToken && (
             <>
               <SectionDivider label="Authentication" />
-              <ApiTokenSection
-                instanceId={activeInstance.instanceId}
-                isAuthenticated={activeInstance.isAuthenticated ?? false}
-                onAuthSuccess={handleAuthSuccess}
-              />
+              {activeInstance.useAdminAuth && (
+                <Flex
+                  align="center"
+                  gap="2"
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-2)',
+                    background: 'var(--blue-a3)',
+                    border: '1px solid var(--blue-a6)',
+                  }}
+                >
+                  <MaterialIcon name="admin_panel_settings" size={16} color="var(--blue-9)" />
+                  <Text size="1" style={{ color: 'var(--blue-11)' }}>
+                    This instance uses a shared admin token. Only admins can update it.
+                  </Text>
+                </Flex>
+              )}
+              {/* Admin can always update the token; non-admin only sees this when useAdminAuth is false */}
+              {(isAdmin || !activeInstance.useAdminAuth) && (
+                <ApiTokenSection
+                  instanceId={activeInstance.instanceId}
+                  isAuthenticated={activeInstance.isAuthenticated ?? false}
+                  onAuthSuccess={handleAuthSuccess}
+                />
+              )}
+            </>
+          )}
+
+          {isHeaders && (
+            <>
+              <SectionDivider label="Authentication" />
+              {activeInstance.useAdminAuth ? (
+                /* Admin-managed shared header — one-click authenticate for all users */
+                <Flex direction="column" gap="3">
+                  <Flex
+                    align="center"
+                    gap="2"
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-2)',
+                      background: 'var(--blue-a3)',
+                      border: '1px solid var(--blue-a6)',
+                    }}
+                  >
+                    <MaterialIcon name="admin_panel_settings" size={16} color="var(--blue-9)" />
+                    <Text size="1" style={{ color: 'var(--blue-11)' }}>
+                      This instance uses a shared admin header. Only admins can update it.
+                    </Text>
+                  </Flex>
+                  {isAdmin && (
+                    <HeadersAuthSection
+                      instanceId={activeInstance.instanceId}
+                      isAuthenticated={activeInstance.isAuthenticated ?? false}
+                      defaultHeaderName={activeInstance.defaultHeaderName}
+                      onAuthSuccess={handleAuthSuccess}
+                    />
+                  )}
+                </Flex>
+              ) : (
+                /* Personal header — each user provides their own */
+                <HeadersAuthSection
+                  instanceId={activeInstance.instanceId}
+                  isAuthenticated={activeInstance.isAuthenticated ?? false}
+                  defaultHeaderName={activeInstance.defaultHeaderName}
+                  onAuthSuccess={handleAuthSuccess}
+                />
+              )}
             </>
           )}
 

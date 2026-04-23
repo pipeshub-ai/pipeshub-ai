@@ -38,6 +38,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
         default_method="api_key",
         env_mapping={"apiKey": "BRAVE_API_KEY"},
     ),
+    use_admin_auth=True,
 )
 class BraveSearch:
     """Brave Search MCP server template."""

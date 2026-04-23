@@ -98,6 +98,26 @@ def get_mcp_server_oauth_tokens_path(instance_id: str, user_id: str) -> str:
     return f"/services/mcp-servers/{instance_id}/{user_id}/oauth-tokens"
 
 
+def get_mcp_server_dcr_client_path(instance_id: str, user_id: str) -> str:
+    """
+    Get etcd path for storing a DCR (Dynamic Client Registration) client record
+    for a specific user + MCP server instance.
+
+    DCR-capable servers (e.g. Atlassian) issue a dynamically-generated
+    client_id/client_secret per registration. We persist those credentials here
+    so they can be reused for token exchange, refresh, and re-authorization
+    without re-registering on every OAuth attempt.
+
+    Args:
+        instance_id: MCP server instance UUID
+        user_id: User identifier
+
+    Returns:
+        etcd path: /services/mcp-servers/{instanceId}/{userId}/dcr-client
+    """
+    return f"/services/mcp-servers/{instance_id}/{user_id}/dcr-client"
+
+
 def normalize_mcp_server_type(server_type: str) -> str:
     """
     Normalize MCP server type for storage keys.
