@@ -2,9 +2,8 @@ import type { Conversation } from '@/chat/types';
 
 /**
  * Epoch ms for "last activity" used for ordering and time buckets.
- * - Prefers `lastActivityAt` from the API; treats values &lt; 1e12 as **seconds** (s→×1000).
- * - Coerces string numbers if present.
- * - Falls back to `updatedAt` then `createdAt`.
+ * - Prefers numeric `lastActivityAt` from GET /conversations; values < 1e12 are treated as **seconds** (s→×1000), otherwise ms.
+ * - Falls back to `updatedAt` then `createdAt` (ISO strings).
  */
 export function getConversationLastActivityMs(conv: Conversation): number {
   const raw = conv.lastActivityAt;
