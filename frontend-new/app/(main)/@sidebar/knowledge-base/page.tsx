@@ -131,6 +131,7 @@ function KnowledgeBaseSidebarSlotContent() {
       try {
         setNodeLoading(nodeId, true);
         const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
+          onlyContainers: true,
           page: 1,
           limit: 50,
           include: 'counts',

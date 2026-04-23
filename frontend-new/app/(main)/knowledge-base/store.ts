@@ -707,6 +707,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           state.allRecordsSidebarSelection = selection;
           state.selectedRecords.clear();
+          // URL drilldown uses `explorer`; keep table page when switching folder in tree.
           if (selection.type !== 'explorer') {
             state.allRecordsPagination.page = 1;
           }

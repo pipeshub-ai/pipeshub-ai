@@ -80,6 +80,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
       return;
     }
 
+    // KB collection root: prefer id match to `categorizedNodes` roots (API may use folder/recordGroup, not `kb`).
     const kbBreadcrumb =
       allRootNodes.length > 0
         ? breadcrumbs.find((b) =>

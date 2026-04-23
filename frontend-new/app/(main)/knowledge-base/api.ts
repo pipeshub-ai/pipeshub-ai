@@ -17,12 +17,13 @@ const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>
 function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
-  params?: { page?: number; limit?: number; include?: string }
+  params?: { page?: number; limit?: number; include?: string; onlyContainers?: boolean }
 ) {
   const page = params?.page ?? 1;
   const limit = params?.limit ?? 50;
   const include = params?.include ?? '';
-  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}`;
+  const onlyContainers = params?.onlyContainers !== false;
+  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}`;
 }
 
 function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
@@ -180,14 +181,15 @@ export const KnowledgeHubApi = {
   },
 
   /**
-   * Get node children for sidebar expansion
+   * Get node children (sidebar tree expansion by default).
    *
-   * Used when expanding nodes in the sidebar tree. Omits leaf records
-   * (`hasChildren: false`); containers and record groups stay.
+   * Sends `onlyContainers` to the API (default `true`, as required for sidebar
+   * child lists). When `onlyContainers` is `false`, returns the raw response
+   * (no client-side leaf-record stripping).
    *
    * @param nodeType - Type of parent node
    * @param nodeId - ID of parent node
-   * @param params - Optional pagination and include flags
+   * @param params - Pagination, `include`, and `onlyContainers` (default true)
    */
   async getNodeChildren(
     nodeType: NodeType,
@@ -203,6 +205,8 @@ export const KnowledgeHubApi = {
     const existing = pendingGetNodeChildren.get(key);
     if (existing) return existing;
 
+    const onlyContainers = params?.onlyContainers !== false;
+
     const promise = (async (): Promise<KnowledgeHubApiResponse> => {
       try {
         const { data } = await apiClient.get<KnowledgeHubApiResponse>(
@@ -212,11 +216,12 @@ export const KnowledgeHubApi = {
               page: params?.page ?? 1,
               limit: params?.limit ?? 50,
               include: params?.include,
+              onlyContainers,
             },
           }
         );
 
-        return withSidebarFilteredItems(data);
+        return onlyContainers ? withSidebarFilteredItems(data) : data;
       } finally {
         pendingGetNodeChildren.delete(key);
       }

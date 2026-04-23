@@ -479,6 +479,7 @@ function KnowledgeBasePageContent() {
       setAppLoading(app.id, true);
       try {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
+          onlyContainers: true,
           page: 1,
           limit: 50,
         });
@@ -711,6 +712,7 @@ function KnowledgeBasePageContent() {
               // Fetch KB children to populate sidebar
               try {
                 const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
+                  onlyContainers: true,
                   page: 1,
                   limit: 50,
                 });
@@ -759,7 +761,7 @@ function KnowledgeBasePageContent() {
                   const folderChildren = await KnowledgeHubApi.getNodeChildren(
                     breadcrumb.nodeType as NodeType,
                     breadcrumb.id,
-                    { page: 1, limit: 50 }
+                    { onlyContainers: true, page: 1, limit: 50 }
                   );
                   const foldersCount =
                     folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
