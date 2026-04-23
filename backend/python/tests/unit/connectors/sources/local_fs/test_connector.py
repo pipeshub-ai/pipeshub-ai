@@ -310,6 +310,65 @@ class TestLocalFsConnectorAsync:
         body = b"".join(chunks)
         assert body == b"hello-stream"
 
+    async def test_apply_file_event_batch_reset_before_apply_rebuilds_from_disk(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        fresh = tmp_path / "fresh.txt"
+        fresh.write_text("hello reset", encoding="utf-8")
+
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        user = User(email="u@x.com", id="u1", org_id="org-1")
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.graph_provider.get_document = AsyncMock(
+            return_value={"createdBy": "u1"}
+        )
+        txn.get_user_by_user_id = AsyncMock(return_value=user)
+        stale_1 = MagicMock(external_record_id="stale-1")
+        stale_2 = MagicMock(external_record_id="stale-2")
+        txn.get_records_by_status = AsyncMock(side_effect=[[stale_1, stale_2], []])
+        txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(
+            return_value=txn
+        )
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+            folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            folder_connector.data_entities_processor.on_new_records = AsyncMock()
+            stats = await folder_connector.apply_file_event_batch(
+                [
+                    LocalFsFileEvent(
+                        type="CREATED",
+                        path="fresh.txt",
+                        oldPath=None,
+                        timestamp=1,
+                        size=fresh.stat().st_size,
+                        isDirectory=False,
+                    )
+                ],
+                reset_before_apply=True,
+            )
+
+        assert stats.deleted == 2
+        assert stats.processed == 1
+        assert txn.delete_record_by_external_id.await_count == 2
+        txn.delete_record_by_external_id.assert_any_await(
+            folder_connector.connector_id, "stale-1", user.id
+        )
+        txn.delete_record_by_external_id.assert_any_await(
+            folder_connector.connector_id, "stale-2", user.id
+        )
+        folder_connector.data_entities_processor.on_new_records.assert_awaited()
+
     async def test_stream_record_not_file_record(self, folder_connector: LocalFsConnector):
         from app.models.entities import Record
 

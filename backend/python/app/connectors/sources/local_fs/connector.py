@@ -76,6 +76,7 @@ from .utils import parse_sync_bool
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 LOCAL_FS_CONNECTOR_NAME = "Local FS"
+FULL_SYNC_RESET_BATCH_SIZE = 500
 
 # Sync config keys (flat under config["sync"] — same as RSS/Web custom fields).
 SYNC_ROOT_PATH_KEY = "sync_root_path"
@@ -617,9 +618,42 @@ class LocalFsConnector(BaseConnector):
         )
         return True
 
+    async def _reset_existing_records(self, owner_user_id: str) -> int:
+        status_filters = [status.value for status in ProgressStatus]
+        deleted = 0
+
+        while True:
+            async with self.data_store_provider.transaction() as tx_store:
+                records = await tx_store.get_records_by_status(
+                    self.data_entities_processor.org_id,
+                    self.connector_id,
+                    status_filters,
+                    limit=FULL_SYNC_RESET_BATCH_SIZE,
+                    offset=0,
+                )
+                if not records:
+                    return deleted
+
+                deleted_this_round = 0
+                for record in records:
+                    external_id = getattr(record, "external_record_id", None)
+                    if not external_id:
+                        continue
+                    await tx_store.delete_record_by_external_id(
+                        self.connector_id,
+                        external_id,
+                        owner_user_id,
+                    )
+                    deleted += 1
+                    deleted_this_round += 1
+
+                if deleted_this_round == 0:
+                    return deleted
+
     async def apply_file_event_batch(
         self,
         events: List[LocalFsFileEvent],
+        reset_before_apply: bool = False,
     ) -> LocalFsFileEventBatchStats:
         await self._reload_sync_settings()
         root_raw = self.sync_root_path.strip()
@@ -644,6 +678,9 @@ class LocalFsConnector(BaseConnector):
             owner, sync_filters, indexing_filters, rg_external = (
                 await self._ensure_owner_and_record_group(root)
             )
+
+            if reset_before_apply:
+                deleted += await self._reset_existing_records(owner.id)
 
             for event in events:
                 event_type = event.type.strip().upper()

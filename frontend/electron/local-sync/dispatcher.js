@@ -44,6 +44,7 @@ async function dispatchFileEventBatch({
   batchId,
   timestamp,
   events,
+  resetBeforeApply,
   refreshAccessToken,
 }) {
   const baseUrl = trimTrailingSlash(apiBaseUrl);
@@ -56,6 +57,7 @@ async function dispatchFileEventBatch({
     batchId,
     events,
     timestamp: timestamp != null ? timestamp : Date.now(),
+    ...(resetBeforeApply === true ? { resetBeforeApply: true } : {}),
   });
 
   let token = accessToken;

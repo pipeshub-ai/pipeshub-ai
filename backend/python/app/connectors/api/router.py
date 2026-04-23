@@ -150,6 +150,7 @@ async def _parse_local_fs_file_event_batch_request(
             else f"localfs-replay-{now}",
             "events": payload.get("events"),
             "timestamp": timestamp if timestamp is not None else now,
+            "resetBeforeApply": payload.get("resetBeforeApply", False),
         }
 
     try:
@@ -3208,7 +3209,10 @@ async def submit_connector_file_events(
                 detail="Initialized connector is not a Local FS connector",
             )
 
-        stats = await connector.apply_file_event_batch(payload.events)
+        stats = await connector.apply_file_event_batch(
+            payload.events,
+            reset_before_apply=payload.resetBeforeApply,
+        )
         return {
             "success": True,
             "connectorId": connector_id,

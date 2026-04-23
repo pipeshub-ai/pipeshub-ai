@@ -16,6 +16,7 @@ class LocalFsFileEventBatchRequest(BaseModel):
     batchId: str
     events: list[LocalFsFileEvent]
     timestamp: int
+    resetBeforeApply: bool = False
 
 
 class LocalFsFileEventBatchStats(BaseModel):
