@@ -23,6 +23,7 @@ export interface MCPServerTemplate {
   url?: string;
   authMode: string;
   supportedAuthTypes: string[];
+  useAdminAuth?: boolean;
   redirectUri?: string;
   iconPath?: string;
   documentationUrl?: string;
@@ -59,6 +60,9 @@ export interface MCPServerInstance {
   supportedAuthTypes: string[];
   requiredEnv?: string[];
   iconPath?: string;
+  useAdminAuth?: boolean;
+  /** For headers auth mode: the configured header name (e.g. "Authorization") */
+  defaultHeaderName?: string;
   enabled: boolean;
   isAuthenticated?: boolean;
   isConfigured?: boolean;

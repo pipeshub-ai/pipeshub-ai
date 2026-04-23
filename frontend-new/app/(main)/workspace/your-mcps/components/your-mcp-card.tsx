@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Flex, Text, Badge, Button, Spinner } from '@radix-ui/themes';
+import { Flex, Text, Badge, Button, Spinner, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { MCPServerInstance } from '@/app/(main)/workspace/mcp-servers/types';
@@ -55,9 +55,17 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
   const [isHovered, setIsHovered] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  // Personal token state (used when useAdminAuth is false)
+  const [personalToken, setPersonalToken] = useState('');
+  const [showPersonalToken, setShowPersonalToken] = useState(false);
+  // For headers auth mode: the name of the header to send (e.g. "Authorization")
+  const [personalHeaderName, setPersonalHeaderName] = useState(
+    server.defaultHeaderName || 'Authorization'
+  );
 
   const isAuthenticated = server.isAuthenticated ?? false;
   const authMode = server.authMode || 'none';
+  const useAdminAuth = server.useAdminAuth ?? false;
   const toolCount = server.toolCount ?? server.tools?.length ?? 0;
 
   const handleAutoAuthenticate = async () => {
@@ -68,6 +76,28 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
       onRefresh();
     } catch {
       onNotify(`Failed to authenticate ${server.displayName || server.instanceName}. The administrator may need to set up credentials first.`, 'error');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handlePersonalTokenAuthenticate = async () => {
+    if (!personalToken.trim()) return;
+    setIsAuthenticating(true);
+    try {
+      const authPayload =
+        authMode === 'headers'
+          ? {
+              headerName: personalHeaderName.trim() || 'Authorization',
+              headerValue: personalToken.trim(),
+            }
+          : { apiToken: personalToken.trim() };
+      await McpServersApi.authenticateInstance(server.instanceId, authPayload);
+      onNotify(`${server.displayName || server.instanceName} authenticated successfully.`, 'success');
+      setPersonalToken('');
+      onRefresh();
+    } catch {
+      onNotify(`Failed to authenticate ${server.displayName || server.instanceName}. Please check your credentials.`, 'error');
     } finally {
       setIsAuthenticating(false);
     }
@@ -277,18 +307,20 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
                 <MaterialIcon name="check_circle" size={14} color="var(--green-10)" />
                 Authenticated
               </Button>
-              <Button
-                type="button"
-                size="1"
-                variant="outline"
-                color="gray"
-                onClick={() => void handleAutoAuthenticate()}
-                disabled={isAuthenticating}
-                style={{ flex: 1 }}
-              >
-                {isAuthenticating ? <Spinner size="1" /> : <MaterialIcon name="refresh" size={14} color="var(--gray-10)" />}
-                Refresh
-              </Button>
+              {useAdminAuth ? (
+                <Button
+                  type="button"
+                  size="1"
+                  variant="outline"
+                  color="gray"
+                  onClick={() => void handleAutoAuthenticate()}
+                  disabled={isAuthenticating}
+                  style={{ flex: 1 }}
+                >
+                  {isAuthenticating ? <Spinner size="1" /> : <MaterialIcon name="refresh" size={14} color="var(--gray-10)" />}
+                  Refresh
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 size="1"
@@ -300,7 +332,8 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
                 {isRemoving ? <Spinner size="1" /> : <MaterialIcon name="delete" size={14} color="var(--red-10)" />}
               </Button>
             </Flex>
-          ) : (
+          ) : useAdminAuth ? (
+            /* Admin-managed token — one-click authenticate */
             <Button
               type="button"
               size="2"
@@ -317,6 +350,58 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
               )}
               {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
             </Button>
+          ) : (
+            /* Personal token — user must provide their own */
+            <Flex direction="column" gap="2">
+              {authMode === 'headers' && (
+                <TextField.Root
+                  placeholder="Header name (e.g. Authorization)"
+                  value={personalHeaderName}
+                  onChange={(e) => setPersonalHeaderName(e.target.value)}
+                />
+              )}
+              <TextField.Root
+                type={showPersonalToken ? 'text' : 'password'}
+                placeholder={authMode === 'headers' ? 'Enter header value...' : 'Enter your API token...'}
+                value={personalToken}
+                onChange={(e) => setPersonalToken(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handlePersonalTokenAuthenticate();
+                }}
+              >
+                <TextField.Slot side="right">
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    type="button"
+                    onClick={() => setShowPersonalToken((v) => !v)}
+                  >
+                    <MaterialIcon
+                      name={showPersonalToken ? 'visibility_off' : 'visibility'}
+                      size={14}
+                      color="var(--gray-9)"
+                    />
+                  </IconButton>
+                </TextField.Slot>
+              </TextField.Root>
+              <Button
+                type="button"
+                size="2"
+                variant="soft"
+                color="indigo"
+                style={{ width: '100%' }}
+                onClick={() => void handlePersonalTokenAuthenticate()}
+                disabled={isAuthenticating || !personalToken.trim()}
+              >
+                {isAuthenticating ? (
+                  <Spinner size="2" />
+                ) : (
+                  <MaterialIcon name="key" size={16} color="var(--indigo-10)" />
+                )}
+                {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
+              </Button>
+            </Flex>
           )
         )}
       </Flex>

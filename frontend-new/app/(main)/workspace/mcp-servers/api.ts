@@ -63,6 +63,13 @@ export const McpServersApi = {
     clientId?: string;
     clientSecret?: string;
     apiToken?: string;
+    useAdminAuth?: boolean;
+    /** For headers auth mode: the name of the HTTP header (e.g. "Authorization") */
+    headerName?: string;
+    /** OAuth provider endpoints for custom servers (no registry template) */
+    authorizationUrl?: string;
+    tokenUrl?: string;
+    scopes?: string[];
   }): Promise<{ instance: MCPServerInstance; message: string }> {
     const { data } = await apiClient.post(`${BASE}/instances`, body);
     // Normalize _id -> instanceId so the shape is consistent with other endpoints

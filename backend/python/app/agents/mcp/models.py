@@ -69,6 +69,14 @@ class MCPServerTemplate(_CamelModel):
     url: str = ""
     auth_mode: MCPAuthMode = MCPAuthMode.NONE
     supported_auth_types: list[str] = Field(default_factory=list)
+    use_admin_auth: bool = Field(
+        default=False,
+        description=(
+            "When True, an admin-provided service token is shared with all users. "
+            "When False, each user must supply their own personal token. "
+            "Only applicable for api_token and headers auth modes."
+        ),
+    )
     redirect_uri: str = Field(
         default="",
         description="Relative redirect URI path for OAuth (appended to base_url by the backend)",
@@ -98,6 +106,7 @@ class MCPServerInstanceConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth_mode: MCPAuthMode = MCPAuthMode.NONE
     supported_auth_types: list[str] = Field(default_factory=list)
+    use_admin_auth: bool = False
     enabled: bool = True
     icon_path: str = ""
     description: str = ""

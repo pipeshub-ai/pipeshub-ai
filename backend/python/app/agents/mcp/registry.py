@@ -103,7 +103,9 @@ class MCPServerRegistry:
         standard_paths = [
             'app.agents.mcp.servers.brave_search',
             'app.agents.mcp.servers.exa',
+            'app.agents.mcp.servers.github',
             'app.agents.mcp.servers.jira',
+            'app.agents.mcp.servers.notion',
             'app.agents.mcp.servers.slack',
         ]
 

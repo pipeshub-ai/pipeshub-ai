@@ -28,6 +28,7 @@ def MCPServer(
     documentation_url: str = "",
     tags: list[str] | None = None,
     auth: AuthHint | None = None,
+    use_admin_auth: bool = False,
 ) -> Callable[[type], type]:
     """
     Decorator to register an MCP server template with metadata.
@@ -49,6 +50,9 @@ def MCPServer(
         documentation_url: URL to server documentation
         tags: Tags for search and categorization
         auth: Auth hint with OAuth URLs, scopes, and env mapping
+        use_admin_auth: When True, admin provides a shared service token for all users.
+            When False, each user must supply their own personal token.
+            Only applies for api_token and headers auth modes.
 
     Returns:
         Decorator function that marks a class as an MCP server template
@@ -99,6 +103,7 @@ def MCPServer(
             "documentation_url": documentation_url,
             "tags": tags_list,
             "auth": auth,
+            "use_admin_auth": use_admin_auth,
         }
 
         # Mark class as an MCP server

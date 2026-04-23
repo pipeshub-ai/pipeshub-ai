@@ -23,7 +23,7 @@ import secrets
 import time
 import uuid
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 import httpx
 from dependency_injector.wiring import Provide, inject
@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_server_config_path,
+    get_mcp_server_dcr_client_path,
     get_mcp_server_instance_users_prefix,
     get_mcp_server_instances_path,
     get_mcp_server_oauth_client_path,
@@ -151,6 +152,25 @@ async def _load_oauth_client_config(
 
 
 _TOOL_DISCOVERY_TIMEOUT_SECONDS = 10
+
+_OAUTH_TOKEN_EXCHANGE_HEADERS = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Accept": "application/json",
+}
+
+
+def _parse_token_response(resp: httpx.Response) -> dict[str, Any]:
+    """Parse an OAuth token endpoint response.
+
+    Providers like GitHub may return ``application/x-www-form-urlencoded``
+    instead of JSON.  Try JSON first, then fall back to form parsing.
+    """
+    text = resp.text
+    try:
+        return resp.json()
+    except Exception:
+        parsed = parse_qs(text, keep_blank_values=False)
+        return {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
 
 
 
@@ -389,6 +409,34 @@ async def create_instance(
     if template and template.auth.env_mapping:
         auth_header_mapping = dict(template.auth.env_mapping)
 
+    # For custom OAuth servers without a registry template, persist the provider
+    # endpoints and scopes directly on the instance so the OAuth flow can proceed
+    # without a catalog entry.
+    instance_oauth_config: dict[str, Any] | None = None
+    if auth_mode == "oauth" and not template:
+        raw_scopes = body.get("scopes", [])
+        if isinstance(raw_scopes, str):
+            raw_scopes = [s.strip() for s in raw_scopes.split(",") if s.strip()]
+        instance_oauth_config = {
+            "authorizationUrl": body.get("authorizationUrl", ""),
+            "tokenUrl": body.get("tokenUrl", ""),
+            "scopes": raw_scopes,
+        }
+
+    # Determine useAdminAuth: body overrides template default
+    template_use_admin_auth = template.use_admin_auth if template else False
+    use_admin_auth = body.get("useAdminAuth", template_use_admin_auth)
+    if not isinstance(use_admin_auth, bool):
+        use_admin_auth = bool(use_admin_auth)
+
+    # Validate: if useAdminAuth is enabled, an API token is mandatory at creation time
+    api_token_for_admin: str = body.get("apiToken", "").strip()
+    if use_admin_auth and auth_mode in ("api_token", "headers") and not api_token_for_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="An API token is required when 'useAdminAuth' is enabled.",
+        )
+
     instance: dict[str, Any] = {
         "_id": instance_id,
         "instanceName": instance_name,
@@ -404,12 +452,17 @@ async def create_instance(
         "requiredEnv": body.get("requiredEnv", list(template.required_env) if template else []),
         "iconPath": body.get("iconPath", template.icon_path if template else ""),
         "authHeaderMapping": body.get("authHeaderMapping", auth_header_mapping),
+        "useAdminAuth": use_admin_auth,
+        "defaultHeaderName": body.get("headerName", "Authorization") if auth_mode == "headers" else None,
         "enabled": True,
         "orgId": user_context["org_id"],
         "createdBy": user_context["user_id"],
         "createdAtTimestamp": now,
         "updatedAtTimestamp": now,
     }
+
+    if instance_oauth_config is not None:
+        instance["instanceOauthConfig"] = instance_oauth_config
 
     all_instances_data = await config_service.get_config(get_mcp_server_instances_path(), default=[])
     if not isinstance(all_instances_data, list):
@@ -426,6 +479,41 @@ async def create_instance(
             config_service, updated_by=user_context["user_id"],
         )
         instance["hasOAuthClientConfig"] = True
+
+    # When useAdminAuth is enabled, immediately store the admin's token so
+    # non-admin users can auto-authenticate against it.
+    if use_admin_auth and api_token_for_admin and auth_mode in ("api_token", "headers"):
+        admin_user_auth: dict[str, Any] = {
+            "isAuthenticated": True,
+            "authMode": auth_mode,
+            "instanceId": instance_id,
+            "serverType": server_type,
+            "transport": transport,
+            "command": instance.get("command", ""),
+            "args": instance.get("args", []),
+            "url": instance.get("url", ""),
+            "requiredEnv": instance.get("requiredEnv", []),
+            "auth": (
+                {
+                    "headerName": body.get("headerName", "Authorization"),
+                    "headerValue": api_token_for_admin,
+                }
+                if auth_mode == "headers"
+                else {"apiToken": api_token_for_admin}
+            ),
+            "credentials": {},
+            "updatedAt": now,
+            "updatedBy": user_context["user_id"],
+        }
+        admin_auth_path = get_mcp_server_config_path(instance_id, user_context["user_id"])
+        try:
+            await config_service.set_config(admin_auth_path, admin_user_auth)
+        except Exception as e:
+            logger.error(
+                "Failed to save admin credentials for new MCP instance %s: %s",
+                instance_id, e,
+            )
+            # Non-fatal: instance is created; admin can re-authenticate later.
 
     return {"status": "success", "instance": instance, "message": "MCP server instance created successfully."}
 
@@ -481,6 +569,62 @@ async def update_instance(
     for field in updatable_fields:
         if field in body:
             instance[field] = body[field]
+
+    # Handle useAdminAuth toggle with validation
+    if "useAdminAuth" in body:
+        new_use_admin_auth = bool(body["useAdminAuth"])
+        current_auth_mode = instance.get("authMode", "none")
+        if new_use_admin_auth and current_auth_mode in ("api_token", "headers"):
+            # When enabling admin auth, an API token must either already be stored
+            # (admin previously authenticated) or be provided in this request.
+            api_token = body.get("apiToken", "").strip()
+            if api_token:
+                # Store the new admin token immediately
+                admin_auth_path = get_mcp_server_config_path(instance_id, user_context["user_id"])
+                now_ts = get_epoch_timestamp_in_ms()
+                admin_user_auth: dict[str, Any] = {
+                    "isAuthenticated": True,
+                    "authMode": current_auth_mode,
+                    "instanceId": instance_id,
+                    "serverType": instance.get("serverType"),
+                    "transport": instance.get("transport", "stdio"),
+                    "command": instance.get("command", ""),
+                    "args": instance.get("args", []),
+                    "url": instance.get("url", ""),
+                    "requiredEnv": instance.get("requiredEnv", []),
+                    "auth": (
+                        {
+                            "headerName": body.get("headerName", instance.get("defaultHeaderName", "Authorization")),
+                            "headerValue": api_token,
+                        }
+                        if current_auth_mode == "headers"
+                        else {"apiToken": api_token}
+                    ),
+                    "credentials": {},
+                    "updatedAt": now_ts,
+                    "updatedBy": user_context["user_id"],
+                }
+                try:
+                    await config_service.set_config(admin_auth_path, admin_user_auth)
+                except Exception as e:
+                    logger.error(
+                        "Failed to save admin credentials when enabling useAdminAuth for instance %s: %s",
+                        instance_id, e,
+                    )
+            else:
+                # Verify the admin has already authenticated so users can auto-authenticate
+                existing_admin_auth = await _fetch_user_auth(
+                    instance_id, user_context["user_id"], config_service
+                )
+                if not existing_admin_auth or not existing_admin_auth.get("isAuthenticated"):
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail=(
+                            "Cannot enable admin auth without a stored token. "
+                            "Provide 'apiToken' in this request or authenticate first."
+                        ),
+                    )
+        instance["useAdminAuth"] = new_use_admin_auth
 
     instance["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
     all_instances_data[idx] = instance
@@ -574,6 +718,20 @@ async def authenticate_instance(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="For OAuth MCP servers, use /instances/{instance_id}/oauth/authorize."
         )
+
+    # When useAdminAuth is enabled only the admin (creator) may set the shared token.
+    # Non-admin users must use the auto-authenticate endpoint instead.
+    use_admin_auth = instance.get("useAdminAuth", False)
+    if use_admin_auth and auth_mode in ("api_token", "headers"):
+        is_admin = await _check_user_is_admin(user_id, request, config_service)
+        if not is_admin:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=(
+                    "This instance uses admin-managed credentials. "
+                    "Use POST /instances/{instance_id}/auto-authenticate to authenticate."
+                ),
+            )
 
     body_data = await request.body()
     body = _parse_request_json(request, body_data)
@@ -727,6 +885,17 @@ async def auto_authenticate_instance(
             detail="This MCP server requires no authentication.",
         )
 
+    # auto-authenticate is only valid when the admin has opted in to shared credentials.
+    use_admin_auth = instance.get("useAdminAuth", False)
+    if not use_admin_auth:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=(
+                "This instance requires individual authentication. "
+                "Use POST /instances/{instance_id}/authenticate and provide your own credentials."
+            ),
+        )
+
     # Retrieve the admin's stored credentials (from the user who created the instance)
     created_by = instance.get("createdBy", "")
     if not created_by:
@@ -833,10 +1002,19 @@ async def oauth_authorize(
     """
     Generate an OAuth authorization URL for the user to authorize this MCP server.
 
-    The frontend provides its baseUrl (window.location.origin). This endpoint
-    builds the redirect_uri from baseUrl + template.redirect_uri (same pattern
-    as connector OAuth), constructs the authorization URL, and returns it.
+    Automatically detects whether the MCP server supports Dynamic Client Registration
+    (DCR) by probing {mcp_url}/.well-known/oauth-authorization-server.  If the
+    well-known document contains a registration_endpoint the DCR flow is used
+    (no admin credentials needed).  Otherwise the standard OAuth flow is used
+    (requires admin-provided clientId / clientSecret).
     """
+    from app.agents.mcp.dcr import (
+        build_dcr_authorization_url,
+        discover_auth_metadata,
+        generate_pkce_pair,
+        register_dcr_client,
+    )
+
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
     user_id = user_context["user_id"]
@@ -856,10 +1034,131 @@ async def oauth_authorize(
     server_type = instance.get("serverType", "")
     registry = _get_registry(request)
     template = registry.get_template(server_type)
-    if not template or not template.auth.oauth2_authorization_url:
+
+    # For custom servers without a registry template, fall back to the OAuth
+    # provider config stored directly on the instance.
+    instance_oauth_cfg: dict[str, Any] = instance.get("instanceOauthConfig") or {}
+
+    if not template and not instance_oauth_cfg:
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"No OAuth configuration found for server type '{server_type}'."
+            detail=(
+                f"No template found for server type '{server_type}' and no OAuth "
+                "provider configuration is stored on this instance. Please delete and "
+                "re-create the server, supplying the Authorization URL and Token URL."
+            ),
+        )
+
+    # Build redirect URI from base_url + template/instance path
+    if not base_url:
+        try:
+            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+            base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
+        except Exception:
+            base_url = "http://localhost:3001"
+
+    redirect_uri_path = (template.redirect_uri if template else "") or f"mcp-servers/oauth/callback/{server_type}"
+    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri_path}"
+    logger.info(f"redirect_uri: {redirect_uri}")
+    # Resolve the MCP server URL (may be overridden per-instance)
+    mcp_url = instance.get("url") or (template.url if template else "")
+
+    # Probe for DCR support
+    dcr_metadata = await discover_auth_metadata(mcp_url) if mcp_url else None
+
+    if dcr_metadata:
+        # ── DCR flow ──────────────────────────────────────────────────────────
+        registration_endpoint = dcr_metadata["registration_endpoint"]
+        authorization_endpoint = dcr_metadata.get("authorization_endpoint", "")
+        token_endpoint = dcr_metadata.get("token_endpoint", "")
+
+        if not authorization_endpoint or not token_endpoint:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_GATEWAY.value,
+                detail="DCR metadata is missing authorization_endpoint or token_endpoint."
+            )
+
+        # Reuse an existing DCR client if already registered for this user+instance
+        dcr_path = get_mcp_server_dcr_client_path(instance_id, user_id)
+        dcr_client: dict[str, Any] | None = None
+        try:
+            candidate = await config_service.get_config(dcr_path, default=None)
+            if isinstance(candidate, dict) and candidate.get("client_id"):
+                dcr_client = candidate
+        except Exception:
+            pass
+
+        if not dcr_client:
+            display_name = instance.get("displayName") or (template.display_name if template else "") or "PipesHub MCP"
+            oauth_scopes = (template.auth.oauth2_scopes if template else None) or instance_oauth_cfg.get("scopes", [])
+            try:
+                dcr_client = await register_dcr_client(
+                    registration_endpoint=registration_endpoint,
+                    redirect_uri=redirect_uri,
+                    scopes=oauth_scopes,
+                    client_name=f"PipesHub – {display_name}",
+                )
+            except RuntimeError as exc:
+                logger.error("DCR registration failed for instance %s: %s", instance_id, exc)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Dynamic Client Registration failed: {exc}"
+                ) from exc
+
+        # Persist DCR client + endpoint info for token exchange / refresh
+        dcr_store: dict[str, Any] = {
+            **dcr_client,
+            "token_endpoint": token_endpoint,
+            "authorization_endpoint": authorization_endpoint,
+            "registration_endpoint": registration_endpoint,
+            "issuer": dcr_metadata.get("issuer", ""),
+            "mcp_url": mcp_url,
+            "updatedAt": int(time.time()),
+        }
+        await config_service.set_config(dcr_path, dcr_store)
+
+        # PKCE
+        code_verifier, _code_challenge = generate_pkce_pair()
+        state = secrets.token_urlsafe(32)
+
+        state_data: dict[str, Any] = {
+            "state": state,
+            "instanceId": instance_id,
+            "serverType": server_type,
+            "userId": user_id,
+            "redirectUri": redirect_uri,
+            "codeVerifier": code_verifier,
+            "isDcr": True,
+            "createdAt": int(time.time()),
+        }
+        state_path = f"/services/mcp-servers/{instance_id}/{user_id}/oauth-state"
+        await config_service.set_config(state_path, state_data)
+
+        oauth_scopes = (template.auth.oauth2_scopes if template else None) or instance_oauth_cfg.get("scopes", [])
+        authorization_url = build_dcr_authorization_url(
+            authorization_endpoint=authorization_endpoint,
+            client_id=dcr_client["client_id"],
+            redirect_uri=redirect_uri,
+            scopes=oauth_scopes,
+            state=state,
+            code_verifier=code_verifier,
+        )
+
+        return {
+            "status": "success",
+            "authorizationUrl": authorization_url,
+            "state": state,
+        }
+
+    # ── Standard OAuth flow (admin-provided credentials) ─────────────────────
+    effective_authorization_url = (
+        (template.auth.oauth2_authorization_url if template else "")
+        or instance_oauth_cfg.get("authorizationUrl", "")
+    )
+    if not effective_authorization_url:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"No OAuth authorization URL configured for server type '{server_type}'."
         )
 
     oauth_config = await _load_oauth_client_config(instance_id, config_service)
@@ -873,17 +1172,6 @@ async def oauth_authorize(
             ),
         )
 
-    # Build redirect URI from base_url + template path (like connector OAuth)
-    if not base_url:
-        try:
-            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-            base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
-        except Exception:
-            base_url = "http://localhost:3001"
-
-    redirect_uri_path = template.redirect_uri or f"mcp-servers/oauth/callback/{server_type}"
-    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri_path}"
-
     state = secrets.token_urlsafe(32)
     state_data = {
         "state": state,
@@ -891,31 +1179,119 @@ async def oauth_authorize(
         "serverType": server_type,
         "userId": user_id,
         "redirectUri": redirect_uri,
+        "isDcr": False,
         "createdAt": int(time.time()),
     }
     state_path = f"/services/mcp-servers/{instance_id}/{user_id}/oauth-state"
     await config_service.set_config(state_path, state_data)
 
-    params = {
+    effective_scopes = (
+        (template.auth.oauth2_scopes if template else None)
+        or instance_oauth_cfg.get("scopes", [])
+    )
+    params: dict[str, str] = {
         "response_type": "code",
         "client_id": oauth_config["clientId"],
         "redirect_uri": redirect_uri,
-        "scope": " ".join(template.auth.oauth2_scopes),
+        "scope": " ".join(effective_scopes),
         "state": state,
     }
 
     if "audience" in oauth_config:
         params["audience"] = oauth_config["audience"]
 
-    if template.auth.oauth2_scopes and "offline_access" in template.auth.oauth2_scopes:
+    if effective_scopes and "offline_access" in effective_scopes:
         params["prompt"] = "consent"
 
-    authorization_url = f"{template.auth.oauth2_authorization_url}?{urlencode(params)}"
+    authorization_url = f"{effective_authorization_url}?{urlencode(params)}"
 
     return {
         "status": "success",
         "authorizationUrl": authorization_url,
         "state": state,
+    }
+
+
+async def _persist_oauth_tokens_and_auth(
+    instance_id: str,
+    user_id: str,
+    server_type: str,
+    instance: dict[str, Any],
+    token_data: dict[str, Any],
+    config_service: ConfigurationService,
+) -> dict[str, Any]:
+    """
+    Shared helper: persist OAuth tokens + user auth record, schedule refresh.
+    Used by both the POST and GET callback endpoints.
+    """
+    access_token = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+    expires_in = token_data.get("expires_in", 3600)
+    scope = token_data.get("scope", "")
+
+    if not access_token:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail="OAuth provider returned empty access token.",
+        )
+
+    now = get_epoch_timestamp_in_ms()
+    expires_at = int(time.time()) + int(expires_in)
+
+    tokens = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "expires_at": expires_at,
+        "scope": scope,
+    }
+    await _save_oauth_tokens(instance_id, user_id, tokens, config_service)
+
+    user_auth: dict[str, Any] = {
+        "isAuthenticated": True,
+        "authMode": "oauth",
+        "instanceId": instance_id,
+        "serverType": server_type,
+        "transport": instance.get("transport", "streamable_http"),
+        "command": instance.get("command", ""),
+        "args": instance.get("args", []),
+        "url": instance.get("url", ""),
+        "requiredEnv": instance.get("requiredEnv", []),
+        "auth": {},
+        "credentials": {
+            "access_token": access_token,
+            "token_type": tokens["token_type"],
+            "expires_at": expires_at,
+            "scope": scope,
+        },
+        "updatedAt": now,
+        "updatedBy": user_id,
+    }
+
+    auth_path = get_mcp_server_config_path(instance_id, user_id)
+    await config_service.set_config(auth_path, user_auth)
+
+    if tokens.get("refresh_token"):
+        try:
+            from app.connectors.core.base.token_service.startup_service import startup_service
+            mcp_refresh_service = startup_service.get_mcp_token_refresh_service()
+            if mcp_refresh_service:
+                await mcp_refresh_service.schedule_token_refresh(
+                    auth_path, instance_id, user_id, expires_at
+                )
+        except Exception as _sched_err:
+            logger.warning(
+                "Failed to schedule MCP token refresh after callback for instance %s: %s",
+                instance_id,
+                _sched_err,
+            )
+
+    return {
+        "status": "success",
+        "message": "OAuth authentication completed successfully.",
+        "isAuthenticated": True,
+        "expiresAt": expires_at,
+        "scope": scope,
     }
 
 
@@ -929,10 +1305,12 @@ async def oauth_callback(
     """
     Exchange an OAuth authorization code for access and refresh tokens.
 
+    Supports both DCR (isDcr flag in saved state) and standard OAuth flows.
     The frontend receives the code and state from the OAuth provider's redirect
-    and POSTs them here. This endpoint validates the state, exchanges the code
-    for tokens, and persists them.
+    and POSTs them here.
     """
+    from app.agents.mcp.dcr import exchange_dcr_code
+
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
     user_id = user_context["user_id"]
@@ -977,125 +1355,109 @@ async def oauth_callback(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     server_type = instance.get("serverType", "")
-    registry = _get_registry(request)
-    template = registry.get_template(server_type)
-    if not template:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Template not found.")
-
-    oauth_config = await _load_oauth_client_config(instance_id, config_service)
-    if not oauth_config:
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="OAuth client credentials not configured for this instance."
-        )
-
-    token_url = template.auth.oauth2_token_url
-    if not token_url:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="No token URL configured for this server type.")
-
     if not redirect_uri:
         redirect_uri = saved_state.get("redirectUri", "")
 
-    token_payload = {
-        "grant_type": "authorization_code",
-        "client_id": oauth_config["clientId"],
-        "client_secret": oauth_config.get("clientSecret", ""),
-        "code": code,
-        "redirect_uri": redirect_uri,
-    }
+    is_dcr = saved_state.get("isDcr", False)
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    if is_dcr:
+        # ── DCR token exchange ────────────────────────────────────────────────
+        dcr_path = get_mcp_server_dcr_client_path(instance_id, user_id)
         try:
-            resp = await http_client.post(
-                token_url,
-                data=token_payload,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            dcr_client = await config_service.get_config(dcr_path, default=None)
+        except Exception:
+            dcr_client = None
+
+        if not isinstance(dcr_client, dict) or not dcr_client.get("client_id"):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="DCR client info not found. Please restart the authorization flow.",
             )
-        except httpx.RequestError as e:
-            logger.error("OAuth token exchange network error for %s: %s", server_type, e)
+
+        token_endpoint = dcr_client.get("token_endpoint", "")
+        if not token_endpoint:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="DCR token endpoint missing. Please restart the authorization flow.",
+            )
+
+        code_verifier = saved_state.get("codeVerifier", "")
+        try:
+            token_data = await exchange_dcr_code(
+                token_endpoint=token_endpoint,
+                code=code,
+                redirect_uri=redirect_uri,
+                client_id=dcr_client["client_id"],
+                client_secret=dcr_client.get("client_secret", ""),
+                code_verifier=code_verifier,
+            )
+        except RuntimeError as exc:
+            logger.error("DCR code exchange failed for instance %s: %s", instance_id, exc)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_GATEWAY.value,
-                detail=f"Failed to reach OAuth token endpoint: {e}"
-            ) from e
+                detail=f"Token exchange failed: {exc}",
+            ) from exc
+    else:
+        # ── Standard OAuth token exchange ─────────────────────────────────────
+        registry = _get_registry(request)
+        template = registry.get_template(server_type)
+        instance_oauth_cfg: dict[str, Any] = instance.get("instanceOauthConfig") or {}
 
-    if resp.status_code != 200:
-        error_detail = resp.text[:500]
-        logger.error("OAuth token exchange failed for %s: %d %s", server_type, resp.status_code, error_detail)
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"OAuth token exchange failed (HTTP {resp.status_code}): {error_detail}"
-        )
+        if not template and not instance_oauth_cfg:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Template not found and no instance OAuth config available.")
 
-    token_data = resp.json()
-    access_token = token_data.get("access_token", "")
-    refresh_token = token_data.get("refresh_token", "")
-    expires_in = token_data.get("expires_in", 3600)
-    scope = token_data.get("scope", "")
-
-    if not access_token:
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail="OAuth provider returned empty access token."
-        )
-
-    now = get_epoch_timestamp_in_ms()
-    expires_at = int(time.time()) + int(expires_in)
-
-    tokens = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": token_data.get("token_type", "Bearer"),
-        "expires_at": expires_at,
-        "scope": scope,
-    }
-    await _save_oauth_tokens(instance_id, user_id, tokens, config_service)
-
-    user_auth: dict[str, Any] = {
-        "isAuthenticated": True,
-        "authMode": "oauth",
-        "instanceId": instance_id,
-        "serverType": server_type,
-        "transport": instance.get("transport", "streamable_http"),
-        "command": instance.get("command", ""),
-        "args": instance.get("args", []),
-        "url": instance.get("url", ""),
-        "requiredEnv": instance.get("requiredEnv", []),
-        "auth": {},
-        "credentials": {
-            "access_token": access_token,
-            "token_type": tokens["token_type"],
-            "expires_at": expires_at,
-            "scope": scope,
-        },
-        "updatedAt": now,
-        "updatedBy": user_id,
-    }
-
-    auth_path = get_mcp_server_config_path(instance_id, user_id)
-    await config_service.set_config(auth_path, user_auth)
-
-    # Schedule proactive token refresh before expiry (mirrors toolset OAuth callback behaviour)
-    if tokens.get("refresh_token"):
-        try:
-            from app.connectors.core.base.token_service.startup_service import startup_service
-            mcp_refresh_service = startup_service.get_mcp_token_refresh_service()
-            if mcp_refresh_service:
-                await mcp_refresh_service.schedule_token_refresh(
-                    auth_path, instance_id, user_id, expires_at
-                )
-        except Exception as _sched_err:
-            logger.warning(
-                "Failed to schedule MCP token refresh after callback for instance %s: %s",
-                instance_id, _sched_err,
+        oauth_config = await _load_oauth_client_config(instance_id, config_service)
+        if not oauth_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="OAuth client credentials not configured for this instance.",
             )
 
-    return {
-        "status": "success",
-        "message": "OAuth authentication completed successfully.",
-        "isAuthenticated": True,
-        "expiresAt": expires_at,
-        "scope": scope,
-    }
+        token_url = (
+            (template.auth.oauth2_token_url if template else "")
+            or instance_oauth_cfg.get("tokenUrl", "")
+        )
+        if not token_url:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="No token URL configured for this server type.",
+            )
+
+        token_payload = {
+            "grant_type": "authorization_code",
+            "client_id": oauth_config["clientId"],
+            "client_secret": oauth_config.get("clientSecret", ""),
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            try:
+                resp = await http_client.post(
+                    token_url,
+                    data=token_payload,
+                    headers=_OAUTH_TOKEN_EXCHANGE_HEADERS,
+                )
+            except httpx.RequestError as exc:
+                logger.error("OAuth token exchange network error for %s: %s", server_type, exc)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Failed to reach OAuth token endpoint: {exc}",
+                ) from exc
+
+        if resp.status_code != 200:
+            error_detail = resp.text[:500]
+            logger.error("OAuth token exchange failed for %s: %d %s", server_type, resp.status_code, error_detail)
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_GATEWAY.value,
+                detail=f"OAuth token exchange failed (HTTP {resp.status_code}): {error_detail}",
+            )
+
+        token_data = _parse_token_response(resp)
+
+    return await _persist_oauth_tokens_and_auth(
+        instance_id, user_id, server_type, instance, token_data, config_service
+    )
 
 
 @router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -1111,10 +1473,13 @@ async def oauth_callback_global(
     """
     Global OAuth callback — mirrors the connector OAuth pattern.
 
+    Supports both DCR (isDcr flag in saved state) and standard OAuth flows.
     The OAuth provider redirects the browser to a frontend callback page.
     That page calls this endpoint with code, state, and baseUrl as query params.
     The instanceId is extracted from the persisted state data.
     """
+    from app.agents.mcp.dcr import exchange_dcr_code
+
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
     user_id = user_context["user_id"]
@@ -1170,129 +1535,116 @@ async def oauth_callback_global(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     server_type = instance.get("serverType", "")
-    registry = _get_registry(request)
-    template = registry.get_template(server_type)
-    if not template:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Template not found.")
-
-    oauth_config = await _load_oauth_client_config(instance_id, config_service)
-    if not oauth_config:
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="OAuth client credentials not configured for this instance."
-        )
-
-    token_url = template.auth.oauth2_token_url
-    if not token_url:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="No token URL configured for this server type.")
-
     redirect_uri = saved_state.get("redirectUri", "")
+    is_dcr = saved_state.get("isDcr", False)
 
-    token_payload = {
-        "grant_type": "authorization_code",
-        "client_id": oauth_config["clientId"],
-        "client_secret": oauth_config.get("clientSecret", ""),
-        "code": code,
-        "redirect_uri": redirect_uri,
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    if is_dcr:
+        # ── DCR token exchange ────────────────────────────────────────────────
+        dcr_path = get_mcp_server_dcr_client_path(instance_id, user_id)
         try:
-            resp = await http_client.post(
-                token_url,
-                data=token_payload,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            dcr_client = await config_service.get_config(dcr_path, default=None)
+        except Exception:
+            dcr_client = None
+
+        if not isinstance(dcr_client, dict) or not dcr_client.get("client_id"):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="DCR client info not found. Please restart the authorization flow.",
             )
-        except httpx.RequestError as e:
-            logger.error("OAuth token exchange network error for %s: %s", server_type, e)
+
+        token_endpoint = dcr_client.get("token_endpoint", "")
+        if not token_endpoint:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="DCR token endpoint missing. Please restart the authorization flow.",
+            )
+
+        code_verifier = saved_state.get("codeVerifier", "")
+        try:
+            token_data = await exchange_dcr_code(
+                token_endpoint=token_endpoint,
+                code=code,
+                redirect_uri=redirect_uri,
+                client_id=dcr_client["client_id"],
+                client_secret=dcr_client.get("client_secret", ""),
+                code_verifier=code_verifier,
+            )
+        except RuntimeError as exc:
+            logger.error("DCR code exchange failed for instance %s: %s", instance_id, exc)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_GATEWAY.value,
-                detail=f"Failed to reach OAuth token endpoint: {e}"
-            ) from e
+                detail=f"Token exchange failed: {exc}",
+            ) from exc
+    else:
+        # ── Standard OAuth token exchange ─────────────────────────────────────
+        registry = _get_registry(request)
+        template = registry.get_template(server_type)
+        instance_oauth_cfg: dict[str, Any] = instance.get("instanceOauthConfig") or {}
 
-    if resp.status_code != 200:
-        error_detail = resp.text[:500]
-        logger.error("OAuth token exchange failed for %s: %d %s", server_type, resp.status_code, error_detail)
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"OAuth token exchange failed (HTTP {resp.status_code}): {error_detail}"
-        )
+        if not template and not instance_oauth_cfg:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Template not found and no instance OAuth config available.")
 
-    token_data = resp.json()
-    access_token = token_data.get("access_token", "")
-    refresh_token = token_data.get("refresh_token", "")
-    expires_in = token_data.get("expires_in", 3600)
-    scope = token_data.get("scope", "")
-
-    if not access_token:
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail="OAuth provider returned empty access token."
-        )
-
-    now = get_epoch_timestamp_in_ms()
-    expires_at = int(time.time()) + int(expires_in)
-
-    tokens = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": token_data.get("token_type", "Bearer"),
-        "expires_at": expires_at,
-        "scope": scope,
-    }
-    await _save_oauth_tokens(instance_id, user_id, tokens, config_service)
-
-    user_auth: dict[str, Any] = {
-        "isAuthenticated": True,
-        "authMode": "oauth",
-        "instanceId": instance_id,
-        "serverType": server_type,
-        "transport": instance.get("transport", "streamable_http"),
-        "command": instance.get("command", ""),
-        "args": instance.get("args", []),
-        "url": instance.get("url", ""),
-        "requiredEnv": instance.get("requiredEnv", []),
-        "auth": {},
-        "credentials": {
-            "access_token": access_token,
-            "token_type": tokens["token_type"],
-            "expires_at": expires_at,
-            "scope": scope,
-        },
-        "updatedAt": now,
-        "updatedBy": user_id,
-    }
-
-    auth_path = get_mcp_server_config_path(instance_id, user_id)
-    await config_service.set_config(auth_path, user_auth)
-
-    # Schedule proactive token refresh before expiry (mirrors toolset OAuth callback behaviour)
-    if tokens.get("refresh_token"):
-        try:
-            from app.connectors.core.base.token_service.startup_service import startup_service
-            mcp_refresh_service = startup_service.get_mcp_token_refresh_service()
-            if mcp_refresh_service:
-                await mcp_refresh_service.schedule_token_refresh(
-                    auth_path, instance_id, user_id, expires_at
-                )
-        except Exception as _sched_err:
-            logger.warning(
-                "Failed to schedule MCP token refresh after global callback for instance %s: %s",
-                instance_id, _sched_err,
+        oauth_config = await _load_oauth_client_config(instance_id, config_service)
+        if not oauth_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="OAuth client credentials not configured for this instance.",
             )
 
-    # Return redirect URL like connectors do
+        token_url = (
+            (template.auth.oauth2_token_url if template else "")
+            or instance_oauth_cfg.get("tokenUrl", "")
+        )
+        if not token_url:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="No token URL configured for this server type.",
+            )
+
+        token_payload = {
+            "grant_type": "authorization_code",
+            "client_id": oauth_config["clientId"],
+            "client_secret": oauth_config.get("clientSecret", ""),
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            try:
+                resp = await http_client.post(
+                    token_url,
+                    data=token_payload,
+                    headers=_OAUTH_TOKEN_EXCHANGE_HEADERS,
+                )
+            except httpx.RequestError as exc:
+                logger.error("OAuth token exchange network error for %s: %s", server_type, exc)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Failed to reach OAuth token endpoint: {exc}",
+                ) from exc
+
+        if resp.status_code != 200:
+            error_detail = resp.text[:500]
+            logger.error("OAuth token exchange failed for %s: %d %s", server_type, resp.status_code, error_detail)
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_GATEWAY.value,
+                detail=f"OAuth token exchange failed (HTTP {resp.status_code}): {error_detail}",
+            )
+
+        token_data = _parse_token_response(resp)
+
+    result = await _persist_oauth_tokens_and_auth(
+        instance_id, user_id, server_type, instance, token_data, config_service
+    )
+
     redirect_url = ""
     if base_url:
-        redirect_url = f"{base_url.rstrip('/')}/dashboard/mcp-servers?tab=my-servers"
+        redirect_url = f"{base_url.rstrip('/')}/workspace/mcp-servers?tab=my-servers"
 
     return {
+        **result,
         "success": True,
         "redirectUrl": redirect_url,
-        "message": "OAuth authentication completed successfully.",
-        "isAuthenticated": True,
-        "expiresAt": expires_at,
-        "scope": scope,
     }
 
 
@@ -1305,7 +1657,11 @@ async def oauth_refresh(
 ) -> dict[str, Any]:
     """
     Refresh an expired OAuth access token using the stored refresh token.
+
+    Supports both DCR (checks for persisted DCR client) and standard OAuth flows.
     """
+    from app.agents.mcp.dcr import refresh_dcr_token
+
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
     user_id = user_context["user_id"]
@@ -1323,52 +1679,96 @@ async def oauth_refresh(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     server_type = instance.get("serverType", "")
-    registry = _get_registry(request)
-    template = registry.get_template(server_type)
-    if not template or not template.auth.oauth2_token_url:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="No OAuth configuration for this server type.")
 
-    oauth_config = await _load_oauth_client_config(instance_id, config_service)
-    if not oauth_config:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OAuth client credentials not configured for this instance.")
+    # Detect DCR: check for a persisted DCR client for this user+instance
+    dcr_path = get_mcp_server_dcr_client_path(instance_id, user_id)
+    dcr_client: dict[str, Any] | None = None
+    try:
+        candidate = await config_service.get_config(dcr_path, default=None)
+        if isinstance(candidate, dict) and candidate.get("client_id") and candidate.get("token_endpoint"):
+            dcr_client = candidate
+    except Exception:
+        pass
 
-    refresh_payload = {
-        "grant_type": "refresh_token",
-        "client_id": oauth_config["clientId"],
-        "client_secret": oauth_config.get("clientSecret", ""),
-        "refresh_token": existing_tokens["refresh_token"],
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    if dcr_client:
+        # ── DCR refresh ───────────────────────────────────────────────────────
         try:
-            resp = await http_client.post(
-                template.auth.oauth2_token_url,
-                data=refresh_payload,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            token_data = await refresh_dcr_token(
+                token_endpoint=dcr_client["token_endpoint"],
+                refresh_token=existing_tokens["refresh_token"],
+                client_id=dcr_client["client_id"],
+                client_secret=dcr_client.get("client_secret", ""),
             )
-        except httpx.RequestError as e:
-            logger.error("OAuth token refresh network error for %s: %s", server_type, e)
+        except RuntimeError as exc:
+            logger.error("DCR token refresh failed for instance %s: %s", instance_id, exc)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_GATEWAY.value,
-                detail=f"Failed to reach OAuth token endpoint: {e}"
-            ) from e
+                detail=f"Token refresh failed: {exc}. You may need to re-authorize.",
+            ) from exc
+    else:
+        # ── Standard OAuth refresh ────────────────────────────────────────────
+        registry = _get_registry(request)
+        template = registry.get_template(server_type)
+        instance_oauth_cfg: dict[str, Any] = instance.get("instanceOauthConfig") or {}
 
-    if resp.status_code != 200:
-        error_detail = resp.text[:500]
-        logger.error("OAuth token refresh failed for %s: %d %s", server_type, resp.status_code, error_detail)
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"Token refresh failed (HTTP {resp.status_code}). You may need to re-authorize."
+        token_url = (
+            (template.auth.oauth2_token_url if template else "")
+            or instance_oauth_cfg.get("tokenUrl", "")
         )
+        if not token_url:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="No OAuth configuration for this server type.",
+            )
 
-    token_data = resp.json()
+        oauth_config = await _load_oauth_client_config(instance_id, config_service)
+        if not oauth_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="OAuth client credentials not configured for this instance.",
+            )
+
+        refresh_payload = {
+            "grant_type": "refresh_token",
+            "client_id": oauth_config["clientId"],
+            "client_secret": oauth_config.get("clientSecret", ""),
+            "refresh_token": existing_tokens["refresh_token"],
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            try:
+                resp = await http_client.post(
+                    token_url,
+                    data=refresh_payload,
+                    headers=_OAUTH_TOKEN_EXCHANGE_HEADERS,
+                )
+            except httpx.RequestError as exc:
+                logger.error("OAuth token refresh network error for %s: %s", server_type, exc)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Failed to reach OAuth token endpoint: {exc}",
+                ) from exc
+
+        if resp.status_code != 200:
+            error_detail = resp.text[:500]
+            logger.error("OAuth token refresh failed for %s: %d %s", server_type, resp.status_code, error_detail)
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_GATEWAY.value,
+                detail=f"Token refresh failed (HTTP {resp.status_code}). You may need to re-authorize.",
+            )
+
+        token_data = _parse_token_response(resp)
+
     access_token = token_data.get("access_token", "")
     new_refresh_token = token_data.get("refresh_token", existing_tokens["refresh_token"])
     expires_in = token_data.get("expires_in", 3600)
     scope = token_data.get("scope", existing_tokens.get("scope", ""))
 
     if not access_token:
-        raise HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail="Provider returned empty access token on refresh.")
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail="Provider returned empty access token on refresh.",
+        )
 
     expires_at = int(time.time()) + int(expires_in)
     now = get_epoch_timestamp_in_ms()
@@ -1386,13 +1786,14 @@ async def oauth_refresh(
     try:
         user_auth = await config_service.get_config(auth_path, default=None)
         if isinstance(user_auth, dict):
+            user_auth.setdefault("credentials", {})
             user_auth["credentials"]["access_token"] = access_token
             user_auth["credentials"]["expires_at"] = expires_at
             user_auth["credentials"]["scope"] = scope
             user_auth["updatedAt"] = now
             await config_service.set_config(auth_path, user_auth)
-    except Exception as e:
-        logger.warning("Failed to update auth record after token refresh: %s", e)
+    except Exception as exc:
+        logger.warning("Failed to update auth record after token refresh: %s", exc)
 
     # Re-schedule the next proactive refresh with the new expiry
     try:
@@ -1405,7 +1806,8 @@ async def oauth_refresh(
     except Exception as _sched_err:
         logger.warning(
             "Failed to re-schedule MCP token refresh after manual refresh for instance %s: %s",
-            instance_id, _sched_err,
+            instance_id,
+            _sched_err,
         )
 
     return {
@@ -1521,6 +1923,8 @@ async def get_my_mcp_servers(
             "authMode": inst.get("authMode", "none"),
             "supportedAuthTypes": inst.get("supportedAuthTypes", []),
             "iconPath": inst.get("iconPath", ""),
+            "useAdminAuth": inst.get("useAdminAuth", False),
+            "defaultHeaderName": inst.get("defaultHeaderName"),
             "isConfigured": True,
             "isAuthenticated": is_authenticated,
             "isFromRegistry": False,

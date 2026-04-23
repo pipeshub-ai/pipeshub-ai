@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import {
   Flex,
   Text,
@@ -11,9 +11,14 @@ import {
   IconButton,
   Spinner,
   TextArea,
+  Switch,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
+import {
+  WorkspaceRightPanel,
+  WorkspaceRightPanelBodyPortalContext,
+  WORKSPACE_DRAWER_POPPER_Z_INDEX,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { McpServersApi } from '../api';
 import type { MCPServerInstance } from '../types';
@@ -76,6 +81,7 @@ export function CustomMcpServerDialog({
   onCreated,
 }: CustomMcpServerDialogProps) {
   const addToast = useToastStore((s) => s.addToast);
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
   const [instanceName, setInstanceName] = useState('');
   const [description, setDescription] = useState('');
@@ -87,12 +93,29 @@ export function CustomMcpServerDialog({
   const [authMode, setAuthMode] = useState('none');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [authorizationUrl, setAuthorizationUrl] = useState('');
+  const [tokenUrl, setTokenUrl] = useState('');
+  const [scopes, setScopes] = useState('');
   const [headerKey, setHeaderKey] = useState('Authorization');
   const [headerValue, setHeaderValue] = useState('');
+  const [useAdminAuth, setUseAdminAuth] = useState(false);
+  const [adminApiToken, setAdminApiToken] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
+
+  const redirectUri = typeof window !== 'undefined'
+    ? `${window.location.origin}/mcp-servers/oauth/callback/custom`
+    : '';
+
+  const handleCopyRedirectUri = () => {
+    navigator.clipboard.writeText(redirectUri);
+    setCopiedRedirectUri(true);
+    setTimeout(() => setCopiedRedirectUri(false), 2000);
+  };
 
   const isHttpTransport = transport === 'streamable_http' || transport === 'sse';
+  const supportsAdminAuth = authMode === 'api_token' || authMode === 'headers';
 
   const handleCreate = async () => {
     setError(null);
@@ -109,8 +132,8 @@ export function CustomMcpServerDialog({
       setError('URL is required for HTTP transport');
       return;
     }
-    if (authMode === 'oauth' && !clientId.trim()) {
-      setError('Client ID is required for OAuth authentication');
+    if (useAdminAuth && supportsAdminAuth && !adminApiToken.trim()) {
+      setError('API token is required when "Use shared admin token" is enabled');
       return;
     }
 
@@ -137,6 +160,7 @@ export function CustomMcpServerDialog({
         transport,
         authMode,
         supportedAuthTypes: authMode === 'none' ? [] : [authMode.toUpperCase()],
+        useAdminAuth: supportsAdminAuth ? useAdminAuth : false,
       };
 
       if (transport === 'stdio') {
@@ -147,9 +171,24 @@ export function CustomMcpServerDialog({
         body.url = url.trim();
       }
 
-      if (authMode === 'oauth' && clientId.trim()) {
-        body.clientId = clientId.trim();
-        body.clientSecret = clientSecret.trim() || undefined;
+      if (authMode === 'oauth') {
+        if (clientId.trim()) {
+          body.clientId = clientId.trim();
+          body.clientSecret = clientSecret.trim() || undefined;
+        }
+        if (authorizationUrl.trim()) body.authorizationUrl = authorizationUrl.trim();
+        if (tokenUrl.trim()) body.tokenUrl = tokenUrl.trim();
+        if (scopes.trim()) {
+          body.scopes = scopes.split(',').map((s) => s.trim()).filter(Boolean);
+        }
+      }
+
+      if (authMode === 'headers') {
+        body.headerName = headerKey.trim() || 'Authorization';
+      }
+
+      if (supportsAdminAuth && useAdminAuth && adminApiToken.trim()) {
+        body.apiToken = adminApiToken.trim();
       }
 
       const result = await McpServersApi.createInstance(body);
@@ -175,8 +214,13 @@ export function CustomMcpServerDialog({
     setAuthMode('none');
     setClientId('');
     setClientSecret('');
+    setAuthorizationUrl('');
+    setTokenUrl('');
+    setScopes('');
     setHeaderKey('Authorization');
     setHeaderValue('');
+    setUseAdminAuth(false);
+    setAdminApiToken('');
     setError(null);
     onClose();
   };
@@ -245,7 +289,11 @@ export function CustomMcpServerDialog({
           <FieldLabel label="Transport" />
           <Select.Root value={transport} onValueChange={setTransport}>
             <Select.Trigger style={{ width: '100%' }} />
-            <Select.Content>
+            <Select.Content
+              position="popper"
+              container={panelBodyPortal ?? undefined}
+              style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+            >
               {TRANSPORT_OPTIONS.map((opt) => (
                 <Select.Item key={opt.value} value={opt.value}>
                   {opt.label}
@@ -313,7 +361,11 @@ export function CustomMcpServerDialog({
           <FieldLabel label="Authentication" />
           <Select.Root value={authMode} onValueChange={setAuthMode}>
             <Select.Trigger style={{ width: '100%' }} />
-            <Select.Content>
+            <Select.Content
+              position="popper"
+              container={panelBodyPortal ?? undefined}
+              style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+            >
               {AUTH_MODE_OPTIONS.map((opt) => (
                 <Select.Item key={opt.value} value={opt.value}>
                   {opt.label}
@@ -325,6 +377,60 @@ export function CustomMcpServerDialog({
             {AUTH_MODE_OPTIONS.find((o) => o.value === authMode)?.description}
           </FieldHint>
         </Flex>
+
+        {/* useAdminAuth toggle — only for api_token / headers modes */}
+        {supportsAdminAuth && (
+          <Flex
+            direction="column"
+            gap="3"
+            style={{
+              padding: 12,
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid var(--gray-a5)',
+              background: 'var(--gray-a2)',
+            }}
+          >
+            <Flex align="center" justify="between" gap="3">
+              <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+                  Use shared admin token
+                </Text>
+                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                  When enabled, you provide a service token now and all users automatically
+                  authenticate with it. When disabled, each user must supply their own token.
+                </Text>
+              </Flex>
+              <Switch
+                checked={useAdminAuth}
+                onCheckedChange={setUseAdminAuth}
+                size="2"
+              />
+            </Flex>
+
+            {useAdminAuth && (
+              <Flex direction="column" gap="2">
+                <FieldLabel
+                  label={authMode === 'headers' ? 'Shared Header Value' : 'Service API Token'}
+                  required
+                />
+                <TextField.Root
+                  type="password"
+                  placeholder={
+                    authMode === 'headers'
+                      ? `Enter the shared value for the ${headerKey || 'Authorization'} header. e.g. Bearer sk-...`
+                      : 'Enter the shared API token'
+                  }
+                  value={adminApiToken}
+                  onChange={(e) => setAdminApiToken(e.target.value)}
+                />
+                <FieldHint>
+                  This value will be used for all users. It is stored securely and never
+                  exposed in the UI.
+                </FieldHint>
+              </Flex>
+            )}
+          </Flex>
+        )}
 
         {/* OAuth fields */}
         {authMode === 'oauth' && (
@@ -341,10 +447,57 @@ export function CustomMcpServerDialog({
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               OAuth App Credentials
             </Text>
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              If your server supports Dynamic Client Registration (DCR), you can leave the
+              fields below blank — credentials will be auto-discovered when you authenticate.
+              Otherwise, create an OAuth app with your provider and enter the credentials below.
+            </Text>
+
+            {redirectUri && (
+              <Flex direction="column" gap="1">
+                <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
+                  Redirect URI (copy to your OAuth app config)
+                </Text>
+                <Flex
+                  align="center"
+                  gap="2"
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 'var(--radius-2)',
+                    background: 'var(--gray-a3)',
+                  }}
+                >
+                  <Text
+                    size="1"
+                    style={{
+                      fontFamily: 'monospace',
+                      flex: 1,
+                      wordBreak: 'break-all',
+                      color: 'var(--gray-12)',
+                    }}
+                  >
+                    {redirectUri}
+                  </Text>
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color={copiedRedirectUri ? 'green' : 'gray'}
+                    onClick={handleCopyRedirectUri}
+                  >
+                    <MaterialIcon
+                      name={copiedRedirectUri ? 'check' : 'content_copy'}
+                      size={14}
+                      color={copiedRedirectUri ? 'var(--green-9)' : 'var(--gray-9)'}
+                    />
+                  </IconButton>
+                </Flex>
+              </Flex>
+            )}
+
             <Flex direction="column" gap="2">
-              <FieldLabel label="Client ID" required />
+              <FieldLabel label="Client ID" />
               <TextField.Root
-                placeholder="Enter your OAuth Client ID"
+                placeholder="Enter your OAuth Client ID (optional for DCR servers)"
                 value={clientId}
                 onChange={(e) => setClientId(e.target.value)}
               />
@@ -358,6 +511,33 @@ export function CustomMcpServerDialog({
                 onChange={(e) => setClientSecret(e.target.value)}
               />
             </Flex>
+            <Flex direction="column" gap="2">
+              <FieldLabel label="Authorization URL" />
+              <TextField.Root
+                placeholder="e.g. https://github.com/login/oauth/authorize"
+                value={authorizationUrl}
+                onChange={(e) => setAuthorizationUrl(e.target.value)}
+              />
+              <FieldHint>The URL where users are sent to authorize your app</FieldHint>
+            </Flex>
+            <Flex direction="column" gap="2">
+              <FieldLabel label="Token URL" />
+              <TextField.Root
+                placeholder="e.g. https://github.com/login/oauth/access_token"
+                value={tokenUrl}
+                onChange={(e) => setTokenUrl(e.target.value)}
+              />
+              <FieldHint>The URL used to exchange the authorization code for tokens</FieldHint>
+            </Flex>
+            <Flex direction="column" gap="2">
+              <FieldLabel label="Scopes" />
+              <TextField.Root
+                placeholder="e.g. repo, read:user"
+                value={scopes}
+                onChange={(e) => setScopes(e.target.value)}
+              />
+              <FieldHint>Comma-separated OAuth scopes to request</FieldHint>
+            </Flex>
             <FieldHint>
               Users will authenticate via OAuth after the server is created.
             </FieldHint>
@@ -365,7 +545,7 @@ export function CustomMcpServerDialog({
         )}
 
         {/* Headers auth fields */}
-        {authMode === 'headers' && isHttpTransport && (
+        {authMode === 'headers' && (
           <Flex
             direction="column"
             gap="3"
@@ -387,21 +567,23 @@ export function CustomMcpServerDialog({
                 onChange={(e) => setHeaderKey(e.target.value)}
               />
             </Flex>
-            <Flex direction="column" gap="2">
-              <FieldLabel label="Header Value" />
-              <TextField.Root
-                type="password"
-                placeholder="Bearer sk-..."
-                value={headerValue}
-                onChange={(e) => setHeaderValue(e.target.value)}
-              />
-              <FieldHint>Optional — you can configure this later</FieldHint>
-            </Flex>
+            {!useAdminAuth && (
+              <Flex direction="column" gap="2">
+                <FieldLabel label="Header Value" />
+                <TextField.Root
+                  type="password"
+                  placeholder="Bearer sk-..."
+                  value={headerValue}
+                  onChange={(e) => setHeaderValue(e.target.value)}
+                />
+                <FieldHint>Optional — you can configure this later</FieldHint>
+              </Flex>
+            )}
           </Flex>
         )}
 
-        {/* API token hint for stdio */}
-        {authMode === 'api_token' && transport === 'stdio' && (
+        {/* Info hint for api_token + stdio when useAdminAuth is off */}
+        {authMode === 'api_token' && transport === 'stdio' && !useAdminAuth && (
           <Flex
             align="center"
             gap="2"
@@ -414,7 +596,7 @@ export function CustomMcpServerDialog({
           >
             <MaterialIcon name="info" size={16} color="var(--blue-9)" />
             <Text size="1" style={{ color: 'var(--blue-11)' }}>
-              The API token will be set as the first required environment variable when users authenticate.
+              Each user will be prompted to provide their own API token when they authenticate.
             </Text>
           </Flex>
         )}

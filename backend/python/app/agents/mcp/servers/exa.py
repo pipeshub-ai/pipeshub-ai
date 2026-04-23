@@ -30,6 +30,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
         default_method="api_key",
         env_mapping={"apiToken": "x-api-key"},
     ),
+    use_admin_auth=True,
 )
 class ExaSearch:
     """Exa Search MCP server template."""
