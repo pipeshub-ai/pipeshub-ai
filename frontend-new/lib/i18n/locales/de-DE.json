@@ -24,7 +24,8 @@
   },
   "chatStream": {
     "thinkingFallback": "Denken…",
-    "refiningResponse": "Antwort wird verfeinert…"
+    "refiningResponse": "Antwort wird verfeinert…",
+    "errorFallback": "Es ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",

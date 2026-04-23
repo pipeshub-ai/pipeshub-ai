@@ -3,7 +3,11 @@
 import React, { useState } from 'react';
 import { Flex, Text, Popover } from '@radix-ui/themes';
 import { CitationPopoverContent } from './citation-popover';
-import { CITATION_POPOVER_WIDTH, CITATION_POPOVER_MAX_WIDTH } from './constants';
+import {
+  CITATION_POPOVER_WIDTH,
+  CITATION_POPOVER_MAX_WIDTH,
+  CITATION_POPOVER_Z_INDEX,
+} from './constants';
 import type { CitationData, CitationCallbacks } from './types';
 import {
   useCitationMessageRowKeyForInline,
@@ -125,7 +129,7 @@ export function CitationNumberCircle({
         align="start"
         onOpenAutoFocus={(e) => e.preventDefault()}
         style={{
-          zIndex: 10_000,
+          zIndex: CITATION_POPOVER_Z_INDEX,
           width: CITATION_POPOVER_WIDTH,
           maxWidth: CITATION_POPOVER_MAX_WIDTH,
           backgroundColor: 'var(--effects-translucent)',

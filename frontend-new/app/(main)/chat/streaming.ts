@@ -174,7 +174,7 @@ export async function streamMessageForSlot(
     globalThis.crypto &&
     typeof globalThis.crypto.randomUUID === 'function'
       ? globalThis.crypto.randomUUID()
-      : `asst-pending-${Date.now()}`;
+      : "asst-pending-" + crypto.randomUUID();
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
@@ -457,7 +457,9 @@ export async function streamMessageForSlot(
 
     console.error('[streaming] Fatal error for slot', slotId, error);
     const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
-    const errorMessage = error instanceof Error ? error.message : 'An error occurred. Please try again.';
+    const errorMessage = error instanceof Error
+      ? error.message
+      : i18n.t('chatStream.errorFallback');
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       streamingContent: '',

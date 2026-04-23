@@ -14,3 +14,6 @@ export const CITATION_POPOVER_WIDTH = '420px';
  * the visible area.
  */
 export const CITATION_POPOVER_MAX_WIDTH = '90vw';
+
+/** Above thread chrome and overlay panels so the popover is not clipped by stacking. */
+export const CITATION_POPOVER_Z_INDEX = 10_000;

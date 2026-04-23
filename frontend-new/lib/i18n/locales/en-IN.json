@@ -24,7 +24,8 @@
   },
   "chatStream": {
     "thinkingFallback": "Thinking…",
-    "refiningResponse": "Refining response…"
+    "refiningResponse": "Refining response…",
+    "errorFallback": "An error occurred. Please try again."
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
