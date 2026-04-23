@@ -382,7 +382,6 @@ export interface AllRecordsFilter {
 
   // Source filters (specific to All Records mode)
   origins?: NodeOrigin[];         // Aligned with API: replaces 'sources'
-  collectionIds?: string[];       // Maps to kbIds parameter
   connectorIds?: string[];
 
   // Size filter

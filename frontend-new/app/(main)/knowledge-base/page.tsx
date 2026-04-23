@@ -183,7 +183,6 @@ function KnowledgeBasePageContent() {
     rawAllRecordsFilter.recordTypes?.join(','),
     rawAllRecordsFilter.indexingStatus?.join(','),
     rawAllRecordsFilter.origins?.join(','),
-    rawAllRecordsFilter.collectionIds?.join(','),
     rawAllRecordsFilter.connectorIds?.join(','),
     rawAllRecordsFilter.sizeRanges?.join(','),
     rawAllRecordsFilter.createdAfter,
@@ -235,14 +234,26 @@ function KnowledgeBasePageContent() {
   const hasHydratedFromUrl = useRef(false);
   const isFirstUrlSyncRender = useRef(true);
 
-  // Hydration: Parse URL params into store on initial mount
+  // Hydration: Parse URL params into store once the URL is readable.
+  // useSearchParams() can mount empty before the real query is available; defer until it matches
+  // the browser URL so we never mark hydrated without applying view=all-records filters.
   useEffect(() => {
     if (hasHydratedFromUrl.current) return;
+
+    const qs = searchParams.toString();
+    const locationSearch =
+      typeof window !== 'undefined' ? window.location.search.replace(/^\?/, '') : '';
+    // Next can mount with empty useSearchParams while location already has the query — wait one tick.
+    if (!qs && locationSearch.length > 0) {
+      return;
+    }
+
     hasHydratedFromUrl.current = true;
 
     const store = useKnowledgeBaseStore.getState();
+    const allRecords = getIsAllRecordsMode(searchParams);
 
-    if (isAllRecordsMode) {
+    if (allRecords) {
       const parsed = parseAllRecordsParams(searchParams);
       if (Object.keys(parsed.filter).length > 0) store.hydrateAllRecordsFilter(parsed.filter);
       if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
@@ -269,7 +280,7 @@ function KnowledgeBasePageContent() {
         setIsSearchOpen(true);
       }
     }
-  }, []);
+  }, [searchParams]);
 
   // URL sync: Write store state to URL when filter/sort/pagination/search changes
   useEffect(() => {
@@ -280,27 +291,33 @@ function KnowledgeBasePageContent() {
     }
     if (!hasHydratedFromUrl.current) return;
 
+    // Always read the latest store snapshot here. This effect can run in the same commit as
+    // hydration; React closures may still hold the pre-hydration filter, which would serialize
+    // an empty filter and router.replace() would strip connectorIds / indexingStatus from the URL.
+    const store = useKnowledgeBaseStore.getState();
+    const allRecords = getIsAllRecordsMode(searchParams);
+
     // Build base navigation params (preserve view, nodeType, nodeId)
     const baseParams: Record<string, string> = {};
-    if (isAllRecordsMode) baseParams.view = 'all-records';
+    if (allRecords) baseParams.view = 'all-records';
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
     if (nodeType) baseParams.nodeType = nodeType;
     if (nodeId) baseParams.nodeId = nodeId;
 
     let filterParams: Record<string, string>;
-    if (isAllRecordsMode) {
+    if (allRecords) {
       filterParams = serializeAllRecordsParams(
-        allRecordsFilter,
-        allRecordsSort,
-        { page: allRecordsPagination.page, limit: allRecordsPagination.limit },
+        store.allRecordsFilter,
+        store.allRecordsSort,
+        { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
         debouncedAllRecordsSearchQuery
       );
     } else {
       filterParams = serializeCollectionsParams(
-        filter,
-        sort,
-        { page: collectionsPagination.page, limit: collectionsPagination.limit },
+        store.filter,
+        store.sort,
+        { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
         debouncedSearchQuery
       );
     }
@@ -329,8 +346,7 @@ function KnowledgeBasePageContent() {
         allRecordsFilter.updatedAfter ||
         allRecordsFilter.updatedBefore ||
         allRecordsFilter.origins?.length ||
-        allRecordsFilter.connectorIds?.length ||
-        allRecordsFilter.collectionIds?.length
+        allRecordsFilter.connectorIds?.length
       );
     }
     return !!(
@@ -510,14 +526,6 @@ function KnowledgeBasePageContent() {
         currentAllRecordsSort,
         currentPagination
       );
-
-      console.log('DEBUG::page::fetchAllRecordsTableData::params', {
-        searchQuery: currentAllRecordsSearchQuery,
-        searchParam: params.q,
-        allParams: params,
-        nodeType,
-        nodeId
-      });
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
       let data;

@@ -183,6 +183,8 @@
     "dateCreated": "Fecha de creación",
     "lastUpdated": "Última actualización",
     "source": "Origen",
+    "connector": "Conector",
+    "connectors": "Conectores",
     "createdAt": "Creado el",
     "folder": "Carpeta",
     "file": "Archivo",
