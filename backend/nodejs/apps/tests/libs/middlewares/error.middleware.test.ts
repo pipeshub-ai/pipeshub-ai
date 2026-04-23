@@ -213,10 +213,13 @@ describe('ErrorMiddleware', () => {
       expect(response.error.metadata).to.deep.equal({ extra: 'dev-info' })
     })
 
-    it('should NOT include metadata in production mode', () => {
+    it('should not include error metadata in production mode', () => {
       process.env.NODE_ENV = 'production'
 
-      const error = new BadRequestError('test', { secret: 'data' })
+      const error = new BadRequestError('test', {
+        blockedUntil: '2026-04-25T10:00:00.000Z',
+        secret: 'data',
+      })
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()

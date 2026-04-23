@@ -210,16 +210,19 @@ describe('UserController', () => {
   });
 
   describe('unblockUser', () => {
-    it('should unblock a user successfully', async () => {
+    it('should unblock a user successfully and clear cooldown expiry', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
-
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+      const findOneAndUpdateStub = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
         userId: '507f1f77bcf86cd799439011',
         isBlocked: false,
       } as any);
 
       await controller.unblockUser(req, res, next);
 
+      expect(findOneAndUpdateStub.calledOnce).to.be.true;
+      expect(findOneAndUpdateStub.firstCall.args[1]).to.deep.equal({
+        $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null },
+      });
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith({ message: 'User unblocked successfully' })).to.be.true;
     });

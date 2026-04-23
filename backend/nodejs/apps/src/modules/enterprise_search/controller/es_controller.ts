@@ -386,13 +386,8 @@ export const streamChat =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
       const userQueryMessage = buildUserQueryMessage(req.body.query);
 
       const userConversationData: Partial<IConversation> = {
@@ -423,11 +418,22 @@ export const streamChat =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
         userId,
       });
+
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
@@ -441,7 +447,7 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: chatMode,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
@@ -5025,13 +5031,8 @@ export const unshareAgent =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
       const userQueryMessage = buildUserQueryMessage(req.body.query);
 
       const userConversationData: Partial<IAgentConversation> = {
@@ -5065,12 +5066,23 @@ export const unshareAgent =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newAgentConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
         userId,
         agentKey,
       });
+
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newAgentConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
 
       // Prepare AI payload
       const aiPayload = {
@@ -5086,7 +5098,7 @@ export const unshareAgent =
         modelFriendlyName: req.body.modelFriendlyName || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newAgentConversationId || null,
       };
 
       logger.info('aiPayload', aiPayload);

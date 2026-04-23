@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Box, Text, Heading } from '@radix-ui/themes';
@@ -39,6 +39,7 @@ function emitRun(
         key={`cite-group-${run[0].key}`}
         items={run.map((m) => ({
           chunkIndex: m.chunkIndex,
+          occurrenceKey: m.key,
           citation: m.citation as CitationData,
         }))}
         callbacks={citationCallbacks}
@@ -51,6 +52,7 @@ function emitRun(
     <InlineCitationBadge
       key={`cite-${only.key}`}
       chunkIndex={only.chunkIndex}
+      occurrenceKey={only.key}
       citation={only.citation}
       callbacks={citationCallbacks}
     />
@@ -178,8 +180,11 @@ export function AnswerContent({
   citationMaps,
   citationCallbacks,
 }: AnswerContentProps) {
-  // Custom components for react-markdown
-  const components = {
+  // Stable `components` so parent re-renders (e.g. sibling message streaming) do
+  // not replace react-markdown's custom component fns and tear down popovers and
+  // other interactive content for this message.
+  const components = useMemo(
+    () => ({
     h1: ({ children }: { children?: React.ReactNode }) => (
       <Heading size="5" weight="bold" style={{ marginTop: 'var(--space-4)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
         {children}
@@ -234,11 +239,13 @@ export function AnswerContent({
     ),
     strong: ({ children }: { children?: React.ReactNode }) => (
       <Text weight="bold" style={{ color: 'var(--slate-12)' }}>
-        {children}
+        {processChildren(children, citationMaps, citationCallbacks)}
       </Text>
     ),
     em: ({ children }: { children?: React.ReactNode }) => (
-      <Text style={{ fontStyle: 'italic' }}>{children}</Text>
+      <Text style={{ fontStyle: 'italic' }}>
+        {processChildren(children, citationMaps, citationCallbacks)}
+      </Text>
     ),
     code: ({ children }: { children?: React.ReactNode }) => (
       <code
@@ -295,7 +302,7 @@ export function AnswerContent({
           fontSize: 'var(--font-size-2)',
         }}
       >
-        {children}
+        {processChildren(children, citationMaps, citationCallbacks)}
       </a>
     ),
     table: ({ children }: { children?: React.ReactNode }) => (
@@ -358,7 +365,7 @@ export function AnswerContent({
         }}
       >
         <Text size="2" weight="bold">
-          {children}
+          {processChildren(children, citationMaps, citationCallbacks)}
         </Text>
       </th>
     ),
@@ -375,7 +382,9 @@ export function AnswerContent({
         </Text>
       </td>
     ),
-  };
+  }),
+    [citationMaps, citationCallbacks],
+  );
 
   return (
     <Box>

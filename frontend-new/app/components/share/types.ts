@@ -81,13 +81,6 @@ export interface SharedAvatarMember {
   type?: 'user' | 'team';
 }
 
-/** Create team payload */
-export interface CreateTeamPayload {
-  name: string;
-  description: string;
-  userRoles: Array<{ userId: string; role: string }>;
-}
-
 /** The adapter interface — each entity page implements this */
 export interface ShareAdapter {
   entityType: ShareEntityType;

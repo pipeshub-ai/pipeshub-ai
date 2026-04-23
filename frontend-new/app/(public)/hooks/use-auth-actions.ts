@@ -9,6 +9,7 @@ import { AuthApi } from '../api';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
+  getUserAccountBlockedUntil,
 } from '@/lib/api/user-account-api-error';
 
 // ─── Local error classification (login-module only) ───────────────────────────
@@ -40,6 +41,32 @@ function extractErrorMessage(error: unknown): string {
     e?.message ??
     ''
   ).toLowerCase();
+}
+
+function formatBlockedUntilLocal(blockedUntilIso?: string): string | undefined {
+  if (!blockedUntilIso) {
+    return undefined;
+  }
+
+  const blockedUntilDate = new Date(blockedUntilIso);
+  if (Number.isNaN(blockedUntilDate.getTime())) {
+    return undefined;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(blockedUntilDate);
+}
+
+function getBlockedUntilDescription(error: unknown): string | undefined {
+  const blockedUntilIso = getUserAccountBlockedUntil(error);
+  const blockedUntilLocal = formatBlockedUntilLocal(blockedUntilIso);
+  if (!blockedUntilLocal) {
+    return undefined;
+  }
+
+  return `Try again after ${blockedUntilLocal}.`;
 }
 
 function classifyAuthError(error: unknown): AuthErrorKind {
@@ -165,11 +192,17 @@ export function useAuthActions({
         );
 
         if (kind === 'accessRevoked') {
+          const blockedUntilDescription = getBlockedUntilDescription(err);
           if (bodyMsg) {
-            toast.error(bodyMsg, { duration: null, showCloseButton: true });
+            toast.error(bodyMsg, {
+              description: blockedUntilDescription,
+              duration: null,
+              showCloseButton: true,
+            });
           } else {
             toast.error('Your account has been disabled.', {
               description:
+                blockedUntilDescription ??
                 'You have entered incorrect credentials too many times',
               duration: null,
               showCloseButton: true,
@@ -272,11 +305,16 @@ export function useAuthActions({
           'Google sign-in failed. Please try again.',
         );
         if (kind === 'accessRevoked') {
+          const blockedUntilDescription = getBlockedUntilDescription(err);
           if (bodyMsg) {
-            toast.error(bodyMsg, { duration: null, showCloseButton: true });
+            toast.error(bodyMsg, {
+              description: blockedUntilDescription,
+              duration: null,
+              showCloseButton: true,
+            });
           } else {
             toast.error('Your account has been disabled.', {
-              description: 'Please contact your administrator.',
+              description: blockedUntilDescription ?? 'Please contact your administrator.',
               duration: null,
               showCloseButton: true,
             });
@@ -338,11 +376,16 @@ export function useAuthActions({
           'OAuth sign-in failed. Please try again.',
         );
         if (kind === 'accessRevoked') {
+          const blockedUntilDescription = getBlockedUntilDescription(err);
           if (bodyMsg) {
-            toast.error(bodyMsg, { duration: null, showCloseButton: true });
+            toast.error(bodyMsg, {
+              description: blockedUntilDescription,
+              duration: null,
+              showCloseButton: true,
+            });
           } else {
             toast.error('Your account has been disabled.', {
-              description: 'Please contact your administrator.',
+              description: blockedUntilDescription ?? 'Please contact your administrator.',
               duration: null,
               showCloseButton: true,
             });
@@ -436,11 +479,17 @@ export function useAuthActions({
         );
 
         if (kind === 'accessRevoked') {
+          const blockedUntilDescription = getBlockedUntilDescription(err);
           if (bodyMsg) {
-            toast.error(bodyMsg, { duration: null, showCloseButton: true });
+            toast.error(bodyMsg, {
+              description: blockedUntilDescription,
+              duration: null,
+              showCloseButton: true,
+            });
           } else {
             toast.error('Your account has been disabled.', {
               description:
+                blockedUntilDescription ??
                 'You have entered incorrect credentials too many times',
               duration: null,
               showCloseButton: true,
@@ -493,11 +542,16 @@ export function useAuthActions({
           'Microsoft sign-in failed. Please try again.',
         );
         if (kind === 'accessRevoked') {
+          const blockedUntilDescription = getBlockedUntilDescription(err);
           if (bodyMsg) {
-            toast.error(bodyMsg, { duration: null, showCloseButton: true });
+            toast.error(bodyMsg, {
+              description: blockedUntilDescription,
+              duration: null,
+              showCloseButton: true,
+            });
           } else {
             toast.error('Your account has been disabled.', {
-              description: 'Please contact your administrator.',
+              description: blockedUntilDescription ?? 'Please contact your administrator.',
               duration: null,
               showCloseButton: true,
             });

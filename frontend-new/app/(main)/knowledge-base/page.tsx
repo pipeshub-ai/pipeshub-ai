@@ -2119,7 +2119,7 @@ function KnowledgeBasePageContent() {
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
         />
 
-        {/* Chat Bar */}
+        {/* Chat Bar (temporarily disabled)
         {selectedCount === 0 &&
         <Box
           style={{ 
@@ -2136,7 +2136,7 @@ function KnowledgeBasePageContent() {
             isAllRecordsMode={isAllRecordsMode}
           />
         </Box>
-        }
+        } */}
       </Flex>
 
       {/* Collections mode only dialogs */}

@@ -399,7 +399,7 @@ export class UserController {
           isBlocked: true,
           isDeleted: false,
         },
-        { $set: { isBlocked: false, wrongCredentialCount: 0 } },
+        { $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null } },
         { new: true }
       );
 

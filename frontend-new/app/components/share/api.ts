@@ -1,9 +1,12 @@
 import { apiClient } from '@/lib/api';
-import type { CreateTeamPayload, ShareTeam, ShareUser } from './types';
+import type { ShareTeam, ShareUser } from './types';
 
 /**
  * Common APIs used by the share sidebar regardless of entity type.
  * Teams and users are shared resources across all entity types.
+ *
+ * Team CRUD lives in {@link '@/app/(main)/workspace/teams/api'.TeamsApi} — do
+ * not duplicate it here.
  */
 export const ShareCommonApi = {
   /** List teams the current user belongs to */
@@ -17,44 +20,6 @@ export const ShareCommonApi = {
       description: (t.description as string) ?? '',
       memberCount: (t.memberCount as number) ?? (t.members as unknown[] ?? []).length,
     }));
-  },
-
-  /** Create a new team */
-  async createTeam(payload: CreateTeamPayload): Promise<ShareTeam> {
-    const { data } = await apiClient.post('/api/v1/teams', payload, { suppressErrorToast: true });
-    return {
-      id: data.id as string,
-      name: data.name,
-      description: data.description ?? '',
-      memberCount: data.memberCount ?? (data.members ?? []).length,
-    };
-  },
-
-  /** Get a team by ID */
-  async getTeamById(teamId: string): Promise<ShareTeam> {
-    const { data } = await apiClient.get(`/api/v1/teams/${teamId}`);
-    return {
-      id: data.id as string,
-      name: data.name,
-      description: data.description ?? '',
-      memberCount: data.memberCount ?? (data.members ?? []).length,
-    };
-  },
-
-  /** Update an existing team */
-  async updateTeam(teamId: string, payload: Partial<CreateTeamPayload>): Promise<ShareTeam> {
-    const { data } = await apiClient.put(`/api/v1/teams/${teamId}`, payload);
-    return {
-      id: data.id as string,
-      name: data.name,
-      description: data.description ?? '',
-      memberCount: data.memberCount ?? (data.members ?? []).length,
-    };
-  },
-
-  /** Delete a team */
-  async deleteTeam(teamId: string): Promise<void> {
-    await apiClient.delete(`/api/v1/teams/${teamId}`);
   },
 
   /**
