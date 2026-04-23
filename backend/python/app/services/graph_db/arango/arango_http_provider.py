@@ -691,56 +691,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
 
-    def _create_typed_record_from_arango(
-        self, record_dict: dict, type_doc: dict | None
-    ) -> Record:
-        """
-        Build a typed Record (FileRecord, MailRecord, etc.) from Arango record + type doc.
-        Matches BaseArangoService._create_typed_record_from_arango for same return type.
-        """
-        record_type = record_dict.get("recordType")
-
-        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            return Record.from_arango_base_record(record_dict)
-
-        try:
-            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
-
-            if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.LINKS.value:
-                return LinkRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.PROJECTS.value:
-                return ProjectRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.MEETINGS.value:
-                return MeetingRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.PRODUCTS.value:
-                return ProductRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.DEALS.value:
-                return DealRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.ARTIFACTS.value:
-                return ArtifactRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.SQL_TABLES.value:
-                return SQLTableRecord.from_arango_record(type_doc, record_dict)
-            if collection == CollectionNames.SQL_VIEWS.value:
-                return SQLViewRecord.from_arango_record(type_doc, record_dict)
-            return Record.from_arango_base_record(record_dict)
-        except Exception as e:
-            self.logger.warning(
-                "Failed to create typed record for %s, falling back to base Record: %s",
-                record_type,
-                str(e),
-            )
-            return Record.from_arango_base_record(record_dict)
-
     async def get_record_by_id(
         self,
         record_id: str,
@@ -3115,22 +3065,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "max_depth": max_depth,
             }
 
-            folder_filter = '''
-                LET targetDoc = FIRST(
+            # Match Neo4j: MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+            # WHERE typeDoc.isFile = true OR NOT typeDoc:File
+            files_col = CollectionNames.FILES.value
+            folder_filter = f'''
+                LET hasValidTypeEdge = LENGTH(
                     FOR v IN 1..1 OUTBOUND record._id @@is_of_type
+                        FILTER !IS_SAME_COLLECTION("{files_col}", v._id) OR v.isFile == true
                         LIMIT 1
-                        RETURN v
-                )
-
-                // If the record connects to a file collection, verify isFile == true
-                // For any other type (webpage, ticket, etc.), automatically accept
-                LET isValidRecord = (
-                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                        ? targetDoc.isFile == true
-                        : true  // Not a file (webpage, ticket, etc.) - accept it
-                )
-
-                FILTER isValidRecord
+                        RETURN 1
+                ) > 0
+                FILTER hasValidTypeEdge
             '''
 
             # Build dynamic typeDoc conditions
@@ -3150,6 +3095,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER edge._from == record._id
                             LET doc = DOCUMENT(edge._to)
                             FILTER doc != null
+                            FILTER !IS_SAME_COLLECTION("{files_col}", doc._id) OR doc.isFile == true
                             RETURN doc
                     )[0]"""
                 type_doc_conditions.append(condition)
@@ -3480,24 +3426,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Returns:
             Properly typed Record instance (FileRecord, MailRecord, etc.)
+
+        Raises:
+            ValueError: If type doc is missing, record type is unknown, or typed construction fails
+                (same behavior as the Neo4j provider typed record factory)
         """
         record_type = record_dict.get("recordType")
 
-        # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            # No type collection or no type doc - use base Record
-            record_data = self._translate_node_from_arango(record_dict)
-            return Record.from_arango_base_record(record_data)
+            raise ValueError(
+                f"No type collection or no type doc, record type:{record_type} or type doc:{type_doc}"
+            )
 
         try:
-            # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
-            # Apply translation to both documents
             type_doc_data = self._translate_node_from_arango(type_doc)
             record_data = self._translate_node_from_arango(record_dict)
 
-            # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
                 return FileRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MAILS.value:
@@ -3525,12 +3471,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             elif collection == CollectionNames.SQL_VIEWS.value:
                 return SQLViewRecord.from_arango_record(type_doc_data, record_data)
             else:
-                # Unknown collection - fallback to base Record
-                return Record.from_arango_base_record(record_data)
+                raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
-            self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
-            record_data = self._translate_node_from_arango(record_dict)
-            return Record.from_arango_base_record(record_data)
+            self.logger.warning(
+                f"Failed to create typed record for {record_type}: {str(e)}"
+            )
+            raise ValueError(
+                f"Failed to create typed record for {record_type}"
+            ) from e
 
     async def get_record_by_conversation_index(
         self,

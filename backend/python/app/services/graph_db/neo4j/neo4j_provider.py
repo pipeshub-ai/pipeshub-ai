@@ -2137,7 +2137,7 @@ class Neo4jProvider(IGraphDBProvider):
         # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
             # No type collection or no type doc - use base Record
-            return Record.from_arango_base_record(record_dict)
+            raise ValueError(f"No type collection or no type doc, record type:{record_type} or type doc:{type_doc}")
 
         try:
             # Determine which collection this type uses
@@ -2171,11 +2171,14 @@ class Neo4jProvider(IGraphDBProvider):
             elif collection == CollectionNames.SQL_VIEWS.value:
                 return SQLViewRecord.from_arango_record(type_doc, record_dict)
             else:
-                # Unknown collection - fallback to base Record
-                return Record.from_arango_base_record(record_dict)
+                raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
-            self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
-            return Record.from_arango_base_record(record_dict)
+            self.logger.warning(
+                f"Failed to create typed record for {record_type}: {str(e)}"
+            )
+            raise ValueError(
+                f"Failed to create typed record for {record_type}"
+            ) from e
 
     async def get_records_by_parent(
         self,
@@ -2358,7 +2361,7 @@ class Neo4jProvider(IGraphDBProvider):
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
 
                 WITH DISTINCT record
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+                MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
                 WHERE typeDoc.isFile = true OR NOT typeDoc:File
                 WITH record, typeDoc
                 ORDER BY record.id
