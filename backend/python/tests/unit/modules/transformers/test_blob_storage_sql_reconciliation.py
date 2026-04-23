@@ -182,6 +182,29 @@ class TestUploadNextVersionS3:
         assert doc_id == "doc-Y"
         assert size > 0
 
+    @pytest.mark.asyncio
+    async def test_s3_non_versioned_error_includes_phrase(self):
+        bs = _make_bs()
+        _configure_auth(bs, "s3")
+
+        async def _raise_non_versioned(*args, **kwargs):
+            raise Exception("Failed with status 400: This document cannot be versioned")
+
+        bs._get_signed_url = AsyncMock(side_effect=_raise_non_versioned)
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            with pytest.raises(Exception, match="cannot be versioned"):
+                await bs.upload_next_version(
+                    "org-1", "rec-1", "doc-legacy", {"r": 1}, "vr-1",
+                )
+
 
 # ---------------------------------------------------------------------------
 # save_reconciliation_metadata

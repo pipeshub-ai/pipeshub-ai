@@ -441,19 +441,26 @@ class BlobStorage(Transformer):
         try:
             async with session.post(url, json=data, headers=headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    error_detail = ""
                     try:
                         error_response = await response.json()
                         self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
                                         response.status, error_response)
-                        error_message = ""
                         if isinstance(error_response, dict):
-                            error_message = str(error_response.get("error", {}).get("message", "")).lower()
-                        if "cannot be versioned" in error_message:
+                            error_detail = str(error_response.get("error", {}).get("message", "")).strip()
+                            if not error_detail:
+                                error_detail = str(error_response)
+                        else:
+                            error_detail = str(error_response)
+                        if "cannot be versioned" in error_detail.lower():
                             self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
                     except aiohttp.ContentTypeError:
                         error_text = await response.text()
+                        error_detail = error_text[:200].strip()
                         self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
                                         response.status, error_text[:200])
+                    if error_detail:
+                        raise aiohttp.ClientError(f"Failed with status {response.status}: {error_detail}")
                     raise aiohttp.ClientError(f"Failed with status {response.status}")
 
                 response_data = await response.json()
