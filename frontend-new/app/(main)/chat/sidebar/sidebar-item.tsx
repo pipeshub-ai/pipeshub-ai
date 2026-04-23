@@ -125,6 +125,45 @@ export function SidebarItem({
       onClick?.();
     };
 
+    // Never nest interactive controls (e.g. menu triggers) inside <a> — invalid HTML
+    // and clicks can still activate the link / full navigation in the browser.
+    if (rightSlot) {
+      return (
+        <div
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          style={sharedStyle}
+        >
+          <Link
+            href={href}
+            onClick={handleLinkClick}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              flex: 1,
+              minWidth: 0,
+              textDecoration: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+            }}
+          >
+            {icon}
+            {labelContent}
+          </Link>
+          <span
+            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+          >
+            {rightSlot}
+          </span>
+        </div>
+      );
+    }
+
     return (
       <Link
         href={href}
