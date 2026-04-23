@@ -419,6 +419,10 @@ class TestFilterKeys:
         assert IndexingFilterKey.FILES.value == "files"
         assert IndexingFilterKey.EMAILS.value == "emails"
         assert IndexingFilterKey.ENABLE_MANUAL_SYNC.value == "enable_manual_sync"
+        assert IndexingFilterKey.TABLES.value == "index_stage_tables"
+        assert IndexingFilterKey.VIEWS.value == "index_stage_views"
+        assert IndexingFilterKey.STAGE_FILES.value == "index_stage_files"
+        assert IndexingFilterKey.MAX_ROWS_PER_TABLE.value == "max_rows_per_table"
 
 
 # ===========================================================================

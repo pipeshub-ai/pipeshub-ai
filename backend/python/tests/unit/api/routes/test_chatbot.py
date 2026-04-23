@@ -24,6 +24,7 @@ class TestChatQueryModel:
         assert q.modelName is None
         assert q.chatMode == "standard"
         assert q.mode == "json"
+        assert q.conversationId is None
 
     def test_all_fields(self):
         from app.api.routes.chatbot import ChatQuery
@@ -38,6 +39,7 @@ class TestChatQueryModel:
             modelName="gpt-4o-mini",
             chatMode="analysis",
             mode="simple",
+            conversationId="conv-456",
         )
         assert q.limit == 10
         assert q.quickMode is True
@@ -47,6 +49,7 @@ class TestChatQueryModel:
         assert q.modelName == "gpt-4o-mini"
         assert q.retrievalMode == "VECTOR"
         assert len(q.previousConversations) == 1
+        assert q.conversationId == "conv-456"
 
     def test_missing_query_fails(self):
         from app.api.routes.chatbot import ChatQuery
@@ -888,15 +891,17 @@ class TestAskAIStream:
     """Tests for the /chat/stream SSE endpoint (generate_stream coverage)."""
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_happy_path(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Full streaming flow emits status events and stream events."""
         from fastapi.responses import StreamingResponse
@@ -908,6 +913,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
         mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def fake_stream(*args, **kwargs):
             yield {"event": "token", "data": {"content": "Hello"}}
@@ -936,16 +942,12 @@ class TestAskAIStream:
                 {"fullName": "Test User", "designation": "Dev"},
                 {"accountType": "individual"},
             )
-            with patch("app.api.routes.chatbot.QueryDecompositionExpansionService") as mock_decomp:
-                mock_decomp.return_value.transform_query = AsyncMock(return_value={"queries": []})
-
-                response = await askAIStream(
-                    request=mock_request,
-                    retrieval_service=mock_retrieval,
-                    graph_provider=AsyncMock(),
-                    reranker_service=AsyncMock(),
-                    config_service=AsyncMock(),
-                )
+            response = await askAIStream(
+                request=mock_request,
+                retrieval_service=mock_retrieval,
+                graph_provider=AsyncMock(),
+                config_service=AsyncMock(),
+            )
 
         assert isinstance(response, StreamingResponse)
         assert response.media_type == "text/event-stream"
@@ -976,7 +978,6 @@ class TestAskAIStream:
             request=mock_request,
             retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -1018,7 +1019,6 @@ class TestAskAIStream:
             request=mock_request,
             retrieval_service=mock_retrieval,
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -1030,15 +1030,17 @@ class TestAskAIStream:
         assert "error" in combined
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_with_conversation_history(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Stream endpoint transforms query when conversation history is present."""
         from app.api.routes.chatbot import askAIStream
@@ -1048,6 +1050,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
         mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def fake_stream(*args, **kwargs):
             yield {"event": "done", "data": {}}
@@ -1090,7 +1093,6 @@ class TestAskAIStream:
                     request=mock_request,
                     retrieval_service=mock_retrieval,
                     graph_provider=AsyncMock(),
-                    reranker_service=AsyncMock(),
                     config_service=AsyncMock(),
                 )
 
@@ -1101,15 +1103,17 @@ class TestAskAIStream:
                 mock_followup.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_ollama_forces_simple_mode(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Ollama provider forces simple mode in streaming."""
         from app.api.routes.chatbot import askAIStream
@@ -1119,6 +1123,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
         mock_flatten.return_value = []
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def fake_stream(*args, **kwargs):
             yield {"event": "done", "data": {}}
@@ -1149,7 +1154,6 @@ class TestAskAIStream:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -1159,15 +1163,17 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_with_custom_system_prompt(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Custom system prompt overrides mode config."""
         from app.api.routes.chatbot import askAIStream
@@ -1177,6 +1183,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": "You are a custom assistant"})
         mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def fake_stream(*args, **kwargs):
             yield {"event": "done", "data": {}}
@@ -1207,7 +1214,6 @@ class TestAskAIStream:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -1217,15 +1223,17 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_enterprise_user_context(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Enterprise/business user gets org context in stream."""
         from app.api.routes.chatbot import askAIStream
@@ -1235,6 +1243,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
         mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def fake_stream(*args, **kwargs):
             yield {"event": "done", "data": {}}
@@ -1265,7 +1274,6 @@ class TestAskAIStream:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -1275,15 +1283,17 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch("app.api.routes.chatbot.get_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock()))
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.BlobStorage")
     @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_error_during_llm_streaming(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
     ):
         """Error during LLM streaming emits error event."""
         from app.api.routes.chatbot import askAIStream
@@ -1293,6 +1303,7 @@ class TestAskAIStream:
         mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
         mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
         mock_fetch_tool.return_value = MagicMock()
+        mock_exec_tool.return_value = MagicMock()
 
         async def failing_stream(*args, **kwargs):
             raise RuntimeError("Stream crashed")
@@ -1324,7 +1335,6 @@ class TestAskAIStream:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -1488,10 +1498,9 @@ class TestAskAI:
 
 
 # Legacy tests below this point target helpers that were removed/refactored
-# from app.api.routes.chatbot (e.g. process_chat_query, askAI, reranker_service).
+# from app.api.routes.chatbot (e.g. process_chat_query, askAI).
 # They are kept for reference but skipped so the suite validates current behaviour.
 _LEGACY_TEST_SKIPS = {
-    "TestAskAIStream": "Legacy tests target removed helpers (reranker_service param, etc.).",
     "TestAskAI": "Legacy tests target removed process_chat_query / askAI helpers.",
 }
 for _class_name, _reason in _LEGACY_TEST_SKIPS.items():

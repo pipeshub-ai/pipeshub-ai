@@ -15,6 +15,7 @@ import type { Conversation } from '../types';
 
 const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Today': 'timeGroup.today',
+  'Yesterday': 'timeGroup.yesterday',
   'Previous 7 Days': 'timeGroup.previous7Days',
   'Older': 'timeGroup.older',
 };

@@ -167,6 +167,9 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def get_edges_from_node(self, from_node_id, edge_collection):
         return []
+    
+    async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection):
+        return []
 
     async def get_edge(self, from_id, from_collection, to_id, to_collection, collection):
         return None
@@ -279,6 +282,12 @@ class TestTransactionStore:
     async def test_get_edges_from_node_returns_empty(self):
         store = ConcreteTransactionStore()
         result = await store.get_edges_from_node("node1", "edge_coll")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_with_target_name_returns_empty(self):
+        store = ConcreteTransactionStore()
+        result = await store.get_edges_from_node_with_target_name("node1", "edge_coll")
         assert result == []
 
     @pytest.mark.asyncio

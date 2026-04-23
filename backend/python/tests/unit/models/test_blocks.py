@@ -75,6 +75,12 @@ class TestBlockType:
     def test_divider(self):
         assert BlockType.DIVIDER.value == "divider"
 
+    def test_view(self):
+        assert BlockType.VIEW.value == "view"
+
+    def test_sql(self):
+        assert BlockType.SQL.value == "sql"
+
     def test_is_str_enum(self):
         assert isinstance(BlockType.TEXT, str)
 
@@ -115,6 +121,9 @@ class TestGroupType:
 
     def test_column_list(self):
         assert GroupType.COLUMN_LIST.value == "column_list"
+
+    def test_view(self):
+        assert GroupType.VIEW.value == "view"
 
     def test_code(self):
         assert GroupType.CODE.value == "code"
@@ -248,6 +257,12 @@ class TestGroupSubType:
     def test_pr_file_change(self):
         assert GroupSubType.PR_FILE_CHANGE.value == "pr_file_change"
 
+    def test_sql_table(self):
+        assert GroupSubType.SQL_TABLE.value == "sql_table"
+
+    def test_sql_view(self):
+        assert GroupSubType.SQL_VIEW.value == "sql_view"
+
 
 # ============================================================================
 # Block model tests
@@ -301,6 +316,7 @@ class TestBlock:
         assert block.image_metadata is None
         assert block.semantic_metadata is None
         assert block.children_records is None
+        assert block.content_hash is None
 
     def test_links_field(self):
         block = Block(type=BlockType.TEXT, links=["https://example.com"])
@@ -321,6 +337,7 @@ class TestBlockGroup:
         assert bg.name is None
         assert bg.parent_index is None
         assert bg.children is None
+        assert bg.content_hash is None
 
     def test_with_sub_type(self):
         bg = BlockGroup(type=GroupType.TEXT_SECTION, sub_type=GroupSubType.CONTENT)

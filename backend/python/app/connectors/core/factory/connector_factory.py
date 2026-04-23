@@ -64,6 +64,9 @@ from app.connectors.sources.salesforce.connector import SalesforceConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 
+from app.connectors.sources.snowflake.connector import SnowflakeConnector
+from app.connectors.sources.postgres.connector import PostgreSQLConnector
+from app.connectors.sources.mariadb.connector import MariaDBConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -95,12 +98,14 @@ class ConnectorFactory:
         "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,
         "azurefiles": AzureFilesConnector,
+        "postgresql": PostgreSQLConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
+        "mariadb": MariaDBConnector,
     }
 
     # Beta connector definitions - single source of truth
