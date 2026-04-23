@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Flex, Heading, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Heading, IconButton } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
@@ -410,20 +410,21 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
 
         {isQuestionLong && (
-          <button
+          <Button
+            color="gray"
+            size="2"
             onClick={() => setIsQuestionExpanded((prev) => !prev)}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '2px',
               marginTop: 'var(--space-2)',
-              background: 'none',
-              border: 'none',
               cursor: 'pointer',
               color: 'var(--slate-11)',
-              fontSize: '13px',
+              background: 'none',
               padding: 0,
               fontFamily: 'inherit',
+              height: 'auto',
             }}
           >
             {isQuestionExpanded ? 'Show less' : 'Show more'}
@@ -431,7 +432,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               name={isQuestionExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
               size={ICON_SIZES.PRIMARY}
             />
-          </button>
+          </Button>
         )}
       </Box>
 
