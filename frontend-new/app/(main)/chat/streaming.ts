@@ -13,12 +13,14 @@
  *   silently — no React component subscribes to those fields.
  */
 
+import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { debugLog } from './debug-logger';
-import { loadHistoricalMessages } from './runtime';
+import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
+import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
   buildStreamRequestModeFields,
   streamChatModeToAgentApiChatMode,
@@ -32,6 +34,27 @@ import {
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
+
+/**
+ * If the last message is the empty placeholder assistant for an in-flight stream,
+ * replace it with the error text. Otherwise append a new assistant error row.
+ */
+function withStreamingErrorMessage(
+  currentMessages: ThreadMessageLike[],
+  errorText: string
+): ThreadMessageLike[] {
+  const last = currentMessages[currentMessages.length - 1];
+  if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
+    return [
+      ...currentMessages.slice(0, -1),
+      { ...last, content: [{ type: 'text' as const, text: errorText }] },
+    ];
+  }
+  return [
+    ...currentMessages,
+    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }] },
+  ];
+}
 
 function statusMessageFromConnectedEvent(data: SSEConnectedEvent): StatusMessage {
   const raw = typeof data?.message === 'string' ? data.message.trim() : '';
@@ -142,7 +165,18 @@ export async function streamMessageForSlot(
   // Create an abort controller scoped to this stream
   const abortController = new AbortController();
 
-  // Append user message + set streaming state atomically
+  // Ephemeral empty assistant so the in-progress turn has a dedicated "last
+  // assistant" message. Pairs with MessageList: only the last assistant whose
+  // preceding user text matches `streamingQuestion` receives live SSE props
+  // (avoids `!content` false positives on older agent turns).
+  const pendingAssistantId =
+    typeof globalThis !== 'undefined' &&
+    globalThis.crypto &&
+    typeof globalThis.crypto.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `asst-pending-${Date.now()}`;
+
+  // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
     streamingQuestion: query,
@@ -157,6 +191,11 @@ export async function streamMessageForSlot(
     messages: [
       ...slot.messages,
       { role: 'user', content: [{ type: 'text', text: query }] },
+      {
+        role: 'assistant' as const,
+        id: pendingAssistantId,
+        content: [{ type: 'text' as const, text: '' }],
+      },
     ],
   });
 
@@ -316,17 +355,21 @@ export async function streamMessageForSlot(
         // Build finalized messages from API response
         const finalMessages = loadHistoricalMessages(data.conversation.messages);
 
-        useChatStore.getState().updateSlot(slotId, {
-          isStreaming: false,
-          streamingContent: '',
-          streamingQuestion: '',
-          currentStatusMessage: null,
-          streamingCitationMaps: null,
-          pendingCollections: [],
-          artifacts: [],
-          messages: finalMessages,
-          hasLoaded: true,
-          abortController: null,
+        // De-prioritise the large `messages` replace so React can finish paint /
+        // pointer handling first (smoother transition vs one blocking commit).
+        startTransition(() => {
+          useChatStore.getState().updateSlot(slotId, {
+            isStreaming: false,
+            streamingContent: '',
+            streamingQuestion: '',
+            currentStatusMessage: null,
+            streamingCitationMaps: null,
+            pendingCollections: [],
+            artifacts: [],
+            messages: finalMessages,
+            hasLoaded: true,
+            abortController: null,
+          });
         });
 
         // Resolve temp → real convId
@@ -361,6 +404,7 @@ export async function streamMessageForSlot(
         cancelPendingStatus();
         console.error('[streaming] Stream error for slot', slotId, error);
         const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+        const err = error.message || 'An error occurred. Please try again.';
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           streamingContent: '',
@@ -369,13 +413,7 @@ export async function streamMessageForSlot(
           streamingCitationMaps: null,
           pendingCollections: [],
           abortController: null,
-          messages: [
-            ...currentMessages,
-            {
-              role: 'assistant' as const,
-              content: [{ type: 'text' as const, text: error.message || 'An error occurred. Please try again.' }],
-            },
-          ],
+          messages: withStreamingErrorMessage(currentMessages, err),
         });
         if (isNewConversation) {
           useChatStore.getState().clearPendingConversation(slotId);
@@ -428,13 +466,7 @@ export async function streamMessageForSlot(
       streamingCitationMaps: null,
       pendingCollections: [],
       abortController: null,
-      messages: [
-        ...currentMessages,
-        {
-          role: 'assistant' as const,
-          content: [{ type: 'text' as const, text: errorMessage }],
-        },
-      ],
+      messages: withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (isNewConversation) {
       useChatStore.getState().clearPendingConversation(slotId);

@@ -16,6 +16,13 @@ export {
   formatSyncLabel,
 } from './utils';
 export { useCitationActions } from './use-citation-actions';
+export {
+  CitationMessageRowKeyContext,
+  useCitationMessageRowKeyForInline,
+  buildInlineCitationInstanceKey,
+  isCitationPopoverKeyStillValid,
+} from './citation-popover-control';
+export { useInlineCitationPopoverStore } from './citation-popover-store';
 export type {
   CitationOrigin,
   CitationData,

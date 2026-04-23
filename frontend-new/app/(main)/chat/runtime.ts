@@ -34,6 +34,11 @@ function extractTextContent(content: ThreadMessageLike['content']): string {
     .join('');
 }
 
+/** Plain text of a thread message (used by streaming + message list). */
+export function getThreadMessagePlainText(message: ThreadMessageLike): string {
+  return extractTextContent(message.content);
+}
+
 /** KB collections attached on send (see chat input metadata). */
 function readKbCollectionsFromMessage(
   message: ThreadMessageLike
@@ -60,6 +65,9 @@ export function loadHistoricalMessages(
   messages: ConversationMessage[]
 ): ThreadMessageLike[] {
   return messages.map((msg) => ({
+    // Stable per-message id — keeps list keys and citation popovers from remounting
+    // on every `messages` ref replace (e.g. SSE complete or history refresh).
+    id: msg._id,
     role: msg.messageType === 'user_query' ? ('user' as const) : ('assistant' as const),
     content: [
       {
