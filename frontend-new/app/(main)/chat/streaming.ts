@@ -278,6 +278,16 @@ export async function streamMessageForSlot(
   try {
     await ChatApi.streamMessage(request, {
       onConnected: (data) => {
+        if (isNewConversation) {
+          const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
+          const earlyId = typeof raw === 'string' ? raw.trim() : '';
+          if (earlyId) {
+            useChatStore
+              .getState()
+              .resolveSlotConvId(slotId, earlyId, { keepTemp: true });
+            debugLog.flush('connected-conv-id', { slotId, convId: earlyId });
+          }
+        }
         scheduleStatus(statusMessageFromConnectedEvent(data));
       },
 

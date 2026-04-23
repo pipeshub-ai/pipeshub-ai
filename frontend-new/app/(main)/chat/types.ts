@@ -258,6 +258,8 @@ export interface ChatArtifact {
 
 export interface SSEConnectedEvent {
   message: string;
+  /** Set by Node when a new conversation row is created before streaming (main + agent). */
+  conversationId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */

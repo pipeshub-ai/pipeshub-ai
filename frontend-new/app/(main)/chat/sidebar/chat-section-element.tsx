@@ -259,19 +259,36 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
   const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const currentConversationId = searchParams.get('conversationId');
   const activeSlotId = useChatStore((s) => s.activeSlotId);
-  const isActive = activeSlotId === slotId;
+  const slotConvId = useChatStore((s) => s.slots[slotId]?.convId ?? null);
+  /**
+   * Match other sidebar rows: highlight from the URL when we know the real id
+   * (server sends it in the SSE `connected` event). Before that, use the
+   * active slot so a temp new chat without a URL id still looks selected.
+   */
+  const isActive = slotConvId
+    ? currentConversationId === slotConvId
+    : activeSlotId === slotId;
+
+  const rawAgent = searchParams.get('agentId');
+  const agentId = rawAgent?.trim() ? rawAgent : null;
+  const href =
+    slotConvId != null && slotConvId !== ''
+      ? buildChatHref({ agentId, conversationId: slotConvId })
+      : undefined;
 
   const handleClick = () => {
     useChatStore.getState().setActiveSlot(slotId);
-    const raw = searchParams.get('agentId');
-    const agentId = raw?.trim() ? raw : null;
-    router.push(agentId ? buildChatHref({ agentId }) : '/chat/');
+    if (!slotConvId) {
+      router.push(agentId ? buildChatHref({ agentId }) : '/chat/');
+    }
   };
 
   return (
     <SidebarItem
       isActive={isActive}
+      href={href}
       onClick={handleClick}
       label={
         <span className="generating-shimmer">
