@@ -94,7 +94,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           textTransform: 'uppercase',
           letterSpacing: '0.02em',
           zIndex: 1,
-          fontFamily: 'Nebulica, sans-serif',
+          fontFamily: 'ClashGrotesk, sans-serif',
         }}
       >
         Explainable Enterprise Search for modern enterprises.

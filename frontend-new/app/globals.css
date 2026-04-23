@@ -2,9 +2,49 @@
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
 
 @font-face {
-  font-family: 'Nebulica';
-  src: url('/fonts/nebulica/Nebulica-VF-iF6628d4886f353.ttf') format('truetype');
-  font-weight: 100 900;
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Extralight.otf') format('opentype');
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Semibold.otf') format('opentype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ClashGrotesk';
+  src: url('/fonts/clash-grotesk/ClashGrotesk-Bold.otf') format('opentype');
+  font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
