@@ -1,43 +1,39 @@
 /**
  * Reusable time-grouping utility.
  *
- * Groups any array of items into three fixed time buckets:
+ * Default buckets (local date):
  *   - Today
- *   - Previous 7 Days
+ *   - Yesterday
+ *   - Previous 7 days — 7 local calendar days before the start of yesterday
  *   - Older
  *
- * The caller decides:
- *   1. How to extract a timestamp from each item (`getTimestamp`).
- *   2. Which buckets to include via `enabledGroups` (default: all three).
+ * The caller provides epoch-ms via `getTimestamp`. For chat sidebars, use
+ * `getConversationLastActivityMs` from `conversation-activity`.
  *
- * @example
- * ```ts
- * // All three groups
- * const groups = groupByTime(items, (i) => i.updatedAt);
- *
- * // Only "Today" and "Older" (merging 7-day items into Older)
- * const groups = groupByTime(items, (i) => i.updatedAt, {
- *   enabledGroups: { today: true, previous7Days: false, older: true },
- * });
- * ```
+ * When a bucket is disabled, items merge to the next enabled lower bucket, then
+ * the next higher one (see {@link resolveBucket}).
  */
 
 // ── Public types ──
 
-/** The three fixed bucket keys. */
-export const TIME_GROUP_KEYS = ['Today', 'Previous 7 Days', 'Older'] as const;
+export const TIME_GROUP_KEYS = [
+  'Today',
+  'Yesterday',
+  'Previous 7 Days',
+  'Older',
+] as const;
 export type TimeGroupKey = (typeof TIME_GROUP_KEYS)[number];
 
-/** Toggle individual buckets on/off. Disabled buckets merge into the next enabled one. */
 export interface EnabledGroups {
   today?: boolean;
+  yesterday?: boolean;
   previous7Days?: boolean;
   older?: boolean;
 }
 
 export interface GroupByTimeOptions {
   /**
-   * Which groups to emit. Defaults to all three enabled.
+   * Which groups to emit. All four default to on.
    *
    * When a group is disabled its items fall into the next *enabled* bucket
    * below it (i.e. towards "Older"). If no lower bucket is enabled either,
@@ -46,86 +42,117 @@ export interface GroupByTimeOptions {
   enabledGroups?: EnabledGroups;
 }
 
-// ── Implementation ──
+// ── Time boundaries (local wall calendar; avoids DST 7×24h drift) ──
 
-/**
- * Assign a raw bucket key based on the timestamp.
- */
-function rawBucket(ts: number, todayStart: number, sevenDaysAgoStart: number): TimeGroupKey {
-  if (ts >= todayStart) return 'Today';
-  if (ts >= sevenDaysAgoStart) return 'Previous 7 Days';
-  return 'Older';
+function startOfLocalDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
 /**
- * Given a raw bucket and enabled flags, find the actual bucket to put the item in.
- * Strategy: if the raw bucket is disabled, try the next lower bucket; if that's
- * also disabled, try the one above.
+ * @returns { todayStart, yesterdayStart, prev7Start } in epoch ms, local time.
+ * "Previous 7" covers [prev7Start, yesterdayStart).
+ */
+function getTimeBoundariesMs(): { todayStart: number; yesterdayStart: number; prev7Start: number } {
+  const now = new Date();
+  const todayStart = startOfLocalDay(now);
+
+  const y = new Date(todayStart);
+  y.setDate(y.getDate() - 1);
+  const yesterdayStart = startOfLocalDay(y);
+
+  const p7 = new Date(yesterdayStart);
+  p7.setDate(p7.getDate() - 7);
+  const prev7Start = p7.getTime();
+
+  return { todayStart, yesterdayStart, prev7Start };
+}
+
+// ── Raw bucket (before disabled-group resolution) ──
+
+function rawBucket(
+  ts: number,
+  todayStart: number,
+  yesterdayStart: number,
+  prev7Start: number,
+): TimeGroupKey {
+  if (ts >= todayStart) return 'Today';
+  if (ts >= yesterdayStart) return 'Yesterday';
+  if (ts >= prev7Start) return 'Previous 7 Days';
+  return 'Older';
+}
+
+// ── Enabled flags ──
+
+type EnabledFour = {
+  today: boolean;
+  yesterday: boolean;
+  previous7Days: boolean;
+  older: boolean;
+};
+
+function resolveEnabled(options?: GroupByTimeOptions): EnabledFour {
+  return {
+    today: options?.enabledGroups?.today ?? true,
+    yesterday: options?.enabledGroups?.yesterday ?? true,
+    previous7Days: options?.enabledGroups?.previous7Days ?? true,
+    older: options?.enabledGroups?.older ?? true,
+  };
+}
+
+/**
+ * If the raw bucket is disabled, try a lower (Older) enabled bucket, then a higher one.
  */
 function resolveBucket(
   raw: TimeGroupKey,
-  enabled: Required<EnabledGroups>,
+  enabled: EnabledFour,
 ): TimeGroupKey | null {
   const bucketEnabled: Record<TimeGroupKey, boolean> = {
-    'Today': enabled.today,
+    Today: enabled.today,
+    Yesterday: enabled.yesterday,
     'Previous 7 Days': enabled.previous7Days,
-    'Older': enabled.older,
+    Older: enabled.older,
   };
 
   if (bucketEnabled[raw]) return raw;
 
-  // Try downwards first
   const idx = TIME_GROUP_KEYS.indexOf(raw);
-  for (let i = idx + 1; i < TIME_GROUP_KEYS.length; i++) {
+  for (let i = idx + 1; i < TIME_GROUP_KEYS.length; i += 1) {
     if (bucketEnabled[TIME_GROUP_KEYS[i]]) return TIME_GROUP_KEYS[i];
   }
-  // Then upwards
-  for (let i = idx - 1; i >= 0; i--) {
+  for (let i = idx - 1; i >= 0; i -= 1) {
     if (bucketEnabled[TIME_GROUP_KEYS[i]]) return TIME_GROUP_KEYS[i];
   }
-
-  return null; // all disabled — shouldn't happen in practice
+  return null;
 }
+
+// ── Public API ──
 
 /**
  * Group items into time buckets.
- *
- * @param items        Array of items to group.
- * @param getTimestamp  Extractor returning epoch‑ms for each item.
- * @param options       Optional configuration.
- * @returns A `Record<TimeGroupKey, T[]>` containing only the enabled groups.
  */
 export function groupByTime<T>(
   items: T[],
   getTimestamp: (item: T) => number,
   options?: GroupByTimeOptions,
 ): Record<TimeGroupKey, T[]> {
-  const enabled: Required<EnabledGroups> = {
-    today: options?.enabledGroups?.today ?? true,
-    previous7Days: options?.enabledGroups?.previous7Days ?? true,
-    older: options?.enabledGroups?.older ?? true,
-  };
+  const enabled = resolveEnabled(options);
+  const { todayStart, yesterdayStart, prev7Start } = getTimeBoundariesMs();
 
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const sevenDaysAgoStart = todayStart - 7 * 24 * 60 * 60 * 1000;
-
-  // Initialise only the enabled buckets
   const groups = {} as Record<TimeGroupKey, T[]>;
   for (const key of TIME_GROUP_KEYS) {
-    const keyEnabled: Record<TimeGroupKey, boolean> = {
-      'Today': enabled.today,
+    const keyOn: Record<TimeGroupKey, boolean> = {
+      Today: enabled.today,
+      Yesterday: enabled.yesterday,
       'Previous 7 Days': enabled.previous7Days,
-      'Older': enabled.older,
+      Older: enabled.older,
     };
-    if (keyEnabled[key]) {
-      groups[key] = [];
-    }
+    if (keyOn[key]) groups[key] = [];
   }
 
   for (const item of items) {
-    const ts = getTimestamp(item);
-    const raw = rawBucket(ts, todayStart, sevenDaysAgoStart);
+    const rawTs = getTimestamp(item);
+    const ts = Number.isFinite(rawTs) ? rawTs : 0;
+    const raw = rawBucket(ts, todayStart, yesterdayStart, prev7Start);
     const bucket = resolveBucket(raw, enabled);
     if (bucket) {
       groups[bucket].push(item);
@@ -136,12 +163,22 @@ export function groupByTime<T>(
 }
 
 /**
- * Filter a grouped record down to only non-empty buckets, preserving display order.
+ * Only non-empty buckets, in default section order, optionally sorting by newest first.
  */
 export function getNonEmptyGroups<T>(
   groups: Record<TimeGroupKey, T[]>,
+  sortValueDesc?: (item: T) => number,
 ): Array<[TimeGroupKey, T[]]> {
   return TIME_GROUP_KEYS
-    .filter((key) => groups[key]?.length > 0)
-    .map((key) => [key, groups[key]] as [TimeGroupKey, T[]]);
+    .filter((key) => (groups[key]?.length ?? 0) > 0)
+    .map((key) => {
+      const arr = groups[key] as T[];
+      if (!sortValueDesc) {
+        return [key, arr] as [TimeGroupKey, T[]];
+      }
+      return [key, [...arr].sort((a, b) => sortValueDesc(b) - sortValueDesc(a))] as [
+        TimeGroupKey,
+        T[],
+      ];
+    });
 }
