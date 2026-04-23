@@ -364,6 +364,7 @@ export default function LabsPage() {
                       checked={checked}
                       onCheckedChange={(val) => setFlagValue(flag.key, val)}
                       style={{ flexShrink: 0, cursor: 'pointer' }}
+                      size='1'
                     />
                   </Flex>
                 );

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Avatar } from '@radix-ui/themes';
+import { Avatar, Badge } from '@radix-ui/themes';
 
 // ─────────────────────────────────────────────
 // UserAvatar — standalone avatar circle
@@ -77,14 +77,36 @@ export function UserAvatar({
   size = 32,
   radius = 'full',
 }: UserAvatarProps) {
+  if (src) {
+    return (
+      <Avatar
+        size={toRadixSize(size)}
+        variant="soft"
+        radius={radius}
+        fallback={getInitials({ fullName, firstName, lastName, email })}
+        src={src}
+        style={{ width: `${size}px`, height: `${size}px`, flexShrink: 0 }}
+      />
+    );
+  }
+
   return (
-    <Avatar
-      size={toRadixSize(size)}
-      variant="soft"
-      radius={radius}
-      fallback={getInitials({ fullName, firstName, lastName, email })}
-      src={src ?? undefined}
-      style={{ width: `${size}px`, height: `${size}px`, flexShrink: 0, backgroundColor: 'var(--accent-a3)', color: 'var(--accent-a2)' }}
-    />
+    <Badge
+      style={{
+        backgroundColor: 'var(--accent-a3)',
+        color: 'var(--accent-a11)',
+        padding: 'var(--space-1)',
+        borderRadius: 'var(--radius-2)',
+        flexShrink: 0,
+        width: 'var(--space-6)',
+        height: 'var(--space-6)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '14px'
+      }}
+    >
+      {getInitials({ fullName, firstName, lastName, email })}
+    </Badge>
   );
 }

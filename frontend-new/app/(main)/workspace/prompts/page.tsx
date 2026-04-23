@@ -52,8 +52,7 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
             align="center"
             justify="center"
             style={{
-              width: 'var(--space-9)',
-              height: 'var(--space-9)',
+              padding: 'var(--space-2)',
               borderRadius: 'var(--radius-1)',
               background: 'var(--slate-a2)',
               flexShrink: 0,
@@ -219,13 +218,22 @@ export default function PromptsPage() {
         {/* ── System Prompt Section ── */}
         <Box style={{ marginBottom: 'var(--space-5)' }}>
           <PromptSectionCard>
-            {/* Label row */}
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('workspace.prompts.heading')}
-            </Text>
-
-            {/* Textarea + button overlay */}
-            <Box style={{ position: 'relative' }}>
+            {/* Label row + button + textarea grouped */}
+            <Flex direction="column" gap="2">
+              <Flex align="center" justify="between">
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('workspace.prompts.heading')}
+                </Text>
+                <Button
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={handleUseDefault}
+                  style={{ border: '1px solid var(--emerald-a8)', borderRadius: 'var(--radius-1)', color: 'var(--emerald-a11)', gap: 4, background: 'var(--olive-2)', marginRight: 0 }}
+                >
+                  {t('workspace.prompts.useDefault')}
+                </Button>
+              </Flex>
               <TextArea
                 rows={6}
                 placeholder={t('workspace.prompts.placeholder')}
@@ -233,18 +241,7 @@ export default function PromptsPage() {
                 onChange={(e) => setCustomPrompt(e.target.value)}
                 style={{ resize: 'vertical' }}
               />
-              <Box style={{ position: 'absolute', top: 8, right: 8 }}>
-                <Button
-                  variant="ghost"
-                  color="gray"
-                  size="1"
-                  onClick={handleUseDefault}
-                  style={{ border: '1px solid var(--emerald-a8)', borderRadius: 'var(--radius-1)', color: 'var(--emerald-a11)', gap: 4, background: 'var(--olive-2)' }}
-                >
-                  {t('workspace.prompts.useDefault')}
-                </Button>
-              </Box>
-            </Box>
+            </Flex>
 
             {/* Helper text */}
             <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
