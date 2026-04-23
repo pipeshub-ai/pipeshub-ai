@@ -42,6 +42,7 @@ export function OAuthAppSelector() {
   const selectedAuthType = useConnectorsStore((s) => s.selectedAuthType);
   const selectedId = useConnectorsStore((s) => s.formData.auth.oauthConfigId as string | undefined);
   const setAuthFormValue = useConnectorsStore((s) => s.setAuthFormValue);
+  const oauthConfigError = useConnectorsStore((s) => s.formErrors.oauthConfigId);
 
   const [oauthApps, setOauthApps] = useState<OAuthListRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -225,32 +226,42 @@ export function OAuthAppSelector() {
           </Text>
         </Flex>
       ) : oauthApps.length > 0 ? (
-        <Select.Root value={radixValue} onValueChange={handleValueChange}>
-          <Select.Trigger
-            style={{
-              width: '100%',
-              minHeight: 40,
-              height: 'auto',
-              minWidth: 0,
-              alignItems: 'center',
-            }}
-            placeholder={isAdmin === true ? 'Select OAuth app or create new…' : 'Select an OAuth app (required)…'}
-          />
-          <Select.Content
-            position="popper"
-            style={{ zIndex: 10000 }}
-            container={panelBodyPortal ?? undefined}
-          >
-            {isAdmin === true && (
-              <Select.Item value={MANUAL_VALUE}>Create new OAuth app</Select.Item>
-            )}
-            {oauthApps.map((app) => (
-              <Select.Item key={app._id} value={app._id}>
-                {rowLabel(app)}
-              </Select.Item>
-            ))}
-          </Select.Content>
-        </Select.Root>
+        <Flex direction="column" gap="1" style={{ width: '100%' }}>
+          <Select.Root value={radixValue} onValueChange={handleValueChange}>
+            <Select.Trigger
+              data-ph-oauth-app-select
+              color={oauthConfigError ? 'red' : undefined}
+              data-invalid={oauthConfigError ? true : undefined}
+              style={{
+                width: '100%',
+                minHeight: 40,
+                height: 'auto',
+                minWidth: 0,
+                alignItems: 'center',
+              }}
+              placeholder={isAdmin === true ? 'Select OAuth app or create new…' : 'Select an OAuth app (required)…'}
+            />
+            <Select.Content
+              position="popper"
+              style={{ zIndex: 10000 }}
+              container={panelBodyPortal ?? undefined}
+            >
+              {isAdmin === true && (
+                <Select.Item value={MANUAL_VALUE}>Create new OAuth app</Select.Item>
+              )}
+              {oauthApps.map((app) => (
+                <Select.Item key={app._id} value={app._id}>
+                  {rowLabel(app)}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          {oauthConfigError ? (
+            <Text size="1" color="red">
+              {oauthConfigError}
+            </Text>
+          ) : null}
+        </Flex>
       ) : null}
     </Flex>
   );

@@ -71,6 +71,11 @@ const focusStyle: React.CSSProperties = {
   paddingRight: 7,
 };
 
+const errorFieldChrome: React.CSSProperties = {
+  border: '1px solid var(--red-9)',
+  backgroundColor: 'var(--red-a2)',
+};
+
 // ========================================
 // Component
 // ========================================
@@ -89,20 +94,41 @@ export function SchemaFormField({
   if (!visible) return null;
 
   const fieldType = field.fieldType || 'TEXT';
-  const _label = `${field.displayName}${'required' in field && field.required ? ' *' : ''}`;
   const isOptional = 'required' in field && !field.required;
+  const isRequired = !isOptional;
+  const invalid = Boolean(error);
 
   // Render the appropriate input based on field type
   const renderField = () => {
     switch (fieldType) {
       case 'CHECKBOX':
         return (
-          <CheckboxField field={field} value={value} onChange={onChange} disabled={disabled} />
+          <Flex direction="column" gap="1">
+            <CheckboxField field={field} value={value} onChange={onChange} disabled={disabled} />
+            {error ? (
+              <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                {error}
+              </Text>
+            ) : null}
+          </Flex>
         );
 
       case 'BOOLEAN':
         return (
-          <BooleanField field={field} value={value} onChange={onChange} disabled={disabled} />
+          <Flex direction="column" gap="1">
+            <BooleanField
+              field={field}
+              value={value}
+              onChange={onChange}
+              disabled={disabled}
+              hasError={invalid}
+            />
+            {error ? (
+              <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                {error}
+              </Text>
+            ) : null}
+          </Flex>
         );
 
       case 'FILE':
@@ -130,13 +156,22 @@ export function SchemaFormField({
                   value={value}
                   onChange={onChange}
                   disabled={disabled}
+                  hasError={invalid}
                   startAdornment={startAdornment}
                 />
               );
             case 'TEXTAREA':
-              return <TextareaInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return (
+                <TextareaInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  hasError={invalid}
+                />
+              );
             case 'JSON':
-              return <JsonInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return <JsonInput field={field} value={value} onChange={onChange} disabled={disabled} hasError={invalid} />;
             case 'SELECT':
               return (
                 <SelectInput
@@ -147,11 +182,19 @@ export function SchemaFormField({
                   options={options}
                   portalZIndex={selectPortalZIndex}
                   startAdornment={startAdornment}
+                  hasError={invalid}
                 />
               );
             case 'NUMBER':
               return (
-                <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} startAdornment={startAdornment} />
+                <NumberInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  startAdornment={startAdornment}
+                  hasError={invalid}
+                />
               );
             default:
               // TEXT, EMAIL, URL, and fallback
@@ -163,13 +206,19 @@ export function SchemaFormField({
                   disabled={disabled}
                   fieldType={fieldType}
                   startAdornment={startAdornment}
+                  hasError={invalid}
                 />
               );
           }
         };
 
         return (
-          <FormField label={field.displayName} optional={isOptional} error={error}>
+          <FormField
+            label={field.displayName}
+            required={isRequired}
+            optional={isOptional}
+            error={error}
+          >
             {renderInput()}
           </FormField>
         );
@@ -178,7 +227,7 @@ export function SchemaFormField({
   };
 
   return (
-    <Flex direction="column" gap="1">
+    <Flex direction="column" gap="1" data-ph-auth-field={field.name}>
       {renderField()}
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}
@@ -336,6 +385,7 @@ function TextInput({
   disabled,
   fieldType,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
@@ -343,6 +393,7 @@ function TextInput({
   disabled: boolean;
   fieldType: string;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -367,9 +418,13 @@ function TextInput({
           onChange={(e) => onChange(field.name, e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused ? (hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle) : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             opacity: disabled ? 0.6 : 1,
           }}
@@ -391,12 +446,14 @@ function PasswordInput({
   onChange,
   disabled,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [showPassword, setShowPassword] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -414,9 +471,15 @@ function PasswordInput({
           onChange={(e) => onChange(field.name, e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused
+              ? hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : focusStyle
+              : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             paddingRight: 36,
             opacity: disabled ? 0.6 : 1,
@@ -456,11 +519,13 @@ function TextareaInput({
   value,
   onChange,
   disabled,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -473,9 +538,15 @@ function TextareaInput({
         onChange={(e) => onChange(field.name, e.target.value)}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
         style={{
           ...textareaStyle,
-          ...(isFocused ? { ...focusStyle, height: 80 } : {}),
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
+            : {}),
           opacity: disabled ? 0.6 : 1,
         }}
       />
@@ -493,11 +564,13 @@ function JsonInput({
   value,
   onChange,
   disabled,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -513,10 +586,16 @@ function JsonInput({
         onChange={(e) => onChange(field.name, e.target.value)}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
         style={{
           ...textareaStyle,
-          ...(isFocused ? { ...focusStyle, height: 120 } : {}),
           height: 120,
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
+            : {}),
           fontFamily: 'monospace',
           fontSize: 13,
           opacity: disabled ? 0.6 : 1,
@@ -537,12 +616,14 @@ function NumberInput({
   onChange,
   disabled,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -567,9 +648,13 @@ function NumberInput({
           }}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused ? (hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle) : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             opacity: disabled ? 0.6 : 1,
           }}
@@ -592,6 +677,7 @@ function SelectInput({
   options,
   portalZIndex,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
@@ -600,6 +686,7 @@ function SelectInput({
   options?: { label: string; value: string }[];
   portalZIndex?: number;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
@@ -624,6 +711,8 @@ function SelectInput({
           disabled={disabled}
         >
           <Select.Trigger
+            data-invalid={hasError || undefined}
+            color={hasError ? 'red' : undefined}
             style={{
               width: '100%',
               height: 32,
@@ -684,11 +773,13 @@ function BooleanField({
   value,
   onChange,
   disabled,
+  hasError = false,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   // Normalize string "true" / "false" to boolean
   const boolVal =
@@ -705,12 +796,14 @@ function BooleanField({
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
+          {'required' in field && field.required && ' *'}
         </Text>
       </Flex>
       <Switch
         checked={boolVal}
         onCheckedChange={(checked) => onChange(field.name, checked)}
         disabled={disabled}
+        color={hasError ? 'red' : undefined}
       />
     </Flex>
   );

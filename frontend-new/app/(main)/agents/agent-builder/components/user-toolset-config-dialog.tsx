@@ -169,6 +169,14 @@ export function UserToolsetConfigDialog({
       }
     });
     setFormErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      requestAnimationFrame(() => {
+        const first = Object.keys(errors)[0];
+        document
+          .querySelector(`[data-ph-auth-field="${first}"]`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
     return Object.keys(errors).length === 0;
   }, [userCredentialFields, formData, t]);
 
@@ -229,8 +237,8 @@ export function UserToolsetConfigDialog({
 
   const handleSaveCredentials = async () => {
     setSaveAttempted(true);
+    setError(null);
     if (!validateForm()) {
-      setError(t('agentBuilder.fillRequiredFields'));
       return;
     }
     try {

@@ -20,6 +20,7 @@ import {
   type ToolsetOauthConfigListRow,
 } from '@/app/(main)/toolsets/api';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
+import { FormField } from '@/app/(main)/workspace/components/form-field';
 import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import {
   apiErrorDetail,
@@ -110,6 +111,8 @@ export function AdminManageActionPanel({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const lastOauthHydrateKeyRef = useRef<string>('');
@@ -305,13 +308,86 @@ export function AdminManageActionPanel({
     }
   }, [onNotify, redirectUri, t]);
 
+  const runManageValidation = useCallback((): boolean => {
+    setFieldErrors({});
+    setInstanceNameError(null);
+    setError(null);
+    const next: Record<string, string> = {};
+    if (!instanceName.trim()) {
+      setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
+    }
+    if (oauth) {
+      for (const f of oauthFields) {
+        const display = oauthFieldForDisplay(f);
+        if (!display.required) continue;
+        const raw = oauthFieldValues[f.name];
+        const ln = f.name.toLowerCase();
+        if (ln === 'clientsecret' && !String(raw ?? '').trim() && clientSecretWasSet) {
+          continue;
+        }
+        if (
+          raw === undefined ||
+          raw === null ||
+          (typeof raw === 'string' && raw.trim() === '')
+        ) {
+          next[f.name] = t('workspace.actions.validation.fieldRequired', { field: f.displayName });
+        }
+      }
+    } else {
+      for (const f of nonOauthConfigureFields) {
+        if (!f.required) continue;
+        const raw = nonOauthValues[f.name];
+        if (
+          raw === undefined ||
+          raw === null ||
+          (typeof raw === 'string' && raw.trim() === '')
+        ) {
+          next[f.name] = t('workspace.actions.validation.fieldRequired', { field: f.displayName });
+        }
+      }
+    }
+    if (Object.keys(next).length > 0) {
+      setFieldErrors(next);
+    }
+    const nameInvalid = !instanceName.trim();
+    if (nameInvalid || Object.keys(next).length > 0) {
+      requestAnimationFrame(() => {
+        if (nameInvalid) {
+          document
+            .querySelector('[data-ph-toolset-admin-instance-name]')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          const k = Object.keys(next)[0];
+          if (k) {
+            document
+              .querySelector(`[data-ph-auth-field="${k}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      });
+    }
+    if (nameInvalid || Object.keys(next).length > 0) {
+      return false;
+    }
+    return true;
+  }, [
+    clientSecretWasSet,
+    instanceName,
+    nonOauthConfigureFields,
+    nonOauthValues,
+    oauth,
+    oauthFieldForDisplay,
+    oauthFields,
+    oauthFieldValues,
+    t,
+  ]);
+
   const handleSave = useCallback(async () => {
     if (!instanceId) return;
-    const name = instanceName.trim();
-    if (!name) {
-      setError(t('workspace.actions.errors.instanceNameRequired'));
+    if (!runManageValidation()) {
       return;
     }
+    const name = instanceName.trim();
     setSaving(true);
     setError(null);
     try {
@@ -404,6 +480,7 @@ export function AdminManageActionPanel({
     onClose,
     onNotify,
     onSaved,
+    runManageValidation,
     t,
   ]);
 
@@ -492,16 +569,26 @@ export function AdminManageActionPanel({
         </>
       ) : null}
 
-      <Flex direction="column" gap="2">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {t('workspace.actions.instanceName')}
-        </Text>
-        <TextField.Root
-          value={instanceName}
-          onChange={(e) => setInstanceName(e.target.value)}
-          placeholder={t('workspace.actions.instanceNamePlaceholder')}
-        />
-      </Flex>
+      <div data-ph-toolset-admin-instance-name>
+        <FormField
+          label={t('workspace.actions.instanceName')}
+          required
+          error={instanceNameError ?? undefined}
+        >
+          <TextField.Root
+            value={instanceName}
+            onChange={(e) => {
+              setInstanceName(e.target.value);
+              if (instanceNameError) {
+                setInstanceNameError(null);
+              }
+            }}
+            color={instanceNameError ? 'red' : undefined}
+            placeholder={t('workspace.actions.instanceNamePlaceholder')}
+            aria-invalid={instanceNameError ? true : undefined}
+          />
+        </FormField>
+      </div>
 
       {oauth ? (
         <>
@@ -512,7 +599,16 @@ export function AdminManageActionPanel({
                   key={field.name}
                   field={oauthFieldForDisplay(field) as SchemaField}
                   value={oauthFieldValues[field.name]}
-                  onChange={(name, val) => setOauthFieldValues((p) => ({ ...p, [name]: val }))}
+                  onChange={(name, val) => {
+                    setOauthFieldValues((p) => ({ ...p, [name]: val }));
+                    setFieldErrors((p) => {
+                      if (!p[name]) return p;
+                      const n = { ...p };
+                      delete n[name];
+                      return n;
+                    });
+                  }}
+                  error={fieldErrors[field.name]}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
                 />
               ))}
@@ -533,7 +629,16 @@ export function AdminManageActionPanel({
               key={field.name}
               field={field as SchemaField}
               value={nonOauthValues[field.name]}
-              onChange={(name, val) => setNonOauthValues((p) => ({ ...p, [name]: val }))}
+              onChange={(name, val) => {
+                setNonOauthValues((p) => ({ ...p, [name]: val }));
+                setFieldErrors((p) => {
+                  if (!p[name]) return p;
+                  const n = { ...p };
+                  delete n[name];
+                  return n;
+                });
+              }}
+              error={fieldErrors[field.name]}
               selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
             />
           ))}
