@@ -83,6 +83,8 @@ def mock_graph_provider():
     provider.batch_upsert_anyone_same_org = AsyncMock()
     provider.batch_upsert_nodes = AsyncMock()
     provider.batch_create_edges = AsyncMock()
+    provider.batch_delete_edges = AsyncMock(return_value=0)
+    provider.batch_upsert_record_relations = AsyncMock()
     provider.batch_create_entity_relations = AsyncMock()
     provider.create_record_relation = AsyncMock()
     provider.create_record_group_relation = AsyncMock()
@@ -101,6 +103,7 @@ def mock_graph_provider():
     provider.get_users_with_permission_to_node = AsyncMock(return_value=[])
     provider.get_edges_to_node = AsyncMock(return_value=[])
     provider.get_edges_from_node = AsyncMock(return_value=[])
+    provider.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     provider.get_related_node_field = AsyncMock(return_value=[])
     provider.delete_records_and_relations = AsyncMock()
     provider.process_file_permissions = AsyncMock()
@@ -564,6 +567,21 @@ class TestGraphTransactionStore:
         )
 
     @pytest.mark.asyncio
+    async def test_batch_delete_edges(self, tx_store, mock_graph_provider) -> None:
+        result = await tx_store.batch_delete_edges([{"_key": "e1"}], "edge_coll")
+        assert result == 0
+        mock_graph_provider.batch_delete_edges.assert_awaited_once_with(
+            [{"_key": "e1"}], collection="edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_record_relations(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.batch_upsert_record_relations([{"from_id": "a", "to_id": "b"}])
+        mock_graph_provider.batch_upsert_record_relations.assert_awaited_once_with(
+            [{"from_id": "a", "to_id": "b"}], transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
     async def test_batch_create_entity_relations(self, tx_store, mock_graph_provider) -> None:
         await tx_store.batch_create_entity_relations([{"edge": "data"}])
         mock_graph_provider.batch_create_entity_relations.assert_awaited_once_with(
@@ -581,6 +599,13 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_with_target_name(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node_with_target_name("node1", "edge_coll")
+        mock_graph_provider.get_edges_from_node_with_target_name.assert_awaited_once_with(
             "node1", "edge_coll", transaction="txn-123"
         )
 

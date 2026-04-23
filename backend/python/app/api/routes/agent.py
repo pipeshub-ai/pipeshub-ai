@@ -1937,6 +1937,7 @@ async def get_agents(
     search: str | None = Query(None, description="Search by name/description/tags"),
     sort_by: str = Query("updatedAtTimestamp", description="Field to sort by"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+    is_deleted: bool = Query(False, alias="isDeleted", description="When true, return only soft-deleted agents",),
 ) -> JSONResponse:
     """Get all agents with pagination and search"""
     try:
@@ -1956,6 +1957,7 @@ async def get_agents(
             search=search,
             sort_by=sort_by,
             sort_order=sort_order,
+            is_deleted=is_deleted,
         )
 
         # Providers return either a simple list (backward-compat) or a dict with agents and totalItems
@@ -2388,7 +2390,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Delete an agent using a transaction to ensure atomicity"""
+    """Soft-delete an agent (tombstone) using a transaction to ensure atomicity."""
     txn_id = None
     services = None
     try:
@@ -2432,24 +2434,23 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         )
         services["logger"].debug(f"🔄 Started transaction {txn_id} for agent deletion")
 
-        # Use hard delete to completely remove agent and all related nodes/edges
-        result = await services["graph_provider"].hard_delete_agent(agent_id, transaction=txn_id)
-        if not result or result.get("agents_deleted", 0) == 0:
+        # Soft-delete: marks the agent instance deleted; related toolsets/tools/knowledge remain.
+        result = await services["graph_provider"].delete_agent(
+            agent_id, user_doc["_key"], org_key, transaction=txn_id
+        )
+        if not result:
             if txn_id is not None:
                 await services["graph_provider"].rollback_transaction(txn_id)
             raise HTTPException(status_code=500, detail="Failed to delete agent")
 
         # Commit transaction on success
         await services["graph_provider"].commit_transaction(txn_id)
-        services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
+        services["logger"].info(f"✅ Successfully soft-deleted agent {agent_id} in transaction {txn_id}")
 
-        # For service account agents, clean up per-agent toolset credentials from ETCD.
-        # These live at /services/toolsets/{instanceId}/{agentKey} and are outside the
-        # graph DB transaction, so they must be deleted separately after the commit.
+        # For service account agents, stop in-process toolset token refresh tasks only.
+        # Credential paths under /services/toolsets/{instanceId}/{agentKey} stay in ETCD.
         if agent.get("isServiceAccount"):
             try:
-                config_service = services["config_service"]
-                all_keys = await config_service.list_keys_in_directory("/services/toolsets/")
                 refresh_service = None
                 try:
                     from app.connectors.core.base.token_service.startup_service import (
@@ -2458,20 +2459,20 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                     refresh_service = startup_service.get_toolset_token_refresh_service()
                 except Exception:
                     pass
-                for key in all_keys:
-                    # Path format: /services/toolsets/{instanceId}/{ownerId}
-                    parts = key.strip("/").split("/")
-                    if len(parts) >= 4 and parts[3] == agent_id:
-                        if refresh_service:
+                if refresh_service:
+                    config_service = services["config_service"]
+                    all_keys = await config_service.list_keys_in_directory("/services/toolsets/")
+                    for key in all_keys:
+                        # Path format: /services/toolsets/{instanceId}/{ownerId}
+                        parts = key.strip("/").split("/")
+                        if len(parts) >= 4 and parts[3] == agent_id:
                             refresh_service.cancel_refresh_task(key)
-                        try:
-                            await config_service.delete_config(key)
-                            services["logger"].info(f"Cleaned up agent credential path: {key}")
-                        except Exception as e:
-                            services["logger"].warning(f"Failed to delete agent credential {key}: {e}")
+                            services["logger"].info(
+                                f"Cancelled toolset token refresh for service account agent path: {key}"
+                            )
             except Exception as e:
                 services["logger"].warning(
-                    f"Failed to cleanup ETCD credentials for deleted service account agent {agent_id}: {e}"
+                    f"Failed to cancel toolset refresh tasks for deleted service account agent {agent_id}: {e}"
                 )
 
         return JSONResponse(
@@ -2480,13 +2481,13 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 "status": "success",
                 "message": "Agent deleted successfully",
                 "deleted": {
-                    "agents": result.get("agents_deleted", 0),
-                    "toolsets": result.get("toolsets_deleted", 0),
-                    "tools": result.get("tools_deleted", 0),
-                    "knowledge": result.get("knowledge_deleted", 0),
-                    "edges": result.get("edges_deleted", 0)
-                }
-            }
+                    "agents": 1,
+                    "toolsets": 0,
+                    "tools": 0,
+                    "knowledge": 0,
+                    "edges": 0,
+                },
+            },
         )
     except HTTPException:
         if txn_id is not None and services is not None:

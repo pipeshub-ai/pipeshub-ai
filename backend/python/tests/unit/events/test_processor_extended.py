@@ -1412,3 +1412,73 @@ class TestProcessPdfOcrFallback:
             )
 
         assert any(e.event == "indexing_complete" for e in events)
+
+
+# ===================================================================
+# _create_transform_context integration: verify it is called by
+# process methods with the correct event_type
+# ===================================================================
+
+
+class TestCreateTransformContextCalledByProcessMethods:
+    @pytest.mark.asyncio
+    async def test_process_md_calls_create_transform_context(self):
+        """process_md_document uses _create_transform_context with event_type."""
+        proc = _make_processor()
+
+        md_parser = MagicMock()
+        md_parser.extract_and_replace_images.return_value = ("# Hello", [])
+        md_parser.parse_string.return_value = b"# Hello"
+        proc.parsers = {"md": md_parser}
+
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
+        from app.models.blocks import BlocksContainer
+        mock_processor.create_blocks = AsyncMock(
+            return_value=BlocksContainer(blocks=[], block_groups=[])
+        )
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="test.md")
+        )
+
+        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+             patch.object(proc, "_create_transform_context", wraps=proc._create_transform_context) as mock_ctx:
+            MockPipeline.return_value.apply = AsyncMock()
+
+            await _collect_events(
+                proc.process_md_document("test.md", "r1", b"# Hello", "vr1", event_type="updateRecord")
+            )
+
+            mock_ctx.assert_called_once()
+            call_args = mock_ctx.call_args
+            # event_type is passed as second positional arg
+            assert call_args[0][1] == "updateRecord"
+
+    @pytest.mark.asyncio
+    async def test_process_excel_calls_create_transform_context(self):
+        """process_excel_document uses _create_transform_context with event_type."""
+        excel_parser = MagicMock()
+        excel_parser.load_workbook_from_binary = MagicMock()
+        excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
+        proc = _make_processor(parsers={"xlsx": excel_parser})
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="test.xlsx")
+        )
+
+        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+             patch.object(proc, "_create_transform_context", wraps=proc._create_transform_context) as mock_ctx:
+            mock_llm.return_value = (MagicMock(), {})
+            MockPipeline.return_value.apply = AsyncMock()
+
+            await _collect_events(
+                proc.process_excel_document(
+                    "test.xlsx", "r1", "1", "src", "o1", b"xldata", "vr1",
+                    event_type="newRecord"
+                )
+            )
+
+            mock_ctx.assert_called_once()

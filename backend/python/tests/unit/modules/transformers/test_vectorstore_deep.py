@@ -1533,7 +1533,8 @@ class TestIndexDocumentsExceptions:
 
     @pytest.mark.asyncio
     async def test_embedding_creation_exception_wraps(self):
-        """Exception during _create_embeddings should raise EmbeddingError."""
+        """Unknown exception during _create_embeddings is wrapped in IndexingError by index_documents."""
+        from app.exceptions.indexing_exceptions import IndexingError
         from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
         vs = _make_vectorstore()
@@ -1555,7 +1556,7 @@ class TestIndexDocumentsExceptions:
             "app.modules.transformers.vectorstore.get_llm",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
-            with pytest.raises(EmbeddingError, match="Failed to create or store embeddings"):
+            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(
                     BlocksContainer(blocks=[text_block], block_groups=[]),
                     "org-1", "rec-1", "vr-1", "text/plain",

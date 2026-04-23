@@ -26,6 +26,8 @@ interface ShareableRowProps {
   showRadio?: boolean;
   /** Whether to show "Invite to Pipeshub" link */
   showInvite?: boolean;
+  /** Whether this is the current user */
+  isCurrentUser?: boolean;
   /** Callback when the row is toggled (selection) */
   onToggle?: () => void;
   /** Callback when role changes */
@@ -50,6 +52,7 @@ export function ShareableRow({
   showRadio = false,
   showInvite = false,
   noRolesInfo,
+  isCurrentUser = false,
   onToggle,
   onRoleChange,
   onInvite,
@@ -118,6 +121,7 @@ export function ShareableRow({
             email={subtitle}
             avatarSize={32}
             profilePicture={avatarUrl}
+            isSelf={isCurrentUser}
           />
         </Box>
       )}

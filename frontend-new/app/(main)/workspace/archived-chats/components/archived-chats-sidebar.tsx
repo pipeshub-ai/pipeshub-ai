@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -14,14 +14,28 @@ import {
   KBD_BADGE_PADDING,
 } from '@/app/components/sidebar';
 import { getModifierSymbol } from '@/lib/utils/platform';
-import type { Conversation } from '../types';
+import type { Conversation, AgentArchivedGroup } from '../types';
 
 interface ArchivedChatsSidebarProps {
   conversations: Conversation[];
+  agentGroups: AgentArchivedGroup[];
   isLoading: boolean;
+  isLoadingAgentGroups: boolean;
   selectedConversationId: string | null;
-  onSelect: (conversation: Conversation) => void;
+  selectedAgentKey: string | null;
+  onSelect: (conversation: Conversation, agentKey?: string | null) => void;
   onSearchClick: () => void;
+  onLoadMoreForAgent: (agentKey: string, page: number) => void;
+  // Normal chats pagination
+  assistantChatsTotalCount: number;
+  assistantChatsHasMore: boolean;
+  isLoadingMoreAssistantChats: boolean;
+  onLoadMoreAssistantChats: () => void;
+  // Agent groups pagination
+  agentGroupsTotalCount: number;
+  agentGroupsHasMore: boolean;
+  isLoadingMoreAgentGroups: boolean;
+  onLoadMoreAgentGroups: () => void;
 }
 
 const KbdBadge = ({ children }: { children: React.ReactNode }) => (
@@ -42,15 +56,197 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
   </span>
 );
 
+const SectionHeader = ({ label, count }: { label: string; count?: number }) => (
+  <Box style={{ padding: '4px 8px 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Text
+      size="1"
+      weight="medium"
+      style={{
+        color: 'var(--slate-9)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+      }}
+    >
+      {label}
+    </Text>
+    {count != null && count > 0 && (
+      <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        {count}
+      </Text>
+    )}
+  </Box>
+);
+
+function LoadMoreButton({
+  onClick,
+  isLoading,
+  label,
+}: {
+  onClick: () => void;
+  isLoading: boolean;
+  label: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      disabled={isLoading}
+      onClick={onClick}
+      style={{
+        appearance: 'none',
+        border: 'none',
+        background: 'transparent',
+        cursor: isLoading ? 'default' : 'pointer',
+        padding: '4px 8px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        borderRadius: 'var(--radius-1)',
+        opacity: isLoading ? 0.5 : 1,
+        width: '100%',
+      }}
+    >
+      <MaterialIcon name="expand_more" size={14} color="var(--accent-9)" />
+      <Text size="1" style={{ color: 'var(--accent-9)' }}>
+        {isLoading ? t('action.loading') : label}
+      </Text>
+    </button>
+  );
+}
+
+interface AgentGroupSectionProps {
+  group: AgentArchivedGroup;
+  selectedConversationId: string | null;
+  selectedAgentKey: string | null;
+  onSelect: (conversation: Conversation, agentKey: string) => void;
+  onLoadMore: (agentKey: string, page: number) => void;
+}
+
+function AgentGroupSection({
+  group,
+  selectedConversationId,
+  selectedAgentKey,
+  onSelect,
+  onLoadMore,
+}: AgentGroupSectionProps) {
+  const { t } = useTranslation();
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  const displayName = group.agentName ?? group.agentKey;
+
+  return (
+    <Box>
+      {/* Agent name header — click to collapse/expand */}
+      <button
+        type="button"
+        onClick={() => setIsExpanded((p) => !p)}
+        style={{
+          appearance: 'none',
+          border: 'none',
+          background: 'transparent',
+          cursor: 'pointer',
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '4px 8px',
+          borderRadius: 'var(--radius-1)',
+        }}
+      >
+        <MaterialIcon
+          name={isExpanded ? 'expand_more' : 'chevron_right'}
+          size={16}
+          color="var(--slate-10)"
+        />
+        <Text
+          size="1"
+          weight="medium"
+          style={{
+            color: 'var(--slate-10)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+            textAlign: 'left',
+          }}
+        >
+          {displayName}
+        </Text>
+        <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+          {group.pagination.totalCount}
+        </Text>
+      </button>
+
+      {isExpanded && (
+        <Flex direction="column" gap="0" style={{ paddingLeft: 8 }}>
+          {group.conversations.map((conv) => {
+            const isActive =
+              selectedConversationId === conv.id &&
+              selectedAgentKey === group.agentKey;
+            return (
+              <SidebarItem
+                key={conv.id}
+                isActive={isActive}
+                onClick={() => onSelect(conv, group.agentKey)}
+                label={
+                  <Text
+                    size="2"
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'block',
+                      lineHeight: `${CHAT_ITEM_HEIGHT}px`,
+                      color: isActive ? 'var(--slate-12)' : 'var(--slate-11)',
+                      fontWeight: isActive ? 500 : 400,
+                    }}
+                  >
+                    {conv.title}
+                  </Text>
+                }
+              />
+            );
+          })}
+
+          {group.pagination.hasNextPage && (
+            <LoadMoreButton
+              isLoading={group.isLoadingMore}
+              label={t('workspace.archivedChats.showMore')}
+              onClick={() => {
+                onLoadMore(group.agentKey, group.pagination.page + 1);
+              }}
+            />
+          )}
+        </Flex>
+      )}
+    </Box>
+  );
+}
+
 export function ArchivedChatsSidebar({
   conversations,
+  agentGroups,
   isLoading,
+  isLoadingAgentGroups,
   selectedConversationId,
+  selectedAgentKey,
   onSelect,
   onSearchClick,
+  onLoadMoreForAgent,
+  assistantChatsTotalCount,
+  assistantChatsHasMore,
+  isLoadingMoreAssistantChats,
+  onLoadMoreAssistantChats,
+  agentGroupsTotalCount,
+  agentGroupsHasMore,
+  isLoadingMoreAgentGroups,
+  onLoadMoreAgentGroups,
 }: ArchivedChatsSidebarProps) {
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
+
+  const hasNormal = conversations.length > 0;
+  const hasAgents = agentGroups.length > 0;
 
   return (
     <Flex
@@ -96,46 +292,111 @@ export function ArchivedChatsSidebar({
         className="no-scrollbar"
         style={{ flex: 1, overflowY: 'auto', padding: CONTENT_PADDING }}
       >
-        {isLoading ? (
-          <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
-              {t('action.loading')}
-            </Text>
-          </Flex>
-        ) : conversations.length === 0 ? (
+        {/* ── Normal chats ───────────────────────────────────────── */}
+        {(isLoading || hasNormal) && (
+          <Box style={{ marginBottom: 12 }}>
+            <SectionHeader
+              label={t('workspace.archivedChats.assistantChat')}
+              count={assistantChatsTotalCount}
+            />
+            {isLoading ? (
+              <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('action.loading')}
+                </Text>
+              </Flex>
+            ) : (
+              <>
+                {conversations.map((conversation) => (
+                  <SidebarItem
+                    key={conversation.id}
+                    isActive={
+                      selectedConversationId === conversation.id &&
+                      !selectedAgentKey
+                    }
+                    onClick={() => onSelect(conversation, null)}
+                    label={
+                      <Text
+                        size="2"
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          display: 'block',
+                          lineHeight: `${CHAT_ITEM_HEIGHT}px`,
+                          color:
+                            selectedConversationId === conversation.id &&
+                            !selectedAgentKey
+                              ? 'var(--slate-12)'
+                              : 'var(--slate-11)',
+                          fontWeight:
+                            selectedConversationId === conversation.id &&
+                            !selectedAgentKey
+                              ? 500
+                              : 400,
+                        }}
+                      >
+                        {conversation.title}
+                      </Text>
+                    }
+                  />
+                ))}
+                {assistantChatsHasMore && (
+                  <LoadMoreButton
+                    isLoading={isLoadingMoreAssistantChats}
+                    label={t('workspace.archivedChats.showMore')}
+                    onClick={onLoadMoreAssistantChats}
+                  />
+                )}
+              </>
+            )}
+          </Box>
+        )}
+
+        {/* ── Agent chats ────────────────────────────────────────── */}
+        {(isLoadingAgentGroups || hasAgents) && (
+          <Box>
+            <SectionHeader
+              label={t('workspace.archivedChats.agents')}
+              count={agentGroupsTotalCount}
+            />
+            {isLoadingAgentGroups ? (
+              <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('action.loading')}
+                </Text>
+              </Flex>
+            ) : (
+              <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-4)' }}>
+                {agentGroups.map((group) => (
+                  <AgentGroupSection
+                    key={group.agentKey}
+                    group={group}
+                    selectedConversationId={selectedConversationId}
+                    selectedAgentKey={selectedAgentKey}
+                    onSelect={onSelect}
+                    onLoadMore={onLoadMoreForAgent}
+                  />
+                ))}
+                {agentGroupsHasMore && (
+                  <LoadMoreButton
+                    isLoading={isLoadingMoreAgentGroups}
+                    label={t('workspace.archivedChats.moreAgents')}
+                    onClick={onLoadMoreAgentGroups}
+                  />
+                )}
+              </Flex>
+            )}
+          </Box>
+        )}
+
+        {/* ── Empty state ────────────────────────────────────────── */}
+        {!isLoading && !isLoadingAgentGroups && !hasNormal && !hasAgents && (
           <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
               {t('workspace.archivedChats.emptyList')}
             </Text>
           </Flex>
-        ) : (
-          conversations.map((conversation) => (
-            <SidebarItem
-              key={conversation.id}
-              isActive={selectedConversationId === conversation.id}
-              onClick={() => onSelect(conversation)}
-              label={
-                <Text
-                  size="2"
-                  style={{
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    display: 'block',
-                    lineHeight: `${CHAT_ITEM_HEIGHT}px`,
-                    color:
-                      selectedConversationId === conversation.id
-                        ? 'var(--slate-12)'
-                        : 'var(--slate-11)',
-                    fontWeight:
-                      selectedConversationId === conversation.id ? 500 : 400,
-                  }}
-                >
-                  {conversation.title}
-                </Text>
-              }
-            />
-          ))
         )}
       </Box>
     </Flex>

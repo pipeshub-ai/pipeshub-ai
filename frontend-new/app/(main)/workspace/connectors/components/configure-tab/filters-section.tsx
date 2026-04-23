@@ -1244,6 +1244,27 @@ function FilterValueEditor({
     );
   }
 
+  if (ft === 'number') {
+    return (
+      <FormField label="Value">
+        <input
+          type="number"
+          value={value === undefined || value === null || value === '' ? '' : String(value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === '') {
+              onValueChange(null);
+              return;
+            }
+            const n = parseFloat(raw);
+            onValueChange(Number.isNaN(n) ? null : n);
+          }}
+          style={inputLike}
+        />
+      </FormField>
+    );
+  }
+
   if (ft === 'datetime') {
     const opLower = operator.toLowerCase();
     if (opLower.startsWith('last_')) {

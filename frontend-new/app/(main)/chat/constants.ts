@@ -163,6 +163,9 @@ export const ASK_MORE_QUESTION_SETS: string[][] = [
 /** Maximum number of visible chats in the sidebar. */
 export const MAX_VISIBLE_CHATS = 10;
 
+/** Page size for the initial sidebar conversations fetch (page 1). */
+export const SIDEBAR_CONVERSATIONS_PAGE_SIZE = 10;
+
 /** Number of conversations fetched per page in the More Chats infinite scroll panel. */
 export const MORE_CHATS_PAGE_SIZE = 20;
 
@@ -175,5 +178,8 @@ export const MAX_VISIBLE_AGENTS_IN_SIDEBAR = 3;
 /** Fetch at least this many agents to decide if "More" is needed. */
 export const SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT = 20;
 
-/** Page size for GET /api/v1/agents/:id/conversations (main + more panel). */
+/** Page size for the initial agent sidebar conversations fetch (page 1). */
+export const SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE = 10;
+
+/** Page size for GET /api/v1/agents/:id/conversations in the More panel (infinite scroll). */
 export const AGENT_CONVERSATIONS_PAGE_SIZE = 20;

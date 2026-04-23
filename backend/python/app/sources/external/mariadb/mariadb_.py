@@ -10,11 +10,104 @@ Provides async wrapper methods for MariaDB operations:
 """
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict
 
 from app.sources.client.mariadb.mariadb import MariaDBClient, MariaDBResponse
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TABLE_ROW_FETCH_LIMIT = 1000
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models for structured data returned by MariaDB queries
+# All use extra='allow' so unexpected columns from the DB are preserved.
+# ---------------------------------------------------------------------------
+
+class DatabaseInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    charset: Optional[str] = None
+    collation: Optional[str] = None
+
+
+class TableListEntry(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    database: Optional[str] = None
+    type: Optional[str] = None
+
+
+class ColumnInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    data_type: Optional[str] = None
+    column_type: Optional[str] = None
+    character_maximum_length: Optional[int] = None
+    numeric_precision: Optional[int] = None
+    numeric_scale: Optional[int] = None
+    datetime_precision: Optional[int] = None
+    nullable: bool = False
+    default: Optional[str] = None
+    is_unique: bool = False
+
+
+class CheckConstraintInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    constraint_name: str = ""
+    check_clause: str = ""
+
+
+class TableDetail(BaseModel):
+    """Result of get_table_info: table metadata + columns + constraints."""
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    type: Optional[str] = None
+    columns: List[ColumnInfo] = []
+    check_constraints: List[CheckConstraintInfo] = []
+
+
+class ViewInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    definition: Optional[str] = None
+
+
+class ForeignKeyInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    constraint_name: str = ""
+    column_name: str = ""
+    foreign_database: str = ""
+    foreign_table_name: str = ""
+    foreign_column_name: str = ""
+
+
+class PrimaryKeyInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    column_name: str = ""
+
+
+class DDLResult(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    ddl: str = ""
+
+
+class ConnectionTestResult(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    version: Optional[str] = None
+    database: Optional[str] = None
+    user: Optional[str] = None
+
+
+class TableStatsEntry(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    database_name: str = ""
+    table_name: str = ""
+    n_live_tup: int = 0
+    last_updated: Optional[str] = None
+    auto_increment: Optional[int] = None
 
 
 class MariaDBDataSource:
@@ -65,12 +158,13 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query)
-            logger.debug(f"🔧 [MariaDBDataSource] Found {len(results)} databases")
+            databases = [DatabaseInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [MariaDBDataSource] Found {len(databases)} databases")
 
             return MariaDBResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} databases"
+                data=[db.model_dump() for db in databases],
+                message=f"Successfully listed {len(databases)} databases"
             )
         except Exception as e:
             logger.error(f"🔧 [MariaDBDataSource] list_databases failed: {e}")
@@ -105,12 +199,13 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query, (database,))
-            logger.debug(f"🔧 [MariaDBDataSource] Found {len(results)} tables")
+            tables = [TableListEntry.model_validate(row) for row in results]
+            logger.debug(f"🔧 [MariaDBDataSource] Found {len(tables)} tables")
 
             return MariaDBResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} tables"
+                data=[t.model_dump() for t in tables],
+                message=f"Successfully listed {len(tables)} tables"
             )
         except Exception as e:
             logger.error(f"🔧 [MariaDBDataSource] list_tables failed: {e}")
@@ -184,36 +279,41 @@ class MariaDBDataSource:
         """
 
         try:
-            table_info = self._client.execute_query(table_query, (database, table))
-            if not table_info:
+            table_info_raw = self._client.execute_query(table_query, (database, table))
+            if not table_info_raw:
                 return MariaDBResponse(
                     success=False,
                     error="Table not found",
                     message=f"Table {database}.{table} not found"
                 )
 
-            columns = self._client.execute_query(columns_query, (database, table))
-            unique_cols = self._client.execute_query(unique_query, (database, table))
+            columns_raw = self._client.execute_query(columns_query, (database, table))
+            unique_cols_raw = self._client.execute_query(unique_query, (database, table))
 
             try:
-                check_constraints = self._client.execute_query(check_query, (database, table))
+                check_raw = self._client.execute_query(check_query, (database, table))
             except Exception:
-                # CHECK_CONSTRAINTS table not available on MariaDB < 10.2
-                check_constraints = []
+                check_raw = []
 
-            unique_column_names = {row.get('column_name') for row in unique_cols}
+            unique_column_names = {row.get('column_name') for row in unique_cols_raw}
+
+            columns = [ColumnInfo.model_validate(row) for row in columns_raw]
             for col in columns:
-                col['is_unique'] = col.get('name') in unique_column_names
+                col.is_unique = col.name in unique_column_names
 
-            result = table_info[0]
-            result["columns"] = columns
-            result["check_constraints"] = check_constraints
+            check_constraints = [CheckConstraintInfo.model_validate(row) for row in check_raw]
+
+            table_detail = TableDetail.model_validate({
+                **table_info_raw[0],
+                'columns': columns,
+                'check_constraints': check_constraints,
+            })
 
             logger.debug(f"🔧 [MariaDBDataSource] Table has {len(columns)} columns")
 
             return MariaDBResponse(
                 success=True,
-                data=result,
+                data=table_detail.model_dump(),
                 message=f"Successfully retrieved table info for {database}.{table}"
             )
         except Exception as e:
@@ -248,12 +348,13 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query, (database,))
-            logger.debug(f"🔧 [MariaDBDataSource] Found {len(results)} views")
+            views = [ViewInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [MariaDBDataSource] Found {len(views)} views")
 
             return MariaDBResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} views"
+                data=[v.model_dump() for v in views],
+                message=f"Successfully listed {len(views)} views"
             )
         except Exception as e:
             logger.error(f"🔧 [MariaDBDataSource] list_views failed: {e}")
@@ -297,11 +398,12 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query, (database, table))
-            logger.debug(f"🔧 [MariaDBDataSource] Found {len(results)} foreign keys")
+            foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [MariaDBDataSource] Found {len(foreign_keys)} foreign keys")
 
             return MariaDBResponse(
                 success=True,
-                data=results,
+                data=[fk.model_dump() for fk in foreign_keys],
                 message=f"Successfully retrieved foreign keys for {database}.{table}"
             )
         except Exception as e:
@@ -343,13 +445,14 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query, (database, table))
+            primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
             logger.debug(
-                f"🔧 [MariaDBDataSource] Found {len(results)} primary key columns"
+                f"🔧 [MariaDBDataSource] Found {len(primary_keys)} primary key columns"
             )
 
             return MariaDBResponse(
                 success=True,
-                data=results,
+                data=[pk.model_dump() for pk in primary_keys],
                 message=f"Successfully retrieved primary keys for {database}.{table}"
             )
         except Exception as e:
@@ -392,11 +495,12 @@ class MariaDBDataSource:
                 )
 
             row = results[0]
-            ddl = row.get('Create Table') or row.get('Create View', '')
+            ddl_text = row.get('Create Table') or row.get('Create View', '')
+            ddl_result = DDLResult(ddl=ddl_text)
 
             return MariaDBResponse(
                 success=True,
-                data={'ddl': ddl},
+                data=ddl_result.model_dump(),
                 message=f"Successfully retrieved DDL for {database}.{table}"
             )
         except Exception as e:
@@ -426,9 +530,10 @@ class MariaDBDataSource:
             results = self._client.execute_query(query)
             logger.info("🔧 [MariaDBDataSource] Connection test successful")
 
+            conn_info = ConnectionTestResult.model_validate(results[0]) if results else ConnectionTestResult()
             return MariaDBResponse(
                 success=True,
-                data=results[0] if results else {},
+                data=conn_info.model_dump(),
                 message="Connection successful"
             )
         except Exception as e:
@@ -469,6 +574,39 @@ class MariaDBDataSource:
                 error=str(e),
                 message="Query execution failed"
             )
+
+    async def fetch_table_rows(
+        self,
+        database_name: str,
+        table_name: str,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` rows from a table.
+
+        Args:
+            database_name: Database name
+            table_name: Table name
+            limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
+
+        Returns:
+            List of row dicts, or empty list on failure.
+        """
+        row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
+        safe_database = database_name.replace('`', '``')
+        safe_table = table_name.replace('`', '``')
+        query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
+        try:
+            response = await self.execute_query(query)
+            if response.success and response.data:
+                return response.data
+        except Exception as e:
+            logger.warning(
+                "🔧 [MariaDBDataSource] fetch_table_rows failed for %s.%s: %s",
+                database_name,
+                table_name,
+                e,
+            )
+        return []
 
     async def get_table_stats(
         self, databases: Optional[list[str]] = None
@@ -519,14 +657,15 @@ class MariaDBDataSource:
 
         try:
             results = self._client.execute_query(query, params)
+            stats = [TableStatsEntry.model_validate(row) for row in results]
             logger.debug(
-                f"🔧 [MariaDBDataSource] Found stats for {len(results)} tables"
+                f"🔧 [MariaDBDataSource] Found stats for {len(stats)} tables"
             )
 
             return MariaDBResponse(
                 success=True,
-                data=results,
-                message=f"Successfully retrieved stats for {len(results)} tables"
+                data=[s.model_dump() for s in stats],
+                message=f"Successfully retrieved stats for {len(stats)} tables"
             )
         except Exception as e:
             logger.error(f"🔧 [MariaDBDataSource] get_table_stats failed: {e}")

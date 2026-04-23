@@ -607,15 +607,14 @@ class TestIndexDocumentsDeeper:
     @pytest.mark.asyncio
     async def test_unexpected_exception_in_index_documents(self):
         """Unexpected exception during block processing -> IndexingError."""
-        from app.models.blocks import Block, BlocksContainer
+        from unittest.mock import PropertyMock
 
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        # Create a block whose type property raises when .lower() is called
+        # Make reading `block.type` raise so the classification loop hits the outer except
         block = MagicMock()
-        block.type = MagicMock()
-        block.type.lower.side_effect = AttributeError("no lower")
+        type(block).type = PropertyMock(side_effect=RuntimeError("broken type"))
 
         container = MagicMock()
         container.blocks = [block]

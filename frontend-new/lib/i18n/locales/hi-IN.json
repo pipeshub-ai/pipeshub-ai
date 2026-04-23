@@ -183,6 +183,8 @@
     "dateCreated": "निर्माण तिथि",
     "lastUpdated": "अंतिम अपडेट",
     "source": "स्रोत",
+    "connector": "कनेक्टर",
+    "connectors": "कनेक्टर",
     "createdAt": "बनाया गया",
     "folder": "फ़ोल्डर",
     "file": "फ़ाइल",

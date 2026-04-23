@@ -277,6 +277,10 @@ class IndexingFilterKey(str, Enum):
     IMAGES = "images"
     VIDEOS = "videos"
 
+    TABLES = "index_stage_tables"
+    VIEWS = "index_stage_views"
+    STAGE_FILES = "index_stage_files"
+    MAX_ROWS_PER_TABLE = "max_rows_per_table"
     # Child content types (generic)
     COMMENTS = "comments"
     ATTACHMENTS = "attachments"

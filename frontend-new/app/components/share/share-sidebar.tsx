@@ -529,16 +529,13 @@ export function ShareSidebar({
                         <ShareableRow
                           key={member.id}
                           type={member.type === 'user' ? 'member' : 'team'}
-                          name={
-                            member.isCurrentUser
-                              ? `${member.name} (you)`
-                              : member.name
-                          }
+                          name={member.name}
                           subtitle={member.email}
                           avatarUrl={member.avatarUrl}
-                          
+                          isCurrentUser={member.isCurrentUser}
+                          isOwner={member.isOwner}
                           role={member.role}
-                          showRoleDropdown
+                          showRoleDropdown ={!member.isOwner}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: 'Full Access', description: 'Chats do not have roles' }

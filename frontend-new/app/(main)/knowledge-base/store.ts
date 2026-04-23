@@ -93,6 +93,8 @@ interface KnowledgeBaseState {
   connectors: Connector[]; // DEPRECATED - will be removed
   appNodes: KnowledgeHubNode[]; // Flat list of app nodes (each becomes own section)
   appChildrenCache: Map<string, KnowledgeHubNode[]>; // Cache for app children
+  /** Nested sidebar trees for non-KB apps (All Records), keyed by app id — mirrors categorizedNodes for KB */
+  connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>; // Track which apps are loading children
 
   // All Records navigation (for drill-down)
@@ -206,6 +208,13 @@ interface KnowledgeBaseActions {
   setConnectors: (connectors: Connector[]) => void;
   setAppNodes: (nodes: KnowledgeHubNode[]) => void;
   cacheAppChildren: (appId: string, children: KnowledgeHubNode[]) => void;
+  setConnectorAppTree: (appId: string, tree: EnhancedFolderTreeNode[]) => void;
+  mergeConnectorAppTreeChildren: (
+    appId: string,
+    parentId: string,
+    children: KnowledgeHubNode[],
+    effectiveHasChildFolders?: boolean
+  ) => void;
   setAppLoading: (appId: string, loading: boolean) => void;
 
   // All Records selection
@@ -314,6 +323,7 @@ const initialState: KnowledgeBaseState = {
   connectors: [],
   appNodes: [],
   appChildrenCache: new Map(),
+  connectorAppTrees: new Map(),
   loadingAppIds: new Set(),
   allRecordsNavigationStack: [],
   allRecordsTableData: null,
@@ -671,6 +681,19 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.appChildrenCache.set(appId, children);
         }),
 
+      setConnectorAppTree: (appId, tree) =>
+        set((state) => {
+          state.connectorAppTrees.set(appId, tree);
+        }),
+
+      mergeConnectorAppTreeChildren: (appId, parentId, children, effectiveHasChildFolders) =>
+        set((state) => {
+          const existing = state.connectorAppTrees.get(appId);
+          if (!existing) return;
+          const merged = mergeChildrenIntoTree(existing, parentId, children, effectiveHasChildFolders);
+          state.connectorAppTrees.set(appId, merged);
+        }),
+
       setAppLoading: (appId, loading) =>
         set((state) => {
           if (loading) {
@@ -684,7 +707,10 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           state.allRecordsSidebarSelection = selection;
           state.selectedRecords.clear();
-          state.allRecordsPagination.page = 1;
+          // URL drilldown uses `explorer`; keep table page when switching folder in tree.
+          if (selection.type !== 'explorer') {
+            state.allRecordsPagination.page = 1;
+          }
         }),
 
       selectRecord: (id) =>

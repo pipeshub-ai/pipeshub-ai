@@ -11,6 +11,7 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
+import { TREE_BASE_PADDING, TREE_INDENT_PER_LEVEL, TREE_LINE_OFFSET } from '@/app/components/sidebar';
 import type {
   PageViewMode,
   FolderTreeNode,
@@ -26,10 +27,6 @@ import type {
 
 // Sidebar width constant
 const SIDEBAR_WIDTH = 233;
-
-// Tree indentation constants
-const TREE_INDENT_PER_LEVEL = 31;
-const TREE_BASE_PADDING = 12;
 
 // ========================================
 // Shared Components
@@ -153,7 +150,7 @@ function FolderTreeItem({
           key={`line-${i}`}
           style={{
             position: 'absolute',
-            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + 8}px`,
+            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + TREE_LINE_OFFSET}px`,
             top: 0,
             bottom: 0,
             width: '1px',
@@ -451,7 +448,7 @@ function CollectionItem({ collection, isSelected, onSelect, depth = 1 }: Collect
           key={`line-${i}`}
           style={{
             position: 'absolute',
-            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + 8}px`,
+            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + TREE_LINE_OFFSET}px`,
             top: 0,
             bottom: 0,
             width: '1px',
@@ -555,7 +552,7 @@ function ConnectorItemComponent({
           key={`line-${i}`}
           style={{
             position: 'absolute',
-            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + 8}px`,
+            left: `${TREE_BASE_PADDING + (i * TREE_INDENT_PER_LEVEL) + TREE_LINE_OFFSET}px`,
             top: 0,
             bottom: 0,
             width: '1px',
@@ -762,7 +759,7 @@ function AppSection({
           children.map((child) => (
             <FolderTreeItem
               key={child.id}
-              node={convertToTreeNode(child, 1)}
+              node={convertToTreeNode(child, 0)}
               isSelected={currentFolderId === child.id}
               currentFolderId={currentFolderId}
               onSelect={(id) => {

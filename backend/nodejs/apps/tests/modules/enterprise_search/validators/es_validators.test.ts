@@ -10,6 +10,8 @@ import {
   enterpriseSearchGetSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
+  agentConversationParamsSchema,
+  agentConversationTitleParamsSchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -100,6 +102,61 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { title: 'a'.repeat(201) },
       }
       const result = conversationTitleParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('agentConversationParamsSchema', () => {
+    it('should accept valid agent key and conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'my-agent',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty agent key', () => {
+      const data = {
+        params: { agentKey: '', conversationId: '507f1f77bcf86cd799439011' },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid conversation id', () => {
+      const data = {
+        params: { agentKey: 'a1', conversationId: 'not-an-objectid' },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('agentConversationTitleParamsSchema', () => {
+    it('should accept valid title update', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: { title: 'Renamed chat' },
+      }
+      const result = agentConversationTitleParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty title', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: { title: '' },
+      }
+      const result = agentConversationTitleParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

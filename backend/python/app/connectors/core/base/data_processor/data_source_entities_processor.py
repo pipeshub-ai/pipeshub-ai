@@ -34,6 +34,8 @@ from app.models.entities import (
     RecordGroup,
     RecordType,
     RelatedExternalRecord,
+    SQLTableRecord,
+    SQLViewRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -64,6 +66,7 @@ class RecordGroupWithPermissions:
     anyone_with_link: bool = False
     anyone_same_org: bool = False
     anyone_same_domain: bool = False
+
 
 @dataclass
 class UserGroupWithMembers:
@@ -98,6 +101,7 @@ class DataSourceEntitiesProcessor:
         RecordRelations.CAUSES.value,
         RecordRelations.RELATED.value,
         RecordRelations.LINKED_TO.value,
+        RecordRelations.FOREIGN_KEY.value,
     ]
 
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
@@ -124,19 +128,30 @@ class DataSourceEntitiesProcessor:
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
+    
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
         parent_record_type: RecordType,
         record: Record,
+        record_name: Optional[str] = None,
+        record_group_type: Optional[str] = None,
+        external_record_group_id: Optional[str] = None,
     ) -> Record:
         """
-        Create a placeholder parent record based on the parent record type.
+        Create a placeholder parent/related record based on the record type.
 
         Args:
             parent_external_id: External ID of the parent record
             parent_record_type: Type of the parent record
             record: The child record (for context like connector info)
+            record_name: Optional name for the record. Defaults to parent_external_id.
+            record_group_type: Optional record group type. Pass the child record's
+                value for parent records; omit (None) for related records that may
+                belong to a different group (e.g. FK targets in SQL connectors).
+            external_record_group_id: Optional external record group ID. Pass the
+                child record's value for parent records; omit (None) for related
+                records that may belong to a different group.
 
         Returns:
             A placeholder Record instance of the appropriate type
@@ -144,13 +159,13 @@ class DataSourceEntitiesProcessor:
         base_params = {
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
-            "record_name": parent_external_id,  # Will be updated when real parent is synced
+            "record_name": record_name or parent_external_id,
             "origin": OriginTypes.CONNECTOR.value,
             "connector_name": record.connector_name,
             "connector_id": record.connector_id,
             "record_type": parent_record_type,
-            "record_group_type": record.record_group_type,
-            "external_record_group_id": record.external_record_group_id,  # Inherit from child record
+            "record_group_type": record_group_type,
+            "external_record_group_id": external_record_group_id,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
@@ -195,6 +210,12 @@ class DataSourceEntitiesProcessor:
             )
         elif parent_record_type == RecordType.PULL_REQUEST:
             return PullRequestRecord(**base_params)
+        elif parent_record_type == RecordType.SQL_TABLE:
+            # Placeholder for FK target table not yet synced; will be replaced when table is synced
+            return SQLTableRecord(**base_params)
+        elif parent_record_type == RecordType.SQL_VIEW:
+            # Placeholder for FK target view not yet synced; will be replaced when view is synced
+            return SQLViewRecord(**base_params)
         else:
             raise ValueError(
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
@@ -223,6 +244,8 @@ class DataSourceEntitiesProcessor:
                     parent_external_id=record.parent_external_record_id,
                     parent_record_type=record.parent_record_type,
                     record=record,
+                    record_group_type=record.record_group_type,
+                    external_record_group_id=record.external_record_group_id,
                 )
                 self.logger.debug(f"parent_record: {parent_record}")
 
@@ -280,8 +303,9 @@ class DataSourceEntitiesProcessor:
             except Exception as e:
                 self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
 
+        edges_to_create = []
+
         for related_ext_record in related_external_records:
-            # Strict type check - only accept RelatedExternalRecord objects
             if not isinstance(related_ext_record, RelatedExternalRecord):
                 self.logger.warning(
                     f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
@@ -295,41 +319,43 @@ class DataSourceEntitiesProcessor:
 
             if not external_record_id:
                 continue
-
-            # Look up the related record by external ID and connector
             related_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
                 external_id=external_record_id
             )
 
-            # Create placeholder related record if not found (similar to _handle_parent_record)
             if related_record is None and record_type:
-                # record_type is already a RecordType enum from RelatedExternalRecord
                 related_record = self._create_placeholder_parent_record(
                     parent_external_id=external_record_id,
                     parent_record_type=record_type,
                     record=record,
+                    record_name=related_ext_record.record_name,
                 )
-
-                # Prepare record group BEFORE saving (so record_group_id is included in first save)
-                record_group_id = await self._handle_record_group(related_record, tx_store)
-
                 await tx_store.batch_upsert_records([related_record])
-
-                # Link record to group AFTER saving (when record.id is available for edges)
-                if record_group_id:
-                    await self._link_record_to_group(related_record, record_group_id, tx_store)
 
             # Create relation using the specific relation_type
             if related_record and isinstance(related_record, Record):
                 # relation_type_enum is already a RecordRelations enum, get its value
                 relation_type = relation_type_enum.value
 
-                await tx_store.create_record_relation(
-                    from_record_id=record.id,
-                    to_record_id=related_record.id,
-                    relation_type=relation_type
-                )
+                edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
+                    "_to": f"{CollectionNames.RECORDS.value}/{related_record.id}",
+                    "relationshipType": relation_type,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "sourceColumn": getattr(related_ext_record, "source_column", None) or "",
+                    "targetColumn": getattr(related_ext_record, "target_column", None) or "",
+                    "childTableName": getattr(related_ext_record, "child_table_name", None) or "",
+                    "parentTableName": getattr(related_ext_record, "parent_table_name", None) or "",
+                    "constraintName": getattr(related_ext_record, "constraint_name", None) or "",
+                }
+                
+                edges_to_create.append(edge)
+
+        # Batch upsert all relation edges at once
+        if edges_to_create:
+            await tx_store.batch_upsert_record_relations(edges_to_create)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
@@ -760,6 +786,7 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            record.weburl = existing_record.weburl
             # pass
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
@@ -772,9 +799,10 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store, existing_record)
 
-        # Handle related external records (issue links, project links, etc.)
-        # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
-        if isinstance(record, (TicketRecord, ProjectRecord)):
+        # Handle related external records (issue links, project links, FK relations, etc.)
+        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
+        # to clean up stale link edges even when related_external_records is empty (handles removed links)
+        if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord

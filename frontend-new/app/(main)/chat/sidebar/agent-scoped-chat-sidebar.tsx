@@ -21,7 +21,7 @@ import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 import { SidebarItem } from './sidebar-item';
 import { AgentMoreChatsSidebar } from './agent-more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
-import { AGENT_CONVERSATIONS_PAGE_SIZE, MAX_VISIBLE_CHATS } from '../constants';
+import { SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE, MAX_VISIBLE_CHATS } from '../constants';
 
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
@@ -54,6 +54,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
   const agentConversations = useChatStore((s) => s.agentConversations);
+  const agentConversationsPagination = useChatStore((s) => s.agentConversationsPagination);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
@@ -78,7 +79,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     try {
       const [agentRes, conv] = await Promise.all([
         AgentsApi.getAgent(agentId),
-        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: AGENT_CONVERSATIONS_PAGE_SIZE }),
+        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE }),
       ]);
       setAgentStreamTools(null);
       setAgentContextAccess(
@@ -124,7 +125,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     if (isMobile) closeMobile();
   };
 
-  const hasMoreYour = agentConversations.length > MAX_VISIBLE_CHATS;
+  const hasMoreYour = agentConversations.length > MAX_VISIBLE_CHATS || (agentConversationsPagination?.hasNextPage ?? false);
 
   const visibleYour = hasMoreYour
     ? agentConversations.slice(0, MAX_VISIBLE_CHATS)

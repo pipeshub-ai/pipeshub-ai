@@ -3,7 +3,7 @@ import os
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, TypeVar
+from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
 from jinja2 import Template
 from app.modules.qna.prompt_templates import (
@@ -65,6 +65,9 @@ class RecordGroupType(str, Enum):
     CASE = "CASE"
     TASK = "TASK"
     SALESFORCE_ORG = "SALESFORCE_ORG"
+    SQL_DATABASE = "SQL_DATABASE"
+    SQL_NAMESPACE = "SQL_NAMESPACE"
+    STAGE = "STAGE"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -94,6 +97,8 @@ class RecordType(str, Enum):
     TASK = "TASK"
     ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
+    SQL_TABLE = "SQL_TABLE"
+    SQL_VIEW = "SQL_VIEW"
     OTHERS = "OTHERS"
 
 
@@ -166,13 +171,20 @@ class RelatedExternalRecord(BaseModel):
 
     This model ensures type safety and validation for related external records.
     Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
+    Optional source_column, target_column, constraint_name are used for SQL FK edges.
     """
     external_record_id: str = Field(description="External ID of the related record")
     record_type: RecordType = Field(description="Type of the related record")
+    record_name: Optional[str] = Field(default=None, description="Human-readable name for the related record placeholder (e.g., table name for SQL FK targets). Defaults to external_record_id if not provided.")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
         description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"
     )
+    source_column: Optional[str] = Field(default=None, description="Source column name (e.g. for SQL foreign keys)")
+    target_column: Optional[str] = Field(default=None, description="Target column name (e.g. for SQL foreign keys)")
+    child_table_name: Optional[str] = Field(default=None, description="Child table name (e.g. for SQL foreign keys)")
+    parent_table_name: Optional[str] = Field(default=None, description="Parent table name (e.g. for SQL foreign keys)")
+    constraint_name: Optional[str] = Field(default=None, description="Constraint name (e.g. FK constraint name)")
 
 
 class Record(BaseModel):
@@ -255,6 +267,8 @@ class Record(BaseModel):
             f"External ID     : {self.external_record_id}",
             f"Created At      : {self._format_timestamp(self.source_created_at)}",
             f"Last Updated At : {self._format_timestamp(self.source_updated_at)}",
+            f"Connector ID    : {self.connector_id if self.connector_id else 'N/A'}",
+            f"connector Name  : {self.connector_name.value if self.connector_name else 'N/A'}",
         ]
         if self.mime_type:
             lines.append(f"MIME Type       : {self.mime_type}")
@@ -1745,6 +1759,193 @@ class SharePointPageRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+
+class SQLViewRecord(Record):
+    """Record class for SQL views (Snowflake, etc.)"""
+    database_name: Optional[str] = Field(default=None, description="Database containing the view")
+    schema_name: Optional[str] = Field(default=None, description="Schema containing the view")
+    fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.view")
+    definition: Optional[str] = Field(default=None, description="SQL definition of the view")
+    source_tables: Optional[List[str]] = Field(default_factory=list, description="Tables referenced by this view")
+    is_secure: bool = Field(default=False, description="Whether this is a secure view")
+    comment: Optional[str] = Field(default=None, description="View description/comment")
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "databaseName": self.database_name,
+            "schemaName": self.schema_name,
+            "fqn": self.fqn,
+            "definition": self.definition,
+            "sourceTables": self.source_tables,
+            "isSecure": self.is_secure,
+            "comment": self.comment,
+        }
+
+    @staticmethod
+    def from_arango_record(view_doc: dict, record_doc: dict) -> "SQLViewRecord":
+        """Create SQLViewRecord from ArangoDB documents (records + sqlViews collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLViewRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            database_name=view_doc.get("databaseName"),
+            schema_name=view_doc.get("schemaName"),
+            fqn=view_doc.get("fqn"),
+            definition=view_doc.get("definition"),
+            source_tables=view_doc.get("sourceTables") or [],
+            is_secure=view_doc.get("isSecure", False),
+            comment=view_doc.get("comment"),
+        )
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+
+class SQLTableRecord(Record):
+    """Record class for SQL tables (Snowflake, etc.)"""
+    database_name: Optional[str] = Field(default=None, description="Database containing the table")
+    schema_name: Optional[str] = Field(default=None, description="Schema containing the table")
+    fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.table")
+    row_count: Optional[int] = Field(default=None, description="Number of rows in the table")
+    size_bytes: Optional[int] = Field(default=None, description="Size of the table in bytes")
+    column_count: Optional[int] = Field(default=None, description="Number of columns in the table")
+    ddl: Optional[str] = Field(default=None, description="CREATE TABLE DDL statement")
+    primary_keys: Optional[List[str]] = Field(default_factory=list, description="Primary key column names")
+    foreign_keys: Optional[List[Dict]] = Field(default_factory=list, description="Foreign key definitions")
+    comment: Optional[str] = Field(default=None, description="Table description/comment")
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "databaseName": self.database_name,
+            "schemaName": self.schema_name,
+            "fqn": self.fqn,
+            "rowCount": self.row_count,
+            "sizeInBytes": self.size_bytes,
+            "columnCount": self.column_count,
+            "ddl": self.ddl,
+            "primaryKeys": self.primary_keys,
+            "foreignKeys": self.foreign_keys,
+            "comment": self.comment,
+        }
+
+    @staticmethod
+    def from_arango_record(table_doc: dict, record_doc: dict) -> "SQLTableRecord":
+        """Create SQLTableRecord from ArangoDB documents (records + sqlTables collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLTableRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            database_name=table_doc.get("databaseName"),
+            schema_name=table_doc.get("schemaName"),
+            fqn=table_doc.get("fqn"),
+            row_count=table_doc.get("rowCount"),
+            size_bytes=table_doc.get("sizeInBytes"),
+            column_count=table_doc.get("columnCount"),
+            ddl=table_doc.get("ddl"),
+            primary_keys=table_doc.get("primaryKeys") or [],
+            foreign_keys=table_doc.get("foreignKeys") or [],
+            comment=table_doc.get("comment"),
+        )
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -1897,6 +2098,7 @@ class ArtifactRecord(Record):
             expires_at=artifact_doc.get("expiresAt"),
         )
 
+        
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
