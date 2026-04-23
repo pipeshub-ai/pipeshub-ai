@@ -999,6 +999,35 @@ class TestGetSignedUrl:
         with pytest.raises(aiohttp.ClientError):
             await bs._get_signed_url(mock_session, "http://api/url", {}, {})
 
+    @pytest.mark.asyncio
+    async def test_non_200_logs_non_versioned_warning(self):
+        import aiohttp
+
+        logger = MagicMock()
+        bs = _make_blob_storage(logger=logger)
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 400
+        mock_resp.json = AsyncMock(
+            return_value={
+                "error": {
+                    "message": "This document cannot be versioned",
+                }
+            }
+        )
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        with pytest.raises(aiohttp.ClientError, match="Failed with status 400"):
+            await bs._get_signed_url(mock_session, "http://api/url", {}, {})
+
+        logger.warning.assert_called_once_with(
+            "⚠️ Signed URL request indicates legacy non-versioned document"
+        )
+
 
 # ===================================================================
 # _upload_to_signed_url
