@@ -4,8 +4,7 @@ Covers: run_sync, _sync_users, _sync_user_groups, _sync_spaces,
 _sync_content, _sync_permission_changes_from_audit_log,
 _fetch_permission_audit_logs, _extract_content_title_from_audit_record,
 _sync_content_permissions_by_titles, _fetch_space_permissions,
-_fetch_page_permissions, _fetch_comments_recursive,
-_fetch_group_members, _extract_cursor_from_next_link.
+_fetch_page_permissions, _fetch_group_members, _extract_cursor_from_next_link.
 """
 
 import logging
@@ -517,44 +516,6 @@ class TestSyncContent:
         assert call_count == 2
 
     @pytest.mark.asyncio
-    async def test_comments_fetched_when_present(self):
-        connector = _make_connector()
-        from app.connectors.core.registry.filters import FilterCollection
-        connector.sync_filters = FilterCollection()
-        connector.indexing_filters = FilterCollection()
-        connector.pages_sync_point = MagicMock()
-        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.pages_sync_point.update_sync_point = AsyncMock()
-
-        page_data = {
-            "id": "pg1",
-            "title": "TestPage",
-            "space": {"id": 123},
-            "childTypes": {"comment": {"value": True}},
-            "children": {"attachment": {"results": []}},
-        }
-
-        ds = MagicMock()
-        ds.get_pages_v1 = AsyncMock(return_value=_resp(200, {
-            "results": [page_data],
-            "_links": {},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._fetch_page_permissions = AsyncMock(return_value=[])
-        connector._fetch_comments_recursive = AsyncMock(return_value=[])
-
-        mock_update = MagicMock()
-        mock_update.record = MagicMock()
-        mock_update.record.id = "rec-1"
-        mock_update.record.inherit_permissions = True
-        mock_update.record.indexing_status = None
-        connector._process_webpage_with_update = AsyncMock(return_value=mock_update)
-
-        await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
-        # Should be called for footer + inline
-        assert connector._fetch_comments_recursive.await_count == 2
-
-    @pytest.mark.asyncio
     async def test_attachments_processed(self):
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
@@ -915,108 +876,6 @@ class TestFetchPagePermissions:
 
         perms = await connector._fetch_page_permissions("pg1")
         assert perms == []
-
-
-# ===========================================================================
-# _fetch_comments_recursive (pagination + recursion)
-# ===========================================================================
-
-
-class TestFetchCommentsRecursive:
-
-    @pytest.mark.asyncio
-    async def test_single_page_footer_comments(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(200, {
-            "results": [{"id": "c1", "title": "Comment 1"}],
-            "_links": {"base": "https://co.atlassian.net/wiki"},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
-        connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
-
-        comments = await connector._fetch_comments_recursive(
-            "12345", "TestPage", "footer", [], "s1", "page", "node-1"
-        )
-        assert len(comments) == 1
-
-    @pytest.mark.asyncio
-    async def test_inline_comments_use_correct_api(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_page_inline_comments = AsyncMock(return_value=_resp(200, {
-            "results": [],
-            "_links": {},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        await connector._fetch_comments_recursive(
-            "12345", "TestPage", "inline", [], "s1", "page", "node-1"
-        )
-        ds.get_page_inline_comments.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_blogpost_footer_comments(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_blog_post_footer_comments = AsyncMock(return_value=_resp(200, {
-            "results": [],
-            "_links": {},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        await connector._fetch_comments_recursive(
-            "67890", "TestBlog", "footer", [], "s1", "blogpost", "node-1"
-        )
-        ds.get_blog_post_footer_comments.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_blogpost_inline_comments(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_blog_post_inline_comments = AsyncMock(return_value=_resp(200, {
-            "results": [],
-            "_links": {},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        await connector._fetch_comments_recursive(
-            "67890", "TestBlog", "inline", [], "s1", "blogpost", "node-1"
-        )
-        ds.get_blog_post_inline_comments.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_recursive_children(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(200, {
-            "results": [{"id": "c1"}],
-            "_links": {"base": "https://co.atlassian.net/wiki"},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
-
-        child_comment = (MagicMock(), [])
-        connector._fetch_comment_children_recursive = AsyncMock(return_value=[child_comment])
-
-        comments = await connector._fetch_comments_recursive(
-            "12345", "TestPage", "footer", [], "s1", "page", "node-1"
-        )
-        # Parent + child
-        assert len(comments) == 2
-
-    @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
-        connector = _make_connector()
-        ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(500, {}))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        comments = await connector._fetch_comments_recursive(
-            "12345", "TestPage", "footer", [], "s1", "page", "node-1"
-        )
-        assert comments == []
 
 
 # ===========================================================================
