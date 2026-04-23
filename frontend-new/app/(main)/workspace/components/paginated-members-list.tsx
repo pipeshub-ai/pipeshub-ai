@@ -24,6 +24,8 @@ interface PaginatedMembersListProps<T> {
   limit?: number;
   /** Max height of the scrollable list area (default 300) */
   maxHeight?: number;
+  /** Optional class name for the internal scrollable rows area. */
+  listClassName?: string;
   /** Called with the fetched items on each successful fetch (for parent-level caching). */
   onFetched?: (items: T[], totalCount: number, page: number, search: string) => void;
 }
@@ -48,6 +50,7 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
     emptyText = 'No items found',
     limit = DEFAULT_LIMIT,
     maxHeight = 300,
+    listClassName,
     onFetched,
   }: PaginatedMembersListProps<T>,
   ref: React.Ref<PaginatedMembersListHandle>
@@ -93,6 +96,7 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
       ) : (
         <Flex
           ref={listRef}
+          className={listClassName}
           direction="column"
           gap="3"
           onScroll={handleScroll}

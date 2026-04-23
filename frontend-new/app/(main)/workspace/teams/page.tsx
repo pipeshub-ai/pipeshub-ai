@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, Suspense, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -37,17 +37,6 @@ const TEAMS_FILTER_CHIPS: FilterChipConfig[] = [
   { key: 'createdBy', label: 'Created By', icon: 'person' },
   { key: 'createdOn', label: 'Created On', icon: 'calendar_today' },
 ];
-
-// ========================================
-// Helpers
-// ========================================
-
-/** Find the creator's member entry in the team members list */
-function findCreator(team: Team) {
-  if (!team.createdBy || !team.members?.length) return null;
-  return team.members.find((m) => m.id === team.createdBy) ?? null;
-}
-
 
 // ========================================
 // Page Component
@@ -90,6 +79,7 @@ function TeamsPageContent() {
     isEditMode,
     detailTeam,
   } = useTeamsStore();
+  const [creatorsById, setCreatorsById] = useState<Record<string, { id: string; name?: string; email?: string } | null>>({});
 
   // ── Paginated user filter (for "Created By" filter) ──
   const userFilter = usePaginatedFilterOptions({
@@ -143,6 +133,41 @@ function TeamsPageContent() {
       fetchTeams();
     }
   }, [fetchTeams, isProfileInitialized]);
+
+  // Resolve "Created By" users by graph UUIDs from users API, caching misses too.
+  useEffect(() => {
+    const creatorIds = Array.from(
+      new Set(
+        teams
+          .map((team) => team.createdBy)
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+    const missingCreatorIds = creatorIds.filter(
+      (id) => !Object.prototype.hasOwnProperty.call(creatorsById, id)
+    );
+
+    if (missingCreatorIds.length === 0) return;
+
+    let cancelled = false;
+    UsersApi.getGraphUsersByIds(missingCreatorIds).then((resolved) => {
+      if (cancelled) return;
+      setCreatorsById((prev) => {
+        const next = { ...prev };
+        for (const id of missingCreatorIds) {
+          const user = resolved[id];
+          next[id] = user
+            ? { id: user.id, name: user.name, email: user.email }
+            : null;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teams, creatorsById]);
 
   // ── URL ↔ Store panel sync (see docs/url-driven-panel-state.md) ──
   const pendingUrlRef = useRef<string | null>(null);
@@ -221,8 +246,12 @@ function TeamsPageContent() {
     const panel = searchParams.get('panel');
     const teamId = searchParams.get('teamId');
     const mode = searchParams.get('mode');
+    const clearingPanelUrl = pendingUrlRef.current === buildUrlKey(null, null, null);
 
-    if (panel !== 'detail' || !teamId) return;
+    // When closing detail/create panels, Store->URL sync briefly leaves stale
+    // query params in place while router.replace is in flight. Skip resolver
+    // work during that transition to avoid re-fetching a just-deleted team.
+    if (clearingPanelUrl || panel !== 'detail' || !teamId) return;
     const store = useTeamsStore.getState();
     if (store.isDetailPanelOpen && store.detailTeam?.id === teamId) return;
 
@@ -244,7 +273,7 @@ function TeamsPageContent() {
           router.replace('/workspace/teams/');
         });
     }
-  }, [teams, isLoading]);
+  }, [teams, isLoading, searchParams, buildUrlKey]);
 
   // Store → URL: when store panel state changes, update the URL
   useEffect(() => {
@@ -409,16 +438,20 @@ function TeamsPageContent() {
         width: '20%',
         minWidth: '180px',
         render: (team) => {
-          const creator = findCreator(team);
+          const creator = creatorsById[team.createdBy];
           if (!creator) {
             return <Text size="2" style={{ color: 'var(--slate-9)' }}>-</Text>;
           }
+          const creatorEmail = (creator.email ?? '').trim().toLowerCase();
+          const currentEmail = (currentUser?.email ?? '').trim().toLowerCase();
           return (
             <AvatarCell
-              name={creator.userName}
-              email={creator.userEmail}
-              isSelf={currentUser?.id === creator.id || currentUser?.email === creator.userEmail}
-              profilePicture={creator.profilePicture}
+              name={creator.name || creator.email || 'Unknown User'}
+              email={creator.email}
+              isSelf={
+                creator.id === currentUser?.id ||
+                Boolean(currentEmail && creatorEmail === currentEmail)
+              }
             />
           );
         },
@@ -434,7 +467,7 @@ function TeamsPageContent() {
         ),
       },
     ],
-    [t, currentUser]
+    [t, currentUser, creatorsById]
   );
 
   // ── Row actions ────────────

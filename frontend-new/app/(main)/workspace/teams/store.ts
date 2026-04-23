@@ -40,10 +40,6 @@ interface TeamsState {
 
   // ── Create team panel ──
   isCreatePanelOpen: boolean;
-  createTeamName: string;
-  createTeamDescription: string;
-  createTeamUserIds: string[];
-  isCreating: boolean;
 
   // ── Detail / Edit team panel ──
   isDetailPanelOpen: boolean;
@@ -76,11 +72,6 @@ interface TeamsActions {
   // ── Create team panel actions ──
   openCreatePanel: () => void;
   closeCreatePanel: () => void;
-  setCreateTeamName: (name: string) => void;
-  setCreateTeamDescription: (desc: string) => void;
-  setCreateTeamUserIds: (ids: string[]) => void;
-  setIsCreating: (loading: boolean) => void;
-  resetCreateForm: () => void;
 
   // ── Detail / Edit team panel actions ──
   openDetailPanel: (team: Team) => void;
@@ -103,10 +94,6 @@ type TeamsStore = TeamsState & TeamsActions;
 
 const initialCreateState = {
   isCreatePanelOpen: false,
-  createTeamName: '',
-  createTeamDescription: '',
-  createTeamUserIds: [] as string[],
-  isCreating: false,
 };
 
 const initialDetailState = {
@@ -222,34 +209,6 @@ export const useTeamsStore = create<TeamsStore>()(
       closeCreatePanel: () =>
         set((state) => {
           state.isCreatePanelOpen = false;
-        }),
-
-      setCreateTeamName: (name) =>
-        set((state) => {
-          state.createTeamName = name;
-        }),
-
-      setCreateTeamDescription: (desc) =>
-        set((state) => {
-          state.createTeamDescription = desc;
-        }),
-
-      setCreateTeamUserIds: (ids) =>
-        set((state) => {
-          state.createTeamUserIds = ids;
-        }),
-
-      setIsCreating: (loading) =>
-        set((state) => {
-          state.isCreating = loading;
-        }),
-
-      resetCreateForm: () =>
-        set((state) => {
-          state.createTeamName = '';
-          state.createTeamDescription = '';
-          state.createTeamUserIds = [];
-          state.isCreating = false;
         }),
 
       // ── Detail / Edit team panel actions ──

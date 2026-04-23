@@ -65,7 +65,11 @@ export const TeamsApi = {
    * Body: { name?, description?, updateUserRoles?: [{ userId (UUID), role }] }
    */
   async updateTeam(id: string, payload: UpdateTeamPayload): Promise<Team> {
-    const { data } = await apiClient.put<{ team: Team } | Team>(`${BASE_URL}/${id}`, payload);
+    const { data } = await apiClient.put<{ team: Team } | Team>(
+      `${BASE_URL}/${id}`,
+      payload,
+      { suppressErrorToast: true }
+    );
     if (data && typeof data === 'object' && 'team' in data) {
       return (data as { team: Team }).team;
     }
