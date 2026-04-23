@@ -4213,10 +4213,10 @@ components:
         timestamp:
           type: integer
           format: int64
+          description: Batch timestamp in epoch milliseconds
         resetBeforeApply:
           type: boolean
           description: When true, clear existing Local FS records before applying this batch
-          description: Batch timestamp in epoch milliseconds
 
     LocalFsFileEventStats:
       type: object
@@ -17798,6 +17798,9 @@ paths:
             type: string
       requestBody:
         required: true
+        description: |
+          JSON body: either a `LocalFsFileEventBatchRequest` object, or a bare JSON array of
+          `LocalFsFileEvent` objects (the server wraps arrays with a generated batch id).
         content:
           application/json:
             schema:

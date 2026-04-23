@@ -290,6 +290,9 @@ class TestLocalFsConnectorAsync:
     ):
         f = tmp_path / "blob.bin"
         f.write_bytes(b"hello-stream")
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
         rec = FileRecord(
             record_name="blob.bin",
             record_type=RecordType.FILE,
@@ -384,6 +387,35 @@ class TestLocalFsConnectorAsync:
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    async def test_stream_record_rejects_path_outside_sync_root(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """Paths must stay under the configured sync root (defense in depth)."""
+        safe = tmp_path / "allowed.txt"
+        safe.write_text("ok", encoding="utf-8")
+        outside = tmp_path.parent / f"outside-localfs-{tmp_path.name}.txt"
+        outside.write_text("secret", encoding="utf-8")
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        rec = FileRecord(
+            record_name="outside.txt",
+            record_type=RecordType.FILE,
+            external_record_id="e-out",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path=str(outside),
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.stream_record(rec)
+        assert ei.value.status_code == HttpStatusCode.FORBIDDEN.value
+        outside.unlink(missing_ok=True)
 
     async def test_get_filter_options_empty(self, folder_connector: LocalFsConnector):
         out = await folder_connector.get_filter_options("anything")
