@@ -177,6 +177,16 @@ export function WorkspaceRightPanel({
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
   const { t } = useTranslation();
+  const primaryButtonTooltipText =
+    primaryTooltip ??
+    (primaryLoading
+      ? t('workspace.rightPanel.primaryLoadingHint')
+      : primaryDisabled
+        ? t('workspace.rightPanel.primaryDisabledHint')
+        : undefined);
+  const showPrimaryButtonTooltip = Boolean(
+    (primaryDisabled || primaryLoading) && primaryButtonTooltipText
+  );
   const handleClose = () => onOpenChange(false);
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
   const titleId = useId();
@@ -355,17 +365,26 @@ export function WorkspaceRightPanel({
             >
               {secondaryLabel}
             </Button>
-            {primaryTooltip && (primaryDisabled || primaryLoading) ? (
-              <Tooltip content={primaryTooltip}>
-                <LoadingButton
-                  variant="solid"
-                  size="2"
-                  onClick={onPrimaryClick}
-                  disabled={primaryDisabled}
-                  loading={primaryLoading}
+            {showPrimaryButtonTooltip && primaryButtonTooltipText ? (
+              <Tooltip content={primaryButtonTooltipText}>
+                <span
+                  className="inline-flex"
+                  style={{ maxWidth: '100%' }}
                 >
-                  {primaryLabel}
-                </LoadingButton>
+                  <LoadingButton
+                    variant="solid"
+                    size="2"
+                    onClick={onPrimaryClick}
+                    disabled={primaryDisabled}
+                    loading={primaryLoading}
+                    style={{
+                      backgroundColor:
+                        primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
+                    }}
+                  >
+                    {primaryLabel}
+                  </LoadingButton>
+                </span>
               </Tooltip>
             ) : (
               <LoadingButton

@@ -1265,7 +1265,15 @@
       },
       "errors": {
         "instanceNameRequired": "Geben Sie einen Instanznamen ein."
+      },
+      "validation": {
+        "fieldRequired": "{{field}} ist erforderlich",
+        "fixErrorsAbove": "Korrigieren Sie die hervorgehobenen Felder oben, um fortzufahren."
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",
+      "primaryLoadingHint": "Bitte warten…"
     },
     "archivedChats": {
       "title": "Archivierte Chats",
@@ -1426,6 +1434,11 @@
       "noInstances": "Noch keine Instanzen konfiguriert",
       "addInstance": "Weitere Instanz hinzufügen",
       "saveConfig": "Konfiguration speichern",
+      "continueToConfiguration": "Weiter zur Konfiguration →",
+      "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
+      "authRequiredBeforeConfig": "Schließen Sie die OAuth-Autorisierung ab, bevor Sie Synchronisierung und Filter konfigurieren",
+      "backToCredentials": "← Zurück zu den Anmeldedaten",
+      "backFromConfigure": "← Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
       "toasts": {

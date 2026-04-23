@@ -1263,7 +1263,15 @@
       },
       "errors": {
         "instanceNameRequired": "Enter an instance name."
+      },
+      "validation": {
+        "fieldRequired": "{{field}} is required",
+        "fixErrorsAbove": "Fix the highlighted fields above to continue."
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "Scroll up and complete the required fields (marked with *) to continue.",
+      "primaryLoadingHint": "Please wait…"
     },
     "archivedChats": {
       "title": "Archived Chats",
@@ -1428,6 +1436,11 @@
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
       "saveConfig": "Save Configuration",
+      "continueToConfiguration": "Continue to configuration →",
+      "oauthSigningIn": "Finish signing in with your provider…",
+      "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
+      "backToCredentials": "← Back to credentials",
+      "backFromConfigure": "← Back",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "toasts": {

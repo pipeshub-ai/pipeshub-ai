@@ -1263,7 +1263,15 @@
       },
       "errors": {
         "instanceNameRequired": "इंस्टेंस नाम दर्ज करें।"
+      },
+      "validation": {
+        "fieldRequired": "{{field}} आवश्यक है",
+        "fixErrorsAbove": "जारी रखने के लिए ऊपर हाइलाइट किए गए फ़ील्ड ठीक करें।"
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "जारी रखने के लिए ऊपर स्क्रॉल करें और आवश्यक फ़ील्ड (* चिह्न वाले) पूरे करें।",
+      "primaryLoadingHint": "कृपया प्रतीक्षा करें…"
     },
     "archivedChats": {
       "title": "संग्रहीत चैट",
@@ -1424,6 +1432,11 @@
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
       "saveConfig": "Save Configuration",
+      "continueToConfiguration": "Continue to configuration →",
+      "oauthSigningIn": "Finish signing in with your provider…",
+      "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
+      "backToCredentials": "← Back to credentials",
+      "backFromConfigure": "← Back",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "toasts": {
