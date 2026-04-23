@@ -73,9 +73,8 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
 
   const visible = agents.slice(0, MAX_VISIBLE_AGENTS_IN_SIDEBAR);
 
-  const openAgent = (id: string) => {
+  const openAgent = () => {
     if (isMobile) useMobileSidebarStore.getState().close();
-    router.push(buildChatHref({ agentId: id }));
   };
 
   /** Keep the mobile drawer open: closing it unmounts SidebarBase before the agents panel can show. */
@@ -131,7 +130,8 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
                   agent={agent}
                   label={label}
                   isActive={isActive}
-                  onSelect={() => openAgent(id)}
+                  href={buildChatHref({ agentId: id })}
+                  onSelect={openAgent}
                   onBeforeNavigate={() => {
                     if (isMobile) useMobileSidebarStore.getState().close();
                   }}

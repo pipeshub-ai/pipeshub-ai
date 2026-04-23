@@ -4,7 +4,7 @@ import pytest
 
 from app.connectors.core.registry.auth_builder import OAuthConfig, OAuthScopeConfig
 from app.connectors.core.registry.auth_utils import auth_field_to_dict, auto_add_oauth_fields
-from app.connectors.core.registry.types import AuthField
+from app.connectors.core.registry.types import AuthField, FileContentValidationRule, ValidationRuleType
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,8 @@ class TestAuthFieldToDict:
         assert result["defaultValue"] == ""
         assert result["validation"]["minLength"] == 1
         assert result["validation"]["maxLength"] == 500
+        assert "acceptedFileTypes" not in result["validation"]
+        assert "validationRules" not in result["validation"]
         assert result["isSecret"] is False
 
     def test_secret_field(self):
@@ -68,6 +70,27 @@ class TestAuthFieldToDict:
         result = auth_field_to_dict(field)
         assert result["validation"]["minLength"] == 5
 
+    def test_validation_rules_serialized_sparse(self):
+        rules = [
+            FileContentValidationRule(
+                type=ValidationRuleType.JSON_HAS_FIELDS,
+                required_fields=["a"],
+                error_message="err",
+            ),
+        ]
+        field = AuthField(
+            name="key",
+            display_name="Key",
+            field_type="FILE",
+            min_length=0,
+            validation_rules=rules,
+        )
+        result = auth_field_to_dict(field)
+        assert result["validation"]["acceptedFileTypes"] == []
+        vr = result["validation"]["validationRules"]
+        assert len(vr) == 1
+        assert vr[0] == {"type": "json_has_fields", "requiredFields": ["a"], "errorMessage": "err"}
+
     def test_default_values(self):
         field = AuthField(name="f", display_name="F")
         result = auth_field_to_dict(field)
@@ -77,6 +100,19 @@ class TestAuthFieldToDict:
         assert result["defaultValue"] == ""
         assert result["validation"]["minLength"] == 1
         assert result["validation"]["maxLength"] == 1000
+        assert "acceptedFileTypes" not in result["validation"]
+        assert "validationRules" not in result["validation"]
+
+    def test_file_field_includes_empty_file_validation_keys(self):
+        field = AuthField(
+            name="creds",
+            display_name="Credentials",
+            field_type="FILE",
+            min_length=0,
+        )
+        result = auth_field_to_dict(field)
+        assert result["validation"]["acceptedFileTypes"] == []
+        assert result["validation"]["validationRules"] == []
 
 
 # ---------------------------------------------------------------------------

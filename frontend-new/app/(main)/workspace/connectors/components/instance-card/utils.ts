@@ -1,5 +1,5 @@
 import { STRATEGY_LABELS, INTERVAL_LABELS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
-import { isConnectorInstanceOAuthAuthIncompleteForSyncUi } from '../../utils/auth-helpers';
+import { isConnectorInstanceOAuthAuthIncompleteForSyncUi, isOAuthType } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,
   ConnectorConfig,
@@ -99,10 +99,18 @@ export function deriveSyncStatusState(
   stats?: ConnectorStatsResponse['data'],
   connectorConfig?: ConnectorConfig,
 ): { status: InstanceSyncStatus; oauthAuthIncompleteForSync: boolean } {
-  const oauthAuthIncompleteForSync = isConnectorInstanceOAuthAuthIncompleteForSyncUi(
-    connectorConfig,
-    instance,
-  );
+  // Legacy guard: Gmail/Drive Workspace team connectors were migrated from OAUTH→CUSTOM.
+  // Old DB rows still carry authType:"OAUTH" but there is no OAuth consent flow anymore,
+  // so they must never be flagged as auth-incomplete for sync.
+  const LEGACY_TEAM_WORKSPACE_TYPES = ['Gmail Workspace', 'Drive Workspace'];
+  const isLegacyWorkspaceOAuth =
+    LEGACY_TEAM_WORKSPACE_TYPES.includes(instance.type) &&
+    instance.scope === 'team' &&
+    isOAuthType(instance.authType ?? connectorConfig?.authType ?? '');
+
+  const oauthAuthIncompleteForSync = isLegacyWorkspaceOAuth
+    ? false
+    : isConnectorInstanceOAuthAuthIncompleteForSyncUi(connectorConfig, instance);
 
   // 1. Backend-set hard states
   if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {

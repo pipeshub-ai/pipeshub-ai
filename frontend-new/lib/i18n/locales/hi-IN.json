@@ -16,6 +16,12 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है…"
   },
+  "timeGroup": {
+    "today": "आज",
+    "yesterday": "कल",
+    "previous7Days": "पिछले 7 दिन",
+    "older": "पुराना"
+  },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
     "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
@@ -49,7 +55,91 @@
     "embeddingDefaultNotInRegistry": "इस डिप्लॉयमेंट के लिए कोई सिस्टम डिफ़ॉल्ट एम्बेडिंग उपलब्ध नहीं है।",
     "failedToLoadEmbeddingProviders": "एम्बेडिंग प्रदाता लोड नहीं हो सके।",
     "failedToLoadConfiguredModels": "कॉन्फ़िगर किए गए मॉडल लोड नहीं हो सके।",
-    "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें"
+    "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें",
+    "steps": {
+      "aiModel": {
+        "title": "AI मॉडल*",
+        "description": "खोज उत्तरों के लिए LLM कनेक्ट करें"
+      },
+      "embeddingModel": {
+        "title": "एम्बेडिंग मॉडल",
+        "description": "दस्तावेज़ों में सिमेंटिक खोज सक्षम करें"
+      },
+      "storage": {
+        "title": "स्टोरेज",
+        "description": "चुनें कि आपका इंडेक्स डेटा कहां संग्रहीत है"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "आमंत्रण और पासवर्ड रीसेट के लिए ईमेल सेटअप करें"
+      }
+    },
+    "systemConfig": "सिस्टम कॉन्फ़िगरेशन",
+    "stepHeading": "चरण {{current}}/{{total}}: {{name}} कॉन्फ़िगर करें",
+    "stepAiModel": {
+      "stepName": "AI मॉडल*",
+      "addLlmHint": "जारी रखने के लिए कम से कम एक टेक्स्ट (LLM) प्रदाता जोड़ें।",
+      "loadProvidersError": "AI मॉडल प्रदाता लोड नहीं हो सके",
+      "loadModelsError": "कॉन्फ़िगर मॉडल लोड नहीं हो सके",
+      "setDefaultSuccess": "डिफ़ॉल्ट मॉडल अपडेट हुआ",
+      "setDefaultError": "डिफ़ॉल्ट मॉडल सेट नहीं हो सका"
+    },
+    "stepStorage": {
+      "stepName": "स्टोरेज",
+      "infoBanner": "अपना पसंदीदा स्टोरेज समाधान चुनें। यदि छोड़ा जाए तो लोकल स्टोरेज डिफ़ॉल्ट रूप से उपयोग होता है।",
+      "providerTypeLabel": "प्रदाता प्रकार*",
+      "providerLocal": "लोकल (सिस्टम डिफ़ॉल्ट)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "एक्सेस की*",
+      "accessKeyPlaceholder": "एक्सेस की दर्ज करें",
+      "secretKeyLabel": "गुप्त की*",
+      "secretKeyPlaceholder": "गुप्त की दर्ज करें",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Bucket दर्ज करें",
+      "regionLabel": "क्षेत्र*",
+      "regionSelectPlaceholder": "क्षेत्र चुनें",
+      "accountNameLabel": "खाते का नाम*",
+      "accountNamePlaceholder": "खाते का नाम दर्ज करें",
+      "accountKeyLabel": "खाते की कुंजी*",
+      "accountKeyPlaceholder": "खाते की कुंजी दर्ज करें",
+      "containerLabel": "कंटेनर*",
+      "containerPlaceholder": "कंटेनर दर्ज करें",
+      "mountNameLabel": "माउंट नाम (वैकल्पिक)",
+      "mountNamePlaceholder": "जैसे: uploads",
+      "baseUrlLabel": "बेस URL (वैकल्पिक)",
+      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "ईमेल, आमंत्रण और पासवर्ड रीसेट सक्षम करने के लिए यह अनुशंसित चरण है",
+      "hostLabel": "SMTP होस्ट*",
+      "hostPlaceholder": "जैसे: smtp.gmail.com",
+      "portLabel": "पोर्ट",
+      "portPlaceholder": "जैसे: 587",
+      "fromEmailLabel": "प्रेषक ईमेल*",
+      "fromEmailPlaceholder": "जैसे: noreply@company.com",
+      "usernameLabel": "उपयोगकर्ता नाम",
+      "usernamePlaceholder": "जैसे: user@gmail.com",
+      "passwordLabel": "पासवर्ड",
+      "passwordPlaceholder": "पासवर्ड दर्ज करें"
+    },
+    "nav": {
+      "prev": "पिछला",
+      "next": "अगला",
+      "enterPipeshub": "Pipeshub में प्रवेश करें",
+      "finishing": "समाप्त हो रहा है…",
+      "saveLlmFirst": "जारी रखने के लिए पहले AI मॉडल चरण सहेजें"
+    },
+    "save": "सहेजें",
+    "saving": "सहेजा जा रहा है…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "गोपनीयता नीति",
+      "website": "वेबसाइट",
+      "visitDocs": "देखें",
+      "docsLabel": "दस्तावेज़ीकरण",
+      "toLearnMore": "अधिक जानने के लिए।"
+    }
   },
   "nav": {
     "collections": "कलेक्शन",
@@ -337,6 +427,7 @@
     "readAloud": "जोर से पढ़ें",
     "stopReading": "पढ़ना बंद करें",
     "ttsNotSupported": "इस ब्राउज़र में टेक्स्ट-टू-स्पीच समर्थित नहीं है",
+    "ttsFailed": "टेक्स्ट-टू-स्पीच विफल रहा। कृपया पुनः प्रयास करें।",
     "copiedAsMarkdown": "Markdown के रूप में कॉपी किया गया",
     "copiedAsText": "टेक्स्ट के रूप में कॉपी किया गया",
     "citations": "उद्धरण",
@@ -535,11 +626,6 @@
     "documentation": "डॉक्यूमेंटेशन",
     "darkMode": "डार्क मोड",
     "lightMode": "लाइट मोड"
-  },
-  "timeGroup": {
-    "today": "आज",
-    "previous7Days": "पिछले 7 दिन",
-    "older": "पुराने"
   },
   "workspace": {
     "users": {
@@ -1424,8 +1510,16 @@
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
         "statInProgressSub": "Still being indexed",
+        "statQueued": "Queued",
+        "statQueuedSub": "Waiting to be indexed",
         "statNotStarted": "Not Started",
-        "statNotStartedSub": "Queued for sync",
+        "statNotStartedSub": "Awaiting connector sync",
+        "statManualIndexing": "Manual indexing",
+        "statManualIndexingSub": "Synced but not indexed yet",
+        "statCompleted": "Completed",
+        "statCompletedSub": "Indexed and searchable",
+        "statEmpty": "Empty",
+        "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "personalRecordsIndexed": "Personal Records Indexed"
@@ -2146,6 +2240,86 @@
       "invalid_request": "दिया गया रीडायरेक्ट URI इस एप्लिकेशन के लिए पंजीकृत किसी भी URI से मेल नहीं खाता। डेवलपर सेटिंग्स में रीडायरेक्ट URI की पुष्टि करें।",
       "invalid_client": "client_id किसी पंजीकृत OAuth एप्लिकेशन से मेल नहीं खाता। अपने एप्लिकेशन की कॉन्फ़िगरेशन में क्लाइंट ID सत्यापित करें।",
       "server_error": "सर्वर पर एक अप्रत्याशित त्रुटि हुई। कृपया बाद में पुनः प्रयास करें।"
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Pipeshub में आपका स्वागत है",
+      "defaultSubtitle": "आपके संगठन का ज्ञान, अंततः खोजयोग्य और जुड़ा हुआ।"
+    },
+    "signUp": {
+      "title": "शुरू करें",
+      "subtitle": "Pipeshub में आपका स्वागत है -- चलिए शुरू करते हैं!",
+      "firstNameLabel": "पहला नाम*",
+      "lastNameLabel": "अंतिम नाम*",
+      "orgNameLabel": "संगठन का नाम*",
+      "emailLabel": "आपका ईमेल*",
+      "passwordLabel": "पासवर्ड*",
+      "confirmPasswordLabel": "पासवर्ड पुष्टि करें*",
+      "preferredLanguageLabel": "पसंदीदा भाषा",
+      "firstNamePlaceholder": "अपना पहला नाम दर्ज करें",
+      "lastNamePlaceholder": "अपना अंतिम नाम दर्ज करें",
+      "orgNamePlaceholder": "संगठन का नाम दर्ज करें",
+      "emailPlaceholder": "अपना ईमेल दर्ज करें",
+      "passwordPlaceholder": "अपना पासवर्ड दर्ज करें",
+      "confirmPasswordPlaceholder": "अपना पासवर्ड पुष्ट करें",
+      "passwordHint": "कम से कम 8 अक्षर: छोटा, बड़ा, अंक, चिह्न।",
+      "continueButton": "जारी रखें",
+      "savingToast": "जानकारी सहेजी जा रही है...",
+      "savingToastDescription": "इसमें कुछ सेकंड लगेंगे",
+      "successToast": "खाता सफलतापूर्वक बनाया गया!",
+      "failToast": "साइन अप विफल हुआ। कृपया पुनः प्रयास करें।",
+      "errors": {
+        "firstNameRequired": "पहला नाम आवश्यक है।",
+        "lastNameRequired": "अंतिम नाम आवश्यक है।",
+        "orgNameRequired": "संगठन का नाम आवश्यक है।",
+        "emailRequired": "ईमेल आवश्यक है।",
+        "emailInvalid": "कृपया वैध ईमेल पता दर्ज करें।",
+        "passwordRequired": "पासवर्ड आवश्यक है।",
+        "confirmPasswordRequired": "कृपया अपना पासवर्ड पुष्ट करें।",
+        "passwordsMismatch": "पासवर्ड मेल नहीं खाते।",
+        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।"
+      }
+    },
+    "login": {
+      "emailVerifiedTitle": "ईमेल सत्यापित",
+      "emailVerifiedDescription": "आपका ईमेल पता अपडेट किया गया। नए ईमेल से साइन इन करें।",
+      "emailVerifyFailedTitle": "ईमेल सत्यापन विफल",
+      "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
+      "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
+      "samlSignInFailedTitle": "साइन-इन विफल",
+      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।"
+    },
+    "common": {
+      "signIn": "साइन इन",
+      "signingIn": "साइन इन हो रहा है…",
+      "sendOtp": "OTP भेजें",
+      "sending": "भेजा जा रहा है…",
+      "forgotPassword": "पासवर्ड भूल गए",
+      "emailLabel": "ईमेल",
+      "emailPlaceholder": "अपना ईमेल दर्ज करें",
+      "passwordLabel": "पासवर्ड",
+      "passwordPlaceholder": "अपना पासवर्ड दर्ज करें",
+      "emailRequired": "ईमेल आवश्यक है।",
+      "emailInvalid": "कृपया वैध ईमेल पता दर्ज करें।",
+      "passwordRequired": "पासवर्ड आवश्यक है।",
+      "incorrectPassword": "गलत पासवर्ड।",
+      "noPasswordSet": "कोई पासवर्ड नहीं। नीचे पासवर्ड भूले का उपयोग करें।",
+      "authFailed": "प्रमाणीकरण विफल। कृपया पुनः प्रयास करें।",
+      "otpInvalidLength": "कृपया पूरा 6 अंकों का कोड दर्ज करें।",
+      "signInWithPasswordInstead": "पासवर्ड से साइन इन करें",
+      "signInWithEmailOtp": "ईमेल OTP से साइन इन करें",
+      "orContinueWith": "या {{provider}} से जारी रखें",
+      "orContinueWithAny": "या इनमें से किसी एक से जारी रखें",
+      "orContinueWithSso": "या सिंगल साइन-ऑन से जारी रखें",
+      "googleNotConfigured": "Google साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "microsoftNotConfigured": "Microsoft साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "oauthNotConfigured": "OAuth साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
+      "googleUnavailable": "Google साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "microsoftUnavailable": "Microsoft साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "oauthUnavailable": "OAuth साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
+      "showPassword": "पासवर्ड दिखाएं",
+      "hidePassword": "पासवर्ड छुपाएं"
     }
   }
 }

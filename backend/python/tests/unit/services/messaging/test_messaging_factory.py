@@ -105,3 +105,46 @@ class TestCreateConsumer:
         )
         assert isinstance(consumer, KafkaMessagingConsumer)
 
+    def test_none_config_raises_value_error(self, logger):
+        with pytest.raises(ValueError, match="Kafka consumer config is required"):
+            MessagingFactory.create_consumer(
+                logger, config=None, broker_type=MessageBrokerType.KAFKA
+            )
+
+    def test_wrong_config_type_raises_type_error(self, logger):
+        """Passing a RedisStreamsConfig to a Kafka consumer → TypeError."""
+        from app.services.messaging.config import RedisStreamsConfig
+        wrong = RedisStreamsConfig(
+            host="localhost", port=6379,
+            client_id="c", group_id="g", topics=["t"],
+        )
+        with pytest.raises(TypeError, match="Expected KafkaConsumerConfig"):
+            MessagingFactory.create_consumer(
+                logger, config=wrong, broker_type=MessageBrokerType.KAFKA
+            )
+
+    def test_default_broker_is_kafka_consumer(self, logger, consumer_config):
+        """Auto-detect broker type for consumer when broker_type is omitted."""
+        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
+        with patch(
+            "app.services.messaging.messaging_factory.get_message_broker_type",
+            return_value=MessageBrokerType.KAFKA,
+        ):
+            consumer = MessagingFactory.create_consumer(logger, config=consumer_config)
+        assert isinstance(consumer, KafkaMessagingConsumer)
+
+
+class TestCreateProducerTypeError:
+    """Passing the wrong config type to a Kafka producer must raise TypeError."""
+
+    def test_wrong_config_type_raises_type_error(self, logger):
+        from app.services.messaging.config import RedisStreamsConfig
+        wrong = RedisStreamsConfig(
+            host="localhost", port=6379,
+            client_id="c", group_id="g", topics=["t"],
+        )
+        with pytest.raises(TypeError, match="Expected KafkaProducerConfig"):
+            MessagingFactory.create_producer(
+                logger, config=wrong, broker_type=MessageBrokerType.KAFKA
+            )
+

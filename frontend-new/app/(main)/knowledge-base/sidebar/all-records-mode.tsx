@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
@@ -56,6 +57,8 @@ interface AllRecordsModeProps {
   // Navigation
   onNavigateToConnectors: () => void;
   onNavigateToConnector: (connectorTypeParam: string) => void;
+  connectorsHref: string;
+  buildConnectorHref: (connectorTypeParam: string) => string;
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -98,6 +101,8 @@ export function AllRecordsMode({
   kbPrivateTree,
   onNavigateToConnectors,
   onNavigateToConnector,
+  connectorsHref,
+  buildConnectorHref,
   onReindex,
   onRename,
   onDelete,
@@ -229,34 +234,45 @@ export function AllRecordsMode({
           </Text>
           <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} onNavigate={onNavigateToConnector} />
+              <MoreConnectorItem key={connector.id} connector={connector} href={buildConnectorHref(connector.connectorTypeParam)} onNavigate={onNavigateToConnector} />
             ))}
             <Button
+              asChild
               variant="ghost"
               size="2"
               color="gray"
-              onClick={onNavigateToConnectors}
-              style={{
-                width: '100%',
-                justifyContent: 'space-between',
-                paddingLeft: 'var(--space-3)',
-                display: 'flex',
-                alignItems: 'center',
-              }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
-                <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
-                  {t('sidebar.seeMoreConnectors')}
-                </Text>
-              </div>
-              <Flex
-                align="center"
-                justify="center"
-                style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+              <Link
+                href={connectorsHref}
+                onClick={(e: React.MouseEvent) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                  e.preventDefault();
+                  onNavigateToConnectors();
+                }}
+                style={{
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  paddingLeft: 'var(--space-3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  textDecoration: 'none',
+                  color: 'inherit',
+                }}
               >
-                <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-              </Flex>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
+                  <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
+                    {t('sidebar.seeMoreConnectors')}
+                  </Text>
+                </div>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
+                >
+                  <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
+                </Flex>
+              </Link>
             </Button>
           </Flex>
         </Box>

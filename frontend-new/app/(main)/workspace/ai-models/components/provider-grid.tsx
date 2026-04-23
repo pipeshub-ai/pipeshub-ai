@@ -27,7 +27,7 @@ interface ProviderGridProps {
   onCapabilitySectionChange: (section: CapabilitySection) => void;
   onAdd: (provider: AIModelProvider, capability: string) => void;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
-  onSetDefault: (modelType: string, modelKey: string) => void;
+  onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   isLoading?: boolean;
   onRefresh: () => void;
@@ -46,6 +46,8 @@ interface ProviderGridProps {
 function modelTypesForSection(section: CapabilitySection): readonly string[] {
   if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
   if (section === 'embedding') return ['embedding'];
+  if (section === 'tts') return ['tts'];
+  if (section === 'stt') return ['stt'];
   return ['imageGeneration'];
 }
 

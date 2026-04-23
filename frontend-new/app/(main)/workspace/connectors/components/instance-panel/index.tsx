@@ -37,9 +37,7 @@ export function InstanceManagementPanel() {
     setInstancePanelTab,
     openPanel,
     openInstancePanel,
-    upsertConnectorInstance,
-    removeConnectorInstanceCaches,
-    bumpCatalogRefresh,
+    removeConnectorInstance,
   } = useConnectorsStore();
 
   const [iconError, setIconError] = useState(false);
@@ -62,41 +60,51 @@ export function InstanceManagementPanel() {
 
   const openRemoveDialog = useCallback(() => {
     if (!selectedInstance?._key) return;
+    if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
+      addToast({
+        variant: 'info',
+        title: 'Already being removed',
+        description: 'This connector is already being removed.',
+      });
+      return;
+    }
+    if (selectedInstance.isActive) {
+      addToast({
+        variant: 'warning',
+        title: 'Disable sync first',
+        description: 'Turn off sync before removing this connector.',
+      });
+      return;
+    }
     setPendingDeleteId(selectedInstance._key);
     setDeleteOpen(true);
-  }, [selectedInstance?._key]);
+  }, [selectedInstance, addToast]);
+
+  const removeConnectorDisabled =
+    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING;
+
+    const removeConnectorDisabledTooltip =
+    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
+      ? 'This connector is already being removed.'
+      : selectedInstance?.isActive
+        ? 'Turn off sync before removing this connector.'
+        : undefined;
 
   const confirmRemoveConnector = useCallback(async () => {
     const id = pendingDeleteId;
     if (!id || deleteBusy) return;
     setDeleteBusy(true);
     try {
-      const merge = await ConnectorsApi.deleteConnectorInstance(id);
-      const { activeConnectors, selectedInstance: currentSelected } =
-        useConnectorsStore.getState();
-      const prev =
-        currentSelected?._key === merge._key
-          ? currentSelected
-          : activeConnectors.find((c) => c._key === merge._key);
-      if (prev) {
-        upsertConnectorInstance({
-          ...prev,
-          _key: merge._key,
-          type: merge.type || prev.type,
-          status: merge.status,
-        });
-      }
-      removeConnectorInstanceCaches(id);
-      addToast({
-        variant: 'success',
-        title: 'Connector removal started',
-        description: 'This instance is being deleted. It may take a moment to disappear from the list.',
-        duration: 4000,
-      });
+      await ConnectorsApi.deleteConnectorInstance(id);
       setDeleteOpen(false);
       setPendingDeleteId(null);
       closeInstancePanel();
-      bumpCatalogRefresh();
+      removeConnectorInstance(id);
+      addToast({
+        variant: 'success',
+        title: 'Connector removed',
+        duration: 3000,
+      });
     } catch (error: unknown) {
       console.error('ConnectorsApi.deleteConnectorInstance', error);
       let description: string | undefined;
@@ -117,11 +125,9 @@ export function InstanceManagementPanel() {
   }, [
     pendingDeleteId,
     deleteBusy,
-    upsertConnectorInstance,
-    removeConnectorInstanceCaches,
+    removeConnectorInstance,
     addToast,
     closeInstancePanel,
-    bumpCatalogRefresh,
   ]);
 
   if (!selectedInstance) return null;
@@ -174,16 +180,6 @@ export function InstanceManagementPanel() {
       : pendingDeleteId === selectedInstance._key
         ? selectedInstance
         : (instances.find((i) => i._key === pendingDeleteId) ?? selectedInstance);
-
-  const removeConnectorDisabled =
-    selectedInstance.isActive || selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
-
-  const removeConnectorDisabledReason =
-    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING
-      ? 'This connector is already being removed.'
-      : selectedInstance.isActive
-        ? 'Turn off sync before removing this connector.'
-        : null;
 
   const manageConfigDisabled = selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
@@ -277,8 +273,8 @@ export function InstanceManagementPanel() {
                 onRequestRemoveConnector={
                   selectedInstance._key ? openRemoveDialog : undefined
                 }
-                removeConnectorDisabled={removeConnectorDisabled}
-                removeConnectorDisabledReason={removeConnectorDisabledReason}
+                removeDisabled={removeConnectorDisabled}
+                removeDisabledTooltip={removeConnectorDisabledTooltip}
               />
             </Tabs.Content>
           </Tabs.Root>

@@ -58,10 +58,16 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
-import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
+import {
+  isPresentationFile,
+  isDocxFile,
+  isLegacyWordDocFile,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 
 function KnowledgeBasePageContent() {
@@ -1000,19 +1006,38 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, setAllRecordsSearchQuery, setSearchQuery]
   );
 
+  // Refetch main table for current route context (shared by handleRefresh and refreshData)
+  const refetchMainTableForCurrentRoute = useCallback(async () => {
+    if (isAllRecordsMode) {
+      // Preserve drill-down context: pass current nodeType/nodeId from URL
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchAllRecordsTableData(nodeType, nodeId);
+      } else {
+        await fetchAllRecordsTableData();
+      }
+    } else if (selectedNode) {
+      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
+    } else {
+      // Fallback: if selectedNode not set (e.g. after failed load), use URL params
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      if (nodeType && nodeId) {
+        await fetchTableData(nodeType, nodeId);
+      }
+    }
+  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+
   // Handle refresh
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      if (isAllRecordsMode) {
-        await fetchAllRecordsTableData();
-      } else if (selectedNode) {
-        await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-      }
+      await refetchMainTableForCurrentRoute();
     } finally {
       setIsRefreshing(false);
     }
-  }, [isAllRecordsMode, selectedNode, fetchTableData, fetchAllRecordsTableData, setIsRefreshing]);
+  }, [refetchMainTableForCurrentRoute, setIsRefreshing]);
 
   // Refresh orchestrator: Syncs sidebar and content area after mutations (delete, create, etc.)
   const refreshData = useCallback(async () => {
@@ -1031,22 +1056,10 @@ function KnowledgeBasePageContent() {
     await refreshKbTree();
 
     // 3. Refetch current content area data (which also re-expands the breadcrumb path)
-    if (isAllRecordsMode) {
-      // Preserve drill-down context: pass current nodeType/nodeId from URL so
-      // the refresh stays on the current collection/folder instead of resetting to root
-      const nodeType = searchParams.get('nodeType');
-      const nodeId = searchParams.get('nodeId');
-      if (nodeType && nodeId) {
-        await fetchAllRecordsTableData(nodeType, nodeId);
-      } else {
-        await fetchAllRecordsTableData();
-      }
-    } else if (selectedNode) {
-      await fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
+    await refetchMainTableForCurrentRoute();
 
     console.log('✅ Data refresh complete');
-  }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+  }, [refetchMainTableForCurrentRoute]);
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
@@ -1394,8 +1407,10 @@ function KnowledgeBasePageContent() {
         setPreviewMode('sidebar');
 
         // 2. Fetch record details and stream file in parallel
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const streamOptions = isPresentationFile(item.mimeType, item.name) ? { convertTo: 'application/pdf' } : undefined;
+        const streamAsPdf =
+          isPresentationFile(item.mimeType, item.name) ||
+          isLegacyWordDocFile(item.mimeType, item.name);
+        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, streamOptions),
@@ -1403,8 +1418,21 @@ function KnowledgeBasePageContent() {
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
-        const resolvedType = recordDetails.record.mimeType || item.extension || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const recordMime = recordDetails.record.mimeType || item.extension || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          recordMime,
+          item.name,
+          blob,
+          !!streamOptions,
+        );
+        const fr = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          item.extension ?? undefined,
+          fr?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         // 4. Update state with actual file URL and/or Blob
@@ -1448,16 +1476,31 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // PPT/PPTX files need server-side conversion to PDF for browser preview
-        const legacyStreamOptions = isPresentationFile(item.fileType, item.name) ? { convertTo: 'pdf' } : undefined;
+        const legacyStreamAsPdf =
+          isPresentationFile(item.fileType, item.name) ||
+          isLegacyWordDocFile(item.fileType, item.name);
+        const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const [recordDetails, blob] = await Promise.all([
           KnowledgeBaseApi.getRecordDetails(item.id),
           KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
         ]);
 
         // DOCX uses the Blob directly; other types stay on URLs.
-        const resolvedType = recordDetails.record.mimeType || item.fileType || '';
-        const isDocx = isDocxFile(resolvedType, item.name);
+        const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          legacyRecordMime,
+          item.name,
+          blob,
+          !!legacyStreamOptions,
+        );
+        const frLegacy = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType,
+          item.name,
+          recordDetails.record.recordName,
+          undefined,
+          frLegacy?.extension,
+        );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         setPreviewFile({
@@ -1642,16 +1685,17 @@ function KnowledgeBasePageContent() {
     });
 
     try {
-      // Check if this is a folder inside an app (use record-group endpoint)
-      const currentTableData = isAllRecordsMode ? allRecordsTableData : tableData;
-      const breadcrumbs = currentTableData?.breadcrumbs ?? [];
-      const isFolderInsideApp =  (item as KnowledgeHubNode).nodeType === 'recordGroup'
-        && breadcrumbs.some(b => b.nodeType === 'app') && item.nodeType !== 'folder';
+      const nodeType = (item as KnowledgeHubNode).nodeType;
 
-      if (isFolderInsideApp) {
+      if (nodeType === 'recordGroup') {
+        // RecordGroups are connector-app folders — use record-group endpoint
         await KnowledgeBaseApi.reindexRecordGroup(item.id);
+      } else if (nodeType === 'folder') {
+        // KB folders — reindex all children
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       } else {
-        await KnowledgeBaseApi.reindexItem(item.id);
+        // Regular records — include children in reindex
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
       toast.update(toastId, {
@@ -1677,7 +1721,7 @@ function KnowledgeBasePageContent() {
         },
       });
     }
-  }, [refreshData, isAllRecordsMode, allRecordsTableData, tableData]);
+  }, [refreshData]);
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
@@ -1871,6 +1915,7 @@ function KnowledgeBasePageContent() {
     const items = selectedItemsArray.map(item => ({
       id: item.id,
       name: item.name,
+      nodeType: ('nodeType' in item) ? (item as KnowledgeHubNode).nodeType : undefined,
     }));
     await bulkReindexSelected(items, refreshData);
   }, [selectedItemsArray, bulkReindexSelected, refreshData]);
@@ -2007,14 +2052,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
-          onRefresh={() => {
-            if (isAllRecordsMode) {
-              // Trigger re-fetch by clearing data
-              setAllRecordsTableData(null);
-            } else if (selectedNode) {
-              fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-            }
-          }}
+          onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {
             if (isAllRecordsMode) {
               useKnowledgeBaseStore.getState().setAllRecordsPage(page);
@@ -2180,6 +2218,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
             // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
             if (previewFile.url && previewFile.url.startsWith('blob:')) {

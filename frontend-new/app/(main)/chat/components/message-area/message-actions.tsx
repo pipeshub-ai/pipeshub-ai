@@ -13,7 +13,7 @@ import type { ModelInfo } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
-import { useSpeechSynthesis } from '@/lib/hooks/use-speech-synthesis';
+import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 
 // ========================================
 // Types
@@ -89,10 +89,20 @@ export function MessageActions({
   const [readAloudHovered, setReadAloudHovered] = useState(false);
   const { t, i18n } = useTranslation();
 
-  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useSpeechSynthesis({
+  const { isSpeaking, isSupported: isTtsSupported, speak, stop: stopSpeech } = useChatSpeechSynthesis({
     lang: i18n.language,
-    onError: () => {
-      toast.error(t('chat.ttsNotSupported'));
+    onError: (error) => {
+      // The Read-Aloud button is only rendered when TTS is supported, so
+      // any runtime failure here is a synthesis / playback error, not a
+      // browser-capability problem. The legacy string claimed otherwise
+      // and was confusing users when only the first sentence played.
+      // Fall back to the legacy message only for the rare pre-flight
+      // "not-supported" signal, to preserve its meaning for callers.
+      if (error === 'not-supported') {
+        toast.error(t('chat.ttsNotSupported'));
+      } else {
+        toast.error(t('chat.ttsFailed'));
+      }
     },
   });
 

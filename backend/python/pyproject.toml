@@ -259,6 +259,11 @@ dependencies = [
     "python-dotenv==1.2.2",
     "redshift_connector==2.0.918",
     "pikepdf>=8.1.0,<9.0.0",
+    # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
+    # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
+    # when the agent declares packages=["reportlab"] / ["fpdf2"].
+    "reportlab>=4.0.0,<5.0.0",
+    "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.26",
     "qdrant-client==1.13.1",
@@ -288,6 +293,11 @@ module = "app.indexing_main:run"
 
 [project.optional-dependencies]
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
+# Optional: enable self-hosted Whisper Speech-to-Text (runs locally via faster-whisper + CTranslate2).
+# Not installed by default because the runtime pulls in CTranslate2 binaries and downloads
+# multi-hundred-MB model weights on first use. Enable with:
+#   pip install -e '.[whisper]'
+whisper = ["faster-whisper>=1.0.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"

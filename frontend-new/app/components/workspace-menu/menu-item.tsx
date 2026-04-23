@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Box } from '@radix-ui/themes';
 import { ITEM_HEIGHT } from './types';
 
@@ -31,6 +32,7 @@ interface MenuItemProps {
   label: React.ReactNode;
   rightSlot?: React.ReactNode;
   onClick?: () => void;
+  href?: string;
   textColor?: string;
   /** Highlighted state (e.g. when a sub-panel is open) */
   isActive?: boolean;
@@ -42,49 +44,50 @@ export function MenuItem({
   label,
   rightSlot,
   onClick,
+  href,
   textColor = 'var(--slate-11)',
   isActive = false,
 }: MenuItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        // Reset native button defaults
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        color: 'inherit',
-        outline: 'none',
-        textDecoration: 'none',
-        // Layout
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        width: '100%',
-        height: ITEM_HEIGHT,
-        padding: '0 12px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        // Visual
-        borderRadius: 'var(--radius-1)',
-        backgroundColor: isActive
-          ? 'var(--slate-a3)'
-          : isHovered
-            ? 'var(--slate-a3)'
-            : 'transparent',
-        border: isActive
-          ? '1px solid var(--slate-a4)'
-          : isHovered
-            ? '1px solid var(--olive-4)'
-            : '1px solid transparent',
-        cursor: onClick ? 'pointer' : 'default',
-      }}
-    >
+  const isExternal = href?.startsWith('http');
+
+  const sharedStyle: React.CSSProperties = {
+    appearance: 'none',
+    margin: 0,
+    font: 'inherit',
+    color: 'inherit',
+    outline: 'none',
+    textDecoration: 'none',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    height: ITEM_HEIGHT,
+    padding: '0 12px',
+    boxSizing: 'border-box',
+    flexShrink: 0,
+    borderRadius: 'var(--radius-1)',
+    backgroundColor: isActive
+      ? 'var(--slate-a3)'
+      : isHovered
+        ? 'var(--olive-3)'
+        : 'transparent',
+    border: isActive
+      ? '1px solid var(--slate-a4)'
+      : isHovered
+        ? '1px solid var(--olive-4)'
+        : '1px solid transparent',
+    cursor: (onClick || href) ? 'pointer' : 'default',
+  };
+
+  const hoverHandlers = {
+    onMouseEnter: () => setIsHovered(true),
+    onMouseLeave: () => setIsHovered(false),
+  };
+
+  const content = (
+    <>
       {icon}
       <div
         style={{
@@ -102,6 +105,40 @@ export function MenuItem({
         {label}
       </div>
       {rightSlot}
+    </>
+  );
+
+  if (href && isExternal) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={onClick}
+        style={sharedStyle}
+        {...hoverHandlers}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  if (href) {
+    const handleLinkClick = (e: React.MouseEvent) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+      onClick?.();
+    };
+
+    return (
+      <Link href={href} onClick={handleLinkClick} style={sharedStyle} {...hoverHandlers}>
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <button type="button" onClick={onClick} style={sharedStyle} {...hoverHandlers}>
+      {content}
     </button>
   );
 }

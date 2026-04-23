@@ -46,6 +46,11 @@ export interface ChatPreviewFile {
    * not the first citation on the target page.
    */
   initialCitationId?: string;
+  /**
+   * Hide the "File Details" tab in the preview shell. Set for previews that
+   * don't correspond to a KB record (e.g. chat-generated artifacts).
+   */
+  hideFileDetails?: boolean;
 }
 
 /**

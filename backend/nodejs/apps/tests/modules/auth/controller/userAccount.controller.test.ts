@@ -685,8 +685,9 @@ describe('UserAccountController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.send.calledOnce).to.be.true;
       expect(res.send.firstCall.args[0].data).to.equal(
-        'password reset mail sent',
+        'If an account exists for this email, a password reset link has been sent.',
       );
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
     });
 
     it('should call next(error) when email is missing', async () => {
@@ -702,7 +703,7 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.equal('Email is required');
     });
 
-    it('should call next(error) when user not found', async () => {
+    it('should respond 200 with the generic message when user is not found', async () => {
       const req: any = {
         body: { email: 'nonexistent@example.com' },
         ip: '127.0.0.1',
@@ -710,13 +711,63 @@ describe('UserAccountController', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 404,
-        data: 'Account not found',
+        data: { message: 'Account not found' },
       });
 
       await controller.forgotPasswordEmail(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.send.firstCall.args[0].data).to.equal(
+        'If an account exists for this email, a password reset link has been sent.',
+      );
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('should respond 200 with the generic message when iam lookup throws', async () => {
+      const req: any = {
+        body: { email: 'broken@example.com' },
+        ip: '127.0.0.1',
+      };
+
+      mockIamService.getUserByEmail.rejects(new Error('iam down'));
+
+      await controller.forgotPasswordEmail(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.send.firstCall.args[0].data).to.equal(
+        'If an account exists for this email, a password reset link has been sent.',
+      );
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('should respond 200 even when sending the mail fails', async () => {
+      const req: any = {
+        body: { email: 'user@example.com' },
+        ip: '127.0.0.1',
+      };
+
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: {
+          _id: 'u1',
+          email: 'user@example.com',
+          orgId: 'o1',
+          fullName: 'Test User',
+        },
+      });
+
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockMailService.sendMail.rejects(new Error('smtp unavailable'));
+
+      await controller.forgotPasswordEmail(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.send.firstCall.args[0].data).to.equal(
+        'If an account exists for this email, a password reset link has been sent.',
+      );
     });
   });
 

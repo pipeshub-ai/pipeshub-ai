@@ -53,6 +53,18 @@ class GenerateImageInput(BaseModel):
             "The more specific the prompt, the better the result."
         ),
     )
+    file_name: str = Field(
+        ...,
+        description=(
+            "A short, descriptive, filesystem-safe base file name for the image, "
+            "WITHOUT extension. Derive it from the subject of the user's request "
+            "using snake_case (lowercase letters, digits, underscores; 2-40 chars). "
+            "Examples: 'mona_lisa', 'coffee_shop_logo', 'cat_with_sunglasses', "
+            "'futuristic_city_skyline'. Do NOT use the model name, timestamps, "
+            "or random IDs. If the user did not specify a name, invent a concise "
+            "one that summarises the subject of the image."
+        ),
+    )
     size: str = Field(
         default="1024x1024",
         description=(
@@ -100,6 +112,10 @@ class ImageGenerator:
             "graphs, diagrams, tables, screenshots of data, PDFs from text, SVG from "
             "data) -- use coding_sandbox.execute_python or coding_sandbox.execute_typescript "
             "for those instead. "
+            "Always pass a descriptive snake_case `file_name` derived from the "
+            "subject of the user's prompt (e.g. 'mona_lisa' for a Mona Lisa request, "
+            "'coffee_shop_logo' for a coffee-shop logo). Never use the model name "
+            "or random IDs as the file name. "
             "The generated image is attached to the response as an artifact; the text "
             "result just acknowledges success and carries metadata."
         ),
@@ -131,6 +147,7 @@ class ImageGenerator:
     async def generate_image(
         self,
         prompt: str,
+        file_name: str = "",
         size: str = "1024x1024",
         n: int = 1,
     ) -> tuple[bool, str]:
@@ -229,6 +246,7 @@ class ImageGenerator:
             conversation_id=conversation_id,
             user_id=user_id,
             model_name=adapter.model,
+            file_name_hint=file_name,
         )
 
         return self._result(True, {
@@ -245,6 +263,7 @@ class ImageGenerator:
             "model": adapter.model,
             "size": size,
             "count": len(images),
+            "file_name": _sanitize_file_stem(file_name),
         })
 
     # ------------------------------------------------------------------
@@ -261,6 +280,7 @@ class ImageGenerator:
         conversation_id: str | None,
         user_id: str | None,
         model_name: str,
+        file_name_hint: str | None = None,
     ) -> None:
         """Upload generated images in the background and register the task.
 
@@ -311,8 +331,11 @@ class ImageGenerator:
                 return None
 
             uploaded: list[dict[str, Any]] = []
+            total = len(images)
             for idx, image_bytes in enumerate(images):
-                file_name = _build_file_name(model_name, idx)
+                file_name = _build_file_name(
+                    model_name, idx, total=total, hint=file_name_hint,
+                )
                 logger.info(
                     "[generate_image] uploading image %d/%d (%s, %d bytes) "
                     "to blob store for conversation=%s",
@@ -373,8 +396,51 @@ class ImageGenerator:
         )
 
 
-def _build_file_name(model_name: str, idx: int) -> str:
-    """Return a short, filesystem-safe file name for the generated image."""
+def _sanitize_file_stem(raw: str | None) -> str:
+    """Normalise a user / LLM supplied file-name stem to a safe snake_case token.
+
+    Returns an empty string when the input is None/empty or produces nothing
+    meaningful after sanitisation. The caller is expected to fall back to a
+    model-based default in that case.
+    """
+    if not raw:
+        return ""
+    cleaned = "".join(
+        c if c.isalnum() or c in {"-", "_"} else "_" for c in raw.strip()
+    ).strip("_-").lower()
+    if not cleaned:
+        return ""
+    # Collapse runs of underscores and hyphens so "a___b---c" -> "a_b-c".
+    out: list[str] = []
+    prev = ""
+    for ch in cleaned:
+        if ch in {"_", "-"} and prev in {"_", "-"}:
+            continue
+        out.append(ch)
+        prev = ch
+    return "".join(out)[:60].strip("_-")
+
+
+def _build_file_name(
+    model_name: str,
+    idx: int,
+    *,
+    total: int = 1,
+    hint: str | None = None,
+) -> str:
+    """Return a short, filesystem-safe file name for the generated image.
+
+    When ``hint`` sanitises to a non-empty stem, use it directly (suffixed
+    with the 1-based index only when ``total`` > 1). Otherwise fall back to
+    the legacy ``{model}_{idx}_{uuid8}.png`` pattern so the upload still
+    succeeds even when the LLM omitted the ``file_name`` argument.
+    """
+    stem = _sanitize_file_stem(hint)
+    if stem:
+        if total > 1:
+            return f"{stem}_{idx + 1}.png"
+        return f"{stem}.png"
+
     safe_model = "".join(
         c if c.isalnum() or c in {"-", "_"} else "_" for c in (model_name or "image")
     ).strip("_") or "image"

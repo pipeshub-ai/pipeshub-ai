@@ -107,6 +107,8 @@ interface ConnectorsState {
   newlyConfiguredConnectorId: string | null;
   /** Bumped after connector list should refetch (create/save/delete). */
   catalogRefreshToken: number;
+  /** IDs of instances we've optimistically removed; filtered out of list updates until the backend stops returning them. */
+  deletedInstanceIds: string[];
 
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
@@ -166,6 +168,8 @@ interface ConnectorsState {
   upsertConnectorInstance: (updated: Connector) => void;
   /** Drop cached config/stats for one instance (e.g. after delete starts). */
   removeConnectorInstanceCaches: (connectorId: string) => void;
+  /** Remove an instance from active list + instance list + clear selection/panel. */
+  removeConnectorInstance: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -262,6 +266,7 @@ const initialState = {
   showConfigSuccessDialog: false,
   newlyConfiguredConnectorId: null as string | null,
   catalogRefreshToken: 0,
+  deletedInstanceIds: [] as string[],
 };
 
 // Panel-specific fields to reset when closing
@@ -307,12 +312,18 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setRegistryConnectors: (connectors) =>
         set((s) => {
-          s.registryConnectors = connectors;
+          const blocked = new Set(s.deletedInstanceIds);
+          s.registryConnectors = blocked.size
+            ? connectors.filter((c) => !c._key || !blocked.has(c._key))
+            : connectors;
         }),
 
       setActiveConnectors: (connectors) =>
         set((s) => {
-          s.activeConnectors = connectors;
+          const blocked = new Set(s.deletedInstanceIds);
+          s.activeConnectors = blocked.size
+            ? connectors.filter((c) => !c._key || !blocked.has(c._key))
+            : connectors;
         }),
 
       setSearchQuery: (query) =>
@@ -353,13 +364,21 @@ export const useConnectorsStore = create<ConnectorsState>()(
           // Open tab: authenticated → Configure; OAuth pending consent → Authorize; else → Authenticate.
           const listAuthType = connector.authType ?? '';
           const rowAuthenticated = isConnectorConfigAuthenticated(connector);
+          // Legacy guard: Gmail/Drive Workspace team connectors were migrated from OAUTH→CUSTOM.
+          // Old DB rows still carry authType:"OAUTH" but the schema no longer supports it, so
+          // opening on the Authorize tab would show an unusable OAuth consent button.
+          const LEGACY_WORKSPACE_TEAM_TYPES = ['Gmail Workspace', 'Drive Workspace'];
+          const isLegacyWorkspaceOAuth =
+            LEGACY_WORKSPACE_TEAM_TYPES.includes(connector.type ?? '') &&
+            scope === 'team' &&
+            isOAuthType(listAuthType);
           if (
             connectorId &&
             (rowAuthenticated ||
               (isNoneAuthType(listAuthType) && connector.isConfigured === true))
           ) {
             s.panelActiveTab = 'configure';
-          } else if (connectorId && isOAuthType(listAuthType) && !rowAuthenticated) {
+          } else if (connectorId && isOAuthType(listAuthType) && !rowAuthenticated && !isLegacyWorkspaceOAuth) {
             s.panelActiveTab = 'authorize';
           } else {
             s.panelActiveTab = 'authenticate';
@@ -451,9 +470,15 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.connectorConfig = config ?? null;
 
           const merged = mergeConfigWithSchema(config ?? null, schema);
+          const configAuthType = config?.authType || '';
+          const supportedTypes = schema.auth?.supportedAuthTypes ?? [];
+          // Stored authType may be from a migration (e.g. OAUTH→CUSTOM). If the schema no
+          // longer lists it, fall through to the schema default.
+          const schemaSupportsStored =
+            !configAuthType || supportedTypes.includes(configAuthType);
           const authType =
-            config?.authType ||
-            schema.auth?.supportedAuthTypes?.[0] ||
+            (schemaSupportsStored ? configAuthType : '') ||
+            supportedTypes[0] ||
             '';
 
           s.selectedAuthType = authType;
@@ -474,6 +499,12 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.authState = 'success';
           } else {
             s.authState = 'empty';
+          }
+
+          // If the panel was waiting on OAuth consent but auth type is no longer OAuth
+          // (schema migration), reset to Authenticate tab so the fields are visible.
+          if (s.panelActiveTab === 'authorize' && !isOAuthType(authType)) {
+            s.panelActiveTab = 'authenticate';
           }
         }),
 
@@ -661,6 +692,24 @@ export const useConnectorsStore = create<ConnectorsState>()(
           if (!connectorId) return;
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
+        }),
+
+      removeConnectorInstance: (connectorId) =>
+        set((s) => {
+          if (!connectorId) return;
+          s.activeConnectors = s.activeConnectors.filter((c) => c._key !== connectorId);
+          s.instances = s.instances.filter((i) => i._key !== connectorId);
+          s.registryConnectors = s.registryConnectors.filter((c) => c._key !== connectorId);
+          delete s.instanceConfigs[connectorId];
+          delete s.instanceStats[connectorId];
+          if (!s.deletedInstanceIds.includes(connectorId)) {
+            s.deletedInstanceIds.push(connectorId);
+          }
+          if (s.selectedInstance?._key === connectorId) {
+            s.selectedInstance = null;
+            s.isInstancePanelOpen = false;
+            s.instancePanelTab = 'overview';
+          }
         }),
 
       clearInstanceData: () =>

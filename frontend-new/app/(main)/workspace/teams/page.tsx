@@ -104,12 +104,6 @@ function TeamsPageContent() {
     }),
   });
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
   // ── Fetch teams (server-paginated + server-filtered) ──
   const fetchTeams = useCallback(async () => {
     setLoading(true);
@@ -145,10 +139,10 @@ function TeamsPageContent() {
   }, [page, limit, searchQuery, filters, setTeams, setLoading, setError]);
 
   useEffect(() => {
-    if (isProfileInitialized && isAdmin) {
+    if (isProfileInitialized) {
       fetchTeams();
     }
-  }, [fetchTeams, isProfileInitialized, isAdmin]);
+  }, [fetchTeams, isProfileInitialized]);
 
   // ── URL ↔ Store panel sync (see docs/url-driven-panel-state.md) ──
   const pendingUrlRef = useRef<string | null>(null);
@@ -493,8 +487,8 @@ function TeamsPageContent() {
   const isEmpty = !isLoading && teams.length === 0 && !hasActiveFilters;
   const isEmptyFiltered = !isLoading && teams.length === 0 && hasActiveFilters;
 
-  // Guard: don't render until profile is resolved / redirect non-admin users
-  if (!isProfileInitialized || isAdmin === false) {
+  // Guard: don't render until profile is resolved
+  if (!isProfileInitialized) {
     return null;
   }
 

@@ -178,7 +178,7 @@ export function FilePreviewMobile({
       </Flex>
 
       {/* Content */}
-      <Flex direction="column" style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
         {showFileInfo ? (
           /* File Information View */
           <Flex
@@ -218,9 +218,13 @@ export function FilePreviewMobile({
           <Box
             style={{
               height: showCitationsSheet ? '45vh' : '100%',
+              width: '100%',
+              maxWidth: '100%',
+              minWidth: 0,
               overflow: 'auto',
               position: 'relative',
               transition: 'height 0.2s ease',
+              boxSizing: 'border-box',
             }}
             className="no-scrollbar"
           >
@@ -248,7 +252,16 @@ export function FilePreviewMobile({
                 </Text>
               </Flex>
             ) : (
-              <Box style={{ height: '100%', padding: 'var(--space-2)' }}>
+              <Box
+                style={{
+                  height: '100%',
+                  width: '100%',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  padding: 'var(--space-2)',
+                  boxSizing: 'border-box',
+                }}
+              >
                 <FilePreviewRenderer
                   fileUrl={file.url}
                   fileName={file.name}

@@ -8,6 +8,7 @@ import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 
 import type { 
   KnowledgeBaseItem, 
@@ -141,6 +142,10 @@ function GridCard({
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
+      // No status from API — no badge (placeholder "-" is rendered by parent)
+      if (item.indexingStatus == null) {
+        return null;
+      }
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return (
@@ -184,6 +189,81 @@ function GridCard({
               }}
             >
               <MaterialIcon name="error_outline" size={12} color="var(--red-9)" />
+            </Flex>
+          );
+        case 'FILE_TYPE_NOT_SUPPORTED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--red-2)',
+                border: '1px solid var(--red-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('FILE_TYPE_NOT_SUPPORTED')} size={12} color="var(--red-9)" />
+            </Flex>
+          );
+        case 'NOT_STARTED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--slate-2)',
+                border: '1px solid var(--slate-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={12} color="var(--slate-11)" />
+            </Flex>
+          );
+        case 'QUEUED':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--blue-2)',
+                border: '1px solid var(--blue-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
+            </Flex>
+          );
+        case 'AUTO_INDEX_OFF':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--olive-2)',
+                border: '1px solid var(--olive-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={12} color="var(--olive-11)" />
+            </Flex>
+          );
+        case 'EMPTY':
+          return (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--slate-2)',
+                border: '1px solid var(--slate-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={12} color="var(--slate-11)" />
             </Flex>
           );
         default:
@@ -527,7 +607,7 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {getStatusBadge() || (
+          {isFolder ? null : (getStatusBadge() || (
             <Text
               size="2"
               weight="medium"
@@ -538,7 +618,7 @@ function GridCard({
             >
               -
             </Text>
-          )}
+          ))}
         </Flex>
       </Flex>
     </Flex>

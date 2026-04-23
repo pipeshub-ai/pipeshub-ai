@@ -12,7 +12,7 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { buildChatHref, openFreshAgentChat } from '@/chat/build-chat-url';
+import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
@@ -113,7 +113,6 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const handleBackHome = () => {
     if (isMobile) closeMobile();
     closeAgentsSidebar();
-    router.push('/chat/');
   };
 
   const handleNewAgentChat = () => {
@@ -121,9 +120,8 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     openFreshAgentChat(agentId, router);
   };
 
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = () => {
     if (isMobile) closeMobile();
-    router.push(buildChatHref({ agentId, conversationId: id }));
   };
 
   const hasMoreYour = agentConversations.length > MAX_VISIBLE_CHATS;
@@ -160,6 +158,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
           label={t('chat.backToChatHome')}
+          href="/chat/"
           onClick={handleBackHome}
         />
 

@@ -77,11 +77,49 @@ export type SyncStrategy = 'WEBHOOK' | 'SCHEDULED' | 'MANUAL' | 'REALTIME';
 // Field types (shared across auth, sync, filter)
 // ========================================
 
+/**
+ * Mirror of Python ``ValidationRuleType`` in
+ * ``backend/python/app/connectors/core/registry/types.py``.
+ * Keep values in sync — they are the wire format exchanged with the backend.
+ */
+export const ValidationRuleType = {
+  JSON_VALID:        'json_valid',
+  JSON_HAS_FIELDS:   'json_has_fields',
+  JSON_FIELD_EQUALS: 'json_field_equals',
+  TEXT_CONTAINS:     'text_contains',
+  TEXT_NOT_CONTAINS: 'text_not_contains',
+} as const;
+
+export type ValidationRuleTypeValue = typeof ValidationRuleType[keyof typeof ValidationRuleType];
+
+export interface ValidationRule {
+  type: ValidationRuleTypeValue;
+  /** For json_has_fields: list of required top-level keys */
+  requiredFields?: string[];
+  /** For json_field_equals: the key to check */
+  field?: string;
+  /** For json_field_equals: the expected value */
+  value?: string;
+  /** For text_contains / text_not_contains: substring or PEM marker to test */
+  pattern?: string;
+  /** Human-readable error shown when the rule fails. Supports {missing} placeholder for json_has_fields. */
+  errorMessage?: string;
+}
+
+/**
+ * Shared validation payload from connector/sync schemas.
+ * The backend omits `acceptedFileTypes` and `validationRules` unless
+ * `fieldType === 'FILE'` — treat them as absent unless the field is a file input.
+ */
 export interface FieldValidation {
   minLength?: number;
   maxLength?: number;
   pattern?: string;
   format?: string;
+  /** Present when `fieldType === 'FILE'` (wire schema from Python). */
+  acceptedFileTypes?: string[];
+  /** Present when `fieldType === 'FILE'`. Ordered rules on file content after selection. */
+  validationRules?: ValidationRule[];
 }
 
 export interface AuthSchemaField {
@@ -436,6 +474,7 @@ export interface RecordsStatus {
   notStarted: number;
   autoIndexOff: number;
   queued: number;
+  empty: number;
 }
 
 /** Indexed record item */
