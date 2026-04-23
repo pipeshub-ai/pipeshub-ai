@@ -1390,6 +1390,14 @@ async def perform_tts_health_check(
                 await asyncio.wait_for(client.models.list(), timeout=30.0)
             finally:
                 await client.close()
+        elif provider == TTSProvider.GEMINI.value:
+            from google import genai
+
+            client = genai.Client(api_key=configuration["apiKey"])
+            await asyncio.wait_for(
+                client.aio.models.get(model=model_name),
+                timeout=30.0,
+            )
         else:
             return JSONResponse(
                 status_code=400,
