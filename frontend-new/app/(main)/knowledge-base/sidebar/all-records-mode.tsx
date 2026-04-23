@@ -8,6 +8,7 @@ import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
 import { AppSection } from './section';
+import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
 import type {
   Connector,
@@ -141,7 +142,7 @@ export function AllRecordsMode({
 
       {/* App sections — KB app (Collections) appears first due to sorting in page.tsx */}
       {appNodes.map((app) => {
-        const isKbApp = app.connector === 'KB';
+        const isKbApp = isKbCollectionsHubApp(app);
         const appChildren = appChildrenCache.get(app.id) || [];
         const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
         // For the KB app, pass the categorized tree (shared + private) so that

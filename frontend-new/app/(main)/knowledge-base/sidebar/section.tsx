@@ -6,7 +6,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_HEADER_PADDING, ELEMENT_HEIGHT } from '@/app/components/sidebar';
 import { FolderTreeItem } from './section-element';
-import { mapConnectorType } from '../utils/all-records-transformer';
+import { FolderIcon } from '@/app/components/ui';
+import { isKbCollectionsHubApp, mapConnectorType } from '../utils/all-records-transformer';
 import { useTranslation } from 'react-i18next';
 import type {
   KnowledgeHubNode,
@@ -30,6 +31,7 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): En
     permission: node.permission,
     origin: node.origin,
     connector: node.connector,
+    subType: node.subType,
     extension: node.extension,
     mimeType: node.mimeType,
   };
@@ -90,8 +92,8 @@ export function AppSection({
   maxVisible,
   onMore,
 }: AppSectionProps) {
-  const isKbApp = app.connector === 'KB';
-  const connectorType = !isKbApp ? mapConnectorType(app.connector || app.name) : 'generic';
+  const isKbApp = isKbCollectionsHubApp(app);
+  const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
 
   return (
@@ -102,8 +104,10 @@ export function AppSection({
         gap="1"
         style={{ padding: SECTION_HEADER_PADDING, marginBottom: KB_SECTION_HEADER_MARGIN_BOTTOM }}
       >
-        {!isKbApp && (
-          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" />
+        {isKbApp ? (
+          <FolderIcon variant="default" size={16} color="var(--emerald-11)" style={{ flexShrink: 0 }} />
+        ) : (
+          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
         )}
         <Text
           size="2"

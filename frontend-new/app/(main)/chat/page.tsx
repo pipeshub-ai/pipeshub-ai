@@ -571,8 +571,12 @@ function ChatContent() {
     // 1. Set collection filters so they scope the AI query
     const collections = pending.pageContext.collections ?? [];
     if (collections.length > 0) {
-      const kbIds = collections.map((c) => c.id);
-      store.setFilters({ ...store.settings.filters, kb: kbIds });
+      const rootIds = collections.map((c) => c.id);
+      store.setFilters({
+        ...store.settings.filters,
+        apps: [...new Set([...(store.settings.filters.apps ?? []), ...rootIds])],
+        kb: [],
+      });
 
       const cache = { ...store.collectionNamesCache };
       collections.forEach((c) => {
@@ -582,7 +586,11 @@ function ChatContent() {
 
       // Store for the streaming UI (pending collection cards on the message)
       store.updateSlot(slotId, {
-        pendingCollections: collections,
+        pendingCollections: collections.map((c) => ({
+          id: c.id,
+          name: c.name,
+          kind: 'collectionRoot' as const,
+        })),
       });
     }
 

@@ -556,35 +556,49 @@ export const ChatApi = {
   },
 
   /**
-   * Fetch collections (knowledge bases) for the chat collection picker.
+   * Fetch hub root nodes for the chat collection picker.
    *
    * Endpoint: GET /api/v1/knowledgeBase/knowledge-hub/nodes
    *
-   * Returns root-level KB nodes. IDs returned here are passed in `filters.kb[]`
-   * to the streaming endpoint. Search is performed client-side.
+   * Returns hub root items (KB connector, other connectors, COLLECTION roots) for one page.
+   * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
+   * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat() {
+  async listCollectionsForChat(params?: { page?: number; limit?: number }): Promise<ListCollectionsForChatResult> {
+    const page = params?.page ?? 1;
+    const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
         params: {
-          page: 1,
-          limit: 100,
+          page,
+          limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
         },
       }
     );
+
     const knowledgeBases: KnowledgeBaseForChat[] = data.items.map((item) => ({
       id: item.id,
       name: item.name,
+      nodeType: item.nodeType,
+      hasChildren: item.hasChildren,
+      origin: item.origin,
+      connector: item.connector,
+      subType: item.subType,
       createdAtTimestamp: item.createdAt ?? 0,
       updatedAtTimestamp: item.updatedAt ?? 0,
       createdBy: '',
       userRole: '',
       folders: [],
     }));
-    return { knowledgeBases };
+    return {
+      knowledgeBases,
+      requestedPage: page,
+      requestedLimit: limit,
+      serverPagination: data.pagination ?? null,
+    };
   },
 
   /**
@@ -631,6 +645,10 @@ interface KbNodeFromHubApi {
   id: string;
   name: string;
   nodeType: string;
+  hasChildren?: boolean;
+  origin?: string;
+  connector?: string;
+  subType?: string;
   updatedAt?: number;
   createdAt?: number;
 }
@@ -638,6 +656,23 @@ interface KbNodeFromHubApi {
 interface KnowledgeHubNodesResponse {
   success: boolean;
   items: KbNodeFromHubApi[];
+  error?: string | null;
+  pagination?: {
+    page?: number;
+    limit?: number;
+    totalItems?: number;
+    totalPages?: number;
+    hasNext?: boolean;
+    hasPrev?: boolean;
+  } | null;
+}
+
+/** One page from {@link ChatApi.listCollectionsForChat}. */
+export interface ListCollectionsForChatResult {
+  knowledgeBases: KnowledgeBaseForChat[];
+  requestedPage: number;
+  requestedLimit: number;
+  serverPagination: KnowledgeHubNodesResponse['pagination'];
 }
 
 /**
@@ -646,6 +681,11 @@ interface KnowledgeHubNodesResponse {
 export interface KnowledgeBaseForChat {
   id: string;
   name: string;
+  nodeType: string;
+  hasChildren?: boolean;
+  origin?: string;
+  connector?: string;
+  subType?: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
   createdBy: string;

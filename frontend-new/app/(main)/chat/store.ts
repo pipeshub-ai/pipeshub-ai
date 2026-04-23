@@ -311,7 +311,7 @@ interface ChatState {
   setMode: (mode: ChatMode) => void;
   setQueryMode: (queryMode: QueryMode) => void;
   setAgentStrategy: (agentStrategy: AgentStrategy) => void;
-  setFilters: (filters: { apps: string[]; kb: string[] }) => void;
+  setFilters: (filters: import('./types').ChatKnowledgeFilters) => void;
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;

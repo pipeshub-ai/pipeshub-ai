@@ -30,6 +30,13 @@ export function mapConnectorType(connectorString: string): ConnectorType {
   return resolveConnectorType(connectorString);
 }
 
+/** Hub app for org Collections (KB) — `connector` / `subType` casing may vary from the API. */
+export function isKbCollectionsHubApp(node: { connector?: string; subType?: string }): boolean {
+  const c = (node.connector ?? '').toString().trim().toUpperCase();
+  if (c === 'KB') return true;
+  return (node.subType ?? '').toString().trim().toUpperCase() === 'KB';
+}
+
 /**
  * Get display name for connector
  */
@@ -96,7 +103,7 @@ export function getSourceDisplay(
   node: KnowledgeHubNode,
   kbLookup: Map<string, string>
 ): { sourceName: string; sourceType: 'collection' | ConnectorType; sourceIcon: string } {
-  if (node.origin === 'COLLECTION' || node.connector === 'KB') {
+  if (node.origin === 'COLLECTION' || isKbCollectionsHubApp(node)) {
     // For KB items, extract KB name from webUrl or use lookup
     const kbId = extractKbIdFromNode(node);
     const kbName = kbId ? kbLookup.get(kbId) || 'Collection' : 'Collection';

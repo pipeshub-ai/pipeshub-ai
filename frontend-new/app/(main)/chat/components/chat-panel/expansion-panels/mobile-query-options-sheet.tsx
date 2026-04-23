@@ -65,7 +65,7 @@ export function MobileQueryOptionsSheet({
   const panelTitles: Record<ActivePanel, string> = {
     root: t('chat.queryOptions', { defaultValue: 'Query options' }),
     models: t('chat.models', { defaultValue: 'Models' }),
-    connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
+    connectors: t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' }),
     'agent-strategy': t('chat.agentStrategy.triggerTitle', { defaultValue: 'Agent mode' }),
     'agent-resources': t('chat.agentResources.sheetTitle', {
       defaultValue: 'Connectors, collections & actions',
@@ -97,13 +97,14 @@ export function MobileQueryOptionsSheet({
       )}
       {activePanel === 'connectors' && (
         <CollectionsTab
-          selectedKbIds={settings.filters?.kb ?? []}
-          onToggleKb={(kbId) => {
-            const current = settings.filters?.kb ?? [];
-            const next = current.includes(kbId)
-              ? current.filter((id) => id !== kbId)
-              : [...current, kbId];
-            setFilters({ apps: settings.filters?.apps ?? [], kb: next });
+          apps={settings.filters?.apps ?? []}
+          kb={settings.filters?.kb ?? []}
+          onSelectionChange={(next) => {
+            setFilters({
+              ...settings.filters,
+              apps: next.apps,
+              kb: next.kb,
+            });
           }}
         />
       )}
@@ -161,7 +162,7 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
           {!isAgentChat ? (
             <ManageRow
               icon="hub"
-              label={t('nav.connectors', { defaultValue: 'Connectors' })}
+              label={t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' })}
               onClick={() => onNavigate('connectors')}
             />
           ) : (

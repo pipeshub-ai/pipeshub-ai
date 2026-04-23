@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
 import { AllRecordsMode } from './all-records-mode';
 import { convertToTreeNode } from './section';
+import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { FolderTreeItem, CollectionItem } from './section-element';
 import type {
   PageViewMode,
@@ -254,7 +255,7 @@ function KBSidebarContent({
     if (moreFoldersApp) {
       const { appId, appName } = moreFoldersApp;
       const appNode = appNodes.find((a) => a.id === appId);
-      const isKbApp = appNode?.connector === 'KB';
+      const isKbApp = appNode ? isKbCollectionsHubApp(appNode) : false;
       const appChildren = appChildrenCache.get(appId) || [];
       const connectorTreePanel = !isKbApp ? connectorAppTrees.get(appId) : undefined;
       const categorizedTree = isKbApp
