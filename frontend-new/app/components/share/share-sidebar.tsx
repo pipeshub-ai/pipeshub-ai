@@ -532,7 +532,7 @@ export function ShareSidebar({
                           isCurrentUser={member.isCurrentUser}
                           isOwner={member.isOwner}
                           role={member.role}
-                          showRoleDropdown
+                          showRoleDropdown ={!member.isOwner}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: 'Full Access', description: 'Chats do not have roles' }
