@@ -263,12 +263,32 @@ export function useAuthActions({
       typeof window !== 'undefined'
         ? sessionStorage.getItem('auth_session_token')
         : null;
-    const baseUrl = getApiBaseUrl();
-    let url = `${baseUrl}/api/v1/saml/signIn?email=${encodeURIComponent(email)}`;
-    if (sessionToken) {
-      url += `&sessionToken=${encodeURIComponent(sessionToken)}`;
+    const baseUrl = getApiBaseUrl().trim();
+    if (!baseUrl) {
+      toast.error('API base URL is not configured.');
+      return;
     }
-    window.location.href = url;
+
+    let target: URL;
+    try {
+      const base = baseUrl.replace(/\/+$/, '');
+      target = new URL(`${base}/api/v1/saml/signIn`);
+    } catch {
+      toast.error('Invalid API base URL.');
+      return;
+    }
+
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      toast.error('Invalid API base URL.');
+      return;
+    }
+
+    target.searchParams.set('email', email);
+    if (sessionToken) {
+      target.searchParams.set('sessionToken', sessionToken);
+    }
+
+    window.location.assign(target.href);
   }, [email]);
 
   /**
