@@ -221,7 +221,8 @@
     "searchPlaceholder": "Buscar...",
     "required": "Este campo es obligatorio",
     "invalidEmail": "Correo electrónico no válido",
-    "invalidUrl": "URL no válida"
+    "invalidUrl": "URL no válida",
+    "name": "Nombre"
   },
   "dialog": {
     "newFolder": "Nueva carpeta de colección",
@@ -1610,6 +1611,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "deleteBot": "Eliminar bot",
       "typeLabels": {
         "slack": "Slack Bot",
         "discord": "Discord Bot",

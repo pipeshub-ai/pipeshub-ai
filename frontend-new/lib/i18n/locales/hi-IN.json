@@ -221,7 +221,8 @@
     "searchPlaceholder": "खोजें...",
     "required": "यह फ़ील्ड आवश्यक है",
     "invalidEmail": "अमान्य ईमेल पता",
-    "invalidUrl": "अमान्य URL"
+    "invalidUrl": "अमान्य URL",
+    "name": "नाम"
   },
   "dialog": {
     "newFolder": "नया कलेक्शन फ़ोल्डर",
@@ -1610,6 +1611,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "deleteBot": "बॉट हटाएं",
       "typeLabels": {
         "slack": "Slack Bot",
         "discord": "Discord Bot",
