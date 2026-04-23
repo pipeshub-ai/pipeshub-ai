@@ -336,7 +336,8 @@ describe('Enterprise Search Utils - coverage', () => {
       const result = buildSharedWithMeFilter(req)
       expect(result.isDeleted).to.be.false
       expect(result.isArchived).to.be.false
-      expect(result.$or).to.have.lengthOf(2)
+      expect(result.$and).to.have.lengthOf(2)
+      expect(result.$and[0]).to.deep.include({ isShared: true })
     })
   })
 
@@ -392,7 +393,8 @@ describe('Enterprise Search Utils - coverage', () => {
       const result = buildFilter(req, VALID_OID2, VALID_OID)
       expect(result.isDeleted).to.be.false
       expect(result.isArchived).to.be.false
-      expect(result.$or).to.have.lengthOf(3)
+      // Owner OR (org-shared AND explicitly shared with this user)
+      expect(result.$or).to.have.lengthOf(2)
     })
 
     it('should include _id when id is provided', () => {

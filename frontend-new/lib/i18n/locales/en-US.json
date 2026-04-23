@@ -1274,7 +1274,11 @@
       "restoreError": "Failed to restore chat",
       "deleteSuccess": "Deleted Successfully",
       "deleteSuccessDescription": "Your chat is permanently deleted successfully",
-      "deleteError": "Failed to delete chat"
+      "deleteError": "Failed to delete chat",
+      "assistantChat": "Assistant Chat",
+      "agents": "Agents",
+      "showMore": "Show More",
+      "moreAgents": "More Agents"
     },
     "general": {
       "subtitle": "Your company general information",
@@ -1852,7 +1856,14 @@
       "discardTitle": "Discard changes?",
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      "discardCancel": "Continue Editing",
+      "deleteError": "Failed to delete chat",
+      "assistantChat": "Assistant Chat",
+      "agents": "Agents",
+      "seeMore": "See more",
+      "showMore": "Show More",
+      "moreAgents": "More Agents",
+      "moreChats": "More Chats"
     }
   },
   "filePreview": {

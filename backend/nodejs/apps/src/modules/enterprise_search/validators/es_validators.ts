@@ -84,6 +84,24 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
   }),
 });
 
+export const agentConversationParamsSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, { message: 'Agent key is required' }),
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+  }),
+});
+
+export const agentConversationTitleParamsSchema = agentConversationParamsSchema.extend({
+  body: z.object({
+    title: z
+      .string()
+      .min(1, { message: 'Title is required' })
+      .max(200, { message: 'Title must be less than 200 characters' }),
+  }),
+});
+
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
   body: z.object({
     userIds: z

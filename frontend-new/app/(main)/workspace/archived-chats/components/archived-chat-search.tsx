@@ -11,6 +11,8 @@ import type { TimeGroupKey } from '@/lib/utils/group-by-time';
 import { TimeGroupedSkeleton } from '@/chat/components/search/skeleton';
 import { ChatRow } from '@/chat/components/search/chat-row';
 import { SearchResultRow } from '@/chat/components/search/search-result-row';
+import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
+import { ArchivedChatsApi } from '../api';
 import type { Conversation } from '../types';
 
 const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
@@ -25,7 +27,7 @@ interface ArchivedChatSearchProps {
   onClose: () => void;
   conversations: Conversation[];
   isLoading: boolean;
-  onSelect: (conversationId: string) => void;
+  onSelect: (conversationId: string, agentKey?: string | null) => void;
 }
 
 export function ArchivedChatSearch({
@@ -42,6 +44,19 @@ export function ArchivedChatSearch({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [contentLeft, setContentLeft] = useState(0);
+
+  // Debounce search input (300ms)
+  const debouncedSearch = useDebouncedSearch(searchQuery, 300);
+
+  // Backend search results state
+  const [searchResults, setSearchResults] = useState<
+    (Conversation & { source?: 'assistant' | 'agent'; agentKey?: string })[]
+  >([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Ref to track in-flight request for cancellation
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const timeGroups = useMemo(() => {
     const grouped = groupConversationsByTime(conversations);
@@ -68,6 +83,8 @@ export function ArchivedChatSearch({
   useEffect(() => {
     if (open) {
       setSearchQuery('');
+      setSearchResults([]);
+      setSearchError(null);
       requestAnimationFrame(() => {
         inputRef.current?.focus();
       });
@@ -98,10 +115,48 @@ export function ArchivedChatSearch({
     };
   }, [open]);
 
+  // Fetch search results from backend when debounced query changes
+  useEffect(() => {
+    const query = debouncedSearch.trim();
+    if (!query) {
+      setSearchResults([]);
+      setIsSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    // Abort previous in-flight request
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    let cancelled = false;
+    setIsSearching(true);
+    setSearchError(null);
+
+    ArchivedChatsApi.searchArchivedConversations({ search: query, limit: 50 })
+      .then((result) => {
+        if (cancelled) return;
+        setSearchResults(result.conversations);
+        setIsSearching(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
+        setSearchError(err instanceof Error ? err.message : 'Search failed');
+        setIsSearching(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [debouncedSearch]);
+
   const handleSelectConversation = useCallback(
-    (id: string) => {
+    (id: string, agentKey?: string | null) => {
       onClose();
-      onSelect(id);
+      onSelect(id, agentKey);
     },
     [onClose, onSelect],
   );
@@ -110,11 +165,8 @@ export function ArchivedChatSearch({
     setSearchQuery(e.target.value);
   }, []);
 
-  const filteredConversations = useMemo(() => {
-    if (!searchQuery.trim()) return null;
-    const q = searchQuery.toLowerCase();
-    return conversations.filter((c) => c.title.toLowerCase().includes(q));
-  }, [searchQuery, conversations]);
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  const showSearchResults = hasSearchQuery;
 
   if (!open) return null;
 
@@ -185,16 +237,25 @@ export function ArchivedChatSearch({
               padding: 'var(--space-3)',
             }}
           >
-            {isLoading && !filteredConversations ? (
-              <TimeGroupedSkeleton />
-            ) : filteredConversations ? (
-              filteredConversations.length > 0 ? (
+            {showSearchResults ? (
+              /* Search results from backend */
+              isSearching ? (
+                <TimeGroupedSkeleton />
+              ) : searchError ? (
+                <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
+                  <Text size="2" style={{ color: 'var(--red-11)' }}>
+                    {searchError}
+                  </Text>
+                </Flex>
+              ) : searchResults.length > 0 ? (
                 <Flex direction="column" gap="1">
-                  {filteredConversations.map((conv) => (
+                  {searchResults.map((conv) => (
                     <SearchResultRow
                       key={conv.id}
                       conversation={conv}
-                      onClick={() => handleSelectConversation(conv.id)}
+                      onClick={() =>
+                        handleSelectConversation(conv.id, conv.agentKey ?? null)
+                      }
                     />
                   ))}
                 </Flex>
@@ -206,47 +267,52 @@ export function ArchivedChatSearch({
                 </Flex>
               )
             ) : (
-              <Flex direction="column" gap="2">
-                {timeGroups.map(([groupKey, groupConversations]) => (
-                  <Flex key={groupKey} direction="column">
-                    <Flex
-                      align="center"
-                      style={{
-                        height: 'var(--space-8)',
-                        padding: '0 var(--space-2)',
-                      }}
-                    >
-                      <Text
-                        size="1"
+              /* Default: time-grouped browse view */
+              isLoading ? (
+                <TimeGroupedSkeleton />
+              ) : (
+                <Flex direction="column" gap="2">
+                  {timeGroups.map(([groupKey, groupConversations]) => (
+                    <Flex key={groupKey} direction="column">
+                      <Flex
+                        align="center"
                         style={{
-                          color: 'var(--slate-a9)',
-                          fontWeight: 400,
+                          height: 32,
+                          padding: '0 var(--space-2)',
                         }}
                       >
-                        {t(TIME_GROUP_I18N[groupKey])}
+                        <Text
+                          size="1"
+                          style={{
+                            color: 'var(--slate-a9)',
+                            fontWeight: 400,
+                          }}
+                        >
+                          {t(TIME_GROUP_I18N[groupKey])}
+                        </Text>
+                      </Flex>
+                      <Flex direction="column" gap="1">
+                        {groupConversations.map((conv) => (
+                          <ChatRow
+                            key={conv.id}
+                            conversation={conv}
+                            onClick={() => handleSelectConversation(conv.id)}
+                            showDate={false}
+                          />
+                        ))}
+                      </Flex>
+                    </Flex>
+                  ))}
+
+                  {timeGroups.length === 0 && !isLoading && (
+                    <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
+                      <Text size="2" style={{ color: 'var(--slate-a9)' }}>
+                        {t('workspace.archivedChats.emptyList')}
                       </Text>
                     </Flex>
-                    <Flex direction="column" gap="1">
-                      {groupConversations.map((conv) => (
-                        <ChatRow
-                          key={conv.id}
-                          conversation={conv}
-                          onClick={() => handleSelectConversation(conv.id)}
-                          showDate={false}
-                        />
-                      ))}
-                    </Flex>
-                  </Flex>
-                ))}
-
-                {timeGroups.length === 0 && !isLoading && (
-                  <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-                    <Text size="2" style={{ color: 'var(--slate-a9)' }}>
-                      {t('workspace.archivedChats.emptyList')}
-                    </Text>
-                  </Flex>
-                )}
-              </Flex>
+                  )}
+                </Flex>
+              )
             )}
           </Box>
         </Flex>
