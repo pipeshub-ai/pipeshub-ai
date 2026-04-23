@@ -7,6 +7,7 @@ import type {
   KnowledgeHubQueryParams,
   RecordDetailsResponse,
 } from './types';
+import { FOLDER_REINDEX_DEPTH } from './constants';
 import { DEFAULT_PAGE_SIZE } from './store';
 
 const BASE_URL = '/api/v1/knowledgeBase';
@@ -659,8 +660,9 @@ export const KnowledgeBaseApi = {
   },
 
   // Reindex item (works for both records and folders)
-  async reindexItem(recordId: string) {
-    const { data } = await apiClient.post<Record<string, unknown>>(`${BASE_URL}/reindex/record/${recordId}`, undefined, { suppressErrorToast: true });
+  // depth=0 for single record, depth=100 for folder (reindex all children)
+  async reindexItem(recordId: string, depth: number = 0) {
+    const { data } = await apiClient.post<Record<string, unknown>>(`${BASE_URL}/reindex/record/${recordId}`, { depth }, { suppressErrorToast: true });
     return data;
   },
 
@@ -740,12 +742,17 @@ export const KnowledgeBaseApi = {
 
   /**
    * Bulk reindex multiple records
-   * @param recordIds - Array of record IDs to reindex
+   * @param items - Array of items with id and nodeType to reindex
    * @returns Promise.allSettled results for each reindex operation
    */
-  async bulkReindex(recordIds: string[]) {
+  async bulkReindex(items: Array<{ id: string; nodeType?: string }>) {
     const results = await Promise.allSettled(
-      recordIds.map(id => this.reindexItem(id))
+      items.map(item => {
+        if (item.nodeType === 'recordGroup') {
+          return this.reindexRecordGroup(item.id);
+        }
+        return this.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+      })
     );
     return results;
   },

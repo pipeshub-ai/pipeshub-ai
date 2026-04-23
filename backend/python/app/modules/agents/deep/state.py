@@ -109,6 +109,11 @@ class DeepAgentState(ChatState, total=False):
     # Consumed (and then popped) by _extract_tool_results in the same call frame.
     _deep_retrieval_buffer: Optional[List]
 
+    critic_approved: Optional[bool]
+    critic_feedback: str
+    critic_issues: Optional[List[Dict[str, str]]]
+    critic_done: bool
+    _critic_available_domains: Optional[List[str]]
 
 # ---------------------------------------------------------------------------
 # Defaults for deep-agent-specific fields
@@ -125,6 +130,11 @@ _DEEP_DEFAULTS: Dict[str, Any] = {
     "domain_summaries": [],
     "sub_agent_analyses": [],
     "_deep_retrieval_buffer": None,
+    "critic_approved": None,
+    "critic_feedback": "",
+    "critic_issues": None,
+    "critic_done": False,
+    "_critic_available_domains": None,
 }
 
 
@@ -138,6 +148,8 @@ def build_deep_agent_state(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] | None = None,
+    model_name: str = None,
+    model_key: str = None,
 ) -> DeepAgentState:
     """
     Build a DeepAgentState by extending the standard ChatState.
@@ -154,6 +166,8 @@ def build_deep_agent_state(
         graph_provider,
         reranker_service,
         config_service,
+        model_name,
+        model_key,
         org_info,
         graph_type="deep",
     )

@@ -1145,7 +1145,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             record_group_id (str): Record group ID
-            connector_id (str): Connector ID (all records in group are from same connector)
+            connector_id (str): Connector ID filter (records matching this connectorId are returned)
             org_id (str): Organization ID (for security filtering)
             depth (int): Depth for traversing children and nested record groups
                         (-1 = unlimited, 0 = only direct records, 1 = direct + 1 level nested, etc.)
@@ -1157,7 +1157,9 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            List[Record]: List of properly typed Record instances
+            List[Record]: List of properly typed Record instances. Origin is not
+                        hard-filtered here; both CONNECTOR and UPLOAD records may
+                        be returned when they match connectorId/org/permission constraints.
         """
         pass
 

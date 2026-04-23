@@ -8,10 +8,6 @@ import { useTranslation } from 'react-i18next';
 import { MenuItem } from './menu-item';
 import { useGitHubStars } from './hooks/use-github-stars';
 
-const openExternal = (url: string) => {
-  window.open(url, '_blank', 'noopener,noreferrer');
-};
-
 /**
  * External links section of the workspace menu:
  *   Documentation, GitHub (with live star count)
@@ -40,7 +36,7 @@ export function ExternalLinksSection() {
             color="var(--slate-11)"
           />
         }
-        onClick={() => openExternal(EXTERNAL_LINKS.documentation)}
+        href={EXTERNAL_LINKS.documentation}
       />
 
       <MenuItem
@@ -97,7 +93,7 @@ export function ExternalLinksSection() {
             color="var(--slate-11)"
           />
         }
-        onClick={() => openExternal(EXTERNAL_LINKS.github)}
+        href={EXTERNAL_LINKS.github}
       />
     </Flex>
   );

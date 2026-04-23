@@ -19,6 +19,7 @@ import {
   createConversationalRouter,
   createSemanticSearchRouter,
   createAgentConversationalRouter,
+  createChatSpeechRouter,
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
@@ -439,6 +440,12 @@ export class Application {
     this.app.use(
       '/api/v1/agents',
       createAgentConversationalRouter(this.esAgentContainer),
+    );
+
+    // chat speech (TTS/STT) proxy routes to the Python AI backend
+    this.app.use(
+      '/api/v1/chat',
+      createChatSpeechRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes

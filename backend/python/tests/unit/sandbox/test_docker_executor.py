@@ -677,3 +677,586 @@ class TestEndToEndExecuteSetsPythonPath:
         install.assert_not_called()
         # PYTHONPATH should not be injected when no packages were requested.
         assert "PYTHONPATH" not in captured_env or captured_env["PYTHONPATH"] != "/deps"
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage for error paths
+# ---------------------------------------------------------------------------
+
+
+class TestInstallDependenciesErrors:
+    """Cover error paths inside _install_dependencies that aren't happy-path."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    def test_unsupported_language_raises(self, executor):
+        """Install is only supported for PYTHON and TYPESCRIPT."""
+        client, _, _, _ = _make_mock_docker_client()
+        with patch("docker.from_env", return_value=client):
+            with pytest.raises(ValueError, match="Cannot install packages"):
+                executor._install_dependencies(
+                    ["sqlite"], SandboxLanguage.SQLITE, timeout=60,
+                )
+
+    def test_docker_import_error_raises_runtime_error(self, executor):
+        """If the docker SDK is missing, _install_dependencies raises RuntimeError."""
+        with patch.dict("sys.modules", {"docker": None}):
+            with patch("builtins.__import__", side_effect=ImportError("no docker")):
+                with pytest.raises(RuntimeError, match="docker Python package"):
+                    executor._install_dependencies(
+                        ["pandas"], SandboxLanguage.PYTHON, timeout=60,
+                    )
+
+    def test_container_remove_exception_swallowed(self, executor):
+        """Install completes successfully even if container.remove() raises."""
+        client, tracker, install_container, _ = _make_mock_docker_client()
+        install_container.remove.side_effect = RuntimeError("remove failed")
+        with patch("docker.from_env", return_value=client):
+            deps_tar, mount = executor._install_dependencies(
+                ["pandas"], SandboxLanguage.PYTHON, timeout=60,
+            )
+        assert mount == "/deps"
+        assert deps_tar
+
+    def test_client_close_exception_swallowed(self, executor):
+        """Install completes successfully even if client.close() raises."""
+        client, tracker, install_container, _ = _make_mock_docker_client()
+        client.close.side_effect = RuntimeError("close failed")
+        with patch("docker.from_env", return_value=client):
+            deps_tar, mount = executor._install_dependencies(
+                ["pandas"], SandboxLanguage.PYTHON, timeout=60,
+            )
+        assert mount == "/deps"
+
+
+class TestEnsureEgressNetworkErrors:
+    """Egress network creation race condition and failure paths."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    def test_create_race_recovers_via_list(self, executor):
+        """Another process created the network between our list and create."""
+        client = MagicMock()
+        # First list returns empty; create raises; second list finds it.
+        client.networks.list.side_effect = [[], [MagicMock()]]
+        client.networks.create.side_effect = RuntimeError("already exists")
+        name = executor._ensure_egress_network(client)
+        assert name == "pipeshub_sandbox_egress"
+
+    def test_create_failure_reraises_when_still_absent(self, executor):
+        """Create fails AND network is still not present on re-check → reraise."""
+        client = MagicMock()
+        client.networks.list.return_value = []
+        client.networks.create.side_effect = RuntimeError("permission denied")
+        with pytest.raises(RuntimeError, match="permission denied"):
+            executor._ensure_egress_network(client)
+
+    def test_create_failure_recheck_list_also_raises(self, executor):
+        """Even the recovery list() call raises — the original error propagates."""
+        client = MagicMock()
+
+        call = {"n": 0}
+
+        def _list(**kwargs):
+            call["n"] += 1
+            if call["n"] == 1:
+                return []
+            raise RuntimeError("daemon gone")
+
+        client.networks.list.side_effect = _list
+        client.networks.create.side_effect = RuntimeError("create failed")
+        with pytest.raises(RuntimeError, match="create failed"):
+            executor._ensure_egress_network(client)
+
+
+class TestRunContainerImagePull:
+    """_run_container image-pull fallback path."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    @pytest.mark.asyncio
+    async def test_image_pull_fails_returns_error(self, executor, tmp_path):
+        """Image not local + pull raises → ExecutionResult(success=False, error=...)."""
+        import docker
+        from docker.errors import ImageNotFound
+
+        client = MagicMock()
+        client.images.get.side_effect = ImageNotFound("not here")
+        client.images.pull.side_effect = RuntimeError("registry down")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            result = await executor._run_container(
+                image="pipeshub/sandbox:latest",
+                command=["sh", "-c", "echo hi"],
+                work_dir=work_dir,
+                src_dir=src_dir,
+                output_dir=output_dir,
+                env={},
+                timeout=5,
+            )
+
+        assert result.success is False
+        assert "registry down" in (result.error or "")
+        assert "docker build" in (result.error or "")
+        _ = docker  # keep import live so fixture module is used
+
+    @pytest.mark.asyncio
+    async def test_image_pull_succeeds_and_runs(self, executor, tmp_path):
+        """Image not local but pull succeeds → container runs normally."""
+        from docker.errors import ImageNotFound
+
+        client, tracker, _ = _make_mock_run_client()
+
+        # First images.get raises ImageNotFound, subsequent pull returns a mock.
+        client.images.get.side_effect = ImageNotFound("not here")
+        client.images.pull.return_value = MagicMock()
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            result = await executor._run_container(
+                image="pipeshub/sandbox:latest",
+                command=["sh", "-c", "echo hi"],
+                work_dir=work_dir,
+                src_dir=src_dir,
+                output_dir=output_dir,
+                env={},
+                timeout=5,
+            )
+
+        assert result.success is True
+        client.images.pull.assert_called_once_with("pipeshub/sandbox:latest")
+
+
+class TestRunContainerTimeout:
+    """_run_container wait-timeout handling."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout_kills_container(self, executor, tmp_path):
+        client, tracker, container = _make_mock_run_client()
+        # Make logs retrievable for the timeout branch.
+        container.logs.return_value = b"partial\n"
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        async def _raise_timeout(*args, **kwargs):
+            raise asyncio.TimeoutError()
+
+        with patch("docker.from_env", return_value=client):
+            with patch("asyncio.wait_for", side_effect=_raise_timeout):
+                result = await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "sleep 1000"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=1,
+                )
+
+        assert result.success is False
+        assert result.exit_code == -1
+        assert "timed out" in (result.error or "").lower()
+        container.kill.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout_logs_unreadable(self, executor, tmp_path):
+        """If logs() also raises after timeout, stdout/stderr fall back to empty."""
+        client, tracker, container = _make_mock_run_client()
+        container.logs.side_effect = RuntimeError("logs gone")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        async def _raise_timeout(*args, **kwargs):
+            raise asyncio.TimeoutError()
+
+        with patch("docker.from_env", return_value=client):
+            with patch("asyncio.wait_for", side_effect=_raise_timeout):
+                result = await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "sleep 1000"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=1,
+                )
+
+        assert result.success is False
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    @pytest.mark.asyncio
+    async def test_kill_exception_swallowed_on_timeout(self, executor, tmp_path):
+        """If container.kill() raises after timeout, we still return a timeout error."""
+        client, tracker, container = _make_mock_run_client()
+        container.kill.side_effect = RuntimeError("kill failed")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        async def _raise_timeout(*args, **kwargs):
+            raise asyncio.TimeoutError()
+
+        with patch("docker.from_env", return_value=client):
+            with patch("asyncio.wait_for", side_effect=_raise_timeout):
+                result = await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "sleep 1000"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=1,
+                )
+
+        assert result.success is False
+
+
+class TestRunContainerExceptionCleanup:
+    """Exception raised mid-run → container.kill + remove + client.close, all with errors swallowed."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    @pytest.mark.asyncio
+    async def test_exception_during_put_archive_reraises(self, executor, tmp_path):
+        """If container.put_archive raises, _run_container kills+removes and reraises."""
+        client, tracker, container = _make_mock_run_client()
+        container.put_archive.side_effect = RuntimeError("put failed")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            with pytest.raises(RuntimeError, match="put failed"):
+                await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "echo hi"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=5,
+                )
+        container.kill.assert_called()
+        container.remove.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_exception_container_remove_swallowed(self, executor, tmp_path):
+        """remove() raising after a successful run does not fail the call."""
+        client, tracker, container = _make_mock_run_client()
+        container.remove.side_effect = RuntimeError("remove failed")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            result = await executor._run_container(
+                image="pipeshub/sandbox:latest",
+                command=["sh", "-c", "echo hi"],
+                work_dir=work_dir,
+                src_dir=src_dir,
+                output_dir=output_dir,
+                env={},
+                timeout=5,
+            )
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_client_close_exception_swallowed(self, executor, tmp_path):
+        """client.close() raising in the outer finally is swallowed."""
+        client, tracker, container = _make_mock_run_client()
+        client.close.side_effect = RuntimeError("close failed")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            result = await executor._run_container(
+                image="pipeshub/sandbox:latest",
+                command=["sh", "-c", "echo hi"],
+                work_dir=work_dir,
+                src_dir=src_dir,
+                output_dir=output_dir,
+                env={},
+                timeout=5,
+            )
+        assert result.success is True
+
+
+class TestSandboxHelpers:
+    """Miscellaneous helpers: cleanup_execution on missing dirs, get_sandbox_root."""
+
+    def test_cleanup_execution_noop_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path))
+        # Must not raise
+        DockerExecutor.cleanup_execution("does-not-exist")
+
+    def test_get_sandbox_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path))
+        assert DockerExecutor.get_sandbox_root() == str(tmp_path)
+
+
+class TestExtractContainerDirEdgeCases:
+    """Remaining branches in _extract_container_dir."""
+
+    def test_empty_stream_chunks_skipped(self, tmp_path):
+        """Empty chunks (b'') from get_archive are skipped."""
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            data = b"hello"
+            info = tarfile.TarInfo(name="output/file.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        tar_buf.seek(0)
+        tar_bytes = tar_buf.read()
+
+        # Inject an empty chunk (simulates server heartbeat/flush).
+        container = MagicMock()
+        container.get_archive.return_value = (iter([b"", tar_bytes, b""]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(container, "/output", output_dir)
+
+        assert os.path.isfile(os.path.join(output_dir, "file.txt"))
+
+    def test_dir_entries_in_tar_are_skipped(self, tmp_path):
+        """Directory entries in the tar must be skipped (not extracted as files)."""
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            # Pure directory entry.
+            dir_info = tarfile.TarInfo(name="output/")
+            dir_info.type = tarfile.DIRTYPE
+            dir_info.mode = 0o755
+            tar.addfile(dir_info)
+            # One file inside.
+            data = b"x"
+            f_info = tarfile.TarInfo(name="output/a.txt")
+            f_info.size = len(data)
+            tar.addfile(f_info, io.BytesIO(data))
+        tar_buf.seek(0)
+        tar_bytes = tar_buf.read()
+
+        container = MagicMock()
+        container.get_archive.return_value = (iter([tar_bytes]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(container, "/output", output_dir)
+
+        assert os.path.isfile(os.path.join(output_dir, "a.txt"))
+
+    def test_empty_member_name_skipped(self, tmp_path):
+        """After stripping the 'output/' prefix, a member named exactly 'output/' becomes empty and is skipped."""
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            data = b"body"
+            info = tarfile.TarInfo(name="output/")  # exact prefix match (file-typed to force non-dir path)
+            info.size = len(data)
+            info.type = tarfile.REGTYPE
+            tar.addfile(info, io.BytesIO(data))
+        tar_buf.seek(0)
+        tar_bytes = tar_buf.read()
+
+        container = MagicMock()
+        container.get_archive.return_value = (iter([tar_bytes]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(container, "/output", output_dir)
+
+        # No files should be extracted — only an empty-named entry was present.
+        assert os.listdir(output_dir) == []
+
+    def test_extraction_exception_swallowed(self, tmp_path):
+        """If the archive can't be read, extraction is logged as debug and doesn't raise."""
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        container = MagicMock()
+        container.get_archive.side_effect = RuntimeError("archive gone")
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        # Must not raise.
+        _extract_container_dir(container, "/output", output_dir)
+
+
+class TestTarDirectoryEmptySrc:
+    """_tar_directory over an empty source dir must still produce a valid tar."""
+
+    def test_empty_dir_produces_valid_empty_tar(self, tmp_path):
+        from app.sandbox.docker_executor import _tar_directory
+
+        src = tmp_path / "empty_src"
+        src.mkdir()
+        blob = _tar_directory(str(src))
+        # Should be a parsable tar containing zero members.
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r") as tar:
+            assert tar.getmembers() == []
+
+    def test_non_empty_dir_includes_file(self, tmp_path):
+        """Hits the loop body (line 498) with a real file in the source dir."""
+        from app.sandbox.docker_executor import _tar_directory
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.py").write_text("print('hi')")
+        blob = _tar_directory(str(src))
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r") as tar:
+            names = [m.name for m in tar.getmembers()]
+        assert "main.py" in names
+
+
+class TestExtractContainerDirNameWithoutPrefix:
+    """Cover the branch where a tar member's name does NOT start with the prefix (547->549)."""
+
+    def test_member_without_prefix_is_still_extracted(self, tmp_path):
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            data = b"no-prefix"
+            info = tarfile.TarInfo(name="rogue.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        tar_buf.seek(0)
+
+        container = MagicMock()
+        container.get_archive.return_value = (iter([tar_buf.read()]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(container, "/output", output_dir)
+
+        assert os.path.isfile(os.path.join(output_dir, "rogue.txt"))
+
+
+class TestRunContainerCreateFailure:
+    """Cover the exception-path branch where container creation itself fails (457->462, 464->469)."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    @pytest.mark.asyncio
+    async def test_create_failure_skips_cleanup(self, executor, tmp_path):
+        """If containers.create() raises, container is None so kill/remove are skipped."""
+        client = MagicMock()
+        client.images.get.return_value = MagicMock()
+        client.containers.create.side_effect = RuntimeError("daemon refused")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            with pytest.raises(RuntimeError, match="daemon refused"):
+                await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "echo hi"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=5,
+                )
+        # client.close() should still have been called in the outer finally.
+        client.close.assert_called_once()
+
+
+class TestRunContainerKillFailureInExcept:
+    """Cover the inner ``except Exception: pass`` around container.kill() in the except branch (line 460)."""
+
+    @pytest.fixture
+    def executor(self, tmp_path, monkeypatch):
+        root = str(tmp_path / "docker_sandbox")
+        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        return DockerExecutor()
+
+    @pytest.mark.asyncio
+    async def test_kill_raises_during_put_archive_failure(self, executor, tmp_path):
+        client, tracker, container = _make_mock_run_client()
+        container.put_archive.side_effect = RuntimeError("put failed")
+        container.kill.side_effect = RuntimeError("kill also failed")
+
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with patch("docker.from_env", return_value=client):
+            with pytest.raises(RuntimeError, match="put failed"):
+                await executor._run_container(
+                    image="pipeshub/sandbox:latest",
+                    command=["sh", "-c", "echo hi"],
+                    work_dir=work_dir,
+                    src_dir=src_dir,
+                    output_dir=output_dir,
+                    env={},
+                    timeout=5,
+                )
+        container.kill.assert_called()

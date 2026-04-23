@@ -57,6 +57,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -281,6 +282,14 @@ class CountryToRegionMapper:
                 description="The Directory (Tenant) ID from Azure AD"
             ),
             AuthField(
+                name="sharepointDomain",
+                display_name="SharePoint Domain",
+                placeholder="https://your-domain.sharepoint.com",
+                description="Your SharePoint domain URL",
+                field_type="URL",
+                max_length=2000
+            ),
+            AuthField(
                 name="hasAdminConsent",
                 display_name="Has Admin Consent",
                 description="Check if admin consent has been granted for the application",
@@ -289,13 +298,67 @@ class CountryToRegionMapper:
                 default_value=False
             ),
             AuthField(
-                name="sharepointDomain",
-                display_name="SharePoint Domain",
-                placeholder="https://your-domain.sharepoint.com",
-                description="Your SharePoint domain URL",
-                field_type="URL",
-                max_length=2000
-            )
+                name="certificate",
+                display_name="Client Certificate",
+                placeholder="Click to upload certificate file (.crt, .cer, or .pem)",
+                description="Upload the client certificate for certificate-based authentication. Required together with Private Key.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".crt", ".cer", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain BEGIN CERTIFICATE marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain END CERTIFICATE marker.",
+                    ),
+                ],
+                is_secret=True,
+            ),
+            AuthField(
+                name="privateKey",
+                display_name="Private Key (PKCS#8)",
+                placeholder="Click to upload private key file (.key or .pem)",
+                description="Upload the private key in PKCS#8 format. Required together with Client Certificate.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".key", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN RSA PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must be in PKCS#8 format, not RSA. Convert with: "
+                            "openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key "
+                            "-out privatekey.key -nocrypt"
+                        ),
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain BEGIN PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain END PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN ENCRYPTED PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must not be encrypted. Use the -nocrypt flag during conversion."
+                        ),
+                    ),
+                ],
+                is_secret=True,
+            ),
         ])
     ])\
     .configure(lambda builder: builder

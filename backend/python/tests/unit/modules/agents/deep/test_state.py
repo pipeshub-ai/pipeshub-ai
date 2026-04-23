@@ -307,8 +307,22 @@ class TestDeepDefaults:
             "domain_summaries",
             "sub_agent_analyses",
             "_deep_retrieval_buffer",
+            # Critic-related defaults (added with the orchestrator-critic node)
+            "critic_approved",
+            "critic_feedback",
+            "critic_issues",
+            "critic_done",
+            "_critic_available_domains",
         }
         assert expected_keys == set(_DEEP_DEFAULTS.keys())
+
+    def test_critic_defaults(self):
+        """Critic state fields default to a 'never ran yet' shape."""
+        assert _DEEP_DEFAULTS["critic_approved"] is None
+        assert _DEEP_DEFAULTS["critic_feedback"] == ""
+        assert _DEEP_DEFAULTS["critic_issues"] is None
+        assert _DEEP_DEFAULTS["critic_done"] is False
+        assert _DEEP_DEFAULTS["_critic_available_domains"] is None
 
     def test_mutable_defaults_are_separate_instances(self):
         """Ensure building state twice doesn't share mutable defaults."""

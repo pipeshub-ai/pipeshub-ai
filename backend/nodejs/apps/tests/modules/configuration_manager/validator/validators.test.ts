@@ -181,5 +181,59 @@ describe('configuration_manager/validator/validators', () => {
       const result = addProviderRequestSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+
+    it('should accept modelType "tts"', () => {
+      const data = {
+        body: {
+          modelType: 'tts',
+          provider: 'openAI',
+          configuration: {
+            model: 'tts-1',
+            apiKey: 'test-key',
+            voice: 'nova',
+          },
+          isMultimodal: false,
+          isReasoning: false,
+          isDefault: true,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept modelType "stt" with openAI', () => {
+      const data = {
+        body: {
+          modelType: 'stt',
+          provider: 'openAI',
+          configuration: {
+            model: 'whisper-1',
+            apiKey: 'test-key',
+          },
+          isMultimodal: false,
+          isReasoning: false,
+          isDefault: true,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept modelType "stt" with self-hosted whisper (no apiKey)', () => {
+      const data = {
+        body: {
+          modelType: 'stt',
+          provider: 'whisper',
+          configuration: {
+            model: 'base',
+          },
+          isMultimodal: false,
+          isReasoning: false,
+          isDefault: true,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
   })
 })

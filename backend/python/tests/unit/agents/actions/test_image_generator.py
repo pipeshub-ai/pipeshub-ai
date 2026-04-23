@@ -488,6 +488,327 @@ class TestBuildFileName:
         name = _build_file_name("", 0)
         assert name.startswith("image_1_")
 
+    def test_uses_hint_single_image(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        assert (
+            _build_file_name("gpt-image-1", 0, total=1, hint="Mona Lisa")
+            == "mona_lisa.png"
+        )
+
+    def test_uses_hint_multiple_images(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        assert (
+            _build_file_name("gpt-image-1", 0, total=3, hint="coffee_logo")
+            == "coffee_logo_1.png"
+        )
+        assert (
+            _build_file_name("gpt-image-1", 2, total=3, hint="coffee_logo")
+            == "coffee_logo_3.png"
+        )
+
+    def test_blank_hint_falls_back_to_model(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        name = _build_file_name("gpt-image-1", 0, total=1, hint="   ")
+        assert name.startswith("gpt-image-1_1_")
+        assert name.endswith(".png")
+
+    def test_junk_hint_falls_back_to_model(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        name = _build_file_name("gpt-image-1", 0, total=1, hint="***///")
+        assert name.startswith("gpt-image-1_1_")
+        assert name.endswith(".png")
+
+    def test_none_hint_falls_back_to_model(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        name = _build_file_name("gpt-image-1", 0, total=1, hint=None)
+        assert name.startswith("gpt-image-1_1_")
+        assert name.endswith(".png")
+
+    def test_hint_sanitisation_preserved(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _build_file_name,
+        )
+
+        # Spaces / slashes / punctuation become underscores which are then
+        # collapsed and trimmed; alphanumerics (including non-ASCII letters)
+        # are preserved and lowercased.
+        assert (
+            _build_file_name("m", 0, total=1, hint="Über /cat!")
+            == "über_cat.png"
+        )
+
+
+class TestSanitizeFileStem:
+    def test_spaces_become_underscores_and_lowercased(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert _sanitize_file_stem("Mona Lisa") == "mona_lisa"
+
+    def test_trims_whitespace_and_punctuation(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert (
+            _sanitize_file_stem("  Coffee Shop Logo!!") == "coffee_shop_logo"
+        )
+
+    def test_slashes_and_dots_become_underscores(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert _sanitize_file_stem("my/model\\v2.png") == "my_model_v2_png"
+
+    def test_empty_inputs_return_empty(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert _sanitize_file_stem(None) == ""
+        assert _sanitize_file_stem("") == ""
+        assert _sanitize_file_stem("   ") == ""
+        assert _sanitize_file_stem("***") == ""
+        assert _sanitize_file_stem("___") == ""
+
+    def test_long_inputs_truncated_to_60_chars(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        result = _sanitize_file_stem("a" * 200)
+        assert len(result) == 60
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+        assert set(result).issubset(allowed)
+
+    def test_collapses_repeated_separators(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert _sanitize_file_stem("a___b---c") == "a_b-c"
+
+    def test_preserves_hyphens(self):
+        from app.agents.actions.image_generator.image_generator import (
+            _sanitize_file_stem,
+        )
+
+        assert _sanitize_file_stem("gpt-image-1") == "gpt-image-1"
+
+
+class TestGenerateImagePassesFileName:
+    """End-to-end: LLM-supplied ``file_name`` reaches ``upload_bytes_artifact``."""
+
+    @pytest.mark.asyncio
+    async def test_hint_threaded_to_upload_single_image(self):
+        from app.agents.actions.image_generator import image_generator as mod
+
+        tool = mod.ImageGenerator(_make_state())
+
+        mock_adapter = SimpleNamespace(
+            provider="openAI",
+            model="gpt-image-1",
+            generate=AsyncMock(return_value=[b"img-bytes"]),
+        )
+        fake_config = {
+            "provider": "openAI",
+            "configuration": {"apiKey": "sk", "model": "gpt-image-1"},
+            "isDefault": True,
+        }
+        mock_upload = AsyncMock(return_value={
+            "fileName": "mona_lisa.png",
+            "signedUrl": "https://blob/1",
+            "documentId": "doc-1",
+        })
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "get_image_generation_config",
+            AsyncMock(return_value=fake_config),
+        ), patch(
+            "app.utils.aimodels.get_image_generation_model",
+            return_value=mock_adapter,
+        ), patch.object(
+            mod, "upload_bytes_artifact", mock_upload,
+        ), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            success, payload = await tool.generate_image(
+                prompt="A Renaissance portrait of a noblewoman",
+                file_name="Mona Lisa",
+                size="1024x1024",
+                n=1,
+            )
+
+            assert success is True
+            data = json.loads(payload)
+            assert data["file_name"] == "mona_lisa"
+
+            await captured_tasks[0]
+
+        mock_upload.assert_awaited_once()
+        assert mock_upload.await_args.kwargs["file_name"] == "mona_lisa.png"
+
+    @pytest.mark.asyncio
+    async def test_hint_threaded_to_upload_multi_image(self):
+        from app.agents.actions.image_generator import image_generator as mod
+
+        tool = mod.ImageGenerator(_make_state())
+
+        mock_adapter = SimpleNamespace(
+            provider="openAI",
+            model="gpt-image-1",
+            generate=AsyncMock(return_value=[b"a", b"b", b"c"]),
+        )
+        fake_config = {
+            "provider": "openAI",
+            "configuration": {"apiKey": "sk", "model": "gpt-image-1"},
+            "isDefault": True,
+        }
+        mock_upload = AsyncMock(return_value={
+            "fileName": "x",
+            "signedUrl": "https://blob/x",
+            "documentId": "doc",
+        })
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "get_image_generation_config",
+            AsyncMock(return_value=fake_config),
+        ), patch(
+            "app.utils.aimodels.get_image_generation_model",
+            return_value=mock_adapter,
+        ), patch.object(
+            mod, "upload_bytes_artifact", mock_upload,
+        ), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            success, _ = await tool.generate_image(
+                prompt="logo",
+                file_name="Coffee Shop Logo",
+                n=3,
+            )
+            assert success is True
+            await captured_tasks[0]
+
+        actual_names = [
+            call.kwargs["file_name"] for call in mock_upload.await_args_list
+        ]
+        assert actual_names == [
+            "coffee_shop_logo_1.png",
+            "coffee_shop_logo_2.png",
+            "coffee_shop_logo_3.png",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_empty_file_name_falls_back_to_model(self):
+        from app.agents.actions.image_generator import image_generator as mod
+
+        tool = mod.ImageGenerator(_make_state())
+
+        mock_adapter = SimpleNamespace(
+            provider="openAI",
+            model="gpt-image-1",
+            generate=AsyncMock(return_value=[b"img"]),
+        )
+        fake_config = {
+            "provider": "openAI",
+            "configuration": {"apiKey": "sk", "model": "gpt-image-1"},
+            "isDefault": True,
+        }
+        mock_upload = AsyncMock(return_value={
+            "fileName": "x",
+            "signedUrl": "https://blob/x",
+            "documentId": "doc",
+        })
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch.object(
+            mod, "get_image_generation_config",
+            AsyncMock(return_value=fake_config),
+        ), patch(
+            "app.utils.aimodels.get_image_generation_model",
+            return_value=mock_adapter,
+        ), patch.object(
+            mod, "upload_bytes_artifact", mock_upload,
+        ), patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            success, payload = await tool.generate_image(
+                prompt="anything",
+                file_name="",
+                n=1,
+            )
+            assert success is True
+            data = json.loads(payload)
+            assert data["file_name"] == ""
+            await captured_tasks[0]
+
+        uploaded_name = mock_upload.await_args.kwargs["file_name"]
+        assert uploaded_name.startswith("gpt-image-1_1_")
+        assert uploaded_name.endswith(".png")
+
+
+class TestGenerateImageInputSchema:
+    """Lock in the LLM-facing contract for the ``file_name`` argument."""
+
+    def test_file_name_is_required(self):
+        from app.agents.actions.image_generator.image_generator import (
+            GenerateImageInput,
+        )
+
+        schema = GenerateImageInput.model_json_schema()
+        assert "file_name" in schema["properties"]
+        assert "file_name" in schema["required"]
+
+    def test_file_name_description_guides_llm(self):
+        from app.agents.actions.image_generator.image_generator import (
+            GenerateImageInput,
+        )
+
+        desc = (
+            GenerateImageInput.model_json_schema()
+            ["properties"]["file_name"]["description"]
+            .lower()
+        )
+        # The description should push the LLM toward descriptive snake_case
+        # names derived from the prompt, and away from model names / random IDs.
+        assert "snake_case" in desc
+        assert "descriptive" in desc
+        assert "model name" in desc
+
+    def test_file_name_description_includes_example(self):
+        from app.agents.actions.image_generator.image_generator import (
+            GenerateImageInput,
+        )
+
+        desc = (
+            GenerateImageInput.model_json_schema()
+            ["properties"]["file_name"]["description"]
+        )
+        # At least one canonical example so the LLM has something to copy.
+        assert "mona_lisa" in desc
+
 
 def _load_is_internal_tool():
     """Load ``_is_internal_tool`` without importing the full tool_system chain.

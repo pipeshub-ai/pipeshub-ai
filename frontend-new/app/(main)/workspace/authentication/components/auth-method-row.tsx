@@ -61,6 +61,11 @@ export function AuthMethodRow({
 
   const showConfigureButton = isConfigurable;
 
+  const switchStyle = {
+    '--accent-9': 'rgba(0, 0, 51, 0.25)',
+    '--accent-indicator': 'white',
+  } as React.CSSProperties;
+
   // ── Badge colour ─────────────────────────────────────────
   const badgeColor = isConfigured ? 'green' : 'orange';
   const badgeLabel = isConfigured ? t('workspace.authentication.badges.configured') : t('workspace.authentication.badges.notConfigured');
@@ -157,12 +162,7 @@ export function AuthMethodRow({
                 checked={state.enabled}
                 disabled={toggleDisabled}
                 onCheckedChange={() => onToggle(state.type)}
-                style={
-                  {
-                    '--accent-9': 'rgba(0, 0, 51, 0.25)',
-                    '--accent-indicator': 'white',
-                  } as React.CSSProperties
-                }
+                style={switchStyle}
               />
             </span>
           </Tooltip>
@@ -173,12 +173,7 @@ export function AuthMethodRow({
             checked={state.enabled}
             disabled={toggleDisabled}
             onCheckedChange={() => onToggle(state.type)}
-            style={
-              {
-                '--accent-9': 'rgba(0, 0, 51, 0.25)',
-                '--accent-indicator': 'white',
-              } as React.CSSProperties
-            }
+            style={switchStyle}
           />
         )}
       </Flex>

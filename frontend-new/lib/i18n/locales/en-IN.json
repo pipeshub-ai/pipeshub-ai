@@ -16,6 +16,12 @@
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
     "loading": "Loading…"
   },
+  "timeGroup": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "previous7Days": "Last 7 days",
+    "older": "Older"
+  },
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…"
@@ -49,7 +55,91 @@
     "embeddingDefaultNotInRegistry": "No system default embedding is available for this deployment.",
     "failedToLoadEmbeddingProviders": "Failed to load embedding providers.",
     "failedToLoadConfiguredModels": "Failed to load configured models.",
-    "nextDisabledEmbeddingHintNoRegistryDefault": "Add an embedding provider below to continue"
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Add an embedding provider below to continue",
+    "steps": {
+      "aiModel": {
+        "title": "AI Model*",
+        "description": "Connect an LLM to power search answers and insights"
+      },
+      "embeddingModel": {
+        "title": "Embedding Model",
+        "description": "Enable semantic search across your documents"
+      },
+      "storage": {
+        "title": "Storage",
+        "description": "Choose where your indexed data is stored"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "Set up email for invites and password resets"
+      }
+    },
+    "systemConfig": "System Configuration",
+    "stepHeading": "Step {{current}}/{{total}}: Configure {{name}}",
+    "stepAiModel": {
+      "stepName": "AI Model*",
+      "addLlmHint": "Add at least one text (LLM) provider to continue.",
+      "loadProvidersError": "Failed to load AI model providers",
+      "loadModelsError": "Failed to load configured models",
+      "setDefaultSuccess": "Default model updated",
+      "setDefaultError": "Failed to set default model"
+    },
+    "stepStorage": {
+      "stepName": "Storage",
+      "infoBanner": "Choose your preferred storage solution. Local storage is used by default if skipped.",
+      "providerTypeLabel": "Provider Type*",
+      "providerLocal": "Local (System Default)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "Access Key*",
+      "accessKeyPlaceholder": "Enter Access Key",
+      "secretKeyLabel": "Secret Key*",
+      "secretKeyPlaceholder": "Enter Secret Key",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Enter Bucket",
+      "regionLabel": "Region*",
+      "regionSelectPlaceholder": "Select Region",
+      "accountNameLabel": "Account Name*",
+      "accountNamePlaceholder": "Enter Account Name",
+      "accountKeyLabel": "Account Key*",
+      "accountKeyPlaceholder": "Enter Account Key",
+      "containerLabel": "Container*",
+      "containerPlaceholder": "Enter Container",
+      "mountNameLabel": "Mount Name (optional)",
+      "mountNamePlaceholder": "eg: uploads",
+      "baseUrlLabel": "Base URL (optional)",
+      "baseUrlPlaceholder": "eg: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "This is a recommended step to enable emails, invites & password resets",
+      "hostLabel": "SMTP Host*",
+      "hostPlaceholder": "eg: smtp.gmail.com",
+      "portLabel": "Port",
+      "portPlaceholder": "eg: 587",
+      "fromEmailLabel": "From Email*",
+      "fromEmailPlaceholder": "eg: noreply@company.com",
+      "usernameLabel": "Username",
+      "usernamePlaceholder": "eg: user@gmail.com",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Enter Password"
+    },
+    "nav": {
+      "prev": "Prev",
+      "next": "Next",
+      "enterPipeshub": "Enter Pipeshub",
+      "finishing": "Finishing…",
+      "saveLlmFirst": "Save the AI Model step first to continue"
+    },
+    "save": "Save",
+    "saving": "Saving…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "Privacy Policy",
+      "website": "Website",
+      "visitDocs": "Visit",
+      "docsLabel": "documentation",
+      "toLearnMore": "to learn more."
+    }
   },
   "nav": {
     "collections": "Collections",
@@ -292,6 +382,23 @@
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
     "connectorsTooltip": "Connectors & Collections",
+    "agentResourcesTooltip": "Connectors, collections & actions",
+    "agentResources": {
+      "sheetTitle": "Connectors, collections & actions",
+      "searchConnectors": "Search connectors",
+      "searchCollections": "Search collections",
+      "searchActions": "Search actions",
+      "actionsTab": "Actions",
+      "noConnectors": "No connectors configured for this agent.",
+      "noCollections": "No collections configured for this agent.",
+      "noCollectionMatches": "No collections match your search.",
+      "noActions": "No actions (toolsets) configured for this agent.",
+      "configureMoreActions": "Configure more actions",
+      "browseWorkspaceActions": "Browse workspace actions",
+      "browseWorkspaceActionsAria": "Open workspace actions to add or manage integrations",
+      "actionsCount": "{{count}} Actions",
+      "resetDefaults": "Reset to defaults"
+    },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",
     "micTooltip": "Voice input",
@@ -320,6 +427,7 @@
     "readAloud": "Read Aloud",
     "stopReading": "Stop Reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
+    "ttsFailed": "Text-to-speech failed. Please try again.",
     "copiedAsMarkdown": "Copied as markdown",
     "copiedAsText": "Copied as a text",
     "citations": "Citations",
@@ -518,11 +626,6 @@
     "documentation": "Documentation",
     "darkMode": "Dark Mode",
     "lightMode": "Light Mode"
-  },
-  "timeGroup": {
-    "today": "Today",
-    "previous7Days": "Previous 7 Days",
-    "older": "Older"
   },
   "workspace": {
     "users": {
@@ -1214,7 +1317,7 @@
       "dataCollectionReason5": "To personalize your user experience",
       "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
-      "removeLogoAria": "Remove organization logo",
+      "editLogoAria": "Edit organization logo",
       "toasts": {
         "loadError": "Failed to load organization",
         "loadErrorDescription": "Could not fetch your organization details",
@@ -1408,8 +1511,16 @@
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
         "statInProgressSub": "Still being indexed",
+        "statQueued": "Queued",
+        "statQueuedSub": "Waiting to be indexed",
         "statNotStarted": "Not Started",
-        "statNotStartedSub": "Queued for sync",
+        "statNotStartedSub": "Awaiting connector sync",
+        "statManualIndexing": "Manual indexing",
+        "statManualIndexingSub": "Synced but not indexed yet",
+        "statCompleted": "Completed",
+        "statCompletedSub": "Indexed and searchable",
+        "statEmpty": "Empty",
+        "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "personalRecordsIndexed": "Personal Records Indexed"
@@ -1660,6 +1771,7 @@
       "general": {
         "avatarLabel": "Your Display Picture",
         "avatarDescription": "Recommended size is 256px by 256px",
+        "editAvatarAria": "Edit profile picture",
         "fullName": "Full Name",
         "fullNameDescription": "Please write your full name",
         "fullNamePlaceholder": "eg: John Doe",
@@ -2129,6 +2241,86 @@
       "invalid_request": "The redirect URI provided does not match any URI registered for this application. Verify the redirect URIs configured in Developer Settings.",
       "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application’s configuration.",
       "server_error": "An unexpected error occurred on the server. Please try again later."
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Welcome to Pipeshub",
+      "defaultSubtitle": "Your organization's knowledge, finally searchable and connected."
+    },
+    "signUp": {
+      "title": "Get Started",
+      "subtitle": "Welcome to Pipeshub -- let's get started!",
+      "firstNameLabel": "First Name*",
+      "lastNameLabel": "Last Name*",
+      "orgNameLabel": "Organization Name*",
+      "emailLabel": "Your Email*",
+      "passwordLabel": "Password*",
+      "confirmPasswordLabel": "Confirm Password*",
+      "preferredLanguageLabel": "Preferred Language",
+      "firstNamePlaceholder": "Enter your first name",
+      "lastNamePlaceholder": "Enter your last name",
+      "orgNamePlaceholder": "Enter your organization name",
+      "emailPlaceholder": "Enter your email",
+      "passwordPlaceholder": "Enter your password",
+      "confirmPasswordPlaceholder": "Confirm your password",
+      "passwordHint": "At least 8 characters: lowercase, uppercase, number, symbol.",
+      "continueButton": "Continue",
+      "savingToast": "Saving details...",
+      "savingToastDescription": "This will take a few seconds",
+      "successToast": "Account created successfully!",
+      "failToast": "Sign up failed. Please try again.",
+      "errors": {
+        "firstNameRequired": "First name is required.",
+        "lastNameRequired": "Last name is required.",
+        "orgNameRequired": "Organization name is required.",
+        "emailRequired": "Email is required.",
+        "emailInvalid": "Please enter a valid email address.",
+        "passwordRequired": "Password is required.",
+        "confirmPasswordRequired": "Please confirm your password.",
+        "passwordsMismatch": "Passwords do not match.",
+        "emailAlreadyExists": "An account with this email already exists."
+      }
+    },
+    "login": {
+      "emailVerifiedTitle": "Email verified",
+      "emailVerifiedDescription": "Your email address was updated. Sign in with your new email.",
+      "emailVerifyFailedTitle": "Email verification failed",
+      "emailVerifyFailedDescription": "The link may be invalid or expired.",
+      "samlErrorTitle": "Error in logging in with SAML",
+      "samlSignInFailedTitle": "Sign-in failed",
+      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again."
+    },
+    "common": {
+      "signIn": "Sign In",
+      "signingIn": "Signing in…",
+      "sendOtp": "Send OTP",
+      "sending": "Sending…",
+      "forgotPassword": "Forgot Password",
+      "emailLabel": "Email",
+      "emailPlaceholder": "Enter your email",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Enter your password",
+      "emailRequired": "Email is required.",
+      "emailInvalid": "Please enter a valid email address.",
+      "passwordRequired": "Password is required.",
+      "incorrectPassword": "Incorrect password.",
+      "noPasswordSet": "No password set. Use Forgot Password below.",
+      "authFailed": "Authentication failed. Please try again.",
+      "otpInvalidLength": "Please enter the full 6-digit code.",
+      "signInWithPasswordInstead": "Sign in with password instead",
+      "signInWithEmailOtp": "Sign in with email OTP",
+      "orContinueWith": "or continue with {{provider}}",
+      "orContinueWithAny": "or continue with any one of them",
+      "orContinueWithSso": "or continue with Single Sign-On",
+      "googleNotConfigured": "Google sign-in is not configured for your organisation.",
+      "microsoftNotConfigured": "Microsoft sign-in is not configured for your organisation.",
+      "oauthNotConfigured": "OAuth sign-in is not configured for your organisation.",
+      "googleUnavailable": "Google sign-in is currently unavailable. Contact your administrator.",
+      "microsoftUnavailable": "Microsoft sign-in is currently unavailable. Contact your administrator.",
+      "oauthUnavailable": "OAuth sign-in is currently unavailable. Contact your administrator.",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password"
     }
   }
 }

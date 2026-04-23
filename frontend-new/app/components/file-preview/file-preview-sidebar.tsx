@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -15,6 +15,15 @@ import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { getTabsForSource, shouldShowPagination } from './utils';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
+import {
+  PANEL_MAX_PX,
+  PANEL_MIN_PX,
+  PANEL_WIDTH_LS_KEY,
+  readSavedPanelWidthPx,
+  clamp,
+  viewportMaxPanelPx,
+} from './resize-storage';
+import { useCitationsColumnResize } from './use-citations-column-resize';
 
 export function FilePreviewSidebar({
   open,
@@ -30,14 +39,24 @@ export function FilePreviewSidebar({
   highlightBox,
   citations,
   initialCitationId,
+  hideFileDetails,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const [panelWidthPx, setPanelWidthPx] = useState(() => readSavedPanelWidthPx(hasCitations));
+  const panelWidthRef = useRef(panelWidthPx);
+  useLayoutEffect(() => {
+    panelWidthRef.current = panelWidthPx;
+  }, [panelWidthPx]);
+  const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
-  const tabs = getTabsForSource(source);
+  const tabs = useMemo(
+    () => getTabsForSource(source, { hideFileDetails }),
+    [source, hideFileDetails],
+  );
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -54,15 +73,55 @@ export function FilePreviewSidebar({
     setTotalPages(null);
   }, [file.id, file.url, initialPage]);
 
+  // If the active tab is no longer visible (e.g. we previously had record
+  // details and now the user opened an artifact without any), fall back to
+  // the Preview tab so we never render an empty body.
+  useEffect(() => {
+    const stillVisible = tabs.some((t) => t.id === activeTab && t.visible);
+    if (!stillVisible) setActiveTab('preview');
+  }, [tabs, activeTab]);
+
+  // Keep panel width within viewport when the window resizes
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => {
+      setPanelWidthPx((w) => Math.min(w, viewportMaxPanelPx()));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [open]);
+
+  const beginPanelEdgeResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelWidthRef.current;
+    const maxW = Math.min(PANEL_MAX_PX, viewportMaxPanelPx());
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    let finalW = startW;
+    const move = (ev: PointerEvent) => {
+      finalW = clamp(startW + (startX - ev.clientX), PANEL_MIN_PX, maxW);
+      setPanelWidthPx(finalW);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        localStorage.setItem(PANEL_WIDTH_LS_KEY, String(finalW));
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, []);
+
   // Handle page detection callback from renderer
   const handleTotalPagesDetected = useCallback((numPages: number) => {
     setTotalPages(numPages);
   }, []);
-
-  const handleChatClick = () => {
-    // TODO: Implement chat functionality
-    console.log('Chat button clicked');
-  };
 
   const handleTabChange = (tab: FilePreviewTab) => {
     setActiveTab(tab);
@@ -134,7 +193,7 @@ export function FilePreviewSidebar({
           top: 10,
           right: 10,
           bottom: 10,
-          width: hasCitations ? '860px' : '37.5rem',
+          width: `${panelWidthPx}px`,
           maxWidth: '100vw',
           maxHeight: 'calc(100vh - 20px)',
           padding: 0,
@@ -228,27 +287,49 @@ export function FilePreviewSidebar({
           <FilePreviewTabs tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
         </Box>
 
-        {/* Content Area with Floating Controls + optional Citations Panel */}
-        <Flex style={{ flex: 1, overflow: 'hidden' }}>
-          {/* Main preview / details content */}
-          <Box 
+        {/* Content area: tab body + optional citations; left strip resizes whole panel width.
+            Must be a flex column so the inner row can use flex:1 + minHeight:0; otherwise block
+            layout ignores flex on children and the preview never gets a bounded height → no Y scroll. */}
+        <Box
+          style={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            position: 'relative',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', alignItems: 'stretch' }}>
+          {/* Main preview / details content — flex column + minHeight:0 so the tab body can scroll in Y */}
+          <Box
             className="no-scrollbar"
-            style={{ 
-                flex: 1, 
-                position: 'relative',
-                overflow: 'hidden',
-                paddingLeft: 'var(--space-4)',
-                paddingRight: 'var(--space-4)',
-                paddingBottom: 'var(--space-2)',
-                paddingTop: 'var(--space-2)',
-                minWidth: 0,
-              }}
-            >
+            style={{
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              paddingLeft: 'var(--space-4)',
+              paddingRight: 'var(--space-4)',
+              paddingBottom: 'var(--space-2)',
+              paddingTop: 'var(--space-2)',
+            }}
+          >
               {/* Tab Content */}
               <Box 
                 style={{ 
+                  flex: 1,
+                  minHeight: 0,
                   height: '100%',
+                  width: '100%',
+                  maxWidth: '100%',
+                  minWidth: 0,
                   overflow: 'auto',
+                  boxSizing: 'border-box',
                 }} 
                 className="no-scrollbar"
               >
@@ -356,45 +437,79 @@ export function FilePreviewSidebar({
                   >
                     <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
                   </IconButton>
-
-                  <Box
-                    style={{
-                      backgroundColor: 'var(--accent-a3)',
-                      borderRadius: 'var(--radius-2)',
-                      padding: '8px 12px',
-                      height: '32px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                    }}
-                    onClick={handleChatClick}
-                  >
-                    <MaterialIcon name="chat" size={ICON_SIZES.SECONDARY} color="var(--accent-11)" />
-                    <Text size="2" weight="medium" style={{ color: 'var(--accent-11)' }}>
-                      Chat
-                    </Text>
-                  </Box>
                 </Flex>
               )}
           </Box>
 
-          {/* Citations Panel — only when citations are provided */}
-          {hasCitations && (
-            <Box
-              style={{
-                borderLeft: '1px solid var(--olive-3)',
-                height: '100%',
-              }}
-            >
-              <CitationsPanel
-                citations={citations}
-                activeCitationId={activeCitationId}
-                onCitationClick={handleCitationClick}
+          {/* Citations Panel — only shown on the Preview tab (File Details
+              has its own full-width body). */}
+          {hasCitations && activeTab === 'preview' && (
+            <>
+              <Box
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize citations panel"
+                onPointerDown={beginCitationsSplitResize}
+                style={{
+                  width: '6px',
+                  flexShrink: 0,
+                  alignSelf: 'stretch',
+                  cursor: 'col-resize',
+                  touchAction: 'none',
+                  borderLeft: '1px solid var(--olive-3)',
+                  backgroundColor: 'transparent',
+                }}
+                onPointerEnter={(ev) => {
+                  ev.currentTarget.style.backgroundColor = 'var(--olive-4)';
+                }}
+                onPointerLeave={(ev) => {
+                  ev.currentTarget.style.backgroundColor = 'transparent';
+                }}
               />
-            </Box>
+              <Box
+                style={{
+                  width: `${citationsWidthPx}px`,
+                  flexShrink: 0,
+                  minWidth: 0,
+                  height: '100%',
+                  minHeight: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+              >
+                <CitationsPanel
+                  citations={citations}
+                  activeCitationId={activeCitationId}
+                  onCitationClick={handleCitationClick}
+                />
+              </Box>
+            </>
           )}
         </Flex>
+
+        <Box
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize file preview panel"
+          onPointerDown={beginPanelEdgeResize}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: '6px',
+            zIndex: 20,
+            cursor: 'col-resize',
+            touchAction: 'none',
+          }}
+          onPointerEnter={(ev) => {
+            ev.currentTarget.style.backgroundColor = 'var(--olive-5)';
+          }}
+          onPointerLeave={(ev) => {
+            ev.currentTarget.style.backgroundColor = 'transparent';
+          }}
+        />
+        </Box>
       </Dialog.Content>
     </Dialog.Root>
   );

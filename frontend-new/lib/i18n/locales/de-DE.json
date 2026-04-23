@@ -16,6 +16,12 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen…"
   },
+  "timeGroup": {
+    "today": "Heute",
+    "yesterday": "Gestern",
+    "previous7Days": "Letzte 7 Tage",
+    "older": "Älter"
+  },
   "chatStream": {
     "thinkingFallback": "Denken…",
     "refiningResponse": "Antwort wird verfeinert…"
@@ -49,7 +55,91 @@
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
     "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
     "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
-    "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren"
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren",
+    "steps": {
+      "aiModel": {
+        "title": "KI-Modell*",
+        "description": "Verbinden Sie ein LLM für Suchantworten und Einblicke"
+      },
+      "embeddingModel": {
+        "title": "Embedding-Modell",
+        "description": "Semantische Suche über Dokumente aktivieren"
+      },
+      "storage": {
+        "title": "Speicher",
+        "description": "Wählen Sie, wo Ihre indizierten Daten gespeichert werden"
+      },
+      "smtp": {
+        "title": "SMTP",
+        "description": "E-Mail für Einladungen und Passwort-Resets einrichten"
+      }
+    },
+    "systemConfig": "Systemkonfiguration",
+    "stepHeading": "Schritt {{current}}/{{total}}: {{name}} konfigurieren",
+    "stepAiModel": {
+      "stepName": "KI-Modell*",
+      "addLlmHint": "Fügen Sie mindestens einen Text-Anbieter (LLM) hinzu, um fortzufahren.",
+      "loadProvidersError": "KI-Modellanbieter konnten nicht geladen werden",
+      "loadModelsError": "Konfigurierte Modelle konnten nicht geladen werden",
+      "setDefaultSuccess": "Standardmodell aktualisiert",
+      "setDefaultError": "Standardmodell konnte nicht gesetzt werden"
+    },
+    "stepStorage": {
+      "stepName": "Speicher",
+      "infoBanner": "Wählen Sie Ihre bevorzugte Speicherlösung. Lokaler Speicher wird standardmäßig verwendet, wenn übersprungen.",
+      "providerTypeLabel": "Anbietertyp*",
+      "providerLocal": "Lokal (Systemstandard)",
+      "providerS3": "Amazon S3",
+      "accessKeyLabel": "Zugriffsschlüssel*",
+      "accessKeyPlaceholder": "Zugriffsschlüssel eingeben",
+      "secretKeyLabel": "Geheimer Schlüssel*",
+      "secretKeyPlaceholder": "Geheimen Schlüssel eingeben",
+      "bucketLabel": "Bucket*",
+      "bucketPlaceholder": "Bucket eingeben",
+      "regionLabel": "Region*",
+      "regionSelectPlaceholder": "Region auswählen",
+      "accountNameLabel": "Kontoname*",
+      "accountNamePlaceholder": "Kontoname eingeben",
+      "accountKeyLabel": "Kontoschlüssel*",
+      "accountKeyPlaceholder": "Kontoschlüssel eingeben",
+      "containerLabel": "Container*",
+      "containerPlaceholder": "Container eingeben",
+      "mountNameLabel": "Mount-Name (optional)",
+      "mountNamePlaceholder": "z.B.: uploads",
+      "baseUrlLabel": "Basis-URL (optional)",
+      "baseUrlPlaceholder": "z.B.: http://localhost:3000/files"
+    },
+    "stepSmtp": {
+      "stepName": "SMTP",
+      "infoBanner": "Dieser empfohlene Schritt aktiviert E-Mails, Einladungen und Passwort-Resets",
+      "hostLabel": "SMTP-Host*",
+      "hostPlaceholder": "z.B.: smtp.gmail.com",
+      "portLabel": "Port",
+      "portPlaceholder": "z.B.: 587",
+      "fromEmailLabel": "Absender-E-Mail*",
+      "fromEmailPlaceholder": "z.B.: noreply@company.com",
+      "usernameLabel": "Benutzername",
+      "usernamePlaceholder": "z.B.: user@gmail.com",
+      "passwordLabel": "Passwort",
+      "passwordPlaceholder": "Passwort eingeben"
+    },
+    "nav": {
+      "prev": "Zurück",
+      "next": "Weiter",
+      "enterPipeshub": "Pipeshub betreten",
+      "finishing": "Abschließen…",
+      "saveLlmFirst": "Speichern Sie zuerst den KI-Modell-Schritt, um fortzufahren"
+    },
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "footer": {
+      "copyright": "© 2026 Pipeshub LLC",
+      "privacyPolicy": "Datenschutzrichtlinie",
+      "website": "Website",
+      "visitDocs": "Besuchen Sie die",
+      "docsLabel": "Dokumentation",
+      "toLearnMore": "um mehr zu erfahren."
+    }
   },
   "nav": {
     "collections": "Sammlungen",
@@ -292,6 +382,23 @@
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
     "connectorsTooltip": "Konnektoren & Sammlungen",
+    "agentResourcesTooltip": "Konnektoren, Sammlungen & Aktionen",
+    "agentResources": {
+      "sheetTitle": "Konnektoren, Sammlungen & Aktionen",
+      "searchConnectors": "Konnektoren suchen",
+      "searchCollections": "Sammlungen suchen",
+      "searchActions": "Aktionen suchen",
+      "actionsTab": "Aktionen",
+      "noConnectors": "Für diesen Agenten sind keine Konnektoren konfiguriert.",
+      "noCollections": "Für diesen Agenten sind keine Sammlungen konfiguriert.",
+      "noCollectionMatches": "Keine Sammlungen entsprechen Ihrer Suche.",
+      "noActions": "Für diesen Agenten sind keine Aktionen (Toolsets) konfiguriert.",
+      "configureMoreActions": "Weitere Aktionen konfigurieren",
+      "browseWorkspaceActions": "Workspace-Aktionen durchsuchen",
+      "browseWorkspaceActionsAria": "Workspace-Aktionen öffnen, um Integrationen hinzuzufügen oder zu verwalten",
+      "actionsCount": "{{count}} Aktionen",
+      "resetDefaults": "Auf Standard zurücksetzen"
+    },
     "aiModelsTooltip": "KI-Modelle",
     "attachmentTooltip": "Dateien anhängen",
     "micTooltip": "Spracheingabe",
@@ -320,6 +427,7 @@
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen stoppen",
     "ttsNotSupported": "Text-to-Speech wird in diesem Browser nicht unterstützt",
+    "ttsFailed": "Text-to-Speech fehlgeschlagen. Bitte erneut versuchen.",
     "copiedAsMarkdown": "Als Markdown kopiert",
     "copiedAsText": "Als Text kopiert",
     "citations": "Zitate",
@@ -515,11 +623,6 @@
     "documentation": "Dokumentation",
     "darkMode": "Dunkelmodus",
     "lightMode": "Hellmodus"
-  },
-  "timeGroup": {
-    "today": "Heute",
-    "previous7Days": "Letzte 7 Tage",
-    "older": "Älter"
   },
   "workspace": {
     "users": {
@@ -1215,7 +1318,7 @@
       "dataCollectionReason5": "Zur Personalisierung Ihrer Benutzererfahrung",
       "dataCollectionReason6": "Zur Verbesserung und Weiterentwicklung unserer Produkte und Dienstleistungen",
       "manageSubtitle": "Verwalten Sie Ihr Unternehmensprofil",
-      "removeLogoAria": "Organisationslogo entfernen",
+      "editLogoAria": "Organisationslogo bearbeiten",
       "toasts": {
         "loadError": "Organisation konnte nicht geladen werden",
         "loadErrorDescription": "Ihre Organisationsdaten konnten nicht abgerufen werden",
@@ -1409,8 +1512,16 @@
         "statUnsupported": "Nicht unterstützt",
         "statUnsupportedSub": "Kann nicht verarbeitet werden",
         "statInProgressSub": "Wird noch indexiert",
+        "statQueued": "Warteschlange",
+        "statQueuedSub": "Warten auf Indizierung",
         "statNotStarted": "Nicht gestartet",
-        "statNotStartedSub": "Für Synchronisierung in Warteschlange",
+        "statNotStartedSub": "Noch nicht mit dem Connector synchronisiert",
+        "statManualIndexing": "Manuelle Indizierung",
+        "statManualIndexingSub": "Synchronisiert, aber noch nicht indexiert",
+        "statCompleted": "Abgeschlossen",
+        "statCompletedSub": "Indexiert und durchsuchbar",
+        "statEmpty": "Leer",
+        "statEmptySub": "Kein extrahierbarer Inhalt",
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "personalRecordsIndexed": "Persönliche Datensätze indexiert"
@@ -1661,6 +1772,7 @@
       "general": {
         "avatarLabel": "Ihr Profilbild",
         "avatarDescription": "Empfohlene Größe: 256 × 256 Pixel",
+        "editAvatarAria": "Profilbild bearbeiten",
         "fullName": "Vollständiger Name",
         "fullNameDescription": "Bitte geben Sie Ihren vollständigen Namen ein",
         "fullNamePlaceholder": "z. B. Max Mustermann",
@@ -2131,6 +2243,86 @@
       "invalid_request": "Die angegebene Redirect-URI stimmt mit keiner registrierten URI für diese Anwendung überein. Überprüfen Sie die Redirect-URIs in den Entwicklereinstellungen.",
       "invalid_client": "Die client_id stimmt mit keiner registrierten OAuth-Anwendung überein. Überprüfen Sie die Client-ID in der Konfiguration Ihrer Anwendung.",
       "server_error": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuchen Sie es später erneut."
+    }
+  },
+  "auth": {
+    "titleSection": {
+      "defaultTitle": "Willkommen bei Pipeshub",
+      "defaultSubtitle": "Das Wissen Ihrer Organisation – endlich durchsuchbar und vernetzt."
+    },
+    "signUp": {
+      "title": "Loslegen",
+      "subtitle": "Willkommen bei Pipeshub – legen wir los!",
+      "firstNameLabel": "Vorname*",
+      "lastNameLabel": "Nachname*",
+      "orgNameLabel": "Organisationsname*",
+      "emailLabel": "Ihre E-Mail*",
+      "passwordLabel": "Passwort*",
+      "confirmPasswordLabel": "Passwort bestätigen*",
+      "preferredLanguageLabel": "Bevorzugte Sprache",
+      "firstNamePlaceholder": "Vornamen eingeben",
+      "lastNamePlaceholder": "Nachnamen eingeben",
+      "orgNamePlaceholder": "Organisationsnamen eingeben",
+      "emailPlaceholder": "E-Mail eingeben",
+      "passwordPlaceholder": "Passwort eingeben",
+      "confirmPasswordPlaceholder": "Passwort bestätigen",
+      "passwordHint": "Mindestens 8 Zeichen: Kleinbuchstaben, Großbuchstaben, Zahl, Symbol.",
+      "continueButton": "Weiter",
+      "savingToast": "Details werden gespeichert...",
+      "savingToastDescription": "Dies dauert einige Sekunden",
+      "successToast": "Konto erfolgreich erstellt!",
+      "failToast": "Registrierung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "errors": {
+        "firstNameRequired": "Vorname ist erforderlich.",
+        "lastNameRequired": "Nachname ist erforderlich.",
+        "orgNameRequired": "Organisationsname ist erforderlich.",
+        "emailRequired": "E-Mail ist erforderlich.",
+        "emailInvalid": "Bitte geben Sie eine gültige E-Mail-Adresse ein.",
+        "passwordRequired": "Passwort ist erforderlich.",
+        "confirmPasswordRequired": "Bitte bestätigen Sie Ihr Passwort.",
+        "passwordsMismatch": "Passwörter stimmen nicht überein.",
+        "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits."
+      }
+    },
+    "login": {
+      "emailVerifiedTitle": "E-Mail verifiziert",
+      "emailVerifiedDescription": "Ihre E-Mail-Adresse wurde aktualisiert. Melden Sie sich mit Ihrer neuen E-Mail an.",
+      "emailVerifyFailedTitle": "E-Mail-Verifizierung fehlgeschlagen",
+      "emailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen.",
+      "samlErrorTitle": "Fehler bei der SAML-Anmeldung",
+      "samlSignInFailedTitle": "Anmeldung fehlgeschlagen",
+      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut."
+    },
+    "common": {
+      "signIn": "Anmelden",
+      "signingIn": "Anmeldung läuft…",
+      "sendOtp": "OTP senden",
+      "sending": "Wird gesendet…",
+      "forgotPassword": "Passwort vergessen",
+      "emailLabel": "E-Mail",
+      "emailPlaceholder": "E-Mail eingeben",
+      "passwordLabel": "Passwort",
+      "passwordPlaceholder": "Passwort eingeben",
+      "emailRequired": "E-Mail ist erforderlich.",
+      "emailInvalid": "Bitte geben Sie eine gültige E-Mail-Adresse ein.",
+      "passwordRequired": "Passwort ist erforderlich.",
+      "incorrectPassword": "Falsches Passwort.",
+      "noPasswordSet": "Kein Passwort festgelegt. Verwenden Sie unten Passwort vergessen.",
+      "authFailed": "Authentifizierung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "otpInvalidLength": "Bitte geben Sie den vollständigen 6-stelligen Code ein.",
+      "signInWithPasswordInstead": "Stattdessen mit Passwort anmelden",
+      "signInWithEmailOtp": "Mit E-Mail-OTP anmelden",
+      "orContinueWith": "oder weiter mit {{provider}}",
+      "orContinueWithAny": "oder mit einem davon fortfahren",
+      "orContinueWithSso": "oder weiter mit Single Sign-On",
+      "googleNotConfigured": "Google-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
+      "microsoftNotConfigured": "Microsoft-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
+      "oauthNotConfigured": "OAuth-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
+      "googleUnavailable": "Google-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
+      "microsoftUnavailable": "Microsoft-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
+      "oauthUnavailable": "OAuth-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
+      "showPassword": "Passwort anzeigen",
+      "hidePassword": "Passwort verbergen"
     }
   }
 }

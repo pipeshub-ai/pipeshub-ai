@@ -354,7 +354,7 @@ export function useTextHighlighter({
             // 1. Try exact match
             let matched = false;
             for (const el of candidates) {
-              if (el.querySelector(`.highlight-${id}`) || el.classList.contains(`highlight-${id}`)) continue;
+              if (el.querySelector(`.highlight-${CSS.escape(id)}`) || el.classList.contains(`highlight-${id}`)) continue;
               const elText = normalizeText(el.textContent);
               if (!elText.includes(normalized)) continue;
 
@@ -375,7 +375,7 @@ export function useTextHighlighter({
 
               if (scored.length > 0) {
                 const best = scored[0];
-                if (!best.el.querySelector(`.highlight-${id}`) && !best.el.classList.contains(`highlight-${id}`)) {
+                if (!best.el.querySelector(`.highlight-${CSS.escape(id)}`) && !best.el.classList.contains(`highlight-${id}`)) {
                   const result = highlightTextInScope(best.el, normalized, id, 'fuzzy', onHighlightClick);
                   if (result.success && result.cleanup) {
                     newCleanups.set(id, result.cleanup);
@@ -403,7 +403,7 @@ export function useTextHighlighter({
       // Clear previous active
       root.querySelectorAll(`.${HL_ACTIVE}`).forEach((el) => el.classList.remove(HL_ACTIVE));
 
-      const el = root.querySelector(`.highlight-${citationId}`);
+      const el = root.querySelector(`.highlight-${CSS.escape(citationId)}`);
       if (el) {
         el.classList.add(HL_ACTIVE);
         el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });

@@ -146,7 +146,7 @@ export function ModelSelectorPanel({
           </Text>
           <span
             onClick={() => {
-              // TODO: navigate to settings page
+              router.push('/workspace/ai-models');
             }}
             style={{
               fontSize: 'var(--font-size-1)',
@@ -160,7 +160,7 @@ export function ModelSelectorPanel({
               lineHeight: 'inherit',
             }}
           >
-            {t('chat.openSettings', 'Open Settings')}
+            {t('chat.openModels', 'Open Models')}
           </span>
         </Flex>
       )}

@@ -1,12 +1,16 @@
 import builtins
 import os
+import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional,Dict,List, TypeVar
+from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
-
+from jinja2 import Template
+from app.modules.qna.prompt_templates import (
+    agent_block_group_prompt,
+)
 from pydantic import BaseModel, Field
-
+from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -24,6 +28,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+
+class LlmTextContent(BaseModel):
+    """A single LLM message-content item produced by ``to_llm_full_context``."""
+
+    type: Literal["text"]
+    text: str
+
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
@@ -263,7 +275,8 @@ class Record(BaseModel):
 
         if self.weburl:
             if not self.weburl.startswith("http"):
-                weburl = f"{frontend_url}{self.weburl}" if frontend_url else self.weburl
+                base_url = frontend_url or "http://localhost:3000"
+                weburl = f"{base_url.rstrip('/')}{self.weburl}"
             else:
                 weburl = self.weburl
 
@@ -389,6 +402,129 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def to_llm_full_context(self) -> list[LlmTextContent]:
+        """
+        Convert a record JSON object to message content format matching get_message_content.
+
+        Args:
+            record: The record JSON object containing block_containers and other metadata
+            ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
+
+        Returns:
+            Tuple of (content list, ref_mapper)
+        """
+
+        try:
+            from app.utils.chat_helpers import valid_group_labels, build_group_blocks
+
+            content: list[LlmTextContent] = []
+            context_metadata = f"record/{self.id}"
+            content.append(LlmTextContent(
+                type="text",
+                text=f"""<record>\n{context_metadata}
+    Record blocks (sorted):\n\n""",
+            ))
+            # Process blocks
+            block_containers = self.block_containers
+            blocks = block_containers.blocks
+            block_groups = block_containers.block_groups
+
+            # build_group_blocks (in chat_helpers) expects plain dicts, not Pydantic models
+            blocks_as_dicts = [b.model_dump() for b in blocks]
+            block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
+
+            seen_block_groups = set()
+            for block in blocks:
+                block_type = block.type.value if block.type else None
+
+                data = block.data or ""
+
+                if block_type == BlockType.IMAGE.value:
+                    continue
+                elif block_type == BlockType.TEXT.value and block.parent_index is None:
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
+                elif block_type == BlockType.TABLE_ROW.value:
+                    block_group_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    if block_group_index is not None:
+                        corresponding_block_group = block_groups[block_group_index]
+
+                        block_type = corresponding_block_group.type.value if corresponding_block_group.type else None
+                        data = corresponding_block_group.data or {}
+
+                        if block_type == GroupType.TABLE.value:
+                            children = corresponding_block_group.children
+                            rows_to_be_included_list = []
+                            if children:
+                                for range_obj in children.block_ranges:
+                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
+
+                            child_results = []
+                            for row_index in rows_to_be_included_list:
+                                if row_index < len(blocks):
+                                    row_block = blocks[row_index]
+                                    block_data = row_block.data
+                                    if isinstance(block_data, dict):
+                                        row_text = block_data.get("row_natural_language_text", "")
+                                    else:
+                                        row_text = str(block_data or "")
+
+                                    child_results.append({
+                                        "content": row_text
+                                    })
+
+                            if child_results:
+                                template = Template(agent_block_group_prompt)
+                                rendered_form = template.render(
+                                    block_group_index=block_group_index,
+                                    label=GroupType.TABLE.value,
+                                    blocks=child_results,
+                                )
+                                content.append(LlmTextContent(
+                                    type="text",
+                                    text=f"{rendered_form}\n\n",
+                                ))
+                elif block.parent_index is not None:
+                    parent_index = block.parent_index
+                    block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
+                    if block_group_id in seen_block_groups:
+                        continue
+                    template = Template(agent_block_group_prompt)
+                    if parent_index >= len(block_groups):
+                        continue
+                    block_group = block_groups[parent_index]
+                    block_group_type = block_group.type.value if block_group.type else None
+                    if block_group_type not in valid_group_labels:
+                        continue
+
+                    virtual_record_id = self.virtual_record_id or ""
+                    group_blocks = build_group_blocks(block_groups_as_dicts, blocks_as_dicts, parent_index, virtual_record_id, self.to_kafka_record(), {})
+
+                    if not group_blocks:
+                        continue
+                    seen_block_groups.add(block_group_id)
+                    rendered_form = template.render(
+                        block_group_index=parent_index,
+                        label=block_group_type,
+                        blocks=group_blocks,
+                    )
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=f"{rendered_form}\n\n",
+                    ))
+                else:
+                    continue
+
+            return content
+        except Exception as e:
+            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {

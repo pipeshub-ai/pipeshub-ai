@@ -3,12 +3,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
+import { Spinner } from '@/app/components/ui/spinner';
 import { isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import type { ChatArtifact } from '../../types';
 
 interface ArtifactsPanelProps {
   artifacts: ChatArtifact[];
-  onPreview?: (artifact: ChatArtifact) => void;
+  onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
 }
 
 const MIME_ICONS: Record<string, string> = {
@@ -69,7 +70,6 @@ async function handleDownload(artifact: ChatArtifact): Promise<void> {
 
   const trusted = isTrustedApiUrl(url) || isSignedUrl(url);
   if (!trusted) {
-    // Untrusted URL (e.g. injected via compromised RAG content) — refuse.
     if (typeof window !== 'undefined' && typeof console !== 'undefined') {
       // eslint-disable-next-line no-console
       console.warn('[artifacts-panel] Refusing to open untrusted artifact URL:', url);
@@ -121,6 +121,8 @@ export function ArtifactsPanel({ artifacts, onPreview }: ArtifactsPanelProps) {
 
 function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
   const [src, setSrc] = useState<string | undefined>(undefined);
+  const [loaded, setLoaded] = useState(false);
+  const [errored, setErrored] = useState(false);
   // Use a ref to capture the current blob: URL so the cleanup closure does not
   // close over a stale `src` value (the previous implementation silently
   // leaked object URLs because the cleanup ran before setSrc committed).
@@ -129,9 +131,13 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
   useEffect(() => {
     let cancelled = false;
 
+    // Reset load state whenever the underlying artifact identity changes so
+    // we show the skeleton again instead of flashing a stale image.
+    setLoaded(false);
+    setErrored(false);
+
     const setAndTrack = (value: string | undefined) => {
       if (cancelled) return;
-      // Revoke any prior blob URL before overwriting it.
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -140,6 +146,9 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
         blobUrlRef.current = value;
       }
       setSrc(value);
+      // No URL at all => treat as errored so we render the fallback icon
+      // instead of leaving the skeleton spinning forever.
+      if (!value) setErrored(true);
     };
 
     // SECURITY: if there is no recordId we will only render a raw URL when it
@@ -176,12 +185,62 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
     };
   }, [artifact.recordId, artifact.downloadUrl]);
 
+  const showSkeleton = !src || (!loaded && !errored);
+
   return (
-    <img
-      src={src}
-      alt={artifact.fileName}
-      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-    />
+    <Box style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {showSkeleton && (
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundColor: 'var(--slate-4)',
+            backgroundImage:
+              'linear-gradient(90deg, var(--slate-3) 0%, var(--slate-5) 50%, var(--slate-3) 100%)',
+            backgroundSize: '400% 100%',
+            animation: 'shimmer-sweep 1.4s linear infinite',
+          }}
+        >
+          <Spinner size={14} color="var(--slate-11)" />
+        </Flex>
+      )}
+      {errored && (
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundColor: 'var(--accent-3)',
+          }}
+        >
+          <span
+            className="material-icons-outlined"
+            style={{ fontSize: 20, color: 'var(--accent-11)' }}
+          >
+            image
+          </span>
+        </Flex>
+      )}
+      {src && (
+        <img
+          src={src}
+          alt={artifact.fileName}
+          onLoad={() => setLoaded(true)}
+          onError={() => setErrored(true)}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: 'block',
+            opacity: loaded ? 1 : 0,
+            transition: 'opacity 150ms ease-out',
+          }}
+        />
+      )}
+    </Box>
   );
 }
 
@@ -190,10 +249,40 @@ function ArtifactCard({
   onPreview,
 }: {
   artifact: ChatArtifact;
-  onPreview?: (artifact: ChatArtifact) => void;
+  onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
 }) {
   const icon = getIconForMime(artifact.mimeType);
   const showThumbnail = isPreviewableImage(artifact.mimeType);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const runDownload = async () => {
+    if (isDownloading) return;
+    setIsDownloading(true);
+    try {
+      await handleDownload(artifact);
+    } finally {
+      if (mountedRef.current) setIsDownloading(false);
+    }
+  };
+
+  const runPreview = async () => {
+    if (!onPreview || isPreviewing) return;
+    setIsPreviewing(true);
+    try {
+      await onPreview(artifact);
+    } finally {
+      if (mountedRef.current) setIsPreviewing(false);
+    }
+  };
 
   return (
     <Flex
@@ -250,19 +339,31 @@ function ArtifactCard({
           <IconButton
             size="1"
             variant="ghost"
-            onClick={() => onPreview(artifact)}
-            style={{ cursor: 'pointer' }}
+            onClick={runPreview}
+            disabled={isPreviewing}
+            aria-label={isPreviewing ? 'Loading preview' : 'Preview artifact'}
+            style={{ cursor: isPreviewing ? 'wait' : 'pointer' }}
           >
-            <span className="material-icons-outlined" style={{ fontSize: 18 }}>visibility</span>
+            {isPreviewing ? (
+              <Spinner size={16} />
+            ) : (
+              <span className="material-icons-outlined" style={{ fontSize: 18 }}>visibility</span>
+            )}
           </IconButton>
         )}
         <IconButton
           size="1"
           variant="ghost"
-          onClick={() => handleDownload(artifact)}
-          style={{ cursor: 'pointer' }}
+          onClick={runDownload}
+          disabled={isDownloading}
+          aria-label={isDownloading ? 'Downloading artifact' : 'Download artifact'}
+          style={{ cursor: isDownloading ? 'wait' : 'pointer' }}
         >
-          <span className="material-icons-outlined" style={{ fontSize: 18 }}>download</span>
+          {isDownloading ? (
+            <Spinner size={16} />
+          ) : (
+            <span className="material-icons-outlined" style={{ fontSize: 18 }}>download</span>
+          )}
         </IconButton>
       </Flex>
     </Flex>

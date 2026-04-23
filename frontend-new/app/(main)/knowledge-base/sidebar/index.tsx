@@ -477,6 +477,8 @@ function KBSidebarContent({
           onNavigateToConnector={(connectorTypeParam) =>
             router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
           }
+          connectorsHref={buildConnectorsUrl(isAdmin)}
+          buildConnectorHref={(param) => buildConnectorsUrl(isAdmin, param)}
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}

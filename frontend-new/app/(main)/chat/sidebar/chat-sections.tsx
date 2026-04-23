@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/chat/store';
@@ -9,7 +9,6 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
-import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSection } from './chat-section';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 
@@ -34,7 +33,6 @@ export const ChatSections = React.memo(function ChatSections({
 }: {
   onOpenMoreChats: (sectionType: 'shared' | 'your') => void;
 }) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams.get('conversationId');
   const { t } = useTranslation();
@@ -68,9 +66,8 @@ export const ChatSections = React.memo(function ChatSections({
   const isMobile = useIsMobile();
 
   const handleNewChat = () => dispatch('newChat');
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = () => {
     if (isMobile) closeMobileSidebar();
-    router.push(buildChatHref({ conversationId: id }));
   };
 
   // Overflow detection
