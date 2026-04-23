@@ -53,10 +53,13 @@ if _opik_api_key and _opik_workspace:
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
 NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
+AGENT_ID_PLACEHOLDER = "agentIdPlaceholder"
 ORCHESTRATION_MODE_LINEAR = "linear"
 ORCHESTRATION_MODE_CONDITIONAL = "conditional"
 CONDITION_NODE_TYPE = "conditional-check"
 CHAT_RESPONSE_NODE_TYPE = "chat-response"
+AGENT_REQUEST_ERROR_DETAIL = "Failed to process agent request"
+AGENT_STREAM_ERROR_MESSAGE = "Failed to stream agent response"
 
 # ============================================================================
 # Request Models
@@ -1248,7 +1251,7 @@ def _extract_text_from_response_data(response_data: Any) -> str:
     if isinstance(response_data, JSONResponse):
         try:
             payload = json.loads(response_data.body.decode()) if hasattr(response_data, "body") else {}
-        except Exception:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             payload = {}
         if isinstance(payload, dict):
             return str(payload.get("answer") or payload.get("response") or payload.get("message") or "")
@@ -1417,7 +1420,7 @@ def _derive_filters_from_knowledge(
                 kb_record_groups.extend(filters_data.get("recordGroups", []) or [])
             filters["kb"] = kb_record_groups
 
-    if not filters.get("kb") and agent_id != "agentIdPlaceholder":
+    if not filters.get("kb") and agent_id != AGENT_ID_PLACEHOLDER:
         filters["kb"] = [NO_KB_SELECTED_FILTER]
 
     return filters
@@ -2396,7 +2399,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error in askAI: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=AGENT_REQUEST_ERROR_DETAIL) from e
 
 
 async def stream_response(
@@ -2464,7 +2467,7 @@ async def stream_response(
         logger.info(f"Streaming completed. Total chunks: {chunk_count}")
     except Exception as e:
         logger.error(f"Error in stream_response: {e}", exc_info=True)
-        yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
+        yield f"event: error\ndata: {json.dumps({'message': AGENT_STREAM_ERROR_MESSAGE, 'type': 'stream_error'})}\n\n"
 
 
 @router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -2509,7 +2512,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error in askAIStream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=AGENT_REQUEST_ERROR_DETAIL) from e
 
 
 # ============================================================================
@@ -4115,7 +4118,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
-        if agent_id == "agentIdPlaceholder":
+        if agent_id == AGENT_ID_PLACEHOLDER:
             toolset_registry = getattr(request.app.state, "toolset_registry", None)
             agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
@@ -4425,7 +4428,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
         # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
         # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
-        if not filters.get("kb") and agent_id != "agentIdPlaceholder":
+        if not filters.get("kb") and agent_id != AGENT_ID_PLACEHOLDER:
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 
         agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)

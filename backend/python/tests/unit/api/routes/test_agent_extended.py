@@ -1133,6 +1133,13 @@ class TestAgentStepHelpers:
         response.body = b"not-json"
         assert _extract_text_from_response_data(response) == ""
 
+    def test_extract_text_from_response_data_handles_invalid_utf8_body(self):
+        from app.api.routes.agent import _extract_text_from_response_data
+
+        response = JSONResponse(content={"message": "ok"})
+        response.body = b"\xff"
+        assert _extract_text_from_response_data(response) == ""
+
     @pytest.mark.parametrize(
         ("model_value", "expected"),
         [
