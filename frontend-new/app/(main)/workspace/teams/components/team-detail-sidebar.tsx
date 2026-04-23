@@ -98,10 +98,10 @@ export function TeamDetailSidebar({
     [detailTeam]
   );
 
-  // Resolve full member ID set for the team (not only current paginated page)
-  // so Add Members never shows users that are already in the team.
+  // Resolve full member ID set only when Add Members is relevant (edit mode),
+  // so we avoid extra fetches while just viewing the panel.
   useEffect(() => {
-    if (!isDetailPanelOpen || !detailTeam) {
+    if (!isDetailPanelOpen || !detailTeam || !isEditMode) {
       setExistingMemberIds(new Set());
       return;
     }
@@ -142,7 +142,7 @@ export function TeamDetailSidebar({
     return () => {
       cancelled = true;
     };
-  }, [isDetailPanelOpen, detailTeam]);
+  }, [isDetailPanelOpen, detailTeam, isEditMode]);
 
   // Resolve "Created By" by graph UUID from users API.
   useEffect(() => {
