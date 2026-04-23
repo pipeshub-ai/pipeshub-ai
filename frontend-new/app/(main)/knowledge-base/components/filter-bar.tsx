@@ -135,7 +135,6 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     }));
   }, [availableFilters]);
 
-  // Connector instances (All Records) — options from API; IDs may also come from URL/deep links
   const connectorOptions = useMemo(() => {
     if (!availableFilters?.connectors) return [];
     return availableFilters.connectors.map((opt) => ({
@@ -160,7 +159,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const handleSourceChange = (values: string[]) => updateFilter({ origins: values as NodeOrigin[] });
 
   const handleConnectorChange = (values: string[]) =>
-    updateFilter({ connectorIds: values.length > 0 ? values : undefined });
+    updateFilter({ connectorIds: values });
 
   const handleSizeChange = (values: string[]) => updateFilter({ sizeRanges: values as SizeRange[] });
 

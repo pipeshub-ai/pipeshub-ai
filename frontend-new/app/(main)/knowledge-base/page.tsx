@@ -241,10 +241,10 @@ function KnowledgeBasePageContent() {
     if (hasHydratedFromUrl.current) return;
 
     const qs = searchParams.toString();
-    const path = typeof window !== 'undefined' ? window.location.pathname : '';
-    const locationSearch = typeof window !== 'undefined' ? window.location.search.replace(/^\?/, '') : '';
-    const onKbPath = path.includes('knowledge-base');
-    if (onKbPath && !qs && locationSearch.length > 0) {
+    const locationSearch =
+      typeof window !== 'undefined' ? window.location.search.replace(/^\?/, '') : '';
+    // Next can mount with empty useSearchParams while location already has the query — wait one tick.
+    if (!qs && locationSearch.length > 0) {
       return;
     }
 
@@ -332,7 +332,6 @@ function KnowledgeBasePageContent() {
     filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
     allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
-    searchParams,
   ]);
 
   // Check if any filters are active (for empty state messaging)
