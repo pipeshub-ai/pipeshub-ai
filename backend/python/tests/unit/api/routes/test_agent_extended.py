@@ -38,6 +38,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 
 # ============================================================================
