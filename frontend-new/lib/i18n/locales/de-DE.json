@@ -219,7 +219,8 @@
     "searchPlaceholder": "Suchen...",
     "required": "Dieses Feld ist erforderlich",
     "invalidEmail": "Ungültige E-Mail-Adresse",
-    "invalidUrl": "Ungültige URL"
+    "invalidUrl": "Ungültige URL",
+    "name": "Name"
   },
   "dialog": {
     "newFolder": "Neuer Sammlungsordner",
@@ -1610,6 +1611,7 @@
       "deleting": "Wird gelöscht...",
       "saving": "Wird gespeichert...",
       "deleteConfirm": "Löschen bestätigen",
+      "deleteBot": "Bot löschen",
       "typeLabels": {
         "slack": "Slack-Bot",
         "discord": "Discord-Bot",

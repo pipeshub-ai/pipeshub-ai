@@ -219,7 +219,8 @@
     "searchPlaceholder": "Search...",
     "required": "This field is required",
     "invalidEmail": "Invalid email address",
-    "invalidUrl": "Invalid URL"
+    "invalidUrl": "Invalid URL",
+    "name": "Name"
   },
   "dialog": {
     "newFolder": "New Collection Folder",
@@ -1609,6 +1610,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "deleteBot": "Delete Bot",
       "typeLabels": {
         "slack": "Slack Bot",
         "discord": "Discord Bot",
