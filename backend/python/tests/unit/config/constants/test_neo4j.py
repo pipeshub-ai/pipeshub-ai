@@ -49,6 +49,8 @@ class TestNeo4jLabel:
         assert Neo4jLabel.LINKS.value == "Link"
         assert Neo4jLabel.PROJECTS.value == "Project"
         assert Neo4jLabel.ARTIFACTS.value == "Artifact"
+        assert Neo4jLabel.SQL_TABLES.value == "SqlTable"
+        assert Neo4jLabel.SQL_VIEWS.value == "SqlView"
 
     def test_user_labels(self) -> None:
         assert Neo4jLabel.USERS.value == "User"
@@ -91,8 +93,12 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_TOOLSETS.value == "AgentToolset"
         assert Neo4jLabel.AGENT_TOOLS.value == "AgentTool"
 
+    def test_sales_labels(self) -> None:
+        assert Neo4jLabel.DEALS.value == "Deals"
+        assert Neo4jLabel.PRODUCTS.value == "Products"
+
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 41
+        assert len(Neo4jLabel) == 43
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +150,8 @@ class TestCollectionToLabelMapping:
             (CollectionNames.MEETINGS.value, Neo4jLabel.MEETINGS.value),
             (CollectionNames.LINKS.value, Neo4jLabel.LINKS.value),
             (CollectionNames.PROJECTS.value, Neo4jLabel.PROJECTS.value),
+            (CollectionNames.SQL_TABLES.value, Neo4jLabel.SQL_TABLES.value),
+            (CollectionNames.SQL_VIEWS.value, Neo4jLabel.SQL_VIEWS.value),
             (CollectionNames.USERS.value, Neo4jLabel.USERS.value),
             (CollectionNames.GROUPS.value, Neo4jLabel.GROUPS.value),
             (CollectionNames.PEOPLE.value, Neo4jLabel.PEOPLE.value),
@@ -154,6 +162,8 @@ class TestCollectionToLabelMapping:
             (CollectionNames.DRIVES.value, Neo4jLabel.DRIVES.value),
             (CollectionNames.PAGE_TOKENS.value, Neo4jLabel.PAGE_TOKENS.value),
             (CollectionNames.BLOCKS.value, Neo4jLabel.BLOCKS.value),
+            (CollectionNames.DEALS.value, Neo4jLabel.DEALS.value),
+            (CollectionNames.PRODUCTS.value, Neo4jLabel.PRODUCTS.value),
             ("tools", Neo4jLabel.TOOLS.value),
             ("tools_ctags", Neo4jLabel.TOOLS_CTAGS.value),
             (CollectionNames.DEPARTMENTS.value, Neo4jLabel.DEPARTMENTS.value),
@@ -178,7 +188,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 39
+        assert len(COLLECTION_TO_LABEL) == 41
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():
@@ -208,6 +218,14 @@ class TestEdgeCollectionToRelationshipMapping:
             (CollectionNames.AGENT_HAS_KNOWLEDGE.value, Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value),
             (CollectionNames.AGENT_HAS_TOOLSET.value, Neo4jRelationshipType.AGENT_HAS_TOOLSET.value),
             (CollectionNames.TOOLSET_HAS_TOOL.value, Neo4jRelationshipType.TOOLSET_HAS_TOOL.value),
+            (CollectionNames.SOLD_IN.value, Neo4jRelationshipType.SOLD_IN.value),
+            (CollectionNames.DEAL_OF.value, Neo4jRelationshipType.DEAL_OF.value),
+            (CollectionNames.MEMBER_OF.value, Neo4jRelationshipType.MEMBER_OF.value),
+            (CollectionNames.PROSPECT.value, Neo4jRelationshipType.PROSPECT.value),
+            (CollectionNames.CUSTOMER.value, Neo4jRelationshipType.CUSTOMER.value),
+            (CollectionNames.LEAD.value, Neo4jRelationshipType.LEAD.value),
+            (CollectionNames.CONTACT.value, Neo4jRelationshipType.CONTACT.value),
+            (CollectionNames.DEAL_INFO.value, Neo4jRelationshipType.DEAL_INFO.value),
         ]
         for arango_key, neo4j_rel in expected_pairs:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel

@@ -10,7 +10,7 @@ MariaDB Connector/Python: https://mariadb.com/docs/server/connect/programming-la
 import logging
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
@@ -347,7 +347,11 @@ class MariaDBConfig(BaseModel):
     host: str = Field(..., description="MariaDB server host")
     port: int = Field(default=3306, description="MariaDB server port", ge=1, le=65535)
     database: Optional[str] = Field(default=None, description="Database name to connect to (optional)")
-    user: str = Field(..., description="Username for authentication")
+    user: str = Field(
+        ...,
+        description="Username for authentication",
+        validation_alias=AliasChoices("username", "user"),
+    )
     password: str = Field(default="", description="Password for authentication")
     timeout: int = Field(default=30, description="Connection timeout in seconds", gt=0)
     ssl_ca: Optional[str] = Field(
@@ -375,7 +379,11 @@ class AuthConfig(BaseModel):
     host: str = Field(..., description="MariaDB server host")
     port: int = Field(default=3306, description="MariaDB server port")
     database: Optional[str] = Field(default=None, description="Database name (optional)")
-    user: str = Field(..., description="Username")
+    user: str = Field(
+        ...,
+        description="Username",
+        validation_alias=AliasChoices("username", "user"),
+    )
     password: str = Field(default="", description="Password")
     ssl_ca: Optional[str] = Field(default=None, description="Path to CA certificate")
 

@@ -80,6 +80,7 @@ def _make_tx_store():
     tx_store.batch_upsert_record_groups = AsyncMock()
     tx_store.create_record_group_relation = AsyncMock()
     tx_store.create_record_relation = AsyncMock()
+    tx_store.batch_upsert_record_relations = AsyncMock()
     tx_store.get_record_by_key = AsyncMock(return_value=None)
     tx_store.batch_upsert_nodes = AsyncMock()
     tx_store.get_user_by_email = AsyncMock(return_value=None)
@@ -1360,7 +1361,7 @@ class TestHandleRelatedExternalRecords:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.create_record_relation.assert_awaited()
+        tx_store.batch_upsert_record_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_creates_placeholder_for_missing_related_record(self):

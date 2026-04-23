@@ -301,6 +301,7 @@ class TestBlobStorageApply:
     async def test_apply_calls_save_record(self):
         """apply should call save_record_to_storage and store_virtual_record_mapping."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id-123", 4096))
         bs.store_virtual_record_mapping = AsyncMock()
 
@@ -320,6 +321,7 @@ class TestBlobStorageApply:
     async def test_apply_no_document_id_skips_mapping(self):
         """When save_record_to_storage returns None doc id, skip mapping."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=(None, None))
         bs.store_virtual_record_mapping = AsyncMock()
 
@@ -351,6 +353,7 @@ class TestBlobStorageApply:
     async def test_apply_propagates_save_error(self):
         """If save_record_to_storage raises, apply should propagate."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(side_effect=Exception("upload failed"))
 
         record = _make_record_mock()
@@ -460,6 +463,7 @@ class TestBlobStorageApplyDeep:
     async def test_apply_full_flow_calls_model_dump(self):
         """apply should call model_dump on the record and clean empty values."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 2048))
         bs.store_virtual_record_mapping = AsyncMock()
 
@@ -486,6 +490,7 @@ class TestBlobStorageApplyDeep:
     async def test_apply_returns_context_with_original_record(self):
         """apply should set ctx.record to the original record object."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 100))
         bs.store_virtual_record_mapping = AsyncMock()
 
@@ -582,9 +587,10 @@ class TestGetRecordFromStorage:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=(None, None))
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
 
         result = await bs.get_record_from_storage("vr-1", "org-1")
         assert result is None
@@ -597,9 +603,12 @@ class TestGetRecordFromStorage:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=("doc-123", 500))
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
+        )
 
         record_data = {"id": "rec-1", "content": "hello"}
         mock_resp = AsyncMock()
@@ -625,9 +634,12 @@ class TestGetRecordFromStorage:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=("doc-123", 500))
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
+        )
 
         mock_resp = AsyncMock()
         mock_resp.status = 404
@@ -874,9 +886,9 @@ class TestGetDocumentIdByVirtualRecordId:
         )
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id == "doc-1"
-        assert size == 2048
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] == "doc-1"
+        assert result["fileSizeBytes"] == 2048
 
     @pytest.mark.asyncio
     async def test_found_by_key_fallback(self):
@@ -887,9 +899,9 @@ class TestGetDocumentIdByVirtualRecordId:
         )
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id == "doc-2"
-        assert size == 1024
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] == "doc-2"
+        assert result["fileSizeBytes"] == 1024
 
     @pytest.mark.asyncio
     async def test_not_found_returns_none(self):
@@ -898,9 +910,8 @@ class TestGetDocumentIdByVirtualRecordId:
         graph_provider.get_document = AsyncMock(return_value=None)
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-missing")
-        assert doc_id is None
-        assert size is None
+        result = await bs.get_document_id_by_virtual_record_id("vr-missing")
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_no_graph_provider_raises(self):
@@ -918,9 +929,9 @@ class TestGetDocumentIdByVirtualRecordId:
         )
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        doc_id, size = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert doc_id is None
-        assert size is None
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] is None
+        assert result["fileSizeBytes"] == 2048
 
 
 # ===================================================================
@@ -1133,11 +1144,12 @@ class TestGetRecordFromStorageSignedUrl:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         # Small file size -> single download (not parallel)
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 100)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 100}
         )
 
         record_data = {"id": "rec-1", "content": "hello"}
@@ -1183,10 +1195,11 @@ class TestGetRecordFromStorageSignedUrl:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 500)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
 
         original_record = {"id": "rec-1", "data": "compressed content"}
@@ -1224,10 +1237,11 @@ class TestGetRecordFromStorageSignedUrl:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 500)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
 
         mock_resp = AsyncMock()
@@ -1443,6 +1457,7 @@ class TestBlobStorageApplyFullFlow:
     async def test_apply_cleans_block_containers(self):
         """apply should clean empty values from block_containers in dumped record."""
         bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 2048))
         bs.store_virtual_record_mapping = AsyncMock()
 

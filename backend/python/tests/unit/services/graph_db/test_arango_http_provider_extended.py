@@ -219,6 +219,22 @@ class TestCreateTypedRecordFromArango:
         provider._create_typed_record_from_arango(record_dict, type_doc)
         mock_project.from_arango_record.assert_called_once()
 
+    @patch("app.services.graph_db.arango.arango_http_provider.SQLTableRecord")
+    def test_sql_table_record_type(self, mock_sql_table, provider):
+        mock_sql_table.from_arango_record = MagicMock(return_value=MagicMock())
+        record_dict = {"_key": "r1", "recordType": "SQL_TABLE", "orgId": "org1"}
+        type_doc = {"_key": "t1"}
+        provider._create_typed_record_from_arango(record_dict, type_doc)
+        mock_sql_table.from_arango_record.assert_called_once()
+
+    @patch("app.services.graph_db.arango.arango_http_provider.SQLViewRecord")
+    def test_sql_view_record_type(self, mock_sql_view, provider):
+        mock_sql_view.from_arango_record = MagicMock(return_value=MagicMock())
+        record_dict = {"_key": "r1", "recordType": "SQL_VIEW", "orgId": "org1"}
+        type_doc = {"_key": "t1"}
+        provider._create_typed_record_from_arango(record_dict, type_doc)
+        mock_sql_view.from_arango_record.assert_called_once()
+
     def test_typed_record_exception_falls_back(self, provider):
         """If from_arango_record raises, fall back to base Record."""
         record_dict = {
@@ -1019,6 +1035,40 @@ class TestBatchCreateEntityRelations:
         assert result is True
 
 
+class TestBatchUpsertRecordRelations:
+    @pytest.mark.asyncio
+    async def test_empty_edges(self, connected_provider):
+        result = await connected_provider.batch_upsert_record_relations([])
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "e1"}])
+        edges = [{
+            "from_id": "r1",
+            "from_collection": "records",
+            "to_id": "r2",
+            "to_collection": "records",
+            "relationshipType": "FOREIGN_KEY",
+            "constraintName": "fk_orders_customers",
+        }]
+        result = await connected_provider.batch_upsert_record_relations(edges)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        edges = [{
+            "from_id": "r1",
+            "from_collection": "records",
+            "to_id": "r2",
+            "to_collection": "records",
+            "relationshipType": "FOREIGN_KEY",
+        }]
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_upsert_record_relations(edges)
+
+
 class TestGetEdge:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider):
@@ -1048,6 +1098,30 @@ class TestDeleteEdge:
         connected_provider.http_client.delete_edge = AsyncMock(return_value=True)
         result = await connected_provider.delete_edge("u1", "users", "r1", "records", "permission")
         assert result is True
+
+
+class TestBatchDeleteEdges:
+    @pytest.mark.asyncio
+    async def test_empty_edges(self, connected_provider):
+        result = await connected_provider.batch_delete_edges([], "permission")
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[1, 1])
+        edges = [
+            {"from_id": "u1", "from_collection": "users", "to_id": "r1", "to_collection": "records"},
+            {"from_id": "u1", "from_collection": "users", "to_id": "r2", "to_collection": "records"},
+        ]
+        result = await connected_provider.batch_delete_edges(edges, "permission")
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        edges = [{"from_id": "u1", "from_collection": "users", "to_id": "r1", "to_collection": "records"}]
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_delete_edges(edges, "permission")
 
 
 class TestDeleteEdgesFrom:
@@ -1190,6 +1264,93 @@ class TestGetEdgesFromNode:
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_from": "u1", "_to": "r1"}])
         result = await connected_provider.get_edges_from_node("users/u1", "permission")
         assert len(result) == 1
+
+
+class TestGetEdgesFromNodeWithTargetName:
+    @pytest.mark.asyncio
+    async def test_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_from": "users/u1", "_to": "records/r1", "name": "Record 1"}]
+        )
+        result = await connected_provider.get_edges_from_node_with_target_name("users/u1", "permission")
+        assert len(result) == 1
+        assert result[0]["name"] == "Record 1"
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        result = await connected_provider.get_edges_from_node_with_target_name("users/u1", "permission")
+        assert result == []
+
+
+class TestRecordRelationHelpers:
+    @pytest.mark.asyncio
+    async def test_get_child_record_ids_by_relation_type_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[
+            {
+                "record_id": "child1",
+                "childTable": "orders",
+                "sourceColumn": "customer_id",
+                "targetColumn": "id",
+            }
+        ])
+        result = await connected_provider.get_child_record_ids_by_relation_type(
+            "parent1", "FOREIGN_KEY"
+        )
+        assert len(result) == 1
+        assert result[0]["record_id"] == "child1"
+
+    @pytest.mark.asyncio
+    async def test_get_child_record_ids_by_relation_type_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        result = await connected_provider.get_child_record_ids_by_relation_type(
+            "parent1", "FOREIGN_KEY"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_parent_record_ids_by_relation_type_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[
+            {
+                "record_id": "parent1",
+                "parentTable": "customers",
+                "sourceColumn": "customer_id",
+                "targetColumn": "id",
+            }
+        ])
+        result = await connected_provider.get_parent_record_ids_by_relation_type(
+            "child1", "FOREIGN_KEY"
+        )
+        assert len(result) == 1
+        assert result[0]["record_id"] == "parent1"
+
+    @pytest.mark.asyncio
+    async def test_get_parent_record_ids_by_relation_type_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        result = await connected_provider.get_parent_record_ids_by_relation_type(
+            "child1", "FOREIGN_KEY"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_virtual_record_ids_for_record_ids_empty_input(self, connected_provider):
+        result = await connected_provider.get_virtual_record_ids_for_record_ids([])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_virtual_record_ids_for_record_ids_success(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[
+            {"_key": "r1", "virtualRecordId": "v1"},
+            {"_key": "r2", "virtualRecordId": "v2"},
+        ])
+        result = await connected_provider.get_virtual_record_ids_for_record_ids(["r1", "r2"])
+        assert result == {"r1": "v1", "r2": "v2"}
+
+    @pytest.mark.asyncio
+    async def test_get_virtual_record_ids_for_record_ids_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        result = await connected_provider.get_virtual_record_ids_for_record_ids(["r1"])
+        assert result == {}
 
 
 # ---------------------------------------------------------------------------

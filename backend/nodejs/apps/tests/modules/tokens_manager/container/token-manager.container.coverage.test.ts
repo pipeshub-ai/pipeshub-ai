@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { TokenManagerContainer } from '../../../../src/modules/tokens_manager/container/token-manager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import { MongoService } from '../../../../src/libs/services/mongo.service'
 import * as config from '../../../../src/modules/tokens_manager/config/config'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
@@ -45,9 +46,12 @@ describe('TokenManagerContainer - coverage', () => {
       }
       sinon.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
 
-      // Stub MongoService and Kafka producer
-      const mongoose = require('mongoose')
-      sinon.stub(mongoose, 'connect').resolves()
+      // Stub MongoService.initialize directly — more reliable than stubbing
+      // `mongoose.connect`, which can be left un-intercepted depending on how
+      // the mongoose module's default export is resolved at require-time.
+      // Without this, the real connect attempt hangs past the test timeout in CI.
+      sinon.stub(MongoService.prototype, 'initialize').resolves()
+      sinon.stub(MongoService.prototype, 'isConnected').returns(false)
 
       const { TokenEventProducer } = require('../../../../src/modules/tokens_manager/services/token-event.producer')
       sinon.stub(TokenEventProducer.prototype, 'start').resolves()

@@ -59,6 +59,8 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    SQLTableRecord,
+    SQLViewRecord,
 )
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
@@ -1251,6 +1253,84 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete edge failed: {str(e)}")
             raise
 
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """Batch delete edges between node pairs."""
+        try:
+            if not edges:
+                return 0
+
+            relationship_type = edge_collection_to_relationship(collection)
+
+            edge_data = []
+            for edge in edges:
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_key = self._parse_arango_id(edge["_from"])
+                    to_collection, to_key = self._parse_arango_id(edge["_to"])
+                elif "from_id" in edge and "to_id" in edge:
+                    from_key = edge["from_id"]
+                    to_key = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(
+                        f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}"
+                    )
+                    continue
+
+                if not from_key or not to_key or not from_collection or not to_collection:
+                    self.logger.warning(
+                        f"Skipping invalid edge (missing required fields): {edge}"
+                    )
+                    continue
+
+                edge_data.append(
+                    {
+                        "from_id": from_key,
+                        "to_id": to_key,
+                        "from_label": collection_to_label(from_collection),
+                        "to_label": collection_to_label(to_collection),
+                    }
+                )
+
+            if not edge_data:
+                return 0
+
+            from collections import defaultdict
+
+            grouped_edges = defaultdict(list)
+            for edge in edge_data:
+                key = (edge["from_label"], edge["to_label"])
+                grouped_edges[key].append(
+                    {"from_id": edge["from_id"], "to_id": edge["to_id"]}
+                )
+
+            total_deleted = 0
+            for (from_label, to_label), group_edges in grouped_edges.items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: edge.to_id}})
+                DELETE r
+                RETURN count(r) AS deleted
+                """
+
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction,
+                )
+                total_deleted += results[0]["deleted"] if results else 0
+
+            return total_deleted
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch delete edges failed: {str(e)}")
+            raise
+
     async def delete_edges_from(
         self,
         from_id: str,
@@ -2086,6 +2166,10 @@ class Neo4jProvider(IGraphDBProvider):
                 return DealRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.ARTIFACTS.value:
                 return ArtifactRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SQL_TABLES.value:
+                return SQLTableRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SQL_VIEWS.value:
+                return SQLViewRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -4420,6 +4504,208 @@ class Neo4jProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def batch_upsert_record_relations(
+        self,
+        edges: list[dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Uses MERGE to avoid duplicates - matches on from, to, relationshipType, and constraintName.
+        This allows multiple edges between the same record pair with different
+        relation types (e.g., FOREIGN_KEY and DEPENDS_ON) or different constraint names
+        (e.g., two FKs from the same table to the same target table).
+
+        Args:
+            edges: List of edge documents with from_id, to_id, relationshipType, and optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("Batch upserting record relation edges")
+
+            edge_data = []
+            for edge in edges:
+                from_key = edge.get("from_id") or edge.get("_from", "").split("/")[-1]
+                to_key = edge.get("to_id") or edge.get("_to", "").split("/")[-1]
+                relationship_type = edge.get("relationshipType", "")
+                props = {k: v for k, v in edge.items() if k not in [
+                    "from_id", "to_id", "from_collection", "to_collection", "_from", "_to"
+                ]}
+                constraint_name = edge.get("constraintName") or ""
+                edge_data.append({
+                    "from_key": from_key,
+                    "to_key": to_key,
+                    "relationshipType": relationship_type,
+                    "constraintName": constraint_name,
+                    "props": props
+                })
+
+            query = """
+            UNWIND $edges AS edge
+            MATCH (from:Record {id: edge.from_key})
+            MATCH (to:Record {id: edge.to_key})
+            MERGE (from)-[r:RECORD_RELATION {relationshipType: edge.relationshipType, constraintName: edge.constraintName}]->(to)
+            SET r += edge.props
+            RETURN count(r) AS upserted
+            """
+
+            await self.client.execute_query(
+                query,
+                parameters={"edges": edge_data},
+                txn_id=transaction
+            )
+
+            self.logger.info(f"Successfully upserted {len(edge_data)} record relation edges.")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Batch record relation upsert failed: {str(e)}")
+            raise
+
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record IDs of all records that have an edge pointing TO this record
+        with the given relation type.
+
+        Args:
+            record_id: Record ID
+            relation_type: Edge relation type
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata.
+        """
+        try:
+            query = """
+            MATCH (child:Record)-[r:RECORD_RELATION]->(parent:Record {id: $record_id})
+            WHERE r.relationshipType = $relation_type
+            RETURN child.id AS record_id,
+                   COALESCE(r.childTableName, '') AS childTable,
+                   COALESCE(r.sourceColumn, '') AS sourceColumn,
+                   COALESCE(r.targetColumn, '') AS targetColumn
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+
+            output = []
+            for record in results:
+                output.append({
+                    "record_id": record["record_id"],
+                    "childTable": record.get("childTable", ""),
+                    "sourceColumn": record.get("sourceColumn", ""),
+                    "targetColumn": record.get("targetColumn", ""),
+                })
+            return output
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get child record IDs by relation type for record %s: %s",
+                record_id, str(e),
+            )
+            return []
+
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: Optional[str] = None
+    ) -> dict[str, str]:
+        """
+        Resolve record IDs to virtualRecordIds. Used to fetch blob for child records by id.
+
+        Args:
+            record_ids: List of record IDs
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict mapping record_id -> virtual_record_id
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = """
+            MATCH (r:Record)
+            WHERE r.id IN $record_ids AND r.virtualRecordId IS NOT NULL
+            RETURN r.id AS record_id, r.virtualRecordId AS virtualRecordId
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_ids": list(record_ids)},
+                txn_id=transaction
+            )
+            return {row["record_id"]: row["virtualRecordId"] for row in (results or [])}
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get virtual_record_ids for record_ids: %s", str(e)
+            )
+            return {}
+
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record IDs of all records that this record has an edge pointing TO
+        with the given relation type.
+
+        Args:
+            record_id: Record ID
+            relation_type: Edge relation type
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata.
+        """
+        try:
+            query = """
+            MATCH (child:Record {id: $record_id})-[r:RECORD_RELATION]->(parent:Record)
+            WHERE r.relationshipType = $relation_type
+            RETURN parent.id AS record_id,
+                   COALESCE(r.parentTableName, '') AS parentTable,
+                   COALESCE(r.sourceColumn, '') AS sourceColumn,
+                   COALESCE(r.targetColumn, '') AS targetColumn
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+
+            output = []
+            for record in results:
+                output.append({
+                    "record_id": record["record_id"],
+                    "parentTable": record.get("parentTable", ""),
+                    "sourceColumn": record.get("sourceColumn", ""),
+                    "targetColumn": record.get("targetColumn", ""),
+                })
+            return output
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get parent record IDs by relation type for record %s: %s",
+                record_id, str(e),
+            )
+            return []
+
     async def batch_upsert_record_groups(
         self,
         record_groups: list[RecordGroup],
@@ -6291,11 +6577,11 @@ class Neo4jProvider(IGraphDBProvider):
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            List[Dict]: List of related records with messageId, id/key, and relationType
+            List[Dict]: List of related records with messageId, id/key, and relationshipType
         """
         try:
             self.logger.info(
-                f"🚀 Getting related records for {record_id} with relation type {relation_type}"
+                f"🚀 Getting related records for {record_id} with relationship type {relation_type}"
             )
 
             # Map edge collection to Neo4j relationship type
@@ -6303,12 +6589,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             query = f"""
             MATCH (source:Record {{id: $record_id}})-[r:{rel_type}]->(target:Record)
-            WHERE r.relationType = $relation_type
+            WHERE r.relationshipType = $relation_type
             RETURN {{
                 messageId: target.externalRecordId,
                 _key: target.id,
                 id: target.id,
-                relationType: r.relationType
+                relationshipType: r.relationshipType
             }} AS result
             """
 
@@ -12126,7 +12412,7 @@ class Neo4jProvider(IGraphDBProvider):
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
-                # Determine target collection from labels
+                # Determine target collection from labels using reverse of COLLECTION_TO_LABEL
                 target_collection = "records"  # Default
                 for label in target_labels:
                     # Use reverse mapping to get collection from label
@@ -12144,6 +12430,77 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
             return []
+
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Args:
+            node_id: Source node ID (e.g., "groups/123")
+            edge_collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of edges
+        """
+        try:
+            # Parse node_id to get collection and key
+            if "/" in node_id:
+                collection, key = node_id.split("/", 1)
+            else:
+                # Try to determine collection from context
+                collection = "records"  # Default fallback
+                key = node_id
+
+            label = collection_to_label(collection)
+            rel_type = self._get_relationship_type(edge_collection)
+
+            query = f"""
+            MATCH (source:{label} {{id: $key}})-[r:{rel_type}]->(target)
+                 RETURN properties(r) AS r, labels(target) AS target_labels, target.id AS target_id,
+                     coalesce(target.name, target.departmentName, target.recordName, target.groupName, target.id) AS target_name
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"key": key},
+                txn_id=transaction
+            )
+
+            # Create reverse mapping from label to collection
+            label_to_collection = {v: k for k, v in COLLECTION_TO_LABEL.items()}
+
+            edges = []
+            for result in results:
+                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                target_labels = result.get("target_labels", [])
+                target_id = result.get("target_id")
+                target_name = result.get("target_name")
+
+                # Determine target collection from labels using reverse of COLLECTION_TO_LABEL
+                target_collection = "records"  # Default
+                for label in target_labels:
+                    # Use reverse mapping to get collection from label
+                    if label in label_to_collection:
+                        target_collection = label_to_collection[label]
+                        break
+
+                # Convert to ArangoDB edge format
+                edge_dict["_from"] = node_id
+                edge_dict["_to"] = f"{target_collection}/{target_id}"
+                edge_dict["name"] = target_name
+                edges.append(edge_dict)
+            return edges
+
+        except Exception as e:
+            self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            return []
+
 
     # ==================== Missing Abstract Methods Implementation ====================
 

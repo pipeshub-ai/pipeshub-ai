@@ -906,3 +906,421 @@ class TestNormalizeCitationsAndChunksForAgent:
             answer, docs, records=None
         )
         assert len(citations) == 1
+
+
+# ---------------------------------------------------------------------------
+# Added tests to raise coverage
+# ---------------------------------------------------------------------------
+
+from app.utils.citations import _resolve_ref, _safe_stringify_content  # noqa: E402
+
+
+class TestResolveRef:
+    def test_ref_resolved_via_mapping(self):
+        """Cover line 72 — tiny ref present in mapping returns the full URL."""
+        mapping = {"ref1": "http://full/url#blockIndex=0"}
+        assert _resolve_ref("ref1", mapping) == "http://full/url#blockIndex=0"
+
+    def test_ref_not_in_mapping_returns_target(self):
+        assert _resolve_ref("ref99", {"ref1": "x"}) == "ref99"
+
+    def test_none_mapping_returns_target(self):
+        assert _resolve_ref("ref1", None) == "ref1"
+
+
+class TestSafeStringifyContent:
+    def test_int_value(self):
+        assert _safe_stringify_content(123) == "123"
+
+    def test_none_value(self):
+        assert _safe_stringify_content(None) == "None"
+
+    def test_exception_returns_empty_string(self):
+        """Cover lines 118-120 — objects whose __str__ raises are handled gracefully."""
+
+        class BadStr:
+            def __str__(self):
+                raise RuntimeError("boom")
+
+        assert _safe_stringify_content(BadStr()) == ""
+
+
+class TestIsUrlResolvableExtra:
+    def test_resolved_via_table_child_block_index(self):
+        """Cover lines 145-151 — URL resolves through TABLE group's child block_index."""
+        url = _url(REC1, 7)
+        table_doc = {
+            "metadata": {"recordId": REC1},
+            "block_index": 4,
+            "block_type": GroupType.TABLE.value,
+            "content": ("summary", [{"block_index": 7}]),
+        }
+        assert _is_url_resolvable_via_records(url, [], [table_doc]) is True
+
+    def test_table_child_block_index_mismatch_not_resolvable(self):
+        url = _url(REC1, 7)
+        table_doc = {
+            "metadata": {"recordId": REC1},
+            "block_index": 4,
+            "block_type": GroupType.TABLE.value,
+            "content": ("summary", [{"block_index": 1}]),
+        }
+        assert _is_url_resolvable_via_records(url, [], [table_doc]) is False
+
+    def test_table_child_results_not_list_ignored(self):
+        url = _url(REC1, 7)
+        table_doc = {
+            "metadata": {"recordId": REC1},
+            "block_index": 4,
+            "block_type": GroupType.TABLE.value,
+            "content": ("summary", "not a list"),
+        }
+        assert _is_url_resolvable_via_records(url, [], [table_doc]) is False
+
+    def test_resolved_via_virtual_record_id_to_result(self):
+        """Cover lines 160-164 — resolution through virtual_record_id_to_result map."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr-xyz": {
+                "id": REC1,
+                "block_containers": {"blocks": [{"type": "text"}]},
+            }
+        }
+        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is True
+
+    def test_virtual_record_id_map_out_of_range_not_resolvable(self):
+        url = _url(REC1, 5)
+        vrid_map = {
+            "vr-xyz": {
+                "id": REC1,
+                "block_containers": {"blocks": [{"type": "text"}]},
+            }
+        }
+        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is False
+
+    def test_virtual_record_id_map_none_entry_skipped(self):
+        url = _url(REC1, 0)
+        vrid_map = {"vr-xyz": None}
+        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is False
+
+
+class TestDetectHallucinatedTinyRefs:
+    """Cover lines 204-206 — tiny ref detection with ref_to_url map."""
+
+    def test_tiny_ref_resolved_via_mapping(self):
+        url = _url(REC1, 0)
+        text = "See [1](ref1)."
+        doc = {"metadata": {"recordId": REC1}, "block_index": 0}
+        result = detect_hallucinated_citation_urls(
+            text,
+            flattened_final_results=[doc],
+            ref_to_url={"ref1": url},
+        )
+        # ref1 is in ref_to_url, so it is NOT hallucinated.
+        assert result == []
+
+    def test_tiny_ref_missing_from_mapping_is_hallucinated(self):
+        text = "See [1](ref42)."
+        result = detect_hallucinated_citation_urls(
+            text, ref_to_url={"ref1": "something"}
+        )
+        assert "ref42" in result
+
+    def test_tiny_ref_without_mapping_is_hallucinated(self):
+        text = "See [1](ref1)."
+        result = detect_hallucinated_citation_urls(text)
+        assert "ref1" in result
+
+
+class TestNormalizeCitationsExtra:
+    """Additional tests raising branch coverage in normalize_citations_and_chunks."""
+
+    def test_url_mapped_to_doc_with_empty_content_skipped(self):
+        """Cover line 298 — when stringified content is falsy, citation is skipped."""
+        url = _url(REC1, 0)
+        docs = [{
+            "virtual_record_id": REC1,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": url,
+            "content": "",
+            "metadata": {},
+        }]
+        answer = f"See [1]({url})."
+        result_text, citations = normalize_citations_and_chunks(answer, docs)
+        assert citations == []
+        # link is dropped because mapping is empty
+        assert "[1]" not in result_text
+
+    def test_record_fallback_table_row_with_empty_text_skipped(self):
+        """Cover line 327 — TABLE_ROW block whose text is empty is skipped."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.TABLE_ROW.value,
+                    "data": {"row_natural_language_text": ""},
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert citations == []
+
+    def test_record_fallback_image_empty_uri_skipped(self):
+        """Cover line 327 — IMAGE block without uri is skipped."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.IMAGE.value,
+                    "data": {"uri": ""},
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert citations == []
+
+    def test_tiny_ref_resolved_via_mapping(self):
+        """Tiny ref resolves to a full URL that maps to a doc."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "hello", block_web_url=url)]
+        answer = "Fact [1](ref1)."
+        result_text, citations = normalize_citations_and_chunks(
+            answer, docs, ref_to_url={"ref1": url}
+        )
+        # After renumbering, the rewritten markdown link should contain the full URL.
+        assert url in result_text
+        assert len(citations) == 1
+        assert citations[0]["content"] == "hello"
+
+
+class TestNormalizeAgentCitationsExtra:
+    """Additional tests raising branch coverage in the agent variant."""
+
+    def test_tuple_content_with_non_string_still_handled(self):
+        """Cover line 452 — non-string, non-tuple content goes through _safe_stringify_content."""
+        url = _url(REC1, 0)
+        docs = [{
+            "virtual_record_id": REC1,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": url,
+            "content": 98765,  # int → stringified
+            "metadata": {"origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org"},
+        }]
+        answer = f"See [1]({url})."
+        _, citations = normalize_citations_and_chunks_for_agent(answer, docs)
+        assert citations[0]["content"] == "98765"
+
+    def test_empty_content_in_matched_doc_skipped(self):
+        """Cover line 455 — doc with empty content is skipped."""
+        url = _url(REC1, 0)
+        docs = [{
+            "virtual_record_id": REC1,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": url,
+            "content": "",
+            "metadata": {},
+        }]
+        answer = f"See [1]({url})."
+        _, citations = normalize_citations_and_chunks_for_agent(answer, docs)
+        assert citations == []
+
+    def test_records_fallback_table_row_empty_text_skipped(self):
+        """Cover line 489 — TABLE_ROW record fallback with empty text is skipped."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.TABLE_ROW.value,
+                    "data": {"row_natural_language_text": ""},
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], records=[record]
+            )
+        assert citations == []
+
+    def test_records_fallback_image_empty_uri_skipped(self):
+        """Cover line 489 — IMAGE record fallback with empty uri is skipped."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.IMAGE.value,
+                    "data": {"uri": ""},
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], records=[record]
+            )
+        assert citations == []
+
+    def test_virtual_record_id_fallback_table_row_empty_text_skipped(self):
+        """Cover lines 520/522 — virtual_record_id fallback for TABLE_ROW with empty text."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{
+                        "type": BlockType.TABLE_ROW.value,
+                        "data": {"row_natural_language_text": ""},
+                        "index": 0,
+                    }]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], virtual_record_id_to_result=vrid_map
+            )
+        assert citations == []
+
+    def test_virtual_record_id_fallback_image_empty_uri_skipped(self):
+        """Cover line 524 — virtual_record_id fallback for IMAGE with empty uri."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{
+                        "type": BlockType.IMAGE.value,
+                        "data": {"uri": ""},
+                        "index": 0,
+                    }]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], virtual_record_id_to_result=vrid_map
+            )
+        assert citations == []
+
+    def test_virtual_record_id_fallback_non_image_type_resolves(self):
+        """Cover line 527 — virtual_record_id fallback succeeds for plain text blocks."""
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{
+                        "type": BlockType.TEXT.value,
+                        "data": "real text content",
+                        "index": 0,
+                    }]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], virtual_record_id_to_result=vrid_map
+            )
+        assert len(citations) == 1
+        assert citations[0]["content"] == "real text content"
+
+    def test_tiny_ref_path_with_ref_to_url(self):
+        """The agent variant should also resolve tiny refs."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "agent content", block_web_url=url)]
+        answer = "Fact [1](ref7)."
+        result_text, citations = normalize_citations_and_chunks_for_agent(
+            answer, docs, ref_to_url={"ref7": url}
+        )
+        assert url in result_text
+        assert len(citations) == 1
+        assert citations[0]["content"] == "agent content"
+
+
+class _TruthyButEmptyStr:
+    """Test double whose bool is True but str() returns empty."""
+
+    def __bool__(self):
+        return True
+
+    def __str__(self):
+        return ""
+
+
+class TestEmptyStringifiedContentSkip:
+    """Cover lines 330, 492, 527 — citation_content empty after stringification."""
+
+    def test_records_fallback_skipped_when_stringification_is_empty(self):
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": "text",
+                    "data": _TruthyButEmptyStr(),
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert citations == []
+
+    def test_agent_records_fallback_skipped_when_stringification_is_empty(self):
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": "text",
+                    "data": _TruthyButEmptyStr(),
+                    "index": 0,
+                }]
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], records=[record]
+            )
+        assert citations == []
+
+    def test_agent_virtual_fallback_skipped_when_stringification_is_empty(self):
+        url = _url(REC1, 0)
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [{
+                        "type": "text",
+                        "data": _TruthyButEmptyStr(),
+                        "index": 0,
+                    }]
+                },
+            }
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={}):
+            _, citations = normalize_citations_and_chunks_for_agent(
+                answer, [], virtual_record_id_to_result=vrid_map
+            )
+        assert citations == []

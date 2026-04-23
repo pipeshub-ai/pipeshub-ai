@@ -877,6 +877,33 @@ class TestGetAgentToolsDynamic:
         tool_names = [t.name for t in tools]
         assert "fetch_full_record" not in tool_names
 
+    @patch("app.modules.agents.qna.tool_system._global_tools_registry")
+    def test_no_sql_query_tool_even_with_config_service(self, mock_registry):
+        """Regression: get_agent_tools must NOT inject execute_sql_query even when
+        config_service is present. The SQL tool is a LangChain StructuredTool, not a
+        RegistryToolWrapper, and appending it here produced a downstream
+        'StructuredTool has no attribute registry_tool' warning during schema
+        conversion. The tool is added by get_agent_tools_with_schemas() instead.
+        """
+        from app.modules.agents.qna.tool_system import get_agent_tools
+
+        mock_tool = _make_registry_tool(
+            app_name="calculator",
+            metadata=SimpleNamespace(category="internal", is_internal=True),
+        )
+        mock_registry.get_all_tools.return_value = {"calculator.add": mock_tool}
+
+        state = {
+            "has_knowledge": False,
+            "virtual_record_id_to_result": {},
+            "config_service": MagicMock(),
+            "graph_provider": MagicMock(),
+            "org_id": "org-1",
+        }
+        tools = get_agent_tools(state)
+        tool_names = [getattr(t, "name", None) for t in tools]
+        assert "execute_sql_query" not in tool_names
+
 
 # ============================================================================
 # 16. get_agent_tools_with_schemas - schema conversion
@@ -1220,6 +1247,92 @@ class TestGetAgentToolsWithSchemasCoverage:
         ):
             tools = get_agent_tools_with_schemas(state)
             assert isinstance(tools, list)
+
+    @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
+    @patch("app.modules.agents.qna.tool_system._global_tools_registry")
+    def test_sql_query_tool_added_when_config_service_present(
+        self, mock_registry, mock_wrapper
+    ):
+        """execute_sql_query must be added exactly once by get_agent_tools_with_schemas
+        when config_service is present, and conversation_id + blob_store are forwarded
+        to create_execute_query_tool (the richer context that the removed get_agent_tools
+        path did not pass).
+        """
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        mock_tool = _make_registry_tool_cov(
+            app_name="calculator",
+            metadata=SimpleNamespace(category="internal", is_internal=True),
+            description="Calc",
+            parameters=[],
+        )
+        mock_registry.get_all_tools.return_value = {"calculator.add": mock_tool}
+
+        wrapper_instance = MagicMock()
+        wrapper_instance.name = "calculator.add"
+        wrapper_instance.description = "Calc"
+        wrapper_instance.registry_tool = mock_tool
+        mock_wrapper.return_value = wrapper_instance
+
+        config_service = MagicMock()
+        graph_provider = MagicMock()
+        blob_store = MagicMock()
+        state = _make_state(
+            config_service=config_service,
+            graph_provider=graph_provider,
+            org_id="org-1",
+            conversation_id="conv-1",
+            blob_store=blob_store,
+        )
+
+        fake_sql_tool = MagicMock(name="execute_sql_query_tool")
+        with patch(
+            "app.utils.execute_query.create_execute_query_tool",
+            return_value=fake_sql_tool,
+        ) as mock_create:
+            tools = get_agent_tools_with_schemas(state)
+
+        assert mock_create.call_count == 1
+        mock_create.assert_called_once_with(
+            config_service=config_service,
+            graph_provider=graph_provider,
+            org_id="org-1",
+            conversation_id="conv-1",
+            blob_store=blob_store,
+        )
+        assert fake_sql_tool in tools
+
+    @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
+    @patch("app.modules.agents.qna.tool_system._global_tools_registry")
+    def test_sql_query_tool_skipped_when_no_config_service(
+        self, mock_registry, mock_wrapper
+    ):
+        """Without config_service, execute_sql_query is not added and the factory
+        is never called (avoids importing execute_query needlessly)."""
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        mock_tool = _make_registry_tool_cov(
+            app_name="calculator",
+            metadata=SimpleNamespace(category="internal", is_internal=True),
+            description="Calc",
+            parameters=[],
+        )
+        mock_registry.get_all_tools.return_value = {"calculator.add": mock_tool}
+
+        wrapper_instance = MagicMock()
+        wrapper_instance.name = "calculator.add"
+        wrapper_instance.description = "Calc"
+        wrapper_instance.registry_tool = mock_tool
+        mock_wrapper.return_value = wrapper_instance
+
+        state = _make_state()  # no config_service
+
+        with patch(
+            "app.utils.execute_query.create_execute_query_tool"
+        ) as mock_create:
+            get_agent_tools_with_schemas(state)
+
+        mock_create.assert_not_called()
 
 
 # ===================================================================
