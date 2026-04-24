@@ -150,6 +150,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 config_node_constants.ENDPOINTS.value,
                 config_node_constants.STORAGE.value,
                 config_node_constants.MIGRATIONS.value,
+                config_node_constants.DEPLOYMENT.value,
             ]
             encrypt_value = key not in EXCLUDED_KEYS
 
@@ -209,6 +210,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         config_node_constants.ENDPOINTS.value,
                         config_node_constants.STORAGE.value,
                         config_node_constants.MIGRATIONS.value,
+                        config_node_constants.DEPLOYMENT.value,
                     ]
                     needs_decryption = key not in UNENCRYPTED_KEYS
 
