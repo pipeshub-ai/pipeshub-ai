@@ -3879,6 +3879,91 @@ describe('Enterprise Search Controller', () => {
         expect(res.status.calledWith(200)).to.be.true
       }
     })
+
+    it('should return shared conversations with pagination', async () => {
+      const mockConversations = [
+        {
+          _id: VALID_OID,
+          title: 'Shared Conv',
+          userId: VALID_OID3,
+          initiator: VALID_OID3,
+          isShared: true,
+          sharedWith: [{ userId: VALID_OID, accessLevel: 'read' }],
+          createdAt: new Date(),
+        },
+      ]
+
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversations),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(1)
+
+      const req = createMockRequest({
+        query: { page: '1', limit: '10', source: 'shared' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('conversations')
+        expect(response).to.have.property('source', 'shared')
+        expect(response).to.have.property('pagination')
+        // shared branch strips the sharedWith field from the projection
+        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
+      }
+    })
+
+    it('should call next with BadRequestError when source is invalid', async () => {
+      const req = createMockRequest({
+        query: { source: 'invalid' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should default source to owned when missing', async () => {
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(0)
+
+      const req = createMockRequest({
+        query: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('source', 'owned')
+      }
+    })
   })
 
   describe('getAllAgentConversations (deep paths)', () => {

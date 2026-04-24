@@ -1892,37 +1892,33 @@ export const getAllConversations = async (
       query: req.query,
     });
 
-    const source = req.query.source;
+    const source = req.query.source ?? 'owned';
     if (source !== 'owned' && source !== 'shared') {
       throw new BadRequestError(
-        "Query param 'source' is required and must be 'owned' or 'shared'",
+        "Query param 'source' must be 'owned' or 'shared'",
       );
     }
 
     const { skip, limit, page } = getPaginationParams(req);
     const sortOptions = buildSortOptions(req);
 
-    let filter: any;
-    let selection = Conversation.find();
-    if (source === 'owned') {
-      // "Your Chats": owned by this user only. buildFilter's default $or also
-      // pulls in shared rows — strip it and pin userId.
-      filter = buildFilter(req, orgId, userId, conversationId as string, true, false);
-      selection = Conversation.find(filter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .select('-__v')
-        .select('-messages');
-    } else {
-      filter = buildFilter(req, orgId, userId, conversationId as string, false, true);
-      selection = Conversation.find(filter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .select('-__v')
-        .select('-messages')
-        .select('-sharedWith');
+    const isOwned = source === 'owned';
+    const filter = buildFilter(
+      req,
+      orgId,
+      userId,
+      conversationId as string,
+      isOwned,
+      !isOwned,
+    );
+    let selection = Conversation.find(filter)
+      .sort(sortOptions as any)
+      .skip(skip)
+      .limit(limit)
+      .select('-__v')
+      .select('-messages');
+    if (!isOwned) {
+      selection = selection.select('-sharedWith');
     }
 
     const [conversations, totalCount] = await Promise.all([

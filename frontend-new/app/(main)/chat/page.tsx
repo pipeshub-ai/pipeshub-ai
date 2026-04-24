@@ -516,10 +516,11 @@ function ChatContent() {
       } catch (error) {
         console.error('Failed to load conversation history:', error);
         if (!cancelled) {
-          // Mark as initialized even on error to avoid infinite retries
+          // Mark as initialized to avoid infinite retries, but leave isOwner
+          // untouched: a transient fetch failure shouldn't flip the share
+          // button off for an actual owner.
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
-            isOwner: false,
           });
         }
       }

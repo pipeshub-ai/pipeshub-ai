@@ -13455,11 +13455,11 @@ paths:
       description: |
         Retrieve paginated conversations for the authenticated user.<br><br>
         <b>Overview:</b><br>
-        Use the required <code>source</code> query parameter to choose which list to return:
+        Use the optional <code>source</code> query parameter to choose which list to return:
         <code>owned</code> — only conversations you own (<code>userId</code> matches the current user).
         <code>shared</code> — conversations where you have recipient access
         (<code>isShared</code> and your user appears in <code>sharedWith</code>), without the owner-only branch.
-        Each call returns one list; call twice if you need both.<br><br>
+        Defaults to <code>owned</code> when omitted. Each call returns one list; call twice if you need both.<br><br>
         <b>Filtering:</b><br>
         <ul>
         <li>Only non-archived conversations are returned by default</li>
@@ -13474,15 +13474,17 @@ paths:
       parameters:
         - name: source
           in: query
-          required: true
+          required: false
           description: |
             <code>owned</code> — owner list (<code>userId</code> filter only).
             <code>shared</code> — explicit share grant list (<code>isShared</code> + <code>sharedWith</code>).
+            Defaults to <code>owned</code> when omitted.
           schema:
             type: string
             enum:
               - owned
               - shared
+            default: owned
         - name: page
           in: query
           required: false

@@ -328,6 +328,9 @@ export const buildFilter = (
   owned: boolean = true,
   shared: boolean = true,
 ) => {
+  if (!owned && !shared) {
+    throw new BadRequestError('Either owned or shared must be true');
+  }
   const filter: any = {
     orgId: new mongoose.Types.ObjectId(`${orgId}`),
     isDeleted: false,
