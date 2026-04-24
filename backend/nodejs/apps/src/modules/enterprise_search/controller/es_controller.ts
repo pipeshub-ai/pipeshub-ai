@@ -1893,67 +1893,53 @@ export const getAllConversations = async (
       query: req.query,
     });
 
+    const source = req.query.source;
+    if (source !== 'owned' && source !== 'shared') {
+      throw new BadRequestError(
+        "Query param 'source' is required and must be 'owned' or 'shared'",
+      );
+    }
+
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildFilter(req, orgId, userId, conversationId as string);
     const sortOptions = buildSortOptions(req);
 
-    // Restrict "Your Chats" to conversations owned by this user.
-    // The default buildFilter includes shared conversations in its $or,
-    // but those are fetched separately via sharedWithMeFilter below.
-    delete filter.$or;
-    filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+    let filter: any;
+    let selection = Conversation.find();
+    if (source === 'owned') {
+      // "Your Chats": owned by this user only. buildFilter's default $or also
+      // pulls in shared rows — strip it and pin userId.
+      filter = buildFilter(req, orgId, userId, conversationId as string);
+      delete filter.$or;
+      filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+      selection = Conversation.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
+        .select('-messages');
+    } else {
+      filter = buildSharedWithMeFilter(req);
+      selection = Conversation.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
+        .select('-messages')
+        .select('-sharedWith');
+    }
 
-    // sharedWith Me Conversation
-    const sharedWithMeFilter = buildSharedWithMeFilter(req);
+    const [conversations, totalCount] = await Promise.all([
+      selection.lean().exec(),
+      Conversation.countDocuments(filter),
+    ]);
 
-    // Execute query
-    const [conversations, totalCount, sharedWithMeConversations] =
-      await Promise.all([
-        Conversation.find(filter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .lean()
-          .exec(),
-        Conversation.countDocuments(filter),
-        Conversation.find(sharedWithMeFilter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .select('-sharedWith')
-          .lean()
-          .exec(),
-      ]);
-
-    const processedConversations = conversations.map((conversation: any) => {
-      const conversationWithComputedFields = addComputedFields(
-        conversation as IConversation,
-        userId,
-      );
-      return {
-        ...conversationWithComputedFields,
-      };
-    });
-    const processedSharedWithMeConversations = sharedWithMeConversations.map(
-      (sharedWithMeConversation: any) => {
-        const conversationWithComputedFields = addComputedFields(
-          sharedWithMeConversation as IConversation,
-          userId,
-        );
-        return {
-          ...conversationWithComputedFields,
-        };
-      },
+    const processedConversations = conversations.map((conversation: any) =>
+      addComputedFields(conversation as IConversation, userId),
     );
 
-    // Build response metadata
     const response = {
       conversations: processedConversations,
-      sharedWithMeConversations: processedSharedWithMeConversations,
+      source,
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
       meta: {

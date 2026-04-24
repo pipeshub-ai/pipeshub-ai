@@ -150,6 +150,7 @@ function ChatContent() {
   const setIsConversationsLoading = useChatStore((s) => s.setIsConversationsLoading);
   const setConversationsError = useChatStore((s) => s.setConversationsError);
   const setPagination = useChatStore((s) => s.setPagination);
+  const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
 
@@ -179,6 +180,9 @@ function ChatContent() {
   );
   const activeSlotThreadAgentId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
+  );
+  const activeSlotIsOwner = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
   );
   /** Prefer slot scope so history/share stay correct if URL query is missing agentId. */
   const historyAndShareAgentId =
@@ -284,17 +288,21 @@ function ChatContent() {
     setConversationsError(null);
 
     try {
-      const result = await ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE);
-      setConversations(result.conversations);
-      setSharedConversations(result.sharedConversations);
-      setPagination(result.pagination);
+      const [owned, shared] = await Promise.all([
+        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'owned' }),
+        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'shared' }),
+      ]);
+      setConversations(owned.conversations);
+      setSharedConversations(shared.conversations);
+      setPagination(owned.pagination);
+      setSharedPagination(shared.pagination);
     } catch (error) {
       console.error('Failed to fetch conversations:', error);
       setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
     } finally {
       setIsConversationsLoading(false);
     }
-  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination]);
+  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination, setSharedPagination]);
 
   // Fetch conversations on mount
   useEffect(() => {
@@ -491,16 +499,19 @@ function ChatContent() {
 
     const loadHistory = async () => {
       try {
-        const messages = historyAndShareAgentId
-          ? (await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)).messages
-          : (await ChatApi.fetchConversation(convId)).messages;
+        const detail = historyAndShareAgentId
+          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
+          : await ChatApi.fetchConversation(convId);
         if (cancelled) return;
 
+        const messages = detail.messages;
+        const isOwner = detail.conversation.access?.isOwner ?? false;
         const formattedMessages = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
           isInitialized: true,
           hasLoaded: true,
+          isOwner,
         });
       } catch (error) {
         console.error('Failed to load conversation history:', error);
@@ -508,6 +519,7 @@ function ChatContent() {
           // Mark as initialized even on error to avoid infinite retries
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
+            isOwner: false,
           });
         }
       }
@@ -654,6 +666,19 @@ function ChatContent() {
     );
   }, [conversationId, historyAndShareAgentId]);
 
+  const showConversationShare =
+    Boolean(
+      conversationId &&
+        chatShareAdapter &&
+        activeSlotIsOwner === true
+    );
+
+  useEffect(() => {
+    if (!showConversationShare && isShareSidebarOpen) {
+      setIsShareSidebarOpen(false);
+    }
+  }, [showConversationShare, isShareSidebarOpen]);
+
   const handleShareClick = useCallback(() => {
     if (!chatShareAdapter) return;
     setIsShareSidebarOpen(true);
@@ -663,7 +688,7 @@ function ChatContent() {
   // Fires whenever the active conversation changes. Uses the same
   // getSharedMembers() path as the share sidebar so IDs stay consistent.
   useEffect(() => {
-    if (!conversationId || !chatShareAdapter) {
+    if (!conversationId || !chatShareAdapter || !showConversationShare) {
       setSharedMembers([]);
       return;
     }
@@ -690,7 +715,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, chatShareAdapter]);
+  }, [conversationId, chatShareAdapter, showConversationShare]);
 
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
@@ -741,8 +766,8 @@ function ChatContent() {
         />
       )}
 
-      {/* Share header group — shown when there's an active conversation */}
-      {conversationId && chatShareAdapter && (
+      {/* Share header group — owners only (hidden for Shared Chats / shared-with-me). */}
+      {showConversationShare && (
         <Box
           style={{
             position: 'absolute',
@@ -953,7 +978,7 @@ function ChatContent() {
       )}
 
       {/* Share Sidebar */}
-      {chatShareAdapter && (
+      {showConversationShare && chatShareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
           onOpenChange={setIsShareSidebarOpen}

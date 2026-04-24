@@ -110,14 +110,19 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
 
     (async () => {
       try {
-        const result = await ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
-          ...(isSearch ? { search: q } : {}),
-          signal: ac.signal,
-        });
-        const merged = [
-          ...result.sharedConversations,
-          ...result.conversations,
-        ];
+        const [shared, owned] = await Promise.all([
+          ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
+            source: 'shared',
+            ...(isSearch ? { search: q } : {}),
+            signal: ac.signal,
+          }),
+          ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
+            source: 'owned',
+            ...(isSearch ? { search: q } : {}),
+            signal: ac.signal,
+          }),
+        ]);
+        const merged = [...shared.conversations, ...owned.conversations];
         if (isSearch) {
           setSearchResults(merged);
         } else {
