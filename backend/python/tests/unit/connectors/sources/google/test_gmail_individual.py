@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import MailRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
@@ -18,6 +17,10 @@ from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
     FilterType,
+    SyncFilterKey,
+)
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
     AppUser,
@@ -423,44 +426,36 @@ class TestProcessGmailMessage:
 
 
 # ---------------------------------------------------------------------------
-# Date filter
+# RECEIVED_DATE: threads.list q + whole-thread indexing (no per-message skip)
 # ---------------------------------------------------------------------------
 
-class TestGmailDateFilter:
-    def test_no_filter_passes(self, connector):
-        assert connector._pass_date_filter(_make_gmail_message()) is True
+class TestGmailReceivedDateQueryFromSyncFilters:
+    def test_build_query_none_without_filter(self, connector):
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_message_before_start_rejected(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067200001
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is False
-
-    def test_message_after_end_rejected(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 1704067199999
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is False
-
-    def test_message_within_range_passes(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067100000
-        mock_filter.get_datetime_end.return_value = 1704067300000
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is True
-
-    def test_invalid_internal_date_passes(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        assert connector._pass_date_filter(_make_gmail_message(internal_date="not-a-number")) is True
+    @pytest.mark.asyncio
+    async def test_process_message_ignores_received_date_for_indexing(self, connector):
+        """Old internalDate still indexed when filter configured (thread-level semantics)."""
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1704067200001, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        msg = _make_gmail_message(internal_date="1704067200000")
+        result = await connector._process_gmail_message(
+            user_email="user@example.com",
+            message=msg,
+            thread_id="thread-1",
+            previous_message_id=None,
+        )
+        assert result is not None
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +981,26 @@ class TestIndividualRunFullSync:
             await connector._run_full_sync("user@example.com", "test-key")
         connector.data_entities_processor.on_new_records.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_full_sync_passes_q_when_received_date_configured(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1704067200000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={"threads": []})
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.gmail_data_source.users_threads_list.assert_called()
+        call_kw = connector.gmail_data_source.users_threads_list.call_args.kwargs
+        assert call_kw.get("q") == "after:1704067200"
+
 
 # ---------------------------------------------------------------------------
 # Deep sync: drive attachment fallback
@@ -1308,67 +1323,46 @@ class TestExtractEmailFromHeaderCoverage:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _pass_date_filter
+# Tests: build_gmail_received_date_threads_query (RECEIVED_DATE)
 # ---------------------------------------------------------------------------
 
 class TestPassDateFilter:
-    def test_no_filter_always_passes(self):
+    def test_no_filter_empty_query(self):
         connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is True
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_invalid_internal_date_passes(self):
+    def test_is_after_query(self):
         connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {"internalDate": "not-a-number"}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_no_internal_date_passes(self):
-        connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_with_start_filter_passes(self):
-        connector = _make_connector()
-        # Create a real Filter with start=1000000000000, end=None
-        # Value must be a dict so the model_validator converts it to a tuple
         date_filter = Filter(
-            key="received_date",
+            key=SyncFilterKey.RECEIVED_DATE.value,
             value={"start": 1000000000000, "end": None},
             type=FilterType.DATETIME,
             operator=DatetimeOperator.IS_AFTER,
         )
         connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_with_start_filter_fails(self):
-        connector = _make_connector()
-        # Create a real Filter with start=1800000000000, end=None
-        date_filter = Filter(
-            key="received_date",
-            value={"start": 1800000000000, "end": None},
-            type=FilterType.DATETIME,
-            operator=DatetimeOperator.IS_AFTER,
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
         )
-        connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is False
+        assert q == "after:1000000000"
 
-    def test_with_end_filter_fails(self):
+    def test_is_before_query(self):
         connector = _make_connector()
-        # Create a real Filter with start=None, end=1600000000000
         date_filter = Filter(
-            key="received_date",
+            key=SyncFilterKey.RECEIVED_DATE.value,
             value={"start": None, "end": 1600000000000},
             type=FilterType.DATETIME,
             operator=DatetimeOperator.IS_BEFORE,
         )
         connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is False
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "before:1600000000"
 
 
 # ---------------------------------------------------------------------------
@@ -2301,11 +2295,18 @@ class TestProcessGmailMessageException:
         assert result.new_permissions == []
 
     @pytest.mark.asyncio
-    async def test_date_filter_rejects_message(self, connector_fullcov):
-        connector_fullcov._pass_date_filter = MagicMock(return_value=False)
+    async def test_received_date_filter_does_not_skip_message(self, connector_fullcov):
+        """Whole-thread semantics: _process_gmail_message does not drop by internalDate."""
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 99999999999999, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector_fullcov.sync_filters = FilterCollection(filters=[date_filter])
         msg = _make_gmail_message()
         result = await connector_fullcov._process_gmail_message("u@e.com", msg, "t1", None)
-        assert result is None
+        assert result is not None
 
 
 class TestExtractAttachmentInfosEdgeCases:

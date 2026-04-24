@@ -64,6 +64,9 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -332,36 +335,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
-    def _pass_date_filter(self, message: dict) -> bool:
-        """
-        Checks if the Gmail message passes the configured RECEIVED_DATE filter.
-        Relies on client-side filtering since Gmail API does not support date filtering.
-        """
-        # Check Received Date Filter
-        received_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
-        if received_filter:
-            # Get start and end timestamps in milliseconds directly
-            start_ts = received_filter.get_datetime_start()
-            end_ts = received_filter.get_datetime_end()
-
-            # Extract internalDate from message (already in epoch milliseconds as string)
-            internal_date = message.get("internalDate")
-            if internal_date:
-                try:
-                    item_ts = int(internal_date)
-                except (ValueError, TypeError):
-                    # If we can't parse the date, skip the filter check
-                    return True
-
-                # Check if message is before start date
-                if start_ts and item_ts < start_ts:
-                    return False
-                # Check if message is after end date
-                if end_ts and item_ts > end_ts:
-                    return False
-
-        return True
-
     @staticmethod
     def _mailbox_external_group_id(user_email: str, label_ids: Optional[List[str]]) -> str:
         """Mailbox record-group external id from Gmail labelIds (same rule as MailRecord)."""
@@ -460,10 +433,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
             # Extract message metadata
             message_id = message.get('id')
             if not message_id:
-                return None
-
-            if not self._pass_date_filter(message):
-                self.logger.debug(f"Skipping message {message_id} due to date filter")
                 return None
 
             # Extract labelIds from message
@@ -1721,6 +1690,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
             total_threads = 0
             total_messages = 0
             page_token = None
+            threads_q = build_gmail_received_date_threads_query(
+                self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            if threads_q:
+                self.logger.info(f"Full sync thread list query (RECEIVED_DATE): {threads_q!r}")
 
             # Fetch threads with pagination
             while True:
@@ -1730,7 +1704,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     threads_response = await self.gmail_data_source.users_threads_list(
                         userId="me",
                         maxResults=100,
-                        pageToken=page_token
+                        pageToken=page_token,
+                        q=threads_q,
                     )
 
                     threads = threads_response.get('threads', [])
@@ -2261,6 +2236,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
     ) -> None:
         """
         Performs an incremental sync of Gmail mailbox contents using history API.
+
+        RECEIVED_DATE applies to full sync via `users.threads.list(q=...)`. The history
+        API has no equivalent `q`; new messages from history are processed without
+        re-applying that date window so incremental sync stays consistent with
+        thread-level indexing.
 
         Args:
             user_email: The user email address

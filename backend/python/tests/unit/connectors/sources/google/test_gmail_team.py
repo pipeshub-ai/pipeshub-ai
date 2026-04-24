@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection
-from app.models.entities import AppUser, MailRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
 import uuid
@@ -26,9 +24,15 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
+    DatetimeOperator,
+    Filter,
     FilterCollection,
+    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
+)
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -457,65 +461,49 @@ class TestTeamProcessGmailMessage:
         assert "cc@e.com" in result.record.cc_emails
         assert "bcc@e.com" in result.record.bcc_emails
 
-    async def test_date_filter_skips_message(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067200001
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-
+    async def test_received_date_filter_does_not_skip_message(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1704067200001, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
         message = _make_gmail_message(internal_date="1704067200000")
         result = await connector._process_gmail_message(
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result is None
+        assert result is not None
 
 
 # ---------------------------------------------------------------------------
-# Date filter (team)
+# RECEIVED_DATE query string (team)
 # ---------------------------------------------------------------------------
 
 class TestTeamGmailDateFilter:
-    def test_no_filter_passes(self, connector):
+    def test_no_filter_empty_query(self, connector):
         message = _make_gmail_message()
-        assert connector._pass_date_filter(message) is True
+        assert message["internalDate"]
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_rejects_old_message(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067200001
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is False
-
-    def test_rejects_future_message(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 1704067199999
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is False
-
-    def test_within_range_passes(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067100000
-        mock_filter.get_datetime_end.return_value = 1704067300000
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is True
-
-    def test_invalid_internal_date_passes(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        message = _make_gmail_message(internal_date="not-a-number")
-        assert connector._pass_date_filter(message) is True
+    def test_is_after_query(self, connector):
+        date_filter = Filter(
+            key=SyncFilterKey.RECEIVED_DATE.value,
+            value={"start": 1704067200001, "end": None},
+            type=FilterType.DATETIME,
+            operator=DatetimeOperator.IS_AFTER,
+        )
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:1704067200"
 
 
 # ---------------------------------------------------------------------------
@@ -836,6 +824,21 @@ class TestTeamFullSync:
         user_gmail_client.users_get_profile = AsyncMock(side_effect=Exception("Profile error"))
         user_gmail_client.users_threads_list = AsyncMock(return_value={"threads": []})
         await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
+
+    async def test_full_sync_passes_q_when_received_date_configured(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1704067200000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        user_gmail_client = AsyncMock()
+        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
+        user_gmail_client.users_threads_list = AsyncMock(return_value={"threads": []})
+        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
+        call_kw = user_gmail_client.users_threads_list.call_args.kwargs
+        assert call_kw.get("q") == "after:1704067200"
 
 
 # ---------------------------------------------------------------------------
@@ -1644,54 +1647,39 @@ class TestSyncRecordGroups:
 
 
 class TestPassDateFilter:
-    def test_no_filter_passes(self, connector_fullcov):
-        msg = _make_gmail_message_fullcov()
-        assert connector_fullcov._pass_date_filter(msg) is True
-
-    def test_before_start_fails(self, connector_fullcov):
-        msg = _make_gmail_message_fullcov(internal_date="1000")
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 2000
-        mock_filter.get_datetime_end.return_value = None
-        connector_fullcov.sync_filters = MagicMock()
-        connector_fullcov.sync_filters.get = MagicMock(
-            side_effect=lambda k: mock_filter if k == SyncFilterKey.RECEIVED_DATE else None
+    def test_no_filter_empty_query(self, connector_fullcov):
+        assert (
+            build_gmail_received_date_threads_query(
+                connector_fullcov.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
         )
-        assert connector_fullcov._pass_date_filter(msg) is False
 
-    def test_after_end_fails(self, connector_fullcov):
-        msg = _make_gmail_message_fullcov(internal_date="5000")
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 3000
-        connector_fullcov.sync_filters = MagicMock()
-        connector_fullcov.sync_filters.get = MagicMock(
-            side_effect=lambda k: mock_filter if k == SyncFilterKey.RECEIVED_DATE else None
+    def test_is_between_query(self, connector_fullcov):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 2000, "end": 5000},
+            "type": "datetime",
+            "operator": "is_between",
+        })
+        connector_fullcov.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector_fullcov.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
         )
-        assert connector_fullcov._pass_date_filter(msg) is False
+        assert q == "after:2 before:5"
 
-    def test_within_range_passes(self, connector_fullcov):
-        msg = _make_gmail_message_fullcov(internal_date="2500")
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 2000
-        mock_filter.get_datetime_end.return_value = 3000
-        connector_fullcov.sync_filters = MagicMock()
-        connector_fullcov.sync_filters.get = MagicMock(
-            side_effect=lambda k: mock_filter if k == SyncFilterKey.RECEIVED_DATE else None
+    def test_is_before_query(self, connector_fullcov):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": None, "end": 3000},
+            "type": "datetime",
+            "operator": "is_before",
+        })
+        connector_fullcov.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector_fullcov.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
         )
-        assert connector_fullcov._pass_date_filter(msg) is True
-
-    def test_invalid_date_passes(self, connector_fullcov):
-        msg = _make_gmail_message_fullcov()
-        msg["internalDate"] = "not-a-number"
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = None
-        connector_fullcov.sync_filters = MagicMock()
-        connector_fullcov.sync_filters.get = MagicMock(
-            side_effect=lambda k: mock_filter if k == SyncFilterKey.RECEIVED_DATE else None
-        )
-        assert connector_fullcov._pass_date_filter(msg) is True
+        assert q == "before:3"
 
 
 class TestProcessGmailMessage:
@@ -1723,11 +1711,17 @@ class TestProcessGmailMessage:
         assert result.new_permissions[0].type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_date_filter_skip(self, connector_fullcov):
-        connector_fullcov._pass_date_filter = MagicMock(return_value=False)
+    async def test_received_date_does_not_skip_message(self, connector_fullcov):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 99999999999999, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector_fullcov.sync_filters = FilterCollection(filters=[date_filter])
         msg = _make_gmail_message_fullcov()
         result = await connector_fullcov._process_gmail_message("u@t.com", msg, "t1", None)
-        assert result is None
+        assert result is not None
 
     @pytest.mark.asyncio
     async def test_other_label(self, connector_fullcov):

@@ -18,7 +18,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.google.common.connector_google_exceptions import GoogleMailError
 from app.models.entities import (
     FileRecord,
@@ -329,11 +329,17 @@ class TestProcessGmailMessageException:
         assert result.new_permissions == []
 
     @pytest.mark.asyncio
-    async def test_date_filter_rejects_message(self, connector):
-        connector._pass_date_filter = MagicMock(return_value=False)
+    async def test_received_date_filter_does_not_skip_message(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 99999999999999, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
         msg = _make_gmail_message()
         result = await connector._process_gmail_message("u@e.com", msg, "t1", None)
-        assert result is None
+        assert result is not None
 
 
 class TestExtractAttachmentInfosEdgeCases:

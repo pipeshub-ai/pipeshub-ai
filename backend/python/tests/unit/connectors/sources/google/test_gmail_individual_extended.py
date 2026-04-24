@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
+)
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -158,15 +161,25 @@ class TestExtractEmail:
 
 class TestPassDateFilter:
     def test_no_filter(self, connector):
-        assert connector._pass_date_filter({"internalDate": "1704067200000"}) is True
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_before_start(self, connector):
-        mock_f = MagicMock()
-        mock_f.get_datetime_start.return_value = 2000000000000
-        mock_f.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_f
-        assert connector._pass_date_filter({"internalDate": "1000000000000"}) is False
+    def test_is_after_query_string(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 2000000000000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:2000000000"
 
 
 class TestProcessMessage:
