@@ -380,6 +380,7 @@ export async function streamMessageForSlot(
             messages: finalMessages,
             hasLoaded: true,
             abortController: null,
+            ...(isNewConversation ? { isOwner: true } : {}),
           });
         });
 

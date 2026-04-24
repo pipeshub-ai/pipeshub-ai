@@ -857,7 +857,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
-        query: { page: '1', limit: '10' },
+        query: { page: '1', limit: '10', source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -886,7 +886,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3820,12 +3820,9 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('getAllConversations (deep paths)', () => {
-    it('should return conversations with shared conversations and pagination', async () => {
+    it('should return owned conversations with pagination', async () => {
       const mockConversations = [
         { _id: VALID_OID, title: 'Conv 1', userId: VALID_OID, initiator: VALID_OID, isShared: false, sharedWith: [], createdAt: new Date() },
-      ]
-      const mockSharedConversations = [
-        { _id: VALID_OID3, title: 'Shared Conv', userId: VALID_OID2, initiator: VALID_OID2, isShared: true, createdAt: new Date() },
       ]
 
       const findChain1: any = {
@@ -3834,25 +3831,13 @@ describe('Enterprise Search Controller', () => {
         limit: sinon.stub().returnsThis(),
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().returnsThis(),
-        exec: sinon.stub(),
+        exec: sinon.stub().resolves(mockConversations),
       }
-      // First call returns conversations, second returns sharedWithMe
-      const findStub = sinon.stub(Conversation, 'find')
-      findChain1.exec.resolves(mockConversations)
-      const findChain2: any = {
-        sort: sinon.stub().returnsThis(),
-        skip: sinon.stub().returnsThis(),
-        limit: sinon.stub().returnsThis(),
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves(mockSharedConversations),
-      }
-      findStub.onFirstCall().returns(findChain1 as any)
-      findStub.onSecondCall().returns(findChain2 as any)
+      sinon.stub(Conversation, 'find').returns(findChain1 as any)
       sinon.stub(Conversation, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
-        query: { page: '1', limit: '10' },
+        query: { page: '1', limit: '10', source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3864,7 +3849,7 @@ describe('Enterprise Search Controller', () => {
         expect(res.status.calledWith(200)).to.be.true
         const response = res.json.firstCall.args[0]
         expect(response).to.have.property('conversations')
-        expect(response).to.have.property('sharedWithMeConversations')
+        expect(response).to.have.property('source', 'owned')
         expect(response).to.have.property('pagination')
       }
     })
@@ -3882,7 +3867,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: { conversationId: VALID_OID },
+        query: { conversationId: VALID_OID, source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3892,6 +3877,91 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should return shared conversations with pagination', async () => {
+      const mockConversations = [
+        {
+          _id: VALID_OID,
+          title: 'Shared Conv',
+          userId: VALID_OID3,
+          initiator: VALID_OID3,
+          isShared: true,
+          sharedWith: [{ userId: VALID_OID, accessLevel: 'read' }],
+          createdAt: new Date(),
+        },
+      ]
+
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversations),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(1)
+
+      const req = createMockRequest({
+        query: { page: '1', limit: '10', source: 'shared' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('conversations')
+        expect(response).to.have.property('source', 'shared')
+        expect(response).to.have.property('pagination')
+        // shared branch strips the sharedWith field from the projection
+        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
+      }
+    })
+
+    it('should call next with BadRequestError when source is invalid', async () => {
+      const req = createMockRequest({
+        query: { source: 'invalid' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should default source to owned when missing', async () => {
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(0)
+
+      const req = createMockRequest({
+        query: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('source', 'owned')
       }
     })
   })
@@ -8086,7 +8156,12 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: { conversationId: VALID_OID, sortBy: 'createdAt', sortOrder: 'asc' },
+        query: {
+          conversationId: VALID_OID,
+          sortBy: 'createdAt',
+          sortOrder: 'asc',
+          source: 'owned',
+        },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -10207,7 +10282,7 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         context: undefined,
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -10676,6 +10751,7 @@ describe('Enterprise Search Controller', () => {
           filter: 'complete',
           sortBy: 'updatedAt',
           sortOrder: 'asc',
+          source: 'owned',
         },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
@@ -10703,7 +10779,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()

@@ -297,32 +297,6 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
-/**
- * Mongo filter for conversations shown in the "shared with me" list (same org,
- * not started by this user). Requires both `isShared` and an entry in
- * `sharedWith` for the current user.
- *
- * `isShared: true` without a `sharedWith` row for this user does not match.
- * Share endpoints record recipients in `sharedWith`, so this is the intended
- * grant shape; it avoids treating a lone `isShared` flag as org-wide visibility.
- */
-export const buildSharedWithMeFilter = (req: AuthenticatedUserRequest) => {
-  const filter = {
-    orgId: new mongoose.Types.ObjectId(`${req.user?.orgId}`),
-    isDeleted: false,
-    isArchived: false,
-    initiator: { $ne: new mongoose.Types.ObjectId(`${req.user?.userId}`) },
-    $and: [
-      { isShared: true },
-      {
-        'sharedWith.userId': new mongoose.Types.ObjectId(`${req.user?.userId}`),
-      },
-    ],
-  };
-
-  return filter;
-};
-
 export const addComputedFields = (
   conversation: IConversation | IConversationDocument,
   userId: string,
@@ -351,19 +325,24 @@ export const buildFilter = (
   orgId: string,
   userId: string,
   id?: string, // conversationId or searchId
+  owned: boolean = true,
+  shared: boolean = true,
 ) => {
+  if (!owned && !shared) {
+    throw new BadRequestError('Either owned or shared must be true');
+  }
   const filter: any = {
     orgId: new mongoose.Types.ObjectId(`${orgId}`),
     isDeleted: false,
     isArchived: false,
     $or: [
-      { userId: new mongoose.Types.ObjectId(`${userId}`) },
-      {
+      ...(owned ? [{ userId: new mongoose.Types.ObjectId(`${userId}`) }] : []),
+      ...(shared ? [{
         $and: [
           { isShared: true },
           { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
         ],
-      },
+      }] : [])
     ],
   };
 

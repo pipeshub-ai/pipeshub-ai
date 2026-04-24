@@ -43,13 +43,14 @@ export const ChatSections = React.memo(function ChatSections({
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const pagination = useChatStore((s) => s.pagination);
+  const sharedPagination = useChatStore((s) => s.sharedPagination);
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[sidebar] [ChatSections]');
   const prevChatSectionsRef = React.useRef<Record<string, unknown>>({});
   const currentSectionsVals: Record<string, unknown> = {
     currentConversationId, conversations, sharedConversations,
-    isConversationsLoading, conversationsError, pendingConversations, pagination,
+    isConversationsLoading, conversationsError, pendingConversations, pagination, sharedPagination,
   };
   const sectionsReasons: string[] = [];
   for (const [k, v] of Object.entries(currentSectionsVals)) {

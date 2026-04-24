@@ -619,8 +619,6 @@ export function ConnectorPanel() {
     bumpCatalogRefresh,
   ]);
 
-  // ── Footer logic ─────────────────────────────────────────────
-
   const isAuthReady =
     authState === 'success' || isNoneAuthType(selectedAuthType);
 

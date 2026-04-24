@@ -5,6 +5,7 @@ import {
   ConversationMessage,
   ConversationsListResponse,
   ConversationApiResponse,
+  ConversationSource,
   ModelInfo,
   SharedWithEntry,
   StreamChatRequest,
@@ -53,6 +54,8 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
 const transformConversation = mapApiConversationToConversation;
 
 export interface FetchConversationsOptions {
+  /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
+  source: ConversationSource;
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
   signal?: AbortSignal;
@@ -60,30 +63,35 @@ export interface FetchConversationsOptions {
 
 // Chat API endpoints
 export const ChatApi = {
-  // Fetch all conversations (user's own and shared with them)
+  // Fetch one page of conversations for a single source (owned or shared).
+  // Call once per tab if you need both lists.
   async fetchConversations(
     page: number = 1,
     limit: number = 20,
-    options?: FetchConversationsOptions
+    options: FetchConversationsOptions
   ): Promise<{
     conversations: Conversation[];
-    sharedConversations: Conversation[];
+    source: ConversationSource;
     pagination: ConversationsListResponse['pagination'];
   }> {
-    const search = options?.search?.trim();
-    const params: Record<string, string | number> = { page, limit };
+    const search = options.search?.trim();
+    const params: Record<string, string | number> = {
+      page,
+      limit,
+      source: options.source,
+    };
     if (search) {
       params.search = search;
     }
 
     const { data } = await apiClient.get<ConversationsListResponse>(
       `/api/v1/conversations`,
-      { params, signal: options?.signal }
+      { params, signal: options.signal }
     );
 
     return {
       conversations: data.conversations.map(transformConversation),
-      sharedConversations: data.sharedWithMeConversations.map(transformConversation),
+      source: data.source,
       pagination: data.pagination,
     };
   },

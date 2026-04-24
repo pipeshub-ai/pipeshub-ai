@@ -111,6 +111,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
+    isOwner: isNew ? true : null,
   };
 }
 
@@ -138,6 +139,7 @@ interface ChatState {
   isConversationsLoading: boolean;
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
+  sharedPagination: ConversationsListResponse['pagination'] | null;
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
@@ -251,6 +253,7 @@ interface ChatState {
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
   setPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
+  setSharedPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
   closeMoreChatsPanel: () => void;
   toggleAgentsSidebar: () => void;
@@ -347,6 +350,7 @@ const initialState = {
   isConversationsLoading: false,
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
+  sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
@@ -545,6 +549,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setConversationsError: (error) => set({ conversationsError: error }),
 
   setPagination: (pagination) => set({ pagination }),
+
+  setSharedPagination: (sharedPagination) => set({ sharedPagination }),
 
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
