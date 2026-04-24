@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Image from "next/image";
 import { MaterialIcon } from "./MaterialIcon";
+import { useThemeAppearance } from '@/app/components/theme-provider';
 
 /**
  * ConnectorIcon component renders custom SVG icons for connectors with MaterialIcon fallback
@@ -99,7 +100,7 @@ interface ConnectorIconProps {
  * - svg: Path to custom SVG icon (null if doesn't exist yet)
  * - fallback: Material Icon name to use when SVG is unavailable
  */
-export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallback: string }> = {
+export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallback: string; needDarkModeInvert?: boolean }> = {
   // Communication & Collaboration
   'slack': { svg: '/icons/connectors/slack.svg', fallback: 'tag' },
   'teams': { svg: '/icons/connectors/teams.svg', fallback: 'groups' },
@@ -123,7 +124,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   // Document & Knowledge
   'kb': { svg: null, fallback: 'folder' },
   'knowledge-base': { svg: null, fallback: 'folder' },
-  'notion': { svg: '/icons/connectors/notion.svg', fallback: 'description' },
+  'notion': { svg: '/icons/connectors/notion.svg', fallback: 'description', needDarkModeInvert: true },
   'confluence': { svg: '/icons/connectors/confluence.svg', fallback: 'article' },
   'bookstack': { svg: '/icons/connectors/bookstack.svg', fallback: 'menu_book' },
   'google-docs': { svg: '/icons/connectors/docs.svg', fallback: 'description' },
@@ -132,10 +133,10 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-forms': { svg: '/icons/connectors/forms.svg', fallback: 'quiz' },
   'ms-onenote': { svg: '/icons/connectors/ms-onenote.svg', fallback: 'note' },
   // Project & Issue Tracking (keys sorted A–Z)
-  'github': { svg: '/icons/connectors/github.svg', fallback: 'code' },
+  'github': { svg: '/icons/connectors/github.svg', fallback: 'code', needDarkModeInvert: true },
   'gitlab': { svg: '/icons/connectors/gitlab.svg', fallback: 'code' },
   'jira': { svg: '/icons/connectors/jira.svg', fallback: 'bug_report' },
-  'linear': { svg: '/icons/connectors/linear.svg', fallback: 'view_kanban' },
+  'linear': { svg: '/icons/connectors/linear.svg', fallback: 'view_kanban', needDarkModeInvert: true },
   'servicenow': { svg: '/icons/connectors/servicenow.svg', fallback: 'build' },
   'zendesk': { svg: '/icons/connectors/zendesk.svg', fallback: 'support' },
   'zammad': { svg: '/icons/connectors/zammad.svg', fallback: 'support_agent' },
@@ -239,7 +240,7 @@ export function resolveConnectorType(input: string): ConnectorType {
 /**
  * Get icon config (svg path + material icon fallback) for any connector string.
  */
-export function getConnectorIconConfig(input: string): { svg: string | null; fallback: string } {
+export function getConnectorIconConfig(input: string): { svg: string | null; fallback: string; needDarkModeInvert?: boolean; } {
   const type = resolveConnectorType(input);
   return CONNECTOR_ICONS[type];
 }
@@ -251,6 +252,8 @@ export const ConnectorIcon = ({
   style
 }: ConnectorIconProps) => {
   const [imageError, setImageError] = useState(false);
+  const { appearance } = useThemeAppearance();
+  const isDarkMode = appearance === 'dark';
 
   const iconConfig = CONNECTOR_ICONS[type as ConnectorType] ?? getConnectorIconConfig(type);
 
@@ -267,6 +270,7 @@ export const ConnectorIcon = ({
         style={{
           objectFit: 'contain',
           display: 'inline-flex',
+          filter: isDarkMode && (iconConfig.needDarkModeInvert ?? false) ? 'invert(1)' : undefined,
           ...style
         }}
       />
