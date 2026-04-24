@@ -76,7 +76,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -205,6 +205,40 @@ def get_parent_path_for_azure_blob(parent_external_id: str) -> str | None:
         return directory_path
     else:
         return None
+
+
+def _container_last_modified_epoch_ms_from_list(
+    containers_data: Iterable[Any] | None, target_names: set[str]
+) -> dict[str, int]:
+    """Map container name -> last_modified as epoch ms from list_containers data.
+
+    The Azure data source returns dicts with ``name`` and ISO ``last_modified``.
+    List API does not expose a separate creation time; we use last_modified for
+    both source_created_at and source_updated_at on the record group.
+    """
+    out: dict[str, int] = {}
+    if not containers_data or not target_names:
+        return out
+    for container in containers_data:
+        name: str | None = None
+        lm: Any = None
+        if isinstance(container, dict):
+            name = container.get("name")
+            lm = container.get("last_modified")
+        else:
+            name = getattr(container, "name", None)
+            lm = getattr(container, "last_modified", None)
+        if not name or name not in target_names:
+            continue
+        ts: int | None = None
+        if lm is not None:
+            if isinstance(lm, datetime):
+                ts = datetime_to_epoch_ms(lm)
+            else:
+                ts = datetime_to_epoch_ms(str(lm))
+        if ts is not None:
+            out[name] = ts
+    return out
 
 
 class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
@@ -492,7 +526,8 @@ class AzureBlobConnector(BaseConnector):
             selected_containers = container_filter.value if container_filter and container_filter.value else []
 
             # List all containers or use configured container
-            containers_to_sync = []
+            containers_to_sync: list[str] = []
+            containers_list_payload: list[Any] | None = None
             if self.container_name:
                 containers_to_sync = [self.container_name]
                 self.logger.info(f"Using configured container: {self.container_name}")
@@ -508,6 +543,7 @@ class AzureBlobConnector(BaseConnector):
 
                 containers_data = containers_response.data
                 if containers_data:
+                    containers_list_payload = containers_data
                     containers_to_sync = self._extract_container_names(containers_data)
 
                     if containers_to_sync:
@@ -519,8 +555,19 @@ class AzureBlobConnector(BaseConnector):
                     self.logger.warning("No containers found")
                     return
 
+            target_names = {n for n in containers_to_sync if n}
+            container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                containers_list_payload, target_names
+            )
+            if containers_list_payload is None and target_names:
+                extra = await self.data_source.list_containers()
+                if extra.success and extra.data:
+                    container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                        extra.data, target_names
+                    )
+
             # Create record groups for containers first
-            await self._create_record_groups_for_containers(containers_to_sync)
+            await self._create_record_groups_for_containers(containers_to_sync, container_ts_ms)
 
             # Sync each container
             for container_name in containers_to_sync:
@@ -540,14 +587,26 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_containers(self, container_names: list[str]) -> None:
+    async def _create_record_groups_for_containers(
+        self,
+        container_names: list[str],
+        container_last_modified_epoch_ms: dict[str, int] | None = None,
+    ) -> None:
         """Create record groups for containers with appropriate permissions.
 
         Uses cached creator_email from init() to avoid repeated database queries.
+
+        Args:
+            container_names: Containers to represent as record groups.
+            container_last_modified_epoch_ms: Optional map from container name to
+                Azure ``last_modified`` (epoch ms) from list_containers. Used for
+                source_created_at / source_updated_at so the knowledge hub shows
+                real dates (Azure list does not expose separate creation time).
         """
         if not container_names:
             return
 
+        ts_map = container_last_modified_epoch_ms or {}
         record_groups = []
         for container_name in container_names:
             if not container_name:
@@ -583,6 +642,7 @@ class AzureBlobConnector(BaseConnector):
                         )
                     )
 
+            lm_ms = ts_map.get(container_name)
             record_group = RecordGroup(
                 name=container_name,
                 external_group_id=container_name,
@@ -590,6 +650,11 @@ class AzureBlobConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"Azure Blob Container: {container_name}",
+                web_url=get_parent_weburl_for_azure_blob(
+                    container_name, self.account_name or ""
+                ),
+                source_created_at=lm_ms,
+                source_updated_at=lm_ms,
             )
             record_groups.append((record_group, permissions))
 

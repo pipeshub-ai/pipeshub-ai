@@ -59,10 +59,40 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
+
+
+def _bucket_creation_dates_from_list_buckets(
+    api_buckets: list[dict] | None, target_names: set[str]
+) -> dict[str, int]:
+    """Map bucket name -> creation time (epoch ms) from ListBuckets response.
+
+    AWS S3 and S3-compatible APIs include CreationDate per bucket. Names not in
+    target_names or without a parseable date are omitted.
+    """
+    out: dict[str, int] = {}
+    if not api_buckets or not target_names:
+        return out
+    for b in api_buckets:
+        name = b.get("Name")
+        if not name or name not in target_names:
+            continue
+        cd = b.get("CreationDate")
+        ts = datetime_to_epoch_ms(cd) if cd else None
+        if ts is not None:
+            out[name] = ts
+    return out
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+
+
+def _s3_last_modified_to_epoch_ms(last_modified: Any) -> int:
+    """Map S3 LastModified (datetime or ISO string from some S3-compatible APIs) to epoch ms."""
+    parsed = datetime_to_epoch_ms(last_modified)
+    if parsed is not None:
+        return parsed
+    return get_epoch_timestamp_in_ms()
 
 
 def get_file_extension(key: str) -> str | None:
@@ -365,7 +395,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
 
             # List all buckets or use configured bucket
-            buckets_to_sync = []
+            buckets_to_sync: list[str] = []
+            list_buckets_payload: list[dict] | None = None
             if self.bucket_name:
                 buckets_to_sync = [self.bucket_name]
                 self.logger.info(f"Using configured bucket: {self.bucket_name}")
@@ -381,13 +412,26 @@ class S3CompatibleBaseConnector(BaseConnector):
 
                 buckets_data = buckets_response.data
                 if buckets_data and "Buckets" in buckets_data:
+                    list_buckets_payload = buckets_data["Buckets"]
                     buckets_to_sync = [
-                        bucket.get("Name") for bucket in buckets_data["Buckets"]
+                        bucket.get("Name") for bucket in list_buckets_payload
                     ]
                     self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
                 else:
                     self.logger.warning("No buckets found")
                     return
+
+            target_names = {n for n in buckets_to_sync if n}
+            bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
+                list_buckets_payload, target_names
+            )
+            # Single-bucket or filter mode: reuse ListBuckets to resolve CreationDate
+            if not list_buckets_payload and target_names:
+                extra = await self.data_source.list_buckets()
+                if extra.success and extra.data:
+                    bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
+                        extra.data.get("Buckets"), target_names
+                    )
 
             # Fetch and cache regions for all buckets
             self.logger.info(f"Fetching regions for {len(buckets_to_sync)} bucket(s)...")
@@ -396,7 +440,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     await self._get_bucket_region(bucket_name)
 
             # Create record groups for buckets first
-            await self._create_record_groups_for_buckets(buckets_to_sync)
+            await self._create_record_groups_for_buckets(buckets_to_sync, bucket_creation_ms)
 
             # Sync each bucket
             for bucket_name in buckets_to_sync:
@@ -416,14 +460,26 @@ class S3CompatibleBaseConnector(BaseConnector):
             self.logger.error(f"❌ Error in {self.connector_name} connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_buckets(self, bucket_names: list[str]) -> None:
+    async def _create_record_groups_for_buckets(
+        self,
+        bucket_names: list[str],
+        bucket_creation_epoch_ms: dict[str, int] | None = None,
+    ) -> None:
         """Create or upsert record groups for buckets with appropriate permissions.
         Always processes all buckets so that edges (e.g. recordGroup->app) are
         re-created after full sync when only edges were deleted.
+
+        Args:
+            bucket_names: Bucket names to sync.
+            bucket_creation_epoch_ms: Optional map of bucket name -> AWS CreationDate
+                as epoch ms (from ListBuckets). Used for source_created_at / source_updated_at
+                so the knowledge hub shows real dates. S3 does not expose bucket last-modified
+                in ListBuckets; we use creation time for both.
         """
         if not bucket_names:
             return
 
+        creation_map = bucket_creation_epoch_ms or {}
         record_groups = []
         for bucket_name in bucket_names:
             if not bucket_name:
@@ -463,6 +519,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                         )
                     )
 
+            creation_ms = creation_map.get(bucket_name)
             record_group = RecordGroup(
                 name=bucket_name,
                 external_group_id=bucket_name,
@@ -470,6 +527,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"{self.connector_name} Bucket: {bucket_name}",
+                web_url=self._generate_parent_web_url(bucket_name),
+                source_created_at=creation_ms,
+                source_updated_at=creation_ms,
             )
             record_groups.append((record_group, permissions))
 
@@ -531,9 +591,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         if not last_modified:
             return True
 
-        if isinstance(last_modified, datetime):
-            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-        else:
+        obj_timestamp_ms = datetime_to_epoch_ms(last_modified)
+        if obj_timestamp_ms is None:
             return True
 
         if modified_after_ms and obj_timestamp_ms < modified_after_ms:
@@ -696,20 +755,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                             ):
                                 continue
 
-                            if not is_folder:
-                                last_modified = obj.get("LastModified")
-                                if last_modified:
-                                    if isinstance(last_modified, datetime):
-                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                    else:
-                                        obj_timestamp_ms = get_epoch_timestamp_in_ms()
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                            else:
-                                last_modified = obj.get("LastModified")
-                                if last_modified and isinstance(last_modified, datetime):
-                                    obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                            last_modified = obj.get("LastModified")
+                            if last_modified:
+                                obj_ts = datetime_to_epoch_ms(last_modified)
+                                if obj_ts is not None:
+                                    max_timestamp = max(max_timestamp, obj_ts)
 
                             # Ensure folder hierarchy exists from file path (S3 has no folder objects)
                             if not is_folder:
@@ -857,10 +907,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             last_modified = obj.get("LastModified")
             if last_modified:
-                if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
-                else:
-                    timestamp_ms = get_epoch_timestamp_in_ms()
+                timestamp_ms = _s3_last_modified_to_epoch_ms(last_modified)
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
@@ -1340,10 +1387,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             last_modified = obj_metadata.get("LastModified")
             if last_modified:
-                if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
-                else:
-                    timestamp_ms = get_epoch_timestamp_in_ms()
+                timestamp_ms = _s3_last_modified_to_epoch_ms(last_modified)
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 

@@ -19,6 +19,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.azure_files.connector import (
     AzureFilesConnector,
     AzureFilesDataSourceEntitiesProcessor,
+    _share_last_modified_epoch_ms_from_list,
     get_file_extension,
     get_mimetype_for_azure_files,
     get_parent_path,
@@ -425,9 +426,36 @@ class TestAzureFilesExtensionFilter:
 
 
 # ===========================================================================
+# _share_last_modified_epoch_ms_from_list
+# ===========================================================================
+class TestShareLastModifiedEpochMsFromList:
+    def test_dict_with_datetime(self):
+        fixed = datetime(2022, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
+        rows = [{"name": "s1", "last_modified": fixed}]
+        m = _share_last_modified_epoch_ms_from_list(rows, {"s1"})
+        assert m["s1"] == int(fixed.timestamp() * 1000)
+
+    def test_respects_target_names(self):
+        rows = [{"name": "a", "last_modified": "2020-01-01T00:00:00+00:00"}]
+        assert _share_last_modified_epoch_ms_from_list(rows, {"b"}) == {}
+
+
+# ===========================================================================
 # Record group creation
 # ===========================================================================
 class TestAzureFilesRecordGroups:
+    @pytest.mark.asyncio
+    async def test_create_record_groups_sets_source_timestamps_and_web_url(self, connector):
+        connector.scope = ConnectorScope.TEAM.value
+        connector.account_name = "myacct"
+        ts = 1_700_000_000_000
+        await connector._create_record_groups_for_shares(["share1"], {"share1": ts})
+        args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        rg, _perms = args[0]
+        assert rg.source_created_at == ts
+        assert rg.source_updated_at == ts
+        assert rg.web_url == "https://myacct.file.core.windows.net/share1"
+
     @pytest.mark.asyncio
     async def test_create_record_groups_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value

@@ -14,6 +14,7 @@ from app.connectors.core.registry.filters import FilterCollection, FilterOperato
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
     AzureBlobDataSourceEntitiesProcessor,
+    _container_last_modified_epoch_ms_from_list,
     get_file_extension,
     get_folder_path_segments_from_blob_name,
     get_mimetype_for_azure_blob,
@@ -413,6 +414,28 @@ class TestPassExtensionFilter:
         azure_connector.sync_filters = MagicMock()
         azure_connector.sync_filters.get.return_value = mock_filter
         assert azure_connector._pass_extension_filter("file.pdf") is True
+
+
+# ===========================================================================
+# _container_last_modified_epoch_ms_from_list
+# ===========================================================================
+class TestContainerLastModifiedEpochMsFromList:
+    def test_dict_iso_string(self):
+        fixed = datetime(2021, 3, 10, 8, 30, 0, tzinfo=timezone.utc)
+        iso = fixed.isoformat().replace("+00:00", "Z")
+        rows = [{"name": "c1", "last_modified": iso}]
+        m = _container_last_modified_epoch_ms_from_list(rows, {"c1"})
+        assert m["c1"] == int(fixed.timestamp() * 1000)
+
+    def test_datetime_object(self):
+        fixed = datetime(2021, 3, 10, 8, 30, 0, tzinfo=timezone.utc)
+        rows = [{"name": "c1", "last_modified": fixed}]
+        m = _container_last_modified_epoch_ms_from_list(rows, {"c1"})
+        assert m["c1"] == int(fixed.timestamp() * 1000)
+
+    def test_filters_by_target_names(self):
+        rows = [{"name": "a", "last_modified": "2020-01-01T00:00:00+00:00"}]
+        assert _container_last_modified_epoch_ms_from_list(rows, {"b"}) == {}
 
 
 # ===========================================================================
