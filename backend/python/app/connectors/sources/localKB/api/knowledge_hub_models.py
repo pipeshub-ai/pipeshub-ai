@@ -67,6 +67,7 @@ class NodeItem(BaseModel):
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
+    reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")

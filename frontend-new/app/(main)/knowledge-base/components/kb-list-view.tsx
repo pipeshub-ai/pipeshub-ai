@@ -237,30 +237,39 @@ function TableRow({
     if (shouldHideIndexingStatusForHubRecord(item)) {
       return '';
     }
+    const appendReason = (base: string, reason?: string | null, showReason = true): string =>
+      showReason && reason?.trim() ? `${base} - ${reason.trim()}` : base;
+
     if (isKnowledgeHubNode(item)) {
       // No status from API — do not imply "Queued"
       if (item.indexingStatus == null) {
         return '';
       }
+      let baseLabel: string;
+      let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': return 'Completed';
-        case 'IN_PROGRESS': return 'In Progress';
-        case 'FAILED': return 'Failed';
-        case 'FILE_TYPE_NOT_SUPPORTED': return 'File Type Not Supported';
-        case 'NOT_STARTED': return 'Not Started';
-        case 'QUEUED': return 'Queued';
-        case 'AUTO_INDEX_OFF': return 'Manual Indexing';
-        case 'EMPTY': return 'Empty';
-        default: return 'Queued';
+        case 'COMPLETED': baseLabel = 'Completed'; break;
+        case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
+        case 'FAILED': baseLabel = 'Failed'; break;
+        case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
+        case 'NOT_STARTED': baseLabel = 'Not Started'; break;
+        case 'QUEUED': baseLabel = 'Queued'; showReason = false; break;
+        case 'AUTO_INDEX_OFF': baseLabel = 'Manual Indexing'; break;
+        case 'EMPTY': baseLabel = 'Empty'; break;
+        default: baseLabel = 'Queued'; showReason = false;
       }
+      return appendReason(baseLabel, item.reason, showReason);
     }
+    let baseLabel: string;
+    let showReason = true;
     switch (item.status) {
-      case 'indexed': return 'Completed';
-      case 'processing': return 'In Progress';
-      case 'pending': return 'Pending';
-      case 'failed': return 'Failed';
-      default: return 'Queued';
+      case 'indexed': baseLabel = 'Completed'; break;
+      case 'processing': baseLabel = 'In Progress'; showReason = false; break;
+      case 'pending': baseLabel = 'Pending'; showReason = false; break;
+      case 'failed': baseLabel = 'Failed'; break;
+      default: baseLabel = 'Queued'; showReason = false;
     }
+    return appendReason(baseLabel, item.reason, showReason);
   };
 
   // Status indicator
