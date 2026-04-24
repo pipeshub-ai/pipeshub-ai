@@ -134,6 +134,9 @@ class ChatState(TypedDict):
     # and uses all records for the configured connectors/KBs
     is_service_account: bool
 
+    # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs
+    is_placeholder_agent: bool
+
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
@@ -488,6 +491,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),
+        "is_placeholder_agent": bool(
+            chat_query.get("isPlaceholderAgent", False)
+        ),
 
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
