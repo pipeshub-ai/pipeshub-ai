@@ -1014,6 +1014,17 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def reset_indexing_status_to_queued_for_record_ids(
+        self, record_ids: list[str]
+    ) -> None:
+        """
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
+        Pass a one-element list for a single record. Used before reindex (API and batched sync).
+        Skips missing records; logs errors without raising.
+        """
+        pass
+
+    @abstractmethod
     async def get_documents_by_status(
         self,
         collection: str,

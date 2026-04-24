@@ -7683,7 +7683,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if not record.get("isInternal"):
                 # Reset indexing status to QUEUED before reindexing
-                await self._reset_indexing_status_to_queued(record_id)
+                await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -10431,6 +10431,17 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+
+    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+        """
+        Set QUEUED for each id (one or many; deduplicated). Same logic as the reindex pre-reset
+        and event-service batch path; caller supplies ids (e.g. from a graph batch just loaded).
+        """
+        if not record_ids:
+            return
+        for rid in dict.fromkeys(record_ids):
+            if rid:
+                await self._reset_indexing_status_to_queued(rid)
 
     async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""

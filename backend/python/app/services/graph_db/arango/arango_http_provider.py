@@ -1136,6 +1136,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to reset record %s to QUEUED: %s", record_id, str(e))
 
+    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+        """Set QUEUED for one or many record ids (deduplicated)."""
+        if not record_ids:
+            return
+        for rid in dict.fromkeys(record_ids):
+            if rid:
+                await self._reset_indexing_status_to_queued(rid)
+
     async def _check_record_permissions(
         self,
         record_id: str,
@@ -1472,7 +1480,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
             if not rec.get("isInternal"):
-                await self._reset_indexing_status_to_queued(record_id)
+                await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:

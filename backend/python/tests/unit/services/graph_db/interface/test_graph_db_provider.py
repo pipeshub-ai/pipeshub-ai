@@ -224,6 +224,7 @@ class TestAbstractMethodInventory:
         "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
+        "reset_indexing_status_to_queued_for_record_ids",
         "get_documents_by_status",
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
