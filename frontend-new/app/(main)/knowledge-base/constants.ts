@@ -12,7 +12,7 @@ export const DIALOG_STYLES = {
  * Page size for knowledge hub sidebar: root app list, per-app children, and
  * `load more` fetches. Set to 5 for pagination testing; increase (e.g. 50) for production.
  */
-export const SIDEBAR_PAGINATION_PAGE_SIZE = 5;
+export const SIDEBAR_PAGINATION_PAGE_SIZE = 20;
 
 // Curated "More Connectors" links for the All Records sidebar.
 // Top 5 enterprise connectors per scope, based on industry adoption.
