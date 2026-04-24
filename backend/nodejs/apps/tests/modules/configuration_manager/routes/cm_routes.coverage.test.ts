@@ -5,6 +5,7 @@ import { Container } from 'inversify'
 import { createConfigurationManagerRouter } from '../../../../src/modules/configuration_manager/routes/cm_routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { AiConfigEventProducer } from '../../../../src/modules/configuration_manager/services/kafka_events.service'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
 
 describe('Configuration Manager Routes - handler coverage', () => {
@@ -40,6 +41,11 @@ describe('Configuration Manager Routes - handler coverage', () => {
       start: sinon.stub().resolves(),
     }
 
+    const mockAiConfigEventService = {
+      publishEvent: sinon.stub().resolves(),
+      start: sinon.stub().resolves(),
+    }
+
     const mockSyncEventService = {
       publishEvent: sinon.stub().resolves(),
       start: sinon.stub().resolves(),
@@ -59,6 +65,7 @@ describe('Configuration Manager Routes - handler coverage', () => {
     container.bind('KeyValueStoreService').toConstantValue(mockKvStore as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind('EntitiesEventProducer').toConstantValue(mockEntityEventService as any)
+    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
     container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)

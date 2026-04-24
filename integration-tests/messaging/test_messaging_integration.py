@@ -25,6 +25,7 @@ from messaging.conftest import (
     consume_redis_messages,
 )
 from messaging.payloads import (
+    ALL_AI_CONFIG_EVENTS,
     ALL_ENTITY_EVENTS,
     ALL_RECORD_EVENTS,
     ALL_SYNC_EVENTS,
@@ -341,6 +342,7 @@ class TestKafkaProducerConsumerE2E:
         suffix = uuid.uuid4().hex[:8]
         record_topic = f"e2e-kafka-records-{suffix}"
         entity_topic = f"e2e-kafka-entity-{suffix}"
+        ai_config_topic = f"e2e-kafka-aiconfig-{suffix}"
         sync_topic = f"e2e-kafka-sync-{suffix}"
         brokers = _kafka_brokers().split(",")
 
@@ -354,6 +356,7 @@ class TestKafkaProducerConsumerE2E:
         # Build events per topic
         record_events = [factory() for factory in ALL_RECORD_EVENTS]
         entity_events = [factory() for factory in ALL_ENTITY_EVENTS]
+        ai_config_events = [factory() for factory in ALL_AI_CONFIG_EVENTS]
         sync_events = [factory() for factory in ALL_SYNC_EVENTS]
 
         # One consumer per topic
@@ -361,16 +364,19 @@ class TestKafkaProducerConsumerE2E:
         received_per_topic: dict[str, list[StreamMessage]] = {
             record_topic: [],
             entity_topic: [],
+            ai_config_topic: [],
             sync_topic: [],
         }
         done_events: dict[str, asyncio.Event] = {
             record_topic: asyncio.Event(),
             entity_topic: asyncio.Event(),
+            ai_config_topic: asyncio.Event(),
             sync_topic: asyncio.Event(),
         }
         expected_counts = {
             record_topic: len(record_events),
             entity_topic: len(entity_events),
+            ai_config_topic: len(ai_config_events),
             sync_topic: len(sync_events),
         }
 
@@ -389,6 +395,7 @@ class TestKafkaProducerConsumerE2E:
             for t, events_list in [
                 (record_topic, record_events),
                 (entity_topic, entity_events),
+                (ai_config_topic, ai_config_events),
                 (sync_topic, sync_events),
             ]:
                 cfg = KafkaConsumerConfig(
@@ -413,6 +420,10 @@ class TestKafkaProducerConsumerE2E:
                 await producer.send_message(
                     entity_topic, event, key=event["payload"].get("orgId", "")
                 )
+            for event in ai_config_events:
+                await producer.send_message(
+                    ai_config_topic, event, key=event["payload"].get("orgId", "")
+                )
             for event in sync_events:
                 await producer.send_message(sync_topic, event, key=event["eventType"])
 
@@ -424,12 +435,14 @@ class TestKafkaProducerConsumerE2E:
 
             assert len(received_per_topic[record_topic]) == len(record_events)
             assert len(received_per_topic[entity_topic]) == len(entity_events)
+            assert len(received_per_topic[ai_config_topic]) == len(ai_config_events)
             assert len(received_per_topic[sync_topic]) == len(sync_events)
 
             # Verify event types match
             for t, events_list in [
                 (record_topic, record_events),
                 (entity_topic, entity_events),
+                (ai_config_topic, ai_config_events),
                 (sync_topic, sync_events),
             ]:
                 received_types = {m.eventType for m in received_per_topic[t]}
@@ -967,10 +980,18 @@ class TestRedisOverloadAndRecovery:
     async def test_intermittent_handler_failure_and_pel_recovery(
         self, redis_stream_cleanup
     ):
-        """Messages that fail processing stay in PEL and are recovered on consumer restart."""
+        """Messages that fail processing stay in PEL and are recovered on consumer restart.
+
+        Simulates a real-world restart by reusing the same ``client_id`` for both
+        consumers — this is the scenario where XAUTOCLAIM cannot help (same consumer
+        name) and only ``XREADGROUP ... id="0"`` can resume the un-acked work.
+        """
         stream = _unique_stream("overload-fail-recover")
         redis_stream_cleanup.append(stream)
 
+        # Same client_id on both consumers = true "restart" scenario.
+        # Lower claim_min_idle_ms so XAUTOCLAIM also works in fast tests if ever
+        # the same client_id assumption is relaxed.
         base_config = dict(
             host=_redis_host(),
             port=_redis_port(),
@@ -978,7 +999,7 @@ class TestRedisOverloadAndRecovery:
             client_id="fail-recover-c",
             group_id="fail-recover-g",
             topics=[stream],
-            claim_min_idle_ms=1000,
+            claim_min_idle_ms=500,
         )
 
         producer = RedisStreamsProducer(logger, RedisStreamsConfig(**base_config))
@@ -1018,10 +1039,10 @@ class TestRedisOverloadAndRecovery:
 
         assert len(first_pass_ok) == 5
 
-        # Wait for messages to become idle (claim_min_idle_ms = 1000ms)
-        await asyncio.sleep(1.5)
-
-        # Phase 2: new consumer with same group — _drain_pending picks up the 5 rejected messages
+        # Phase 2: a "restarted" consumer reuses the same client_id. The 5 rejected
+        # messages are in this client's own PEL — _drain_pending must call
+        # XREADGROUP with id "0" to recover them (XAUTOCLAIM won't, since the
+        # consumer name matches).
         second_pass: list[StreamMessage] = []
         second_done = asyncio.Event()
 
@@ -1031,9 +1052,7 @@ class TestRedisOverloadAndRecovery:
                 second_done.set()
             return True
 
-        # Use a different client_id so xgroup_delconsumer doesn't wipe consumer1's PEL
-        recovery_config = {**base_config, "client_id": "fail-recover-c2"}
-        consumer2 = RedisStreamsConsumer(logger, RedisStreamsConfig(**recovery_config))
+        consumer2 = RedisStreamsConsumer(logger, RedisStreamsConfig(**base_config))
         try:
             await consumer2.start(accept_all)
             await asyncio.wait_for(second_done.wait(), timeout=15.0)
@@ -1049,7 +1068,12 @@ class TestRedisOverloadAndRecovery:
     async def test_consumer_crash_and_restart_recovers_pending(
         self, redis_stream_cleanup
     ):
-        """Simulates a consumer crash (exception = no ack) and verifies PEL drain on restart."""
+        """Simulates a consumer crash (exception = no ack) and verifies PEL drain on restart.
+
+        Reuses the same ``client_id`` for both consumers — this is the canonical
+        crash/restart scenario. Recovery relies on Phase 2 of ``_drain_pending``
+        (``XREADGROUP ... id="0"``), since XAUTOCLAIM cannot steal from itself.
+        """
         stream = _unique_stream("overload-crash")
         redis_stream_cleanup.append(stream)
 
@@ -1060,7 +1084,7 @@ class TestRedisOverloadAndRecovery:
             client_id="crash-c",
             group_id="crash-g",
             topics=[stream],
-            claim_min_idle_ms=1000,
+            claim_min_idle_ms=500,
         )
 
         producer = RedisStreamsProducer(logger, RedisStreamsConfig(**base_config))
@@ -1085,7 +1109,9 @@ class TestRedisOverloadAndRecovery:
         finally:
             await consumer1.stop()
 
-        # Phase 2: new consumer — _drain_pending should recover un-acked messages
+        # Phase 2: "restart" with the same client_id — _drain_pending should
+        # recover the un-acked messages from this client's own PEL via
+        # XREADGROUP with id "0".
         recovered: list[StreamMessage] = []
         recovered_done = asyncio.Event()
 
@@ -1095,9 +1121,7 @@ class TestRedisOverloadAndRecovery:
                 recovered_done.set()
             return True
 
-        # Use a different client_id so xgroup_delconsumer doesn't wipe consumer1's PEL
-        recovery_config = {**base_config, "client_id": "crash-c2"}
-        consumer2 = RedisStreamsConsumer(logger, RedisStreamsConfig(**recovery_config))
+        consumer2 = RedisStreamsConsumer(logger, RedisStreamsConfig(**base_config))
         try:
             await consumer2.start(recovery_handler)
             await asyncio.wait_for(recovered_done.wait(), timeout=15.0)

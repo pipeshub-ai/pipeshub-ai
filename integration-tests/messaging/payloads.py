@@ -287,6 +287,10 @@ def app_disabled_event(org_id: str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# ai-config-events
+# ---------------------------------------------------------------------------
+
 def llm_configured_event(org_id: str | None = None) -> dict:
     org_id = org_id or _uid()
     return {
@@ -460,6 +464,9 @@ ALL_ENTITY_EVENTS = [
     user_deleted_event,
     app_enabled_event,
     app_disabled_event,
+]
+
+ALL_AI_CONFIG_EVENTS = [
     llm_configured_event,
     embedding_model_configured_event,
 ]
