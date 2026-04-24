@@ -4,6 +4,7 @@ import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Flex, Text, Button, IconButton, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/(main)/layout';
 import { useKnowledgeBaseStore } from '../store';
 import type { ViewMode, PageViewMode, Breadcrumb } from '../types';
 import { FolderIcon } from '@/app/components/ui';
@@ -300,7 +301,7 @@ export function Header({
         height: '40px',
         // Leave room on the left for the fixed mobile hamburger button so the
         // breadcrumb does not sit underneath it.
-        padding: isMobile ? '0 var(--space-2) 0 44px' : '0 var(--space-3)',
+        padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
         borderBottom: '1px solid var(--olive-3)',
         backdropFilter: 'blur(8px)',
         backgroundColor: 'var(--effects-translucent)',
