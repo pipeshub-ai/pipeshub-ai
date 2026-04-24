@@ -4,7 +4,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import KnowledgeBaseSidebar from '../../knowledge-base/sidebar';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
-import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/constants';
+import {
+  ADMIN_MORE_CONNECTORS,
+  PERSONAL_MORE_CONNECTORS,
+  SIDEBAR_PAGINATION_PAGE_SIZE,
+} from '../../knowledge-base/constants';
+import { sidebarNodeChildrenMetaFromResponse } from '../../knowledge-base/utils/sidebar-child-pagination-meta';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   categorizeNode,
@@ -133,12 +138,27 @@ function KnowledgeBaseSidebarSlotContent() {
         const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
           onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
           include: 'counts',
+          sortBy: 'name',
+          sortOrder: 'asc',
         });
 
         cacheNodeChildren(nodeId, response.items);
         addNodes(response.items);
+
+        const { setNodeChildrenPagination } = useKnowledgeBaseStore.getState();
+        if (nodeType !== 'app') {
+          setNodeChildrenPagination(
+            nodeId,
+            sidebarNodeChildrenMetaFromResponse(
+              response.pagination,
+              response.items.length,
+              SIDEBAR_PAGINATION_PAGE_SIZE,
+              nodeType
+            )
+          );
+        }
 
         const foldersCount =
           response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;

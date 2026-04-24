@@ -1,8 +1,9 @@
 import { KnowledgeHubApi } from '../api';
 import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
-import { buildConnectorAppSidebarTree, categorizeNodes } from './tree-builder';
+import { buildConnectorAppSidebarTree, categorizeNodes, treeHasNodeWithId } from './tree-builder';
 import { isKbCollectionsHubApp } from './all-records-transformer';
+import { sidebarNodeChildrenMetaAfterPage } from './sidebar-child-pagination-meta';
 import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
 
@@ -130,5 +131,68 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     });
   } finally {
     setAppLoading(appId, false);
+  }
+}
+
+/**
+ * Fetches the next page of children for a nested sidebar parent (folder, kb,
+ * recordGroup, …). App direct children use {@link loadMoreAppChildPage} instead.
+ */
+export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> {
+  const state = useKnowledgeBaseStore.getState();
+  const meta = state.nodeChildrenPagination.get(parentId);
+  if (!meta?.hasNext || meta.nodeType === 'app') return;
+
+  const {
+    cacheNodeChildren,
+    setNodeChildrenPagination,
+    setLoadingNodeChildrenMore,
+    addNodes,
+    mergeConnectorAppTreeChildren,
+    reMergeCachedChildrenIntoTree,
+  } = useKnowledgeBaseStore.getState();
+
+  setLoadingNodeChildrenMore(parentId, true);
+  try {
+    const response = await KnowledgeHubApi.getNodeChildren(meta.nodeType, parentId, {
+      onlyContainers: true,
+      page: meta.nextPage,
+      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+      sortBy: 'name',
+      sortOrder: 'asc',
+      include: 'counts',
+    });
+
+    const previous = useKnowledgeBaseStore.getState().nodeChildrenCache.get(parentId) || [];
+    const merged = mergeNodesById(previous, response.items);
+    cacheNodeChildren(parentId, merged);
+
+    setNodeChildrenPagination(
+      parentId,
+      sidebarNodeChildrenMetaAfterPage(
+        response.pagination,
+        response.items.length,
+        SIDEBAR_PAGINATION_PAGE_SIZE,
+        meta.nextPage,
+        meta.nodeType
+      )
+    );
+
+    addNodes(response.items);
+    reMergeCachedChildrenIntoTree();
+
+    const { connectorAppTrees } = useKnowledgeBaseStore.getState();
+    for (const [appId, tree] of Array.from(connectorAppTrees.entries())) {
+      if (!treeHasNodeWithId(tree, parentId)) continue;
+      mergeConnectorAppTreeChildren(appId, parentId, merged);
+      break;
+    }
+  } catch (error) {
+    console.error('loadMoreNodeChildrenPage failed:', { parentId, error });
+    toast.error('Could not load more items', {
+      description: 'Please try again or refresh the page.',
+    });
+  } finally {
+    setLoadingNodeChildrenMore(parentId, false);
   }
 }
