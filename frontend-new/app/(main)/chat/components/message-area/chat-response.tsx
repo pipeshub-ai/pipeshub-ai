@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Flex, Heading, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Heading, IconButton } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
@@ -344,6 +344,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   };
 
   const [isQuestionHovered, setIsQuestionHovered] = useState(false);
+  const [isQuestionExpanded, setIsQuestionExpanded] = useState(false);
+
+  const QUESTION_CHAR_LIMIT = 250;
+  const isQuestionLong = question.length > QUESTION_CHAR_LIMIT;
+  const displayedQuestion = isQuestionExpanded || !isQuestionLong
+    ? question
+    : question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…';
 
   const handleEditQuery = useCallback(() => {
     if (!messageId || isStreaming) return;
@@ -356,51 +363,78 @@ export const ChatResponse = React.memo(function ChatResponse({
   const shell = (
     <Box style={{ width: '100%' }}>
       {/* Question Header with hover edit icon */}
-      <Flex
-        align="center"
-        gap="2"
+      <Box
         onMouseEnter={() => setIsQuestionHovered(true)}
         onMouseLeave={() => setIsQuestionHovered(false)}
         style={{
           marginBottom: collections && collections.length > 0 ? 'var(--space-3)' : 'var(--space-4)',
         }}
       >
-        <Heading
-          size={isMobile ? '5' : '7'}
-          weight="medium"
-          style={{
-            color: 'var(--slate-12)',
-            lineHeight: 1.3,
-            paddingTop: 'var(--space-3)',
-          }}
-        >
-          {question}
-          {/* Edit pencil icon — appears on hover, only when not streaming */}
-          {!isStreaming && messageId && (
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="1"
-              onClick={handleEditQuery}
-              style={{
-                margin: '0 0 0 var(--space-2)',
-                cursor: 'pointer',
-                flexShrink: 0,
-                opacity: isQuestionHovered ? 1 : 0,
-                transition: 'opacity 0.15s ease',
-                pointerEvents: isQuestionHovered ? 'auto' : 'none',
-                verticalAlign: 'middle',
-              }}
-            >
-              <MaterialIcon
-                name="edit"
-                size={ICON_SIZES.PRIMARY}
-                color="var(--slate-11)"
-              />
-            </IconButton>
-          )}
-        </Heading>
-      </Flex>
+        <Flex align="start" gap="2">
+          <Heading
+            size={isMobile ? '5' : '6'}
+            weight="medium"
+            style={{
+              color: 'var(--slate-12)',
+              lineHeight: 1.3,
+              paddingTop: 'var(--space-3)',
+              flex: 1,
+            }}
+          >
+            {displayedQuestion}
+            {/* Edit pencil icon — appears on hover, only when not streaming */}
+            {!isStreaming && messageId && (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={handleEditQuery}
+                style={{
+                  margin: '0 0 0 var(--space-2)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  opacity: isQuestionHovered ? 1 : 0,
+                  transition: 'opacity 0.15s ease',
+                  pointerEvents: isQuestionHovered ? 'auto' : 'none',
+                  verticalAlign: 'middle',
+                }}
+              >
+                <MaterialIcon
+                  name="edit"
+                  size={ICON_SIZES.PRIMARY}
+                  color="var(--slate-11)"
+                />
+              </IconButton>
+            )}
+          </Heading>
+        </Flex>
+
+        {isQuestionLong && (
+          <Button
+            color="gray"
+            size="2"
+            onClick={() => setIsQuestionExpanded((prev) => !prev)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '2px',
+              marginTop: 'var(--space-2)',
+              cursor: 'pointer',
+              color: 'var(--slate-11)',
+              background: 'none',
+              padding: 0,
+              fontFamily: 'inherit',
+              height: 'auto',
+            }}
+          >
+            {isQuestionExpanded ? 'Show less' : 'Show more'}
+            <MaterialIcon
+              name={isQuestionExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
+              size={ICON_SIZES.PRIMARY}
+            />
+          </Button>
+        )}
+      </Box>
 
       {/* Collection cards — shown when KBs were attached to this message */}
       {collections && collections.length > 0 && (

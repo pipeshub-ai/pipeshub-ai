@@ -210,6 +210,7 @@ export function FilePreviewFullscreen({
                 fileName={file.name}
                 fileType={file.type}
                 fileBlob={file.blob}
+                webUrl={file.webUrl}
                 pagination={paginationControls}
                 highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                 highlightPage={hasCitations ? syncHighlightPage : undefined}

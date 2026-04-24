@@ -155,6 +155,8 @@ interface ConnectorsState {
   setIsSavingAuth: (saving: boolean) => void;
   setIsSavingConfig: (saving: boolean) => void;
   setSaveError: (error: string | null) => void;
+  /** Set or clear individual form error keys. Pass `null` to remove a key. */
+  mergeFormErrors: (patch: Record<string, string | null | undefined>) => void;
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
@@ -624,6 +626,17 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setSaveError: (error) =>
         set((s) => {
           s.saveError = error;
+        }),
+
+      mergeFormErrors: (patch) =>
+        set((s) => {
+          for (const [k, v] of Object.entries(patch)) {
+            if (v === null || v === undefined || v === '') {
+              delete s.formErrors[k];
+            } else {
+              s.formErrors[k] = v;
+            }
+          }
         }),
 
       setIsLoadingRecords: (loading) =>

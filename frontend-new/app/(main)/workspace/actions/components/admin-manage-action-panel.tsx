@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import {
   AlertDialog,
   Badge,
@@ -14,12 +15,14 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   ToolsetsApi,
   type BuilderSidebarToolset,
   type ToolsetOauthConfigListRow,
 } from '@/app/(main)/toolsets/api';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
+import { FormField } from '@/app/(main)/workspace/components/form-field';
 import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import {
   apiErrorDetail,
@@ -88,6 +91,7 @@ export function AdminManageActionPanel({
   onDeleted,
   onNotify,
 }: AdminManageActionPanelProps) {
+  const router = useRouter();
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(true);
   const { t } = useTranslation();
   const instanceId = instance.instanceId ?? '';
@@ -96,7 +100,9 @@ export function AdminManageActionPanel({
   const oauth = isOAuthType(authType);
 
   const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
+  const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
 
   const [instanceName, setInstanceName] = useState(instance.instanceName || instance.displayName || '');
   const [oauthFieldValues, setOauthFieldValues] = useState<Record<string, unknown>>({});
@@ -106,10 +112,13 @@ export function AdminManageActionPanel({
   const [nonOauthValues, setNonOauthValues] = useState<Record<string, unknown>>({});
   /** Instance document `auth` from GET /instances/:id (admin); my-toolsets rows often omit this. */
   const [instanceAuthFromGet, setInstanceAuthFromGet] = useState<Record<string, unknown> | null>(null);
+  const [instanceAuthLoading, setInstanceAuthLoading] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const lastOauthHydrateKeyRef = useRef<string>('');
@@ -165,17 +174,21 @@ export function AdminManageActionPanel({
 
   useEffect(() => {
     if (!instanceId) {
+      setInstanceAuthLoading(false);
       setInstanceAuthFromGet(null);
       return;
     }
     let cancelled = false;
     void (async () => {
+      setInstanceAuthLoading(true);
       try {
         const doc = await ToolsetsApi.getToolsetInstance(instanceId);
         if (cancelled) return;
         setInstanceAuthFromGet(asAuthRecord(doc.auth));
       } catch {
         if (!cancelled) setInstanceAuthFromGet(null);
+      } finally {
+        if (!cancelled) setInstanceAuthLoading(false);
       }
     })();
     return () => {
@@ -185,15 +198,21 @@ export function AdminManageActionPanel({
 
   useEffect(() => {
     if (!toolsetType) {
+      setSchemaRaw(null);
+      setSchemaLoading(false);
       return;
     }
     let cancelled = false;
     (async () => {
+      setSchemaRaw(null);
+      setSchemaLoading(true);
       try {
         const s = await ToolsetsApi.getToolsetRegistrySchema(toolsetType);
         if (!cancelled) setSchemaRaw(s);
       } catch {
         if (!cancelled) setSchemaRaw(null);
+      } finally {
+        if (!cancelled) setSchemaLoading(false);
       }
     })();
     return () => {
@@ -205,11 +224,15 @@ export function AdminManageActionPanel({
     if (!oauth || !toolsetType) return;
     let cancelled = false;
     (async () => {
+      setOauthConfigs([]);
+      setOauthConfigsLoading(true);
       try {
         const list = await ToolsetsApi.listToolsetOAuthConfigs(toolsetType);
         if (!cancelled) setOauthConfigs(list);
       } catch {
         if (!cancelled) setOauthConfigs([]);
+      } finally {
+        if (!cancelled) setOauthConfigsLoading(false);
       }
     })();
     return () => {
@@ -218,7 +241,14 @@ export function AdminManageActionPanel({
   }, [oauth, toolsetType]);
 
   useEffect(() => {
+    if (oauth) return;
+    setOauthConfigs([]);
+    setOauthConfigsLoading(false);
+  }, [oauth, toolsetType]);
+
+  useEffect(() => {
     if (!oauth || !oauthFields.length) return;
+    if (oauthConfigsLoading) return;
     const row = linkedOauthRow;
     const hydrateKey = `${instance.instanceId}:${row?._id ?? 'none'}:${oauthFields.map((f) => f.name).join(',')}`;
     if (hydrateKey === lastOauthHydrateKeyRef.current) return;
@@ -229,7 +259,7 @@ export function AdminManageActionPanel({
       Boolean(row?.clientSecretSet) || Boolean(String(seeded.clientSecret ?? '').trim())
     );
     lastOauthHydrateKeyRef.current = hydrateKey;
-  }, [oauth, oauthFields, linkedOauthRow, instance.instanceId]);
+  }, [oauth, oauthFields, linkedOauthRow, instance.instanceId, oauthConfigsLoading]);
 
   useEffect(() => {
     if (oauth || !nonOauthConfigureFields.length) {
@@ -294,6 +324,11 @@ export function AdminManageActionPanel({
 
   const showOauthImpactCallout =
     oauth && oauthFields.length > 0 && stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot;
+  const credentialsSectionLoading =
+    (schemaLoading && !schemaRaw) ||
+    (oauth && oauthConfigsLoading) ||
+    (!oauth && instanceAuthLoading);
+  const showPersonalActionsCta = !isNoneAuthType(authType) && !oauth && Boolean(toolsetType);
 
   const copyRedirect = useCallback(async () => {
     if (!redirectUri) return;
@@ -305,13 +340,86 @@ export function AdminManageActionPanel({
     }
   }, [onNotify, redirectUri, t]);
 
+  const runManageValidation = useCallback((): boolean => {
+    setFieldErrors({});
+    setInstanceNameError(null);
+    setError(null);
+    const next: Record<string, string> = {};
+    if (!instanceName.trim()) {
+      setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
+    }
+    if (oauth) {
+      for (const f of oauthFields) {
+        const display = oauthFieldForDisplay(f);
+        if (!display.required) continue;
+        const raw = oauthFieldValues[f.name];
+        const ln = f.name.toLowerCase();
+        if (ln === 'clientsecret' && !String(raw ?? '').trim() && clientSecretWasSet) {
+          continue;
+        }
+        if (
+          raw === undefined ||
+          raw === null ||
+          (typeof raw === 'string' && raw.trim() === '')
+        ) {
+          next[f.name] = t('workspace.actions.validation.fieldRequired', { field: f.displayName });
+        }
+      }
+    } else {
+      for (const f of nonOauthConfigureFields) {
+        if (!f.required) continue;
+        const raw = nonOauthValues[f.name];
+        if (
+          raw === undefined ||
+          raw === null ||
+          (typeof raw === 'string' && raw.trim() === '')
+        ) {
+          next[f.name] = t('workspace.actions.validation.fieldRequired', { field: f.displayName });
+        }
+      }
+    }
+    if (Object.keys(next).length > 0) {
+      setFieldErrors(next);
+    }
+    const nameInvalid = !instanceName.trim();
+    if (nameInvalid || Object.keys(next).length > 0) {
+      requestAnimationFrame(() => {
+        if (nameInvalid) {
+          document
+            .querySelector('[data-ph-toolset-admin-instance-name]')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          const k = Object.keys(next)[0];
+          if (k) {
+            document
+              .querySelector(`[data-ph-auth-field="${k}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      });
+    }
+    if (nameInvalid || Object.keys(next).length > 0) {
+      return false;
+    }
+    return true;
+  }, [
+    clientSecretWasSet,
+    instanceName,
+    nonOauthConfigureFields,
+    nonOauthValues,
+    oauth,
+    oauthFieldForDisplay,
+    oauthFields,
+    oauthFieldValues,
+    t,
+  ]);
+
   const handleSave = useCallback(async () => {
     if (!instanceId) return;
-    const name = instanceName.trim();
-    if (!name) {
-      setError(t('workspace.actions.errors.instanceNameRequired'));
+    if (!runManageValidation()) {
       return;
     }
+    const name = instanceName.trim();
     setSaving(true);
     setError(null);
     try {
@@ -319,7 +427,7 @@ export function AdminManageActionPanel({
         const authConfig: Record<string, unknown> = { type: 'OAUTH' };
         for (const f of oauthFields) {
           const ln = f.name.toLowerCase();
-          if (ln === 'redirecturi' || ln === 'baseurl') continue;
+          if (ln === 'redirecturi') continue;
           const raw = oauthFieldValues[f.name];
           if (ln === 'clientsecret' && (!raw || !String(raw).trim())) {
             if (clientSecretWasSet) continue;
@@ -404,6 +512,7 @@ export function AdminManageActionPanel({
     onClose,
     onNotify,
     onSaved,
+    runManageValidation,
     t,
   ]);
 
@@ -446,6 +555,11 @@ export function AdminManageActionPanel({
       }
     );
   }, [beginOAuth, instanceId, t]);
+
+  const goToPersonalActions = useCallback(() => {
+    if (!toolsetType) return;
+    router.push(`/workspace/actions/personal?toolsetType=${encodeURIComponent(toolsetType)}`);
+  }, [router, toolsetType]);
 
   if (!instanceId) {
     return (
@@ -492,27 +606,50 @@ export function AdminManageActionPanel({
         </>
       ) : null}
 
-      <Flex direction="column" gap="2">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {t('workspace.actions.instanceName')}
-        </Text>
-        <TextField.Root
-          value={instanceName}
-          onChange={(e) => setInstanceName(e.target.value)}
-          placeholder={t('workspace.actions.instanceNamePlaceholder')}
-        />
-      </Flex>
+      <div data-ph-toolset-admin-instance-name>
+        <FormField
+          label={t('workspace.actions.instanceName')}
+          required
+          error={instanceNameError ?? undefined}
+        >
+          <TextField.Root
+            value={instanceName}
+            onChange={(e) => {
+              setInstanceName(e.target.value);
+              if (instanceNameError) {
+                setInstanceNameError(null);
+              }
+            }}
+            color={instanceNameError ? 'red' : undefined}
+            placeholder={t('workspace.actions.instanceNamePlaceholder')}
+            aria-invalid={instanceNameError ? true : undefined}
+          />
+        </FormField>
+      </div>
 
       {oauth ? (
         <>
-          {oauthFields.length > 0 ? (
+          {credentialsSectionLoading ? (
+            <Flex align="center" justify="center" mt="1" style={{ width: '100%', minHeight: 120 }}>
+              <LottieLoader variant="loader" size={40} showLabel label={t('agentBuilder.loadingSchema')} />
+            </Flex>
+          ) : oauthFields.length > 0 ? (
             <Flex direction="column" gap="3" mt="1">
               {oauthFields.map((field) => (
                 <SchemaFormField
                   key={field.name}
                   field={oauthFieldForDisplay(field) as SchemaField}
                   value={oauthFieldValues[field.name]}
-                  onChange={(name, val) => setOauthFieldValues((p) => ({ ...p, [name]: val }))}
+                  onChange={(name, val) => {
+                    setOauthFieldValues((p) => ({ ...p, [name]: val }));
+                    setFieldErrors((p) => {
+                      if (!p[name]) return p;
+                      const n = { ...p };
+                      delete n[name];
+                      return n;
+                    });
+                  }}
+                  error={fieldErrors[field.name]}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
                 />
               ))}
@@ -523,6 +660,10 @@ export function AdminManageActionPanel({
             </Callout.Root>
           )}
         </>
+      ) : credentialsSectionLoading ? (
+        <Flex align="center" justify="center" mt="1" style={{ width: '100%', minHeight: 120 }}>
+          <LottieLoader variant="loader" size={40} showLabel label={t('agentBuilder.loadingSchema')} />
+        </Flex>
       ) : nonOauthConfigureFields.length > 0 ? (
         <Flex direction="column" gap="3" mt="1">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -533,7 +674,16 @@ export function AdminManageActionPanel({
               key={field.name}
               field={field as SchemaField}
               value={nonOauthValues[field.name]}
-              onChange={(name, val) => setNonOauthValues((p) => ({ ...p, [name]: val }))}
+              onChange={(name, val) => {
+                setNonOauthValues((p) => ({ ...p, [name]: val }));
+                setFieldErrors((p) => {
+                  if (!p[name]) return p;
+                  const n = { ...p };
+                  delete n[name];
+                  return n;
+                });
+              }}
+              error={fieldErrors[field.name]}
               selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
             />
           ))}
@@ -547,7 +697,7 @@ export function AdminManageActionPanel({
         </Callout.Root>
       ) : null}
 
-      {oauth && showOauthImpactCallout ? (
+      {oauth && !credentialsSectionLoading && showOauthImpactCallout ? (
         <Callout.Root color="amber">
           <Callout.Icon>
             <MaterialIcon name="warning" size={16} />
@@ -569,6 +719,28 @@ export function AdminManageActionPanel({
             ))}
           </Flex>
         </Flex>
+      ) : null}
+
+      {showPersonalActionsCta ? (
+        <Callout.Root color="blue" variant="surface" size="1">
+          <Callout.Text>
+            {t('workspace.actions.manage.personalActionsHint', {
+              defaultValue: 'User credentials are managed in My Actions.',
+            })}
+            <Button
+              type="button"
+              size="1"
+              variant="soft"
+              color="blue"
+              ml="2"
+              onClick={goToPersonalActions}
+            >
+              {t('workspace.actions.manage.openPersonalActionsCta', {
+                defaultValue: 'Open My Actions',
+              })}
+            </Button>
+          </Callout.Text>
+        </Callout.Root>
       ) : null}
 
       <Separator size="4" />

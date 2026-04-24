@@ -6,7 +6,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_HEADER_PADDING, ELEMENT_HEIGHT } from '@/app/components/sidebar';
 import { FolderTreeItem } from './section-element';
-import { mapConnectorType } from '../utils/all-records-transformer';
+import { FolderIcon } from '@/app/components/ui';
+import { isKbCollectionsHubApp, mapConnectorType } from '../utils/all-records-transformer';
 import { useTranslation } from 'react-i18next';
 import type {
   KnowledgeHubNode,
@@ -14,7 +15,8 @@ import type {
   NodeType,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SidebarListShimmerRows } from './sidebar-list-shimmer';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 
 /** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
 export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
@@ -30,6 +32,7 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): En
     permission: node.permission,
     origin: node.origin,
     connector: node.connector,
+    subType: node.subType,
     extension: node.extension,
     mimeType: node.mimeType,
   };
@@ -64,6 +67,11 @@ interface AppSectionProps {
   // Overflow limit
   maxVisible?: number;
   onMore?: () => void;
+
+  /** Server pagination: more direct children exist for this app (same hub API as chat picker) */
+  appChildListHasMore?: boolean;
+  onLoadMoreAppChildren?: () => void;
+  appChildLoadMoreDisabled?: boolean;
 }
 
 /**
@@ -89,10 +97,27 @@ export function AppSection({
   onDelete,
   maxVisible,
   onMore,
+  appChildListHasMore,
+  onLoadMoreAppChildren,
+  appChildLoadMoreDisabled,
 }: AppSectionProps) {
-  const isKbApp = app.connector === 'KB';
-  const connectorType = !isKbApp ? mapConnectorType(app.connector || app.name) : 'generic';
+  const { t } = useTranslation();
+  const isKbApp = isKbCollectionsHubApp(app);
+  const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
+  const treeLen = hierarchicalTree?.length ?? 0;
+  /**
+   * “⋯ More” overflow: KB uses `categorizedTree` length; non-KB uses flat `children`
+   * when there is no tree yet (`treeLen === 0`). When overflow shows, inline
+   * “Load more” for server pagination is hidden (see `showChildLoadInline`).
+   */
+  const showOverflowMore =
+    Boolean(maxVisible) &&
+    ((treeLen > 0 && treeLen > maxVisible) ||
+      (treeLen === 0 && children.length > maxVisible));
+  const showChildLoadInline =
+    !isLoading &&
+    Boolean(appChildListHasMore && onLoadMoreAppChildren && !showOverflowMore);
 
   return (
     <Box style={{ marginBottom: `${SECTION_PADDING_BOTTOM}px` }}>
@@ -102,8 +127,10 @@ export function AppSection({
         gap="1"
         style={{ padding: SECTION_HEADER_PADDING, marginBottom: KB_SECTION_HEADER_MARGIN_BOTTOM }}
       >
-        {!isKbApp && (
-          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" />
+        {isKbApp ? (
+          <FolderIcon variant="default" size={16} color="var(--emerald-11)" style={{ flexShrink: 0 }} />
+        ) : (
+          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
         )}
         <Text
           size="2"
@@ -121,9 +148,7 @@ export function AppSection({
       >
       <Flex direction="column" gap="0">
         {isLoading ? (
-          <Flex align="center" gap="2" style={{ padding: 'var(--space-2) var(--space-6)' }}>
-            <LottieLoader variant="loader" size={16} />
-          </Flex>
+          <SidebarListShimmerRows count={3} />
         ) : hierarchicalTree && hierarchicalTree.length > 0 ? (
             <>
               {(maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree).map((node) => (
@@ -193,6 +218,17 @@ export function AppSection({
             No items
           </Text>
         )}
+        {showChildLoadInline && onLoadMoreAppChildren ? (
+          <SidebarLoadMoreButton
+            onClick={onLoadMoreAppChildren}
+            disabled={appChildLoadMoreDisabled}
+            loading={appChildLoadMoreDisabled}
+            flexStyle={{
+              paddingLeft: 'var(--space-6)',
+              paddingTop: 'var(--space-1)',
+            }}
+          />
+        ) : null}
       </Flex>
       </Box>
     </Box>

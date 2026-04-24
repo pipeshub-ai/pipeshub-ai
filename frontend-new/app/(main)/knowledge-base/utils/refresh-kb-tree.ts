@@ -1,6 +1,11 @@
+import { useAuthStore } from '@/lib/store/auth-store';
 import { useKnowledgeBaseStore } from '../store';
 import { KnowledgeHubApi } from '../api';
+import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { categorizeNodes } from './tree-builder';
+import { isKbCollectionsHubApp } from './all-records-transformer';
+import { getCollectionsHubBootstrapFromToken } from './collections-hub-app';
+import { fetchAllKbAppContainerChildren } from './fetch-all-kb-hub-children';
 
 /**
  * Refreshes the Collections sidebar tree by re-fetching the KB app's children.
@@ -9,45 +14,74 @@ import { categorizeNodes } from './tree-builder';
  * is rebuilt immediately. An optional `afterRefresh` callback runs after (e.g.
  * `reMergeCachedChildrenIntoTree`).
  *
- * If the KB app node isn't loaded yet (race on first load), root nodes are
- * re-fetched and `setAppNodes` is called, which queues the children-fetch effect
- * to run on the next render cycle.
+ * If the KB app node isn't loaded yet (race on first load), the org-scoped hub
+ * `knowledgeBase_<orgId>` is resolved from the JWT and merged into `appNodes`
+ * without dropping other root apps. If that fails, root apps are re-fetched from
+ * navigation (All Records compatibility).
  */
 export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
-  const { appNodes, setNodes, setCategorizedNodes, cacheAppChildren, setAppNodes } =
-    useKnowledgeBaseStore.getState();
+  const {
+    appNodes,
+    setNodes,
+    setCategorizedNodes,
+    cacheAppChildren,
+    setAppNodes,
+    setAppChildPagination,
+    setAppRootListPagination,
+  } = useKnowledgeBaseStore.getState();
 
-  const kbApp = appNodes.find((n) => n.connector === 'KB');
+  let kbApp = appNodes.find((n) => isKbCollectionsHubApp(n));
 
-  if (kbApp) {
-    const response = await KnowledgeHubApi.getNodeChildren('app', kbApp.id, {
-      onlyContainers: true,
-      page: 1,
-      limit: 50,
-    });
-    cacheAppChildren(kbApp.id, response.items);
-    setNodes(response.items);
-
-    // Re-add previously cached subfolder nodes so reMergeCachedChildrenIntoTree
-    // can still find parent nodes for any re-expanded subtrees. setNodes above
-    // replaces state.nodes with only the KB top-level children, which would
-    // otherwise cause the merge to silently skip expanded folders.
-    const { nodeChildrenCache: freshNodeChildren, addNodes } = useKnowledgeBaseStore.getState();
-    const cachedSubfolderNodes = Array.from(freshNodeChildren.values()).flat();
-    if (cachedSubfolderNodes.length > 0) {
-      addNodes(cachedSubfolderNodes);
+  if (!kbApp) {
+    const boot = getCollectionsHubBootstrapFromToken(useAuthStore.getState().accessToken);
+    if (boot.ok) {
+      const nonKb = appNodes.filter((n) => !isKbCollectionsHubApp(n));
+      setAppNodes([boot.app, ...nonKb]);
+      if (nonKb.length === 0) {
+        setAppRootListPagination(null);
+      }
+      kbApp = boot.app;
+    } else {
+      const response = await KnowledgeHubApi.getNavigationNodes({
+        page: 1,
+        limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+        include: 'counts',
+        sortBy: 'updatedAt',
+        sortOrder: 'desc',
+      });
+      const appItems = response.items.filter((n) => n.nodeType === 'app');
+      const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
+      const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
+      setAppNodes([...kbApps, ...connectorApps]);
+      const p = response.pagination;
+      setAppRootListPagination(
+        p
+          ? {
+              hasNext: p.hasNext,
+              nextPage: p.hasNext ? p.page + 1 : p.page,
+            }
+          : null
+      );
+      kbApp = useKnowledgeBaseStore.getState().appNodes.find((n) => isKbCollectionsHubApp(n));
+      if (!kbApp) {
+        return;
+      }
     }
-
-    const categorized = categorizeNodes(response.items, `apps/${kbApp.id}`);
-    setCategorizedNodes(categorized);
-    afterRefresh?.();
-  } else {
-    // Fallback: KB app not yet in store — reload root nodes so the children-fetch
-    // effect will pick up the KB app and populate the tree on the next render.
-    const response = await KnowledgeHubApi.getRootNodes({ page: 1, limit: 100 });
-    const appItems = response.items.filter((n) => n.nodeType === 'app');
-    const kbApps = appItems.filter((n) => n.connector === 'KB');
-    const connectorApps = appItems.filter((n) => n.connector !== 'KB');
-    setAppNodes([...kbApps, ...connectorApps]);
   }
+
+  const mergedItems = await fetchAllKbAppContainerChildren(kbApp.id);
+
+  cacheAppChildren(kbApp.id, mergedItems);
+  setNodes(mergedItems);
+  setAppChildPagination(kbApp.id, { hasNext: false, nextPage: 1 });
+
+  const { nodeChildrenCache: freshNodeChildren, addNodes } = useKnowledgeBaseStore.getState();
+  const cachedSubfolderNodes = Array.from(freshNodeChildren.values()).flat();
+  if (cachedSubfolderNodes.length > 0) {
+    addNodes(cachedSubfolderNodes);
+  }
+
+  const categorized = categorizeNodes(mergedItems, `apps/${kbApp.id}`);
+  setCategorizedNodes(categorized);
+  afterRefresh?.();
 }

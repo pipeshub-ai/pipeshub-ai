@@ -10,12 +10,12 @@ import {
   IconButton,
   Select,
   Separator,
-  Spinner,
   Text,
   TextField,
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
@@ -49,7 +49,7 @@ function buildOAuthAuthConfigForCreate(
   const authConfig: Record<string, unknown> = { type: 'OAUTH' };
   for (const f of fields) {
     const ln = f.name.toLowerCase();
-    if (ln === 'redirecturi' || ln === 'baseurl') continue;
+    if (ln === 'redirecturi') continue;
     const raw = values[f.name];
     if (opts.stripEmptyClientSecret && ln === 'clientsecret' && (!raw || !String(raw).trim())) {
       continue;
@@ -102,6 +102,7 @@ export function ActionSetupPanel({
   const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const lastHydratedOauthIdRef = useRef<string | null>(null);
 
   const authOptions = useMemo(
@@ -121,6 +122,7 @@ export function ActionSetupPanel({
     setClientId('');
     setClientSecret('');
     setError(null);
+    setFieldErrors({});
     lastHydratedOauthIdRef.current = null;
   }, [open, registryRow, authOptions]);
 
@@ -129,6 +131,7 @@ export function ActionSetupPanel({
     setFieldValues({});
     setClientId('');
     setClientSecret('');
+    setFieldErrors({});
     lastHydratedOauthIdRef.current = null;
   }, [authType]);
 
@@ -275,6 +278,12 @@ export function ActionSetupPanel({
 
   const handleFieldChange = useCallback((name: string, value: unknown) => {
     setFieldValues((prev) => ({ ...prev, [name]: value }));
+    setFieldErrors((prev) => {
+      if (!prev[name]) return prev;
+      const n = { ...prev };
+      delete n[name];
+      return n;
+    });
   }, []);
 
   const schemaFieldForDisplay = useCallback(
@@ -295,12 +304,87 @@ export function ActionSetupPanel({
     [oauthAppValue, showOAuthAppPicker, t]
   );
 
-  const handleSubmit = useCallback(async () => {
+  const runValidation = useCallback((): boolean => {
+    setFieldErrors({});
+    setError(null);
+    const next: Record<string, string> = {};
     const name = instanceName.trim();
     if (!name) {
-      setError(t('workspace.actions.errors.instanceNameRequired'));
+      next.instanceName = t('workspace.actions.errors.instanceNameRequired');
+    }
+
+    const upper = (authType || 'NONE').toUpperCase();
+    for (const f of schemaFieldsToRender) {
+      const display = schemaFieldForDisplay(f);
+      if (!display.required) continue;
+      if (isOAuthType(upper) && showOAuthAppPicker && oauthAppValue !== NEW_OAUTH_VALUE) {
+        const ln = f.name.toLowerCase();
+        if (ln === 'clientid' || ln === 'clientsecret') continue;
+      }
+      const v = fieldValues[f.name];
+      if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) {
+        next[f.name] = t('workspace.actions.validation.fieldRequired', { field: f.displayName });
+      }
+    }
+
+    if (
+      isOAuthType(upper) &&
+      (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE)
+    ) {
+      if (!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientid') && !clientId.trim()) {
+        next.clientId = t('workspace.actions.validation.fieldRequired', { field: t('workspace.actions.oauthClientId') });
+      }
+      if (!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientsecret') && !clientSecret.trim()) {
+        next.clientSecret = t('workspace.actions.validation.fieldRequired', {
+          field: t('workspace.actions.oauthClientSecret'),
+        });
+      }
+    }
+
+    if (Object.keys(next).length > 0) {
+      setFieldErrors(next);
+      requestAnimationFrame(() => {
+        if (next.instanceName) {
+          document.querySelector('[data-ph-action-instance-name]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else if (next.clientId || next.clientSecret) {
+          document.querySelector('[data-ph-action-oauth-credentials]')?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+        } else {
+          const first = schemaFieldsToRender.find((f) => next[f.name])?.name;
+          if (first) {
+            document
+              .querySelector(`[data-ph-auth-field="${first}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      });
+      return false;
+    }
+    return true;
+  }, [
+    instanceName,
+    authType,
+    schemaFieldsToRender,
+    schemaFieldForDisplay,
+    fieldValues,
+    showOAuthAppPicker,
+    oauthAppValue,
+    clientId,
+    clientSecret,
+    t,
+  ]);
+
+  const handleSubmit = useCallback(async () => {
+    if (schemaLoading) {
+      setError(t('agentBuilder.loadingSchema'));
       return;
     }
+    if (!runValidation()) {
+      return;
+    }
+    const name = instanceName.trim();
     const upper = (authType || 'NONE').toUpperCase();
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -379,10 +463,12 @@ export function ActionSetupPanel({
     onCreatedUserAuthNotice,
     onNotify,
     onOpenChange,
+    runValidation,
     schemaFieldsToRender,
     showOAuthAppPicker,
     t,
     toolsetType,
+    schemaLoading,
   ]);
 
   const docLinksFromRegistry = useMemo(
@@ -438,16 +524,14 @@ export function ActionSetupPanel({
       primaryLabel={t('action.create')}
       secondaryLabel={t('action.cancel')}
       primaryLoading={saving}
-      primaryDisabled={schemaLoading || saving}
+      primaryDisabled={saving}
+      primaryTooltip={saving ? t('action.saving') : undefined}
       onPrimaryClick={() => void handleSubmit()}
       onSecondaryClick={() => onOpenChange(false)}
     >
       {schemaLoading ? (
-        <Flex align="center" justify="center" py="8" gap="3">
-          <Spinner size="3" />
-          <Text size="2" color="gray">
-            {t('agentBuilder.loadingSchema')}
-          </Text>
+        <Flex align="center" justify="center" py="8" style={{ width: '100%' }}>
+          <LottieLoader variant="loader" size={48} showLabel label={t('agentBuilder.loadingSchema')} />
         </Flex>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
@@ -534,13 +618,24 @@ export function ActionSetupPanel({
             </Flex>
           ) : null}
 
-          <FormField label={t('workspace.actions.instanceName')} required>
-            <TextField.Root
-              value={instanceName}
-              onChange={(e) => setInstanceName(e.target.value)}
-              placeholder={t('workspace.actions.instanceNamePlaceholder')}
-            />
-          </FormField>
+          <div data-ph-action-instance-name>
+            <FormField label={t('workspace.actions.instanceName')} required error={fieldErrors.instanceName}>
+              <TextField.Root
+                value={instanceName}
+                onChange={(e) => {
+                  setInstanceName(e.target.value);
+                  setFieldErrors((prev) => {
+                    if (!prev.instanceName) return prev;
+                    const n = { ...prev };
+                    delete n.instanceName;
+                    return n;
+                  });
+                }}
+                color={fieldErrors.instanceName ? 'red' : undefined}
+                placeholder={t('workspace.actions.instanceNamePlaceholder')}
+              />
+            </FormField>
+          </div>
 
           {authOptions.length > 1 ? (
             <FormField label={t('workspace.actions.authType')}>
@@ -589,6 +684,7 @@ export function ActionSetupPanel({
                   field={schemaFieldForDisplay(field) as SchemaField}
                   value={fieldValues[field.name]}
                   onChange={handleFieldChange}
+                  error={fieldErrors[field.name]}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
                 />
               ))}
@@ -600,18 +696,47 @@ export function ActionSetupPanel({
           ) : null}
 
           {isOAuthType(authType) && (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE) ? (
-            <Flex direction="column" gap="3">
+            <Flex data-ph-action-oauth-credentials direction="column" gap="3">
               {!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientid') ? (
-                <FormField label={t('workspace.actions.oauthClientId')} required>
-                  <TextField.Root value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                <FormField
+                  label={t('workspace.actions.oauthClientId')}
+                  required
+                  error={fieldErrors.clientId}
+                >
+                  <TextField.Root
+                    value={clientId}
+                    onChange={(e) => {
+                      setClientId(e.target.value);
+                      setFieldErrors((p) => {
+                        if (!p.clientId) return p;
+                        const n = { ...p };
+                        delete n.clientId;
+                        return n;
+                      });
+                    }}
+                    color={fieldErrors.clientId ? 'red' : undefined}
+                  />
                 </FormField>
               ) : null}
               {!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientsecret') ? (
-                <FormField label={t('workspace.actions.oauthClientSecret')} required>
+                <FormField
+                  label={t('workspace.actions.oauthClientSecret')}
+                  required
+                  error={fieldErrors.clientSecret}
+                >
                   <TextField.Root
                     type="password"
                     value={clientSecret}
-                    onChange={(e) => setClientSecret(e.target.value)}
+                    onChange={(e) => {
+                      setClientSecret(e.target.value);
+                      setFieldErrors((p) => {
+                        if (!p.clientSecret) return p;
+                        const n = { ...p };
+                        delete n.clientSecret;
+                        return n;
+                      });
+                    }}
+                    color={fieldErrors.clientSecret ? 'red' : undefined}
                   />
                 </FormField>
               ) : null}

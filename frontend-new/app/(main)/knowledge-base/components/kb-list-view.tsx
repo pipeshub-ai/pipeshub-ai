@@ -375,6 +375,7 @@ function TableRow({
           isKnowledgeHub={isKnowledgeHubNode(item)}
           nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
           connector={isKnowledgeHubNode(item) ? item.connector : undefined}
+          subType={isKnowledgeHubNode(item) ? item.subType : undefined}
           extension={isKnowledgeHubNode(item) ? item.extension : undefined}
           mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
           legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}

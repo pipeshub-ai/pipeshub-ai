@@ -80,6 +80,33 @@ class GCSDataSource:
         except Exception as e:
             return self._handle_response(error=f"Unexpected error: {str(e)}")
 
+    async def get_bucket_properties(self, bucket_name: str) -> GCSResponse:
+        """Load metadata for one bucket (creation/update times) without listing the project.
+
+        Use when the connector syncs a known set of buckets and ``list_buckets`` would be wasteful.
+        """
+        try:
+            client = self._get_storage_client()
+            bucket = client.get_bucket(bucket_name)
+            bucket_info: Dict[str, Any] = {
+                "name": bucket.name,
+                "id": bucket.id,
+                "location": bucket.location,
+                "location_type": bucket.location_type,
+                "storage_class": bucket.storage_class,
+                "time_created": bucket.time_created.isoformat() if bucket.time_created else None,
+                "updated": bucket.updated.isoformat() if bucket.updated else None,
+                "project_number": bucket.project_number,
+            }
+            return self._handle_response(data=bucket_info)
+
+        except NotFound:
+            return self._handle_response(error=f"Bucket not found: {bucket_name}")
+        except GoogleAPIError as e:
+            return self._handle_response(error=f"GCS API error: {str(e)}")
+        except Exception as e:
+            return self._handle_response(error=f"Unexpected error: {str(e)}")
+
     async def list_blobs(
         self,
         bucket_name: str,

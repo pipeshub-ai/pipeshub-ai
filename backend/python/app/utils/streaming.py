@@ -457,7 +457,9 @@ async def execute_tool_calls(
     tools_executed = False
     tool_args = []
     tool_results = []
+    records = []
     while hops < max_hops:
+        current_hop_records = []
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
@@ -472,7 +474,7 @@ async def execute_tool_calls(
                 llm_to_pass,
                 messages,
                 final_results,
-                records=[],
+                records=records,
                 target_words_per_chunk=target_words_per_chunk,
                 original_llm=llm,
                 virtual_record_id_to_result=virtual_record_id_to_result,
@@ -589,7 +591,6 @@ async def execute_tool_calls(
         # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
 
-        records = []
         # Process results and yield events
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
@@ -613,7 +614,9 @@ async def execute_tool_calls(
                     }
                 }
                 if "records" in tool_result:
-                    records.extend(tool_result.get("records", []))
+                    hop_records = tool_result.get("records", [])
+                    records.extend(hop_records)
+                    current_hop_records.extend(hop_records)
             else:
                 logger.warning(
                     "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
@@ -635,9 +638,19 @@ async def execute_tool_calls(
 
         message_contents = []
 
-        for record in records:
+        _refs_before_tools = len(ref_mapper.ref_to_url) if ref_mapper else 0
+        logger.debug(
+            "🔎 [KB-CITE] execute_tool_calls: about to format tool records | records=%d refs_before=%d",
+            len(current_hop_records), _refs_before_tools,
+        )
+        for record in current_hop_records:
             message_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
             message_contents.append(message_content)
+        _refs_after_tools = len(ref_mapper.ref_to_url) if ref_mapper else 0
+        logger.debug(
+            "🔎 [KB-CITE] execute_tool_calls: formatted tool records | records=%d refs_before=%d refs_after=%d new_refs=%d",
+            len(message_contents), _refs_before_tools, _refs_after_tools, _refs_after_tools - _refs_before_tools,
+        )
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
 
@@ -657,7 +670,7 @@ async def execute_tool_calls(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
 
-            virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
+            virtual_record_ids = [r.get("virtual_record_id") for r in current_hop_records if r.get("virtual_record_id")]
             vector_db_limit =  get_vectorDb_limit(context_length)
             # For service-account agents pass the agent-scoped filter_groups so the
             # fallback retrieval honours the same KB/connector scope that the primary
@@ -695,11 +708,16 @@ async def execute_tool_calls(
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                message_contents, ref_mapper = build_message_content_array(final_tool_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
-
+                _refs_before_fb = len(ref_mapper.ref_to_url) if ref_mapper else 0
                 logger.debug(
-                    "execute_tool_calls: prepared message_contents=%d",
-                    len(message_contents)
+                    "🔎 [KB-CITE] execute_tool_calls: THRESHOLD fallback | tool_records_dropped=%d flatten_search_results=%d final_tool_results=%d refs_before=%d",
+                    len(current_hop_records), len(flatten_search_results), len(final_tool_results), _refs_before_fb,
+                )
+                message_contents, ref_mapper = build_message_content_array(final_tool_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
+                _refs_after_fb = len(ref_mapper.ref_to_url) if ref_mapper else 0
+                logger.debug(
+                    "🔎 [KB-CITE] execute_tool_calls: THRESHOLD fallback done | message_contents=%d refs_after=%d new_refs=%d",
+                    len(message_contents), _refs_after_fb, _refs_after_fb - _refs_before_fb,
                 )
 
         # Build tool messages with actual content
@@ -1141,7 +1159,11 @@ async def handle_json_mode(
                 confidence = None
                 reference_data = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url)
+            normalized, cites = normalize_citations_and_chunks(
+                final_answer, final_results, records,
+                ref_to_url=ref_to_url,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+            )
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -1224,7 +1246,11 @@ async def handle_simple_mode(
             if existing_ai_content:
                 logger.info("stream_llm_response_with_tools: detected existing AI message (simple mode), streaming directly")
                 clean_answer, confidence = parse_confidence_from_answer(existing_ai_content)
-                normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records, ref_to_url=ref_to_url)
+                normalized, cites = normalize_citations_and_chunks(
+                    clean_answer, final_results, records,
+                    ref_to_url=ref_to_url,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                )
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -1605,7 +1631,9 @@ async def call_aiter_llm_stream_simple(
 
                     clean_answer, confidence = parse_confidence_from_answer(current_raw)
                     normalized, cites = normalize_citations_and_chunks(
-                        clean_answer, final_results, records, ref_to_url=ref_to_url,
+                        clean_answer, final_results, records,
+                        ref_to_url=ref_to_url,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
                     )
 
                     chunk_text = normalized[prev_norm_len:]
@@ -1672,7 +1700,11 @@ async def call_aiter_llm_stream_simple(
                     yield event
                 return
 
-        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records, ref_to_url=ref_to_url)
+        normalized, cites = normalize_citations_and_chunks(
+            clean_answer, final_results, records,
+            ref_to_url=ref_to_url,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+        )
         yield {
             "event": "complete",
             "data": {
@@ -1739,7 +1771,9 @@ async def call_aiter_llm_stream(
 
                 state.emit_upto = len(safe_answer)
                 normalized, cites = normalize_citations_and_chunks(
-                            safe_answer, final_results, records, ref_to_url=ref_to_url,
+                            safe_answer, final_results, records,
+                            ref_to_url=ref_to_url,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
                         )
 
                 chunk_text = normalized[state.prev_norm_len:]
@@ -1803,7 +1837,9 @@ async def call_aiter_llm_stream(
                         state.words_in_chunk = 0
 
                         normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results, records, ref_to_url=ref_to_url,
+                            current_raw, final_results, records,
+                            ref_to_url=ref_to_url,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
                         )
 
                         chunk_text = normalized[state.prev_norm_len:]
@@ -1946,7 +1982,11 @@ async def call_aiter_llm_stream(
                                 yield event
                             return
 
-                    normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records, ref_to_url=ref_to_url)
+                    normalized, c = normalize_citations_and_chunks(
+                        state.answer_buf, final_results, records,
+                        ref_to_url=ref_to_url,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                    )
                     yield {
                         "event": "complete",
                         "data": {
@@ -2002,7 +2042,11 @@ async def call_aiter_llm_stream(
                     yield event
                 return
 
-        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url)
+        normalized, c = normalize_citations_and_chunks(
+            final_answer, final_results, records,
+            ref_to_url=ref_to_url,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+        )
         complete_data = {
             "answer": normalized,
             "citations": c,

@@ -5,6 +5,7 @@ import {
   ConversationMessage,
   ConversationsListResponse,
   ConversationApiResponse,
+  ConversationSource,
   ModelInfo,
   SharedWithEntry,
   StreamChatRequest,
@@ -53,6 +54,8 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
 const transformConversation = mapApiConversationToConversation;
 
 export interface FetchConversationsOptions {
+  /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
+  source: ConversationSource;
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
   signal?: AbortSignal;
@@ -60,30 +63,35 @@ export interface FetchConversationsOptions {
 
 // Chat API endpoints
 export const ChatApi = {
-  // Fetch all conversations (user's own and shared with them)
+  // Fetch one page of conversations for a single source (owned or shared).
+  // Call once per tab if you need both lists.
   async fetchConversations(
     page: number = 1,
     limit: number = 20,
-    options?: FetchConversationsOptions
+    options: FetchConversationsOptions
   ): Promise<{
     conversations: Conversation[];
-    sharedConversations: Conversation[];
+    source: ConversationSource;
     pagination: ConversationsListResponse['pagination'];
   }> {
-    const search = options?.search?.trim();
-    const params: Record<string, string | number> = { page, limit };
+    const search = options.search?.trim();
+    const params: Record<string, string | number> = {
+      page,
+      limit,
+      source: options.source,
+    };
     if (search) {
       params.search = search;
     }
 
     const { data } = await apiClient.get<ConversationsListResponse>(
       `/api/v1/conversations`,
-      { params, signal: options?.signal }
+      { params, signal: options.signal }
     );
 
     return {
       conversations: data.conversations.map(transformConversation),
-      sharedConversations: data.sharedWithMeConversations.map(transformConversation),
+      source: data.source,
       pagination: data.pagination,
     };
   },
@@ -556,35 +564,49 @@ export const ChatApi = {
   },
 
   /**
-   * Fetch collections (knowledge bases) for the chat collection picker.
+   * Fetch hub root nodes for the chat collection picker.
    *
    * Endpoint: GET /api/v1/knowledgeBase/knowledge-hub/nodes
    *
-   * Returns root-level KB nodes. IDs returned here are passed in `filters.kb[]`
-   * to the streaming endpoint. Search is performed client-side.
+   * Returns hub root items (KB connector, other connectors, COLLECTION roots) for one page.
+   * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
+   * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat() {
+  async listCollectionsForChat(params?: { page?: number; limit?: number }): Promise<ListCollectionsForChatResult> {
+    const page = params?.page ?? 1;
+    const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
         params: {
-          page: 1,
-          limit: 100,
+          page,
+          limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
         },
       }
     );
+
     const knowledgeBases: KnowledgeBaseForChat[] = data.items.map((item) => ({
       id: item.id,
       name: item.name,
+      nodeType: item.nodeType,
+      hasChildren: item.hasChildren,
+      origin: item.origin,
+      connector: item.connector,
+      subType: item.subType,
       createdAtTimestamp: item.createdAt ?? 0,
       updatedAtTimestamp: item.updatedAt ?? 0,
       createdBy: '',
       userRole: '',
       folders: [],
     }));
-    return { knowledgeBases };
+    return {
+      knowledgeBases,
+      requestedPage: page,
+      requestedLimit: limit,
+      serverPagination: data.pagination ?? null,
+    };
   },
 
   /**
@@ -631,6 +653,10 @@ interface KbNodeFromHubApi {
   id: string;
   name: string;
   nodeType: string;
+  hasChildren?: boolean;
+  origin?: string;
+  connector?: string;
+  subType?: string;
   updatedAt?: number;
   createdAt?: number;
 }
@@ -638,6 +664,23 @@ interface KbNodeFromHubApi {
 interface KnowledgeHubNodesResponse {
   success: boolean;
   items: KbNodeFromHubApi[];
+  error?: string | null;
+  pagination?: {
+    page?: number;
+    limit?: number;
+    totalItems?: number;
+    totalPages?: number;
+    hasNext?: boolean;
+    hasPrev?: boolean;
+  } | null;
+}
+
+/** One page from {@link ChatApi.listCollectionsForChat}. */
+export interface ListCollectionsForChatResult {
+  knowledgeBases: KnowledgeBaseForChat[];
+  requestedPage: number;
+  requestedLimit: number;
+  serverPagination: KnowledgeHubNodesResponse['pagination'];
 }
 
 /**
@@ -646,6 +689,11 @@ interface KnowledgeHubNodesResponse {
 export interface KnowledgeBaseForChat {
   id: string;
   name: string;
+  nodeType: string;
+  hasChildren?: boolean;
+  origin?: string;
+  connector?: string;
+  subType?: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
   createdBy: string;

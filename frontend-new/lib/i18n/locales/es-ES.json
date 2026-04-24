@@ -337,6 +337,7 @@
     "suggestedInWorkspace": "Sugerido en el espacio de trabajo",
     "createSubFolder": "Crear una subcarpeta",
     "more": "Más",
+    "loadMore": "Cargar más",
     "moreCollections": "Más colecciones",
     "searchCollections": "Buscar"
   },
@@ -384,7 +385,8 @@
     "listening": "Escuchando...",
     "voiceInputNotSupported": "La entrada de voz no es compatible con este navegador",
     "voiceError": "No se pudo acceder al micrófono",
-    "connectorsTooltip": "Conectores y Colecciones",
+    "connectorsCollectionsTitle": "Conectores y colecciones",
+    "connectorsTooltip": "Conectores y colecciones",
     "agentResourcesTooltip": "Conectores, colecciones y acciones",
     "agentResources": {
       "sheetTitle": "Conectores, colecciones y acciones",
@@ -413,7 +415,7 @@
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
     "noChatsYet": "Aún no hay chats",
-    "searchCollections": "Buscar colecciones",
+    "searchCollections": "Buscar conectores y colecciones",
     "loadingCollections": "Cargando colecciones…",
     "failedToLoadCollections": "Error al cargar colecciones",
     "noCollectionsAvailable": "No hay colecciones disponibles",
@@ -1264,7 +1266,15 @@
       },
       "errors": {
         "instanceNameRequired": "Introduzca un nombre de instancia."
+      },
+      "validation": {
+        "fieldRequired": "{{field}} es obligatorio",
+        "fixErrorsAbove": "Corrija los campos resaltados arriba para continuar."
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",
+      "primaryLoadingHint": "Espere…"
     },
     "archivedChats": {
       "title": "Chats archivados",
@@ -1425,6 +1435,11 @@
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
       "saveConfig": "Save Configuration",
+      "continueToConfiguration": "Continuar a la configuración →",
+      "oauthSigningIn": "Termine de iniciar sesión con su proveedor…",
+      "authRequiredBeforeConfig": "Complete la autorización OAuth antes de configurar la sincronización y los filtros",
+      "backToCredentials": "← Volver a credenciales",
+      "backFromConfigure": "← Atrás",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "toasts": {
@@ -1469,6 +1484,13 @@
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
+        "credentialsSubtext": "Introduce los detalles de autenticación de {{name}}",
+        "oauthCreateHelperAdmin": "Si existen apps OAuth guardadas, elige una arriba o elige «Crear nueva app OAuth» e introduce las credenciales de cliente abajo. Registra primero esta URL de redirección en tu IdP.",
+        "oauthCreateHelperNonAdmin": "Selecciona una app OAuth guardada registrada por tu administrador. No introduzcas secretos de cliente aquí. Registra la URL de redirección en el IdP si lo exige tu organización.",
+        "oauthCredentialsSubtextAdmin": "Introduce o revisa credenciales de cliente (nuevo registro o app guardada elegida arriba).",
+        "oauthCredentialsSubtextNonAdmin": "Se utiliza la app OAuth seleccionada en esta instancia. Los secretos de cliente los gestionan los administradores; no es necesario introducirlos aquí.",
+        "redirectUrlDescription": "Añade esta URL exacta a la lista de redirecciones permitidas de tu proveedor de identidad.",
+        "redirectUrlHelperNonOauth": "Registra la URL de redirección en tu proveedor de identidad y luego completa los campos siguientes.",
         "noAuthRequired": "No authentication required for this connector"
       },
       "docSection": {
@@ -1946,6 +1968,7 @@
     "toolsetDuplicateNotify": "Solo puede haber un conjunto de herramientas {{name}} en el lienzo a la vez.",
     "toolsetAuthUpdated": "Autenticación del conjunto de herramientas actualizada.",
     "loadMore": "Cargar más",
+    "loadMoreConnectors": "Cargar más conectores",
     "loadingMore": "Cargando…",
     "notConfiguredReason": "no configurado",
     "notAuthenticatedReason": "no autenticado",

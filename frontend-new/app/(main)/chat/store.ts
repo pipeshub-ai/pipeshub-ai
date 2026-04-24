@@ -47,6 +47,11 @@ export interface ChatPreviewFile {
    */
   initialCitationId?: string;
   /**
+   * External URL for the record (e.g. Jira ticket, Confluence page).
+   * Used by UnknownPreview to open the source in a new browser tab.
+   */
+  webUrl?: string;
+  /**
    * Hide the "File Details" tab in the preview shell. Set for previews that
    * don't correspond to a KB record (e.g. chat-generated artifacts).
    */
@@ -106,6 +111,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
+    isOwner: isNew ? true : null,
   };
 }
 
@@ -133,6 +139,7 @@ interface ChatState {
   isConversationsLoading: boolean;
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
+  sharedPagination: ConversationsListResponse['pagination'] | null;
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
@@ -246,6 +253,7 @@ interface ChatState {
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
   setPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
+  setSharedPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
   closeMoreChatsPanel: () => void;
   toggleAgentsSidebar: () => void;
@@ -311,7 +319,7 @@ interface ChatState {
   setMode: (mode: ChatMode) => void;
   setQueryMode: (queryMode: QueryMode) => void;
   setAgentStrategy: (agentStrategy: AgentStrategy) => void;
-  setFilters: (filters: { apps: string[]; kb: string[] }) => void;
+  setFilters: (filters: import('./types').ChatKnowledgeFilters) => void;
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
@@ -342,6 +350,7 @@ const initialState = {
   isConversationsLoading: false,
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
+  sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
@@ -540,6 +549,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setConversationsError: (error) => set({ conversationsError: error }),
 
   setPagination: (pagination) => set({ pagination }),
+
+  setSharedPagination: (sharedPagination) => set({ sharedPagination }),
 
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
