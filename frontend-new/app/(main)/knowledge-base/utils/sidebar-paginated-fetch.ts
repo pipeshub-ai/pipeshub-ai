@@ -142,6 +142,7 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
   const state = useKnowledgeBaseStore.getState();
   const meta = state.nodeChildrenPagination.get(parentId);
   if (!meta?.hasNext || meta.nodeType === 'app') return;
+  if (state.loadingNodeChildrenMoreIds.has(parentId)) return;
 
   const {
     cacheNodeChildren,
@@ -160,7 +161,6 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
       limit: SIDEBAR_PAGINATION_PAGE_SIZE,
       sortBy: 'name',
       sortOrder: 'asc',
-      include: 'counts',
     });
 
     const previous = useKnowledgeBaseStore.getState().nodeChildrenCache.get(parentId) || [];
@@ -182,9 +182,10 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
     reMergeCachedChildrenIntoTree();
 
     const { connectorAppTrees } = useKnowledgeBaseStore.getState();
-    for (const [appId, tree] of Array.from(connectorAppTrees.entries())) {
+    for (const [appId, tree] of connectorAppTrees) {
       if (!treeHasNodeWithId(tree, parentId)) continue;
       mergeConnectorAppTreeChildren(appId, parentId, merged);
+      // Each hub node appears under at most one connector app tree.
       break;
     }
   } catch (error) {
