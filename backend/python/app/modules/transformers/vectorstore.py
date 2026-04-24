@@ -14,6 +14,12 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
+from app.config.collection_spec import (
+    default_collection_spec,
+    delete_collection_spec,
+    get_collection_spec,
+    set_collection_spec,
+)
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -533,42 +539,23 @@ class VectorStore(Transformer):
                 field_name="metadata.orgId",
                 field_schema={"type": "keyword"},
             )
-            # Index the sentinel-marker field so
-            # :meth:`count_user_points` can do an indexed filtered count
-            # instead of a full scan. Best-effort: on failure we fall
-            # back to the (slower) unindexed path or to
-            # ``points_count - sentinel`` subtraction.
-            try:
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name="_kind",
-                    field_schema={"type": "keyword"},
-                )
-            except Exception as idx_err:
-                self.logger.warning(
-                    f"Failed to create '_kind' payload index on "
-                    f"{self.collection_name}: {idx_err}. "
-                    f"count_user_points will use the slower fallback."
-                )
 
             if embedding_provider and embedding_model_name:
                 try:
-                    await self.vector_db_service.set_collection_signature(
-                        collection_name=self.collection_name,
-                        signature=_build_embedding_signature(
-                            provider=embedding_provider,
-                            model_name=embedding_model_name,
-                            dimension=embedding_size,
-                            is_multimodal=is_multimodal,
-                        ),
-                        embedding_size=embedding_size,
+                    await set_collection_spec(
+                        self.config_service,
+                        self.collection_name,
+                        provider=embedding_provider,
+                        model=embedding_model_name,
+                        dimension=embedding_size,
+                        is_multimodal=is_multimodal,
                     )
                 except Exception as sig_err:
-                    # Signature write is best-effort. Failing here would force
-                    # us to drop an otherwise-valid collection; log loudly
+                    # Spec write is best-effort. Failing here would force us
+                    # to drop an otherwise-valid collection; log loudly
                     # instead so legacy-style behaviour still works.
                     self.logger.error(
-                        f"⚠️ Failed to write collection signature for "
+                        f"⚠️ Failed to write collection spec for "
                         f"{self.collection_name}: {sig_err}"
                     )
         except Exception as e:
@@ -638,68 +625,54 @@ class VectorStore(Transformer):
                 },
             )
 
-        # Prefer an authoritative user-point count (excludes the signature
-        # sentinel). Fall back to raw counters if and only if the service
-        # doesn't expose the helper (older/test implementations) — mixing the
-        # filtered count with ``vectors_count`` would re-introduce the bug
-        # this signature feature was supposed to close: a collection whose
-        # only point is the sentinel would report ``vectors_count >= 1`` and
-        # be flagged as "has user data", blocking a legitimate model swap
-        # on an otherwise-empty collection.
-        #
         # Use strict isinstance checks rather than truthy/int() coercion:
         # MagicMock.__int__ defaults to 1 and its truthiness is True, so a
         # naive path would interpret every AsyncMock-returned value as
         # "there is user data" and flip control flow in tests.
-        user_points: Optional[int] = None
-        user_points_authoritative = False
-        try:
-            raw = await self.vector_db_service.count_user_points(self.collection_name)
-            if isinstance(raw, int) and not isinstance(raw, bool):
-                user_points = raw
-                user_points_authoritative = True
-        except AttributeError:
-            pass
-        except Exception as cnt_err:
-            self.logger.warning(
-                f"count_user_points failed for {self.collection_name}: {cnt_err}"
-            )
-
+        raw_pc = getattr(collection_info, "points_count", None)
+        user_points = (
+            raw_pc if isinstance(raw_pc, int) and not isinstance(raw_pc, bool) else 0
+        )
         raw_vc = getattr(collection_info, "vectors_count", None)
         vectors_count = (
             raw_vc if isinstance(raw_vc, int) and not isinstance(raw_vc, bool) else 0
         )
-
-        if user_points_authoritative:
-            # Trust the sentinel-aware count; vectors_count is kept only for
-            # diagnostics because Qdrant includes the sentinel in it.
-            has_user_data = user_points > 0  # type: ignore[operator]
-        else:
-            raw_pc = getattr(collection_info, "points_count", None)
-            user_points = (
-                raw_pc if isinstance(raw_pc, int) and not isinstance(raw_pc, bool) else 0
-            )
-            has_user_data = user_points > 0 or vectors_count > 0
+        has_user_data = user_points > 0 or vectors_count > 0
 
         # Same dimension: check signature identity to catch same-dim model swaps
         # (two different embedding models happening to produce vectors of the
         # same dimensionality, which the dimension check cannot detect).
         if current_vector_size == embedding_size:
+            # Legacy callers that don't plumb through an embedding identity
+            # can't participate in the identity check; reusing the collection
+            # is what they've always done. Bail out before touching the
+            # ConfigurationService so we don't trip the "stale spec → drop"
+            # branch purely on ``(None, None)`` vs the default-model fallback.
+            if not embedding_provider or not embedding_model_name:
+                return
+
             stored_sig: Optional[dict] = None
+            is_persisted_spec = False
             try:
-                raw_sig = await self.vector_db_service.get_collection_signature(
-                    self.collection_name
+                raw_sig = await get_collection_spec(
+                    self.config_service, self.collection_name, use_cache=False
                 )
                 # Strict isinstance: ignore MagicMock-style test doubles that
                 # truthily satisfy "not None" but aren't real payloads.
                 if isinstance(raw_sig, dict) and raw_sig:
                     stored_sig = raw_sig
-            except AttributeError:
-                stored_sig = None
+                    is_persisted_spec = True
             except Exception as sig_err:
                 self.logger.warning(
-                    f"Signature lookup failed for {self.collection_name}: {sig_err}"
+                    f"Collection spec lookup failed for {self.collection_name}: {sig_err}"
                 )
+
+            if stored_sig is None:
+                # No config node stored: treat pre-migration collections as if
+                # they were built with the default embedding model. Dimension
+                # comes from the live collection so the identity check still
+                # works. First reindex/recreate below upgrades the node.
+                stored_sig = default_collection_spec(current_vector_size)
 
             signature_matches = _signatures_match(
                 stored=stored_sig,
@@ -708,36 +681,37 @@ class VectorStore(Transformer):
                 new_is_multimodal=is_multimodal,
             )
 
-            if signature_matches or stored_sig is None:
-                # Match or legacy-unknown: reuse. Legacy collections pre-date
-                # signature tracking; we can't second-guess them here.
-                if stored_sig is None and has_user_data and embedding_provider and embedding_model_name:
-                    self.logger.warning(
-                        f"Collection {self.collection_name} has no embedding "
-                        f"signature on record; assuming the currently configured "
-                        f"model matches the one that built it. The health-check "
-                        f"flow should be used before switching models."
-                    )
-                elif not has_user_data and embedding_provider and embedding_model_name:
-                    # Empty collection with either matching or legacy-unknown
-                    # signature: refresh the signature to reflect the current
-                    # configuration so future runs are authoritative.
+            if signature_matches:
+                # Match: reuse. If this was the synthesized default-model
+                # fallback (no persisted node yet) and the collection is empty,
+                # stamp the current config so later runs are authoritative.
+                if (
+                    not is_persisted_spec
+                    and not has_user_data
+                    and embedding_provider
+                    and embedding_model_name
+                ):
                     try:
-                        await self.vector_db_service.set_collection_signature(
-                            collection_name=self.collection_name,
-                            signature=_build_embedding_signature(
-                                provider=embedding_provider,
-                                model_name=embedding_model_name,
-                                dimension=embedding_size,
-                                is_multimodal=is_multimodal,
-                            ),
-                            embedding_size=embedding_size,
+                        await set_collection_spec(
+                            self.config_service,
+                            self.collection_name,
+                            provider=embedding_provider,
+                            model=embedding_model_name,
+                            dimension=embedding_size,
+                            is_multimodal=is_multimodal,
                         )
                     except Exception as sig_err:
                         self.logger.warning(
-                            f"Failed to refresh signature on empty collection "
+                            f"Failed to stamp collection spec on empty collection "
                             f"{self.collection_name}: {sig_err}"
                         )
+                elif not is_persisted_spec and has_user_data:
+                    self.logger.warning(
+                        f"Collection {self.collection_name} has no embedding spec "
+                        f"on record; assuming the currently configured model matches "
+                        f"the one that built it. The health-check flow should be used "
+                        f"before switching models."
+                    )
                 return
 
             # Stored signature disagrees with what we're about to use.
@@ -773,13 +747,14 @@ class VectorStore(Transformer):
 
             # Empty collection: drop and recreate so the signature matches.
             self.logger.warning(
-                f"Collection {self.collection_name} has a stale signature "
+                f"Collection {self.collection_name} has a stale spec "
                 f"({stored_sig.get('embedding_provider')}/"
                 f"{stored_sig.get('embedding_model')}) and no user data. "
                 f"Dropping and recreating with the current model."
             )
             try:
                 await self.vector_db_service.delete_collection(self.collection_name)
+                await delete_collection_spec(self.config_service, self.collection_name)
             except Exception as del_err:
                 raise VectorStoreError(
                     "Failed to delete empty collection during signature-mismatch recreation.",
@@ -827,6 +802,7 @@ class VectorStore(Transformer):
         )
         try:
             await self.vector_db_service.delete_collection(self.collection_name)
+            await delete_collection_spec(self.config_service, self.collection_name)
         except Exception as del_err:
             raise VectorStoreError(
                 "Failed to delete empty collection during dimension-mismatch recreation.",
@@ -1032,7 +1008,9 @@ class VectorStore(Transformer):
                 must={"virtualRecordId": virtual_record_id}
             )
 
-            self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(
+                self.collection_name, filter_dict
+            )
 
             self.logger.info(f"✅ Successfully deleted embeddings for record {virtual_record_id}")
         except Exception as e:
@@ -1054,7 +1032,9 @@ class VectorStore(Transformer):
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
-            self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(
+                self.collection_name, filter_dict
+            )
             self.logger.info(
                 f"✅ Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"

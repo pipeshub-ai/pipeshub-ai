@@ -30,7 +30,6 @@ from qdrant_client.http.models import (
     Distance,
     Filter,
     FieldCondition,
-    FilterSelector,
     KeywordIndexParams,
     KeywordIndexType,
     MatchValue,
@@ -568,18 +567,31 @@ class TestUpsertPoints:
 
 
 class TestDeletePoints:
-    def test_delete_points_success(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_delete_points_success(self, connected_service):
         mock_filter = Filter(must=[FieldCondition(key="metadata.orgId", match=MatchValue(value="org1"))])
-        connected_service.delete_points("col", mock_filter)
+        await connected_service.delete_points("col", mock_filter)
         connected_service.client.delete.assert_called_once()
         call_kwargs = connected_service.client.delete.call_args[1]
         assert call_kwargs["collection_name"] == "col"
-        assert isinstance(call_kwargs["points_selector"], FilterSelector)
+        ps = call_kwargs["points_selector"]
+        assert hasattr(ps, "filter")
 
-    def test_delete_points_not_connected(self, service):
+    @pytest.mark.asyncio
+    async def test_delete_points_not_connected(self, service):
         mock_filter = Filter(must=[])
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.delete_points("col", mock_filter)
+            await service.delete_points("col", mock_filter)
+
+    @pytest.mark.asyncio
+    async def test_delete_points_async_client_awaits(self, async_service):
+        """Async client ``delete`` must be awaited or points are never removed."""
+        mock_client = MagicMock()
+        mock_client.delete = AsyncMock()
+        async_service.client = mock_client
+        flt = Filter(must=[])
+        await async_service.delete_points("col", flt)
+        mock_client.delete.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

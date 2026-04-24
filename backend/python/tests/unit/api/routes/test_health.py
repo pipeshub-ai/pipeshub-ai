@@ -240,6 +240,17 @@ class TestCheckCollectionInfo:
         collection_info.config.params.vectors = vectors_mock
         collection_info.points_count = 10
         retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        # Config-service spec matches the new identity so the model-change
+        # check treats this as a no-op rather than falling back to the
+        # DEFAULT_EMBEDDING_MODEL identity (which would otherwise block).
+        retrieval_svc.config_service = AsyncMock()
+        retrieval_svc.config_service.get_config = AsyncMock(
+            return_value={
+                "embedding_provider": "",
+                "embedding_model": "model-a",
+                "embedding_dimension": 768,
+            }
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
@@ -1185,6 +1196,14 @@ class TestCheckCollectionInfoFullCoverage:
         collection_info.config.params.vectors = vectors_mock
         collection_info.points_count = 10
         retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        retrieval_svc.config_service = AsyncMock()
+        retrieval_svc.config_service.get_config = AsyncMock(
+            return_value={
+                "embedding_provider": "",
+                "embedding_model": "model-a",
+                "embedding_dimension": 768,
+            }
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
@@ -1654,11 +1673,12 @@ class TestLoadTestImageFullCoverage:
 
 
 # =============================================================================
-# Collection-signature-aware identity check
+# Collection-spec-aware identity check
 #
 # These tests cover the behaviour that makes the health check robust against
-# "same vector dimension, different embedding model" swaps: when the vector
-# collection itself carries a signature, it wins over the AI_MODELS config.
+# "same vector dimension, different embedding model" swaps: when the
+# Configuration Service holds a spec for the collection, it wins over the
+# AI_MODELS config.
 # =============================================================================
 
 
@@ -1669,8 +1689,14 @@ def _make_retrieval_svc_for_signature_check(
     points_count=100,
     dense_size=768,
 ):
-    """Helper that builds a retrieval_service mock with explicit signature /
-    config / points_count behaviour."""
+    """Helper that builds a retrieval_service mock with explicit spec /
+    config / points_count behaviour.
+
+    ``stored_signature`` is the payload expected to come back from
+    ``ConfigurationService.get_config('/services/vectorCollections/<name>')``
+    so existing tests written against the old Qdrant-sentinel API keep
+    working with only a parameter rename.
+    """
     dense_vec = MagicMock()
     dense_vec.size = dense_size
     vectors = MagicMock()
@@ -1683,10 +1709,19 @@ def _make_retrieval_svc_for_signature_check(
     svc.collection_name = "coll"
     svc.vector_db_service = AsyncMock()
     svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
-    svc.vector_db_service.get_collection_signature = AsyncMock(
-        return_value=stored_signature
-    )
-    svc.vector_db_service.count_user_points = AsyncMock(return_value=points_count)
+
+    spec_key = "/services/vectorCollections/coll"
+
+    async def _get_config(key, *args, **kwargs):
+        if key == spec_key:
+            return stored_signature
+        return None
+
+    svc.config_service = AsyncMock()
+    svc.config_service.get_config = AsyncMock(side_effect=_get_config)
+    svc.config_service.set_config = AsyncMock(return_value=True)
+    svc.config_service.delete_config = AsyncMock(return_value=True)
+
     svc.get_current_embedding_model_name = AsyncMock(return_value=current_config_model)
     return svc
 
@@ -1784,7 +1819,10 @@ class TestPerformEmbeddingCheckSignatureAware:
 
     @pytest.mark.asyncio
     async def test_unknown_identity_nonempty_collection_blocks(self, mock_request):
-        """No stored signature AND no config -> cannot verify -> refuse."""
+        """No stored spec AND no config hint -> we fall back to the
+        ``DEFAULT_EMBEDDING_MODEL`` identity and compare against it. A
+        populated collection whose new model differs from the default must
+        still be rejected."""
         logger = MagicMock()
         config = {
             "provider": "openai",
@@ -1807,12 +1845,16 @@ class TestPerformEmbeddingCheckSignatureAware:
 
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "cannot verify" in body.lower()
+        # Pre-migration fallback reports a plain model mismatch against the
+        # built-in default, not the generic "cannot verify" message.
+        assert "mismatch" in body.lower()
+        assert "default" in body.lower()
 
     @pytest.mark.asyncio
-    async def test_signature_excludes_sentinel_from_user_count(self, mock_request):
-        """When a signature is stored on an otherwise-empty collection,
-        `count_user_points` returns 0 and the check should pass."""
+    async def test_empty_collection_allows_model_swap(self, mock_request):
+        """With the spec moved out of Qdrant there is no sentinel; an empty
+        collection (raw ``points_count == 0``) has no user data and must
+        allow a swap without tripping the identity check."""
         logger = MagicMock()
         config = {
             "provider": "openai",
@@ -1820,17 +1862,15 @@ class TestPerformEmbeddingCheckSignatureAware:
         }
         mock_embed = MagicMock()
 
-        # Raw points_count is 1 (just the sentinel) but count_user_points is 0.
         retrieval_svc = _make_retrieval_svc_for_signature_check(
             stored_signature={
                 "embedding_provider": "openai",
                 "embedding_model": "text-embedding-3-small",
                 "embedding_dimension": 768,
             },
-            points_count=1,
+            points_count=0,
             dense_size=768,
         )
-        retrieval_svc.vector_db_service.count_user_points = AsyncMock(return_value=0)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -1979,14 +2019,27 @@ class TestResolveStoredEmbeddingIdentityMultimodal:
     integration-style tests above so regressions in the helper itself
     are easy to triage."""
 
+    @staticmethod
+    def _make_svc(spec):
+        """Retrieval-service mock whose ConfigurationService returns
+        ``spec`` for the vectorCollections key."""
+        svc = MagicMock()
+        svc.collection_name = "coll"
+        svc.config_service = MagicMock()
+
+        async def _get_config(key, *args, **kwargs):
+            if key == "/services/vectorCollections/coll":
+                return spec
+            return None
+
+        svc.config_service.get_config = AsyncMock(side_effect=_get_config)
+        return svc
+
     @pytest.mark.asyncio
     async def test_is_multimodal_true_surfaced(self):
         logger = MagicMock()
-        retrieval_svc = MagicMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = MagicMock()
-        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
-            return_value={
+        retrieval_svc = self._make_svc(
+            {
                 "embedding_provider": "voyageai",
                 "embedding_model": "voyage-multimodal-3",
                 "embedding_dimension": 1024,
@@ -1999,17 +2052,14 @@ class TestResolveStoredEmbeddingIdentityMultimodal:
             retrieval_svc, logger
         )
 
-        assert source == "collection"
+        assert source == "collection_spec"
         assert identity["is_multimodal"] is True
 
     @pytest.mark.asyncio
     async def test_is_multimodal_false_surfaced(self):
         logger = MagicMock()
-        retrieval_svc = MagicMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = MagicMock()
-        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
-            return_value={
+        retrieval_svc = self._make_svc(
+            {
                 "embedding_provider": "openai",
                 "embedding_model": "text-embedding-3-small",
                 "embedding_dimension": 1536,
@@ -2022,20 +2072,17 @@ class TestResolveStoredEmbeddingIdentityMultimodal:
             retrieval_svc, logger
         )
 
-        assert source == "collection"
+        assert source == "collection_spec"
         assert identity["is_multimodal"] is False
 
     @pytest.mark.asyncio
     async def test_is_multimodal_absent_is_not_surfaced(self):
-        """A legacy signature (pre-flag) must not synthesize an
+        """A legacy spec (pre-flag) must not synthesize an
         ``is_multimodal`` key — callers rely on the key's absence to
         know the flag is unknown."""
         logger = MagicMock()
-        retrieval_svc = MagicMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = MagicMock()
-        retrieval_svc.vector_db_service.get_collection_signature = AsyncMock(
-            return_value={
+        retrieval_svc = self._make_svc(
+            {
                 "embedding_provider": "openai",
                 "embedding_model": "text-embedding-3-small",
                 "embedding_dimension": 1536,
@@ -2047,7 +2094,7 @@ class TestResolveStoredEmbeddingIdentityMultimodal:
             retrieval_svc, logger
         )
 
-        assert source == "collection"
+        assert source == "collection_spec"
         assert "is_multimodal" not in identity
 
 
@@ -2071,7 +2118,7 @@ class TestHandleModelChangeProviderAware:
                 logger,
                 current_provider="ollama",
                 new_provider="openai",
-                identity_source="collection",
+                identity_source="collection_spec",
             )
         assert exc_info.value.status_code == 400
 
@@ -2091,7 +2138,7 @@ class TestHandleModelChangeProviderAware:
             logger,
             current_provider="openai",
             new_provider="openai",
-            identity_source="collection",
+            identity_source="collection_spec",
         )
 
     @pytest.mark.asyncio
@@ -2123,16 +2170,14 @@ class TestHandleModelChangeProviderAware:
 # =============================================================================
 
 
-class TestEmptyButSignedCollection:
-    """``vectors_count`` in Qdrant counts the signature sentinel, so a
-    collection whose only point is the sentinel would previously look
-    non-empty and falsely block a model swap. The authoritative
-    ``count_user_points`` helper is the single source of truth."""
+class TestEmptyCollectionAllowsSwap:
+    """With the spec moved to the ConfigurationService, Qdrant no longer
+    holds a sentinel point, so ``points_count`` is authoritative: an empty
+    collection must not block a model swap even when a stale spec points
+    at a different model."""
 
     @pytest.mark.asyncio
-    async def test_empty_signed_collection_allows_model_swap(self, mock_request):
-        """count_user_points = 0 -> health check passes even though the raw
-        points_count / vectors_count are non-zero because of the sentinel."""
+    async def test_empty_collection_allows_model_swap(self, mock_request):
         logger = MagicMock()
         config = {
             "provider": "voyageai",
@@ -2146,11 +2191,9 @@ class TestEmptyButSignedCollection:
                 "embedding_model": "text-embedding-3-small",
                 "embedding_dimension": 768,
             },
-            # Only the sentinel is in the collection.
-            points_count=1,
+            points_count=0,
             dense_size=768,
         )
-        retrieval_svc.vector_db_service.count_user_points = AsyncMock(return_value=0)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -2159,41 +2202,30 @@ class TestEmptyButSignedCollection:
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
         assert resp.status_code == 200, (
-            "Empty-but-signed collection must not block model swap. "
+            "Empty collection must not block model swap. "
             f"Body: {resp.body.decode()}"
         )
 
 
-class TestLegacyConfigProviderCompare:
-    """When only AI_MODELS config is available (no collection signature yet),
-    the legacy compare must still catch provider-only swaps — e.g. switching
-    ``ollama/nomic-embed-text`` to ``openai/nomic-embed-text``: the model
-    string matches but the vector spaces are incompatible."""
+class TestDefaultFallbackIdentity:
+    """Pre-migration collections have no config-service spec, so the
+    identity check falls back to the built-in ``DEFAULT_EMBEDDING_MODEL``.
+    Switching a populated pre-migration collection to a different model
+    must still be blocked; switching to the default itself must pass."""
 
     @pytest.mark.asyncio
-    async def test_same_model_different_provider_rejected_in_config_path(
-        self, mock_request
-    ):
+    async def test_default_fallback_rejects_different_model(self, mock_request):
         logger = MagicMock()
         config = {
             "provider": "openai",
-            "configuration": {"model": "nomic-embed-text"},
+            "configuration": {"model": "text-embedding-3-small"},
         }
         mock_embed = MagicMock()
 
         retrieval_svc = _make_retrieval_svc_for_signature_check(
             stored_signature=None,
-            # Legacy saved config: ollama-backed. No collection signature yet.
-            current_config_model="nomic-embed-text",
             points_count=50,
             dense_size=768,
-        )
-        retrieval_svc.get_current_embedding_config = AsyncMock(
-            return_value={
-                "provider": "ollama",
-                "configuration": {"model": "nomic-embed-text"},
-                "isDefault": True,
-            }
         )
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
@@ -2204,37 +2236,30 @@ class TestLegacyConfigProviderCompare:
 
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "ollama" in body
-        assert "openai" in body
-        # Make sure the response surfaces "identity_source: config" so the
+        assert "mismatch" in body.lower()
+        # The response must surface ``identity_source: default`` so the
         # origin of the decision is auditable.
-        assert "config" in body
+        assert "default" in body.lower()
 
     @pytest.mark.asyncio
-    async def test_same_provider_same_model_allowed_in_config_path(
+    async def test_default_fallback_allows_matching_default_model(
         self, mock_request
     ):
-        """Control: identical (provider, model) in config must pass even on
-        the legacy path (no stored signature)."""
+        """Switching to (or retaining) the default embedding model on a
+        pre-migration collection must pass the identity check."""
+        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+
         logger = MagicMock()
         config = {
-            "provider": "openai",
-            "configuration": {"model": "text-embedding-3-small"},
+            "provider": "default",
+            "configuration": {"model": DEFAULT_EMBEDDING_MODEL},
         }
         mock_embed = MagicMock()
 
         retrieval_svc = _make_retrieval_svc_for_signature_check(
             stored_signature=None,
-            current_config_model="text-embedding-3-small",
             points_count=50,
             dense_size=768,
-        )
-        retrieval_svc.get_current_embedding_config = AsyncMock(
-            return_value={
-                "provider": "openai",
-                "configuration": {"model": "text-embedding-3-small"},
-                "isDefault": True,
-            }
         )
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 

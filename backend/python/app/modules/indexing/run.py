@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 
+from app.config.collection_spec import set_collection_spec
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
@@ -20,7 +21,6 @@ from app.exceptions.indexing_exceptions import (
 from app.services.vector_db.const.const import (
     ORG_ID_FIELD,
     VIRTUAL_RECORD_ID_FIELD,
-    normalize_identity as _normalize_identity,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
@@ -374,11 +374,11 @@ class IndexingPipeline:
     ) -> None:
         """Initialize collection with proper configuration.
 
-        When ``embedding_provider`` and ``embedding_model_name`` are supplied
-        (and the underlying vector DB exposes :meth:`set_collection_signature`),
-        a collection signature is written so future health checks can
-        authoritatively tell which embedding model built this collection.
-        Kept optional so legacy callers / tests continue to work unchanged.
+        When ``embedding_provider`` and ``embedding_model_name`` are supplied,
+        the collection spec is persisted to the ConfigurationService so
+        future health checks can authoritatively tell which embedding
+        model built this collection. Kept optional so legacy callers /
+        tests continue to work unchanged.
         """
         try:
             collection_info = await self.vector_db_service.get_collection(self.collection_name)
@@ -427,54 +427,27 @@ class IndexingPipeline:
                         "type": "keyword",
                     }
                 )
-                # Index the sentinel-marker field so the health-check
-                # flow's ``count_user_points`` can filter on an index
-                # rather than a full scan. Best-effort; mirrors the
-                # vectorstore path.
-                try:
-                    await self.vector_db_service.create_index(
-                        collection_name=self.collection_name,
-                        field_name="_kind",
-                        field_schema={"type": "keyword"},
-                    )
-                except Exception as idx_err:
-                    self.logger.warning(
-                        f"Failed to create '_kind' payload index on "
-                        f"{self.collection_name}: {idx_err}. "
-                        f"count_user_points will use the slower fallback."
-                    )
-
-                # Best-effort signature write. The vectorstore path does the
-                # same thing; keeping this branch in sync prevents collections
+                # Best-effort spec write. The vectorstore path does the same
+                # thing; keeping this branch in sync prevents collections
                 # bootstrapped through the indexing pipeline from being
                 # permanently "legacy-unknown" w.r.t. later identity checks.
                 if embedding_provider and embedding_model_name:
-                    setter = getattr(
-                        self.vector_db_service, "set_collection_signature", None
-                    )
-                    if callable(setter):
-                        try:
-                            await setter(
-                                collection_name=self.collection_name,
-                                signature={
-                                    "embedding_provider": _normalize_identity(
-                                        embedding_provider
-                                    ),
-                                    "embedding_model": _normalize_identity(
-                                        embedding_model_name
-                                    ),
-                                    "embedding_dimension": int(embedding_size),
-                                },
-                                embedding_size=embedding_size,
-                            )
-                        except Exception as sig_err:
-                            # Signature write is advisory; don't drop the
-                            # otherwise-valid collection just because this
-                            # failed. Log loudly so it's discoverable.
-                            self.logger.error(
-                                f"⚠️ Failed to write collection signature for "
-                                f"{self.collection_name}: {sig_err}"
-                            )
+                    try:
+                        await set_collection_spec(
+                            self.config_service,
+                            self.collection_name,
+                            provider=embedding_provider,
+                            model=embedding_model_name,
+                            dimension=int(embedding_size),
+                        )
+                    except Exception as sig_err:
+                        # Spec write is advisory; don't drop the otherwise
+                        # valid collection just because this failed. Log
+                        # loudly so it's discoverable.
+                        self.logger.error(
+                            f"⚠️ Failed to write collection spec for "
+                            f"{self.collection_name}: {sig_err}"
+                        )
             except Exception as e:
                 self.logger.error(
                     f"❌ Error creating collection {self.collection_name}: {str(e)}"

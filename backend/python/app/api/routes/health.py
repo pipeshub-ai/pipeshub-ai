@@ -8,6 +8,12 @@ from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
 from langchain_core.messages import HumanMessage  #type: ignore
 
+from app.config.collection_spec import (
+    default_collection_spec,
+    delete_collection_spec,
+    get_collection_spec,
+    set_collection_spec,
+)
 from app.services.vector_db.const.const import (
     ORG_ID_FIELD,
     VIRTUAL_RECORD_ID_FIELD,
@@ -44,57 +50,69 @@ async def _resolve_stored_embedding_identity(
         ``embedding_model`` keys (normalized), or ``None`` if it can't be
         determined.
       * ``source`` is one of:
-          - ``"collection"`` — signature stored on the vector collection
-            itself (authoritative).
-          - ``"config"``     — legacy path: read the currently configured
-            model from AI_MODELS. Only meaningful when the health check is
-            invoked *before* saving the new config; the caller must treat
-            this as less trustworthy and block on ambiguous cases.
-          - ``"unknown"``    — no signature on the collection and no config
-            either.
+          - ``"collection_spec"`` — spec stored in the ConfigurationService
+            under ``/services/vectorCollections/<name>`` (authoritative).
+          - ``"default"``         — no spec stored; assume the collection
+            was built with the built-in default embedding model. Matches
+            how pre-migration collections are handled everywhere else.
+          - ``"config"``          — legacy fallback: read the currently
+            configured model from AI_MODELS. Only meaningful when neither
+            the collection spec nor the default fallback is applicable.
+          - ``"unknown"``         — nothing we can say about the identity.
 
-    Preferring the collection signature over config is the whole point of
-    this helper: the config is exactly what the user is trying to change,
-    so it is a correlated, not causal, source of truth.
+    The collection spec is the authoritative source when present; the
+    config-based fallback is kept only so legacy flows that never wrote
+    a spec still line up with what the user has configured.
     """
-    vector_db_service = getattr(retrieval_service, "vector_db_service", None)
+    config_service = getattr(retrieval_service, "config_service", None)
     collection_name = getattr(retrieval_service, "collection_name", None)
 
-    if vector_db_service is not None and collection_name:
-        getter = getattr(vector_db_service, "get_collection_signature", None)
-        if callable(getter):
-            try:
-                stored = await getter(collection_name)
-                # Only accept a proper dict payload. Guard against AsyncMock-
-                # style test doubles returning a MagicMock for any attribute.
-                if isinstance(stored, dict) and stored:
-                    identity = {
-                        "embedding_provider": _normalize_identity(
-                            stored.get("embedding_provider")
-                        ),
-                        "embedding_model": _normalize_identity(
-                            stored.get("embedding_model")
-                        ),
-                        "embedding_dimension": stored.get("embedding_dimension"),
-                    }
-                    # ``is_multimodal`` is only present on collections
-                    # written by signature-aware code. Surface it so the
-                    # same-dimension identity check can catch a flip of
-                    # the ``isMultimodal`` toggle on the same model.
-                    if "is_multimodal" in stored:
-                        identity["is_multimodal"] = bool(stored.get("is_multimodal"))
-                    return identity, "collection"
-            except Exception as e:
-                logger.warning(
-                    f"Stored collection signature lookup failed: {e}"
-                )
+    if config_service is not None and collection_name:
+        try:
+            stored = await get_collection_spec(
+                config_service, collection_name, use_cache=False
+            )
+            # Only accept a proper dict payload. Guard against AsyncMock-
+            # style test doubles returning a MagicMock for any attribute.
+            if isinstance(stored, dict) and stored:
+                identity = {
+                    "embedding_provider": _normalize_identity(
+                        stored.get("embedding_provider")
+                    ),
+                    "embedding_model": _normalize_identity(
+                        stored.get("embedding_model")
+                    ),
+                    "embedding_dimension": stored.get("embedding_dimension"),
+                }
+                # ``is_multimodal`` is only present on specs written by
+                # spec-aware code. Surface it so the same-dimension
+                # identity check can catch a flip of the ``isMultimodal``
+                # toggle on the same model.
+                if "is_multimodal" in stored:
+                    identity["is_multimodal"] = bool(stored.get("is_multimodal"))
+                return identity, "collection_spec"
+        except Exception as e:
+            logger.warning(
+                f"Stored collection spec lookup failed: {e}"
+            )
 
-    # Legacy fallback: read the default entry from AI_MODELS config. This
-    # is what was used historically; keep it so pre-signature collections
-    # still work. Prefer the richer ``get_current_embedding_config`` so we
-    # can surface the provider too (pulled from the entry flagged
-    # ``isDefault: True``), and fall back to the plain model-name getter
-    # for older retrieval services that don't expose the new method.
+    # No spec on record. Treat pre-migration collections as if they were
+    # built with the default embedding model. This matches the fallback
+    # used in the vectorstore/indexing paths and keeps health checks
+    # consistent for legacy deployments.
+    default_spec = default_collection_spec(None)
+    if default_spec.get("embedding_model"):
+        return (
+            {
+                "embedding_provider": default_spec.get("embedding_provider"),
+                "embedding_model": default_spec.get("embedding_model"),
+                "embedding_dimension": default_spec.get("embedding_dimension"),
+            },
+            "default",
+        )
+
+    # Legacy fallback retained for the edge case where even the default
+    # model name is unavailable: read the default entry from AI_MODELS.
     current_model: Optional[str] = None
     current_provider: Optional[str] = None
 
@@ -136,58 +154,18 @@ async def _resolve_stored_embedding_identity(
 async def _count_user_points(
     retrieval_service, raw_points_count, logger: Optional[Logger] = None
 ) -> int:
-    """Prefer the vector DB's own "exclude sentinel" counter; fall back to
-    the raw Qdrant ``points_count`` minus the signature sentinel if one
-    exists. This matters because our signature sentinel inflates the raw
-    count by one even on an otherwise-empty collection.
+    """Return the user-point count for the retrieval collection.
 
-    We use strict ``isinstance(..., int)`` checks rather than ``int(...)``
-    because ``MagicMock.__int__`` is preconfigured to return ``1``, which
-    would otherwise silently turn every test-double call into "there is
-    user data" and flip all identity-check branches.
-
-    ``logger`` is optional so the helper stays easy to call from tests,
-    but in the request path callers should pass the scoped logger so
-    fallback events show up in health-check diagnostics instead of being
-    silently swallowed.
+    With the embedding-model spec now living in the ConfigurationService
+    (see ``app.config.collection_spec``) there is no sentinel point to
+    exclude, so the raw Qdrant ``points_count`` is the user count. Kept as
+    a helper (rather than inlining) so the strict ``isinstance`` guard
+    against ``MagicMock.__int__`` returning ``1`` stays centralized — tests
+    rely on this to distinguish "no user data" from "one user point".
     """
-    vector_db_service = getattr(retrieval_service, "vector_db_service", None)
-    collection_name = getattr(retrieval_service, "collection_name", None)
-
-    counter = getattr(vector_db_service, "count_user_points", None)
-    if callable(counter) and collection_name:
-        try:
-            count = await counter(collection_name)
-            if isinstance(count, int) and not isinstance(count, bool):
-                return count
-        except Exception as exc:
-            # Don't fail the health check on counter issues, but do
-            # surface them — a permanently-failing filtered count means
-            # every invocation will pay the fallback cost and operators
-            # should know.
-            if logger is not None:
-                logger.warning(
-                    "count_user_points failed for '%s'; falling back to "
-                    "points_count minus sentinel. Error: %s",
-                    collection_name,
-                    exc,
-                )
-
-    sig_getter = getattr(vector_db_service, "get_collection_signature", None)
-    if callable(sig_getter) and collection_name:
-        try:
-            sig = await sig_getter(collection_name)
-            if isinstance(sig, dict) and sig and isinstance(raw_points_count, int):
-                return max(raw_points_count - 1, 0)
-        except Exception as exc:
-            if logger is not None:
-                logger.warning(
-                    "get_collection_signature fallback failed for '%s'; "
-                    "returning raw points_count=%s. Error: %s",
-                    collection_name,
-                    raw_points_count,
-                    exc,
-                )
+    # ``retrieval_service`` and ``logger`` are intentionally accepted for
+    # backwards compatibility with existing call sites and tests.
+    del retrieval_service, logger
 
     if isinstance(raw_points_count, int) and not isinstance(raw_points_count, bool):
         return raw_points_count
@@ -354,9 +332,11 @@ async def handle_model_change(
       * If identities differ but the collection has no user data → drop
         and recreate so the new model can index cleanly.
       * If identities match → nothing to do.
-      * ``identity_source="collection"`` means the "current" identity came
-        from the collection signature and is authoritative; otherwise it
-        came from config (best-effort, legacy fallback).
+      * ``identity_source="collection_spec"`` means the "current" identity
+        came from the ConfigurationService spec node and is authoritative;
+        ``"default"`` means we assumed the built-in default model (pre-
+        migration fallback); otherwise it came from config (best-effort,
+        legacy fallback).
 
     Historical args ``current_model_name`` / ``new_model_name`` are kept
     for backward compatibility; when ``current_provider`` and
@@ -463,9 +443,24 @@ async def recreate_collection(
     new_is_multimodal: Optional[bool] = None,
 ) -> None:
     """Recreate the collection with new parameters. If provider and model
-    are supplied, also write a fresh collection signature so future health
-    checks can authoritatively tell which model built this collection."""
+    are supplied, also write a fresh collection spec to the Configuration
+    Service so future health checks can authoritatively tell which model
+    built this collection."""
     try:
+        # Drop the old spec node first so a transient failure after this
+        # point can never leave a stale spec pointing at a dropped
+        # collection. Best-effort; recreated below on success.
+        config_service = getattr(retrieval_service, "config_service", None)
+        if config_service is not None:
+            try:
+                await delete_collection_spec(
+                    config_service, retrieval_service.collection_name
+                )
+            except Exception as del_err:
+                logger.warning(
+                    f"Failed to clear collection spec before recreate: {del_err}"
+                )
+
         await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
         await retrieval_service.vector_db_service.create_collection(
@@ -489,33 +484,23 @@ async def recreate_collection(
             }
         )
 
-        if new_provider and new_model_name:
-            setter = getattr(
-                retrieval_service.vector_db_service,
-                "set_collection_signature",
-                None,
-            )
-            if callable(setter):
-                signature: Dict[str, Any] = {
-                    "embedding_provider": _normalize_identity(new_provider),
-                    "embedding_model": _normalize_identity(new_model_name),
-                    "embedding_dimension": int(embedding_size),
-                }
-                if new_is_multimodal is not None:
-                    signature["is_multimodal"] = bool(new_is_multimodal)
-                try:
-                    await setter(
-                        collection_name=retrieval_service.collection_name,
-                        signature=signature,
-                        embedding_size=embedding_size,
-                    )
-                except Exception as sig_err:
-                    # Don't fail the recreate just because the signature
-                    # write failed; log loudly so it's discoverable.
-                    logger.error(
-                        f"Failed to write collection signature after recreate: {sig_err}",
-                        exc_info=True,
-                    )
+        if new_provider and new_model_name and config_service is not None:
+            try:
+                await set_collection_spec(
+                    config_service,
+                    retrieval_service.collection_name,
+                    provider=new_provider,
+                    model=new_model_name,
+                    dimension=int(embedding_size),
+                    is_multimodal=new_is_multimodal,
+                )
+            except Exception as sig_err:
+                # Don't fail the recreate just because the spec write
+                # failed; log loudly so it's discoverable.
+                logger.error(
+                    f"Failed to write collection spec after recreate: {sig_err}",
+                    exc_info=True,
+                )
 
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:
@@ -573,9 +558,10 @@ async def check_collection_info(
             f"Collection points: raw={raw_points_count}, user={points_count}"
         )
 
-        # Signature-source path: we KNOW what built the collection.
-        # No need to defer to the legacy "current model from config" heuristic.
-        if identity_source == "collection":
+        # Spec-source path: we KNOW what built the collection from the
+        # ConfigurationService record. No need to defer to the legacy
+        # "current model from config" heuristic.
+        if identity_source == "collection_spec":
             await handle_model_change(
                 retrieval_service,
                 current_model_name,
@@ -586,12 +572,13 @@ async def check_collection_info(
                 logger,
                 current_provider=current_provider,
                 new_provider=new_provider,
-                identity_source="collection",
+                identity_source="collection_spec",
             )
             return
 
-        # Legacy path: fall back to the config-derived current model. Keep
-        # the historical behaviour so pre-signature collections keep working.
+        # Legacy / default-fallback path: "current" came from the default
+        # embedding model or from AI_MODELS. Keep the historical behaviour
+        # so pre-migration collections keep working.
         await handle_model_change(
             retrieval_service,
             current_model_name,
@@ -1028,9 +1015,9 @@ async def perform_embedding_health_check(
 
                         # Same dimension — the case the original code missed.
                         # Two different models can share a dimension but produce
-                        # incompatible vector spaces. Use the stored signature
+                        # incompatible vector spaces. Use the stored spec
                         # when available; fall back to config otherwise.
-                        if identity_source == "collection" and current_identity:
+                        if identity_source == "collection_spec" and current_identity:
                             # Authoritative: compare (provider, model, and
                             # — when known on both sides — is_multimodal).
                             # Any differ blocks the change. (``cur_provider``
@@ -1074,7 +1061,7 @@ async def perform_embedding_health_check(
                                     "new_provider": new_provider_norm,
                                     "new_model": new_model_norm,
                                     "points_count": points_count,
-                                    "identity_source": "collection",
+                                    "identity_source": "collection_spec",
                                 }
                                 if cur_is_multimodal is not None:
                                     details["existing_is_multimodal"] = bool(
@@ -1092,17 +1079,15 @@ async def perform_embedding_health_check(
                                         "timestamp": get_epoch_timestamp_in_ms(),
                                     },
                                 )
-                        elif identity_source == "config" and current_identity:
-                            # Legacy: we only have the saved AI_MODELS config
-                            # (no collection signature yet). It's best-effort
-                            # because that config is what the user is about to
-                            # change, so it's correlated with "what built the
-                            # index" rather than causal. Still, when the saved
-                            # config carries a ``provider``, compare it too:
-                            # swapping ``ollama/nomic-embed-text`` for
-                            # ``openai/nomic-embed-text`` shares the model
-                            # string but produces incompatible vectors, and is
-                            # exactly the case this endpoint exists to catch.
+                        elif identity_source in ("config", "default") and current_identity:
+                            # Best-effort identity check used when no per-
+                            # collection spec has been stamped yet. ``config``
+                            # means we read the default AI_MODELS entry;
+                            # ``default`` means we assumed the built-in
+                            # default embedding model (pre-migration
+                            # collections). Both are correlated, not causal,
+                            # so we compare model + provider strings without
+                            # the ``isMultimodal`` refinement.
                             model_differs = (
                                 bool(cur_model)
                                 and bool(new_model_norm)
@@ -1132,7 +1117,7 @@ async def perform_embedding_health_check(
                                             "new_provider": new_provider_norm,
                                             "new_model": new_model_norm,
                                             "points_count": points_count,
-                                            "identity_source": "config",
+                                            "identity_source": identity_source,
                                         },
                                         "timestamp": get_epoch_timestamp_in_ms(),
                                     },

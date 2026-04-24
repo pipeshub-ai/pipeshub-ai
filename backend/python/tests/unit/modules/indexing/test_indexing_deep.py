@@ -151,8 +151,10 @@ class TestInitializeCollection:
 
         await pipeline._initialize_collection(embedding_size=1024)
 
-        # Should create 3 indexes (virtualRecordId, orgId, _kind)
-        assert pipeline.vector_db_service.create_index.await_count == 3
+        # Should create 2 indexes (virtualRecordId, orgId). The legacy
+        # ``_kind`` sentinel index was removed when the embedding-model
+        # spec moved to the ConfigurationService.
+        assert pipeline.vector_db_service.create_index.await_count == 2
 
 
 # ===================================================================

@@ -338,8 +338,10 @@ class TestIndexingPipelineInitializeCollection:
         await pipeline._initialize_collection(embedding_size=768)
 
         pipeline.vector_db_service.create_collection.assert_awaited_once()
-        # 3 indexes: virtualRecordId, orgId, and _kind (sentinel-marker)
-        assert pipeline.vector_db_service.create_index.call_count == 3
+        # 2 indexes: virtualRecordId and orgId. The legacy ``_kind``
+        # sentinel index was removed when the embedding-model spec moved
+        # to the ConfigurationService.
+        assert pipeline.vector_db_service.create_index.call_count == 2
 
     @pytest.mark.asyncio
     async def test_recreates_on_mismatch(self):
