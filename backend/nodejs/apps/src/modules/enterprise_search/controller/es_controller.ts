@@ -60,7 +60,6 @@ import {
   buildFilter,
   buildMessageFilter,
   buildPaginationMetadata,
-  buildSharedWithMeFilter,
   buildSortOptions,
   buildUserQueryMessage,
   extractModelInfo,
@@ -1908,9 +1907,7 @@ export const getAllConversations = async (
     if (source === 'owned') {
       // "Your Chats": owned by this user only. buildFilter's default $or also
       // pulls in shared rows — strip it and pin userId.
-      filter = buildFilter(req, orgId, userId, conversationId as string);
-      delete filter.$or;
-      filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+      filter = buildFilter(req, orgId, userId, conversationId as string, true, false);
       selection = Conversation.find(filter)
         .sort(sortOptions as any)
         .skip(skip)
@@ -1918,7 +1915,7 @@ export const getAllConversations = async (
         .select('-__v')
         .select('-messages');
     } else {
-      filter = buildSharedWithMeFilter(req);
+      filter = buildFilter(req, orgId, userId, conversationId as string, false, true);
       selection = Conversation.find(filter)
         .sort(sortOptions as any)
         .skip(skip)

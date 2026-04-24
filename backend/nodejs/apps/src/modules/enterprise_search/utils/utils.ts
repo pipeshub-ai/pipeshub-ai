@@ -297,81 +297,6 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
-/**
- * Build the search (regex on title + messages.content) sub-filter from
- * req.query.search. Shares validation rules with buildFilter. Returns undefined
- * if no search param.
- */
-const buildSearchSubFilter = (req: AuthenticatedUserRequest) => {
-  if (!req.query.search) return undefined;
-
-  const searchValue = extractSearchParameter(req.query.search);
-  validateNoXSS(searchValue, 'search parameter');
-  if (searchValue.length > 1000) {
-    throw new BadRequestError('Search parameter too long (max 1000 characters)');
-  }
-  const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return {
-    $or: [
-      { title: { $regex: escapedSearch, $options: 'i' } },
-      { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
-    ],
-  };
-};
-
-const buildCreatedAtSubFilter = (req: AuthenticatedUserRequest) => {
-  if (!req.query.startDate && !req.query.endDate) return undefined;
-
-  const createdAt: { $gte?: Date; $lte?: Date } = {};
-  if (req.query.startDate) {
-    const startDate = new Date(req.query.startDate as string);
-    if (isNaN(startDate.getTime())) {
-      throw new BadRequestError('Invalid start date format');
-    }
-    createdAt.$gte = startDate;
-  }
-  if (req.query.endDate) {
-    const endDate = new Date(req.query.endDate as string);
-    if (isNaN(endDate.getTime())) {
-      throw new BadRequestError('Invalid end date format');
-    }
-    createdAt.$lte = endDate;
-  }
-  return createdAt;
-};
-
-/**
- * Mongo filter for conversations shown in the "shared with me" list (same org,
- * not started by this user). Requires both `isShared` and an entry in
- * `sharedWith` for the current user.
- *
- * `isShared: true` without a `sharedWith` row for this user does not match.
- * Share endpoints record recipients in `sharedWith`, so this is the intended
- * grant shape; it avoids treating a lone `isShared` flag as org-wide visibility.
- */
-export const buildSharedWithMeFilter = (req: AuthenticatedUserRequest) => {
-  const filter: any = {
-    orgId: new mongoose.Types.ObjectId(`${req.user?.orgId}`),
-    isDeleted: false,
-    isArchived: false,
-    initiator: { $ne: new mongoose.Types.ObjectId(`${req.user?.userId}`) },
-    $and: [
-      { isShared: true },
-      {
-        'sharedWith.userId': new mongoose.Types.ObjectId(`${req.user?.userId}`),
-      },
-    ],
-  };
-
-  const searchSub = buildSearchSubFilter(req);
-  if (searchSub) filter.$and.push(searchSub);
-
-  const createdAt = buildCreatedAtSubFilter(req);
-  if (createdAt) filter.createdAt = createdAt;
-
-  return filter;
-};
-
 export const addComputedFields = (
   conversation: IConversation | IConversationDocument,
   userId: string,
@@ -400,19 +325,21 @@ export const buildFilter = (
   orgId: string,
   userId: string,
   id?: string, // conversationId or searchId
+  owned: boolean = true,
+  shared: boolean = true,
 ) => {
   const filter: any = {
     orgId: new mongoose.Types.ObjectId(`${orgId}`),
     isDeleted: false,
     isArchived: false,
     $or: [
-      { userId: new mongoose.Types.ObjectId(`${userId}`) },
-      {
+      ...(owned ? [{ userId: new mongoose.Types.ObjectId(`${userId}`) }] : []),
+      ...(shared ? [{
         $and: [
           { isShared: true },
           { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
         ],
-      },
+      }] : [])
     ],
   };
 

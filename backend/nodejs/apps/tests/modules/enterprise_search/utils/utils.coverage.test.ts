@@ -13,7 +13,6 @@ import {
   buildPaginationMetadata,
   buildFiltersMetadata,
   buildFilter,
-  buildSharedWithMeFilter,
   addComputedFields,
   sortMessages,
   buildMessageFilter,
@@ -328,20 +327,6 @@ describe('Enterprise Search Utils - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // buildSharedWithMeFilter
-  // -----------------------------------------------------------------------
-  describe('buildSharedWithMeFilter', () => {
-    it('should build filter excluding initiator', () => {
-      const req = createMockRequest()
-      const result = buildSharedWithMeFilter(req)
-      expect(result.isDeleted).to.be.false
-      expect(result.isArchived).to.be.false
-      expect(result.$and).to.have.lengthOf(2)
-      expect(result.$and[0]).to.deep.include({ isShared: true })
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // addComputedFields
   // -----------------------------------------------------------------------
   describe('addComputedFields', () => {
@@ -468,6 +453,13 @@ describe('Enterprise Search Utils - coverage', () => {
       const regex = result.$and[0].$or[0].title.$regex
       expect(regex).to.include('\\.')
       expect(regex).to.include('\\+')
+    })
+
+    it('should use share-only $or branch when owned=false and shared=true', () => {
+      const req = createMockRequest()
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, false, true)
+      expect(result.$or).to.have.lengthOf(1)
+      expect(result.$or[0].$and[0]).to.deep.include({ isShared: true })
     })
   })
 
