@@ -427,10 +427,15 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
             # Single-bucket or filter mode: reuse ListBuckets to resolve CreationDate
             if not list_buckets_payload and target_names:
-                extra = await self.data_source.list_buckets()
-                if extra.success and extra.data:
-                    bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
-                        extra.data.get("Buckets"), target_names
+                try:
+                    extra = await self.data_source.list_buckets()
+                    if extra.success and extra.data:
+                        bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
+                            extra.data.get("Buckets"), target_names
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch bucket creation dates via list_buckets: {e}"
                     )
 
             # Fetch and cache regions for all buckets

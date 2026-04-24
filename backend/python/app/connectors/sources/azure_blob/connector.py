@@ -86,6 +86,10 @@ DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 # Base URL for Azure Portal
 AZURE_PORTAL_BASE_URL = "https://portal.azure.com"
 
+# When sync targets explicit container names without a prior list response, fetch each
+# container's properties instead of listing all containers (avoids heavy calls on large accounts).
+_MAX_CONTAINERS_FOR_PER_PROPERTY_TIMESTAMP_FETCH = 128
+
 
 def get_file_extension(blob_name: str) -> str | None:
     """Extracts the extension from a blob name."""
@@ -560,10 +564,43 @@ class AzureBlobConnector(BaseConnector):
                 containers_list_payload, target_names
             )
             if containers_list_payload is None and target_names:
-                extra = await self.data_source.list_containers()
-                if extra.success and extra.data:
-                    container_ts_ms = _container_last_modified_epoch_ms_from_list(
-                        extra.data, target_names
+                try:
+                    names_for_ts = sorted(n for n in target_names if n)
+                    if (
+                        names_for_ts
+                        and len(names_for_ts) <= _MAX_CONTAINERS_FOR_PER_PROPERTY_TIMESTAMP_FETCH
+                    ):
+                        per_container: dict[str, int] = {}
+                        for cname in names_for_ts:
+                            prop = await self.data_source.get_container_properties(cname)
+                            if not prop.success or not prop.data:
+                                continue
+                            lm = getattr(prop.data, "last_modified", None)
+                            ts: int | None = None
+                            if lm is not None:
+                                if isinstance(lm, datetime):
+                                    ts = datetime_to_epoch_ms(lm)
+                                else:
+                                    ts = datetime_to_epoch_ms(str(lm))
+                            if ts is not None:
+                                per_container[cname] = ts
+                        if per_container:
+                            container_ts_ms = per_container
+                        else:
+                            extra = await self.data_source.list_containers()
+                            if extra.success and extra.data:
+                                container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                                    extra.data, target_names
+                                )
+                    else:
+                        extra = await self.data_source.list_containers()
+                        if extra.success and extra.data:
+                            container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                                extra.data, target_names
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch container timestamps: {e}"
                     )
 
             # Create record groups for containers first

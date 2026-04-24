@@ -508,10 +508,15 @@ class AzureFilesConnector(BaseConnector):
                 shares_list_payload, target_names
             )
             if shares_list_payload is None and target_names:
-                extra = await self.data_source.list_shares()
-                if extra.success and extra.data:
-                    share_ts_ms = _share_last_modified_epoch_ms_from_list(
-                        extra.data, target_names
+                try:
+                    extra = await self.data_source.list_shares()
+                    if extra.success and extra.data:
+                        share_ts_ms = _share_last_modified_epoch_ms_from_list(
+                            extra.data, target_names
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch share timestamps via list_shares: {e}"
                     )
 
             # Create record groups for shares first

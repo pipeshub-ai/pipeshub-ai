@@ -88,6 +88,10 @@ DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 # Base URL for Google Cloud Console
 GCS_CONSOLE_BASE_URL = "https://console.cloud.google.com/storage/browser"
 
+# When sync targets explicit buckets without a prior list response, fetch each bucket's
+# metadata instead of listing every bucket in the project.
+_MAX_BUCKETS_FOR_PER_PROPERTY_TIMESTAMP_FETCH = 128
+
 
 def _gcs_datetime_to_epoch_ms(value: datetime | str | None) -> int | None:
     """Parse GCS timestamps (ISO strings from GCSDataSource or datetime in tests/mocks)."""
@@ -531,10 +535,36 @@ class GCSConnector(BaseConnector):
                 buckets_list_payload, target_names
             )
             if buckets_list_payload is None and target_names:
-                extra = await self.data_source.list_buckets()
-                if extra.success and extra.data and "Buckets" in extra.data:
-                    bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
-                        extra.data["Buckets"], target_names
+                try:
+                    names_for_ts = sorted(n for n in target_names if n)
+                    if (
+                        names_for_ts
+                        and len(names_for_ts) <= _MAX_BUCKETS_FOR_PER_PROPERTY_TIMESTAMP_FETCH
+                    ):
+                        rows: list[dict[str, Any]] = []
+                        for bname in names_for_ts:
+                            one = await self.data_source.get_bucket_properties(bname)
+                            if one.success and one.data:
+                                rows.append(one.data)
+                        if rows:
+                            bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                rows, target_names
+                            )
+                        else:
+                            extra = await self.data_source.list_buckets()
+                            if extra.success and extra.data and "Buckets" in extra.data:
+                                bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                    extra.data["Buckets"], target_names
+                                )
+                    else:
+                        extra = await self.data_source.list_buckets()
+                        if extra.success and extra.data and "Buckets" in extra.data:
+                            bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                extra.data["Buckets"], target_names
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch bucket timestamps: {e}"
                     )
 
             # Create record groups for buckets first
