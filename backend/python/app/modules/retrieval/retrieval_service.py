@@ -909,6 +909,33 @@ class RetrievalService:
 
         return user_data
 
+    @staticmethod
+    def _combine_with_image_filter(base_filter: models.Filter) -> models.Filter:
+        """Return a new filter that ANDs ``base_filter`` with
+        ``metadata.blockType == "image"``.
+
+        ``base_filter`` already carries the org + accessible-virtualRecordId
+        scoping; we just stack the block-type constraint on top so the
+        image-only prefetch respects permissions and tenant isolation.
+        Building a fresh :class:`models.Filter` keeps the helper pure —
+        we never mutate the caller's filter object, which is reused by
+        the text prefetches and the top-level QueryRequest.
+        """
+        image_condition = models.FieldCondition(
+            key="metadata.blockType",
+            match=models.MatchValue(value=BlockType.IMAGE.value),
+        )
+
+        must = list(getattr(base_filter, "must", None) or [])
+        must.append(image_condition)
+
+        return models.Filter(
+            must=must,
+            should=list(getattr(base_filter, "should", None) or []) or None,
+            must_not=list(getattr(base_filter, "must_not", None) or []) or None,
+            min_should=getattr(base_filter, "min_should", None),
+        )
+
     # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
     # LangChain's SparseVector, which Prefetch does not accept.
     @staticmethod
@@ -922,7 +949,18 @@ class RetrievalService:
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
     async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
-        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
+        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
+
+        Image points are stored with only a dense vector (no page_content →
+        no sparse), so they systematically lose RRF fusion against text
+        points that score in both the dense and sparse lanes. On top of
+        that, text-to-text similarity is tighter than text-to-image even
+        in multimodal embedding spaces, so image hits can fail to even
+        reach the dense prefetch's top-N candidate pool. To keep image
+        embeddings reachable at retrieval time, we add a third,
+        image-only dense prefetch filtered on ``metadata.blockType`` so
+        images compete in their own lane inside RRF.
+        """
         all_results = []
 
         dense_embeddings = await self.get_embedding_model_instance()
@@ -941,6 +979,12 @@ class RetrievalService:
             asyncio.gather(*sparse_tasks),
         )
 
+        image_only_filter = self._combine_with_image_filter(filter)
+        # Reserve a modest budget for image hits so they don't crowd out
+        # text results when the collection has a lot of images, while
+        # still guaranteeing a handful always survive fusion.
+        image_prefetch_limit = max(limit // 2, 5)
+
         query_requests = [
             models.QueryRequest(
                 prefetch=[
@@ -953,6 +997,16 @@ class RetrievalService:
                         query=self.to_qdrant_sparse(sparse_embedding),
                         using="sparse",
                         limit=limit * 2,
+                    ),
+                    # Dedicated dense lane for image-only points. Without
+                    # this, image hits get crowded out by text in the
+                    # main dense prefetch and drop out of the RRF fusion
+                    # entirely — see method docstring.
+                    models.Prefetch(
+                        query=dense_embedding,
+                        using="dense",
+                        limit=image_prefetch_limit,
+                        filter=image_only_filter,
                     ),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion

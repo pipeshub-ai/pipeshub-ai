@@ -59,14 +59,15 @@ class TestBuildImagePoint:
 
         assert point.payload["page_content"] == ""
 
-    def test_metadata_carries_block_type_identity_and_image_uri(self):
-        """The Qdrant payload keeps the image URI on ``metadata.imageUri``
-        (and OUT of ``page_content``). Downstream — the retrieval
-        formatter and the frontend citation renderer — reads
-        ``metadata.imageUri`` to display the image; dropping it here
-        would silently break image rendering for every new-style
-        point. ``page_content`` stays empty so the blob never reaches
-        the LLM prompt."""
+    def test_metadata_is_identity_only_without_image_blob(self):
+        """The Qdrant payload is identity-only — ``virtualRecordId`` +
+        ``blockId`` + ``orgId`` + a ``blockType`` marker. The image URI
+        itself (often a multi-MB base64 data URL) must NOT land on the
+        payload: the bytes live in blob storage and are resolved at
+        read time via ``block.data.uri`` in the record graph.
+        Duplicating them into Qdrant bloats the collection for no
+        read-path benefit. ``page_content`` also stays empty so the
+        blob never leaks into the LLM prompt."""
         from app.models.blocks import BlockType
         from app.modules.transformers.vectorstore import VectorStore
 
@@ -79,8 +80,11 @@ class TestBuildImagePoint:
 
         metadata = point.payload["metadata"]
         assert metadata["blockType"] == BlockType.IMAGE.value
-        assert metadata["imageUri"] == "data:image/png;base64,abc"
-        # page_content stays empty — the blob lives on metadata only.
+        assert "imageUri" not in metadata, (
+            "image bytes must not be persisted on the Qdrant payload — "
+            "the bytes live in blob storage"
+        )
+        # page_content stays empty for the same reason.
         assert point.payload["page_content"] == ""
         # Identity metadata is preserved verbatim.
         assert metadata["orgId"] == "org-1"
@@ -132,14 +136,11 @@ class TestNativePathsEmitCleanPoints:
 
         assert len(points) == 1
         assert points[0].payload["page_content"] == ""
-        # ``imageUri`` must ride on metadata (not page_content) so the
-        # frontend citation renderer can read it without pulling the
-        # blob from blob storage on every hit, while the LLM-prompt
-        # content stays empty.
-        assert (
-            points[0].payload["metadata"]["imageUri"]
-            == "data:image/png;base64,abc"
-        )
+        # The image bytes must stay OUT of the Qdrant payload — they
+        # live in blob storage and are resolved at read time via
+        # ``block.data.uri``. Persisting them here would bloat the
+        # collection for no read-path benefit.
+        assert "imageUri" not in points[0].payload["metadata"]
         assert points[0].payload["metadata"]["blockType"] == "image"
 
     @pytest.mark.asyncio
@@ -174,10 +175,7 @@ class TestNativePathsEmitCleanPoints:
         # outputEmbeddingLength is forwarded from self.output_dimensions, not hardcoded 1024.
         assert captured["body"]["embeddingConfig"]["outputEmbeddingLength"] == 384
         assert points[0].payload["page_content"] == ""
-        assert (
-            points[0].payload["metadata"]["imageUri"]
-            == "data:image/png;base64,aW1nCg=="
-        )
+        assert "imageUri" not in points[0].payload["metadata"]
 
     @pytest.mark.asyncio
     async def test_bedrock_output_dim_defaults_to_1024(self):
@@ -269,10 +267,7 @@ class TestNativePathsEmitCleanPoints:
 
         assert len(points) == 1
         assert points[0].payload["page_content"] == ""
-        assert (
-            points[0].payload["metadata"]["imageUri"]
-            == "data:image/png;base64,aW1n"
-        )
+        assert "imageUri" not in points[0].payload["metadata"]
         assert points[0].payload["metadata"]["blockType"] == "image"
 
     @pytest.mark.asyncio
@@ -340,10 +335,7 @@ class TestNativePathsEmitCleanPoints:
         assert captured["body"]["output_dimensionality"] == 3072
         assert points[0].payload["page_content"] == ""
         assert points[0].payload["metadata"]["blockType"] == "image"
-        assert (
-            points[0].payload["metadata"]["imageUri"]
-            == "data:image/png;base64,aW1n"
-        )
+        assert "imageUri" not in points[0].payload["metadata"]
 
 
 # ===================================================================

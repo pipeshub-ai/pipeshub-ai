@@ -630,6 +630,99 @@ class TestExecuteParallelSearches:
         )
         assert len(results) == 1  # deduplicated
 
+    @pytest.mark.asyncio
+    async def test_adds_image_only_dense_prefetch(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """Regression: image points are stored with only a ``dense`` vector
+        and no ``page_content``. Without a dedicated prefetch they lose
+        RRF fusion against text points (which score in both dense and
+        sparse) and are also crowded out of the dense top-N candidate
+        pool because text-to-text similarity is tighter than
+        text-to-image even in multimodal models. Assert the
+        QueryRequest now carries a third, image-only dense prefetch
+        filtered on ``metadata.blockType == "image"``.
+        """
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+
+        sparse_result = MagicMock()
+        sparse_result.indices = [1]
+        sparse_result.values = [0.5]
+        retrieval_service.sparse_embeddings.embed_query = MagicMock(return_value=sparse_result)
+
+        mock_vector_db_service.query_nearest_points.return_value = []
+
+        qdrant_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.orgId", match=models.MatchValue(value="o1")
+                )
+            ]
+        )
+        await retrieval_service._execute_parallel_searches(
+            ["test query"], qdrant_filter, 10
+        )
+
+        mock_vector_db_service.query_nearest_points.assert_called_once()
+        _, kwargs = mock_vector_db_service.query_nearest_points.call_args
+        query_requests = kwargs["requests"]
+        assert len(query_requests) == 1
+        prefetches = query_requests[0].prefetch
+        assert len(prefetches) == 3, (
+            "expected three prefetches: dense + sparse + image-only dense"
+        )
+        image_prefetch = prefetches[2]
+        assert image_prefetch.using == "dense"
+        assert image_prefetch.filter is not None
+
+        # The image prefetch must stack the image block-type constraint
+        # on top of the caller's org/accessible-vrid scoping, so images
+        # from other tenants never leak through the dedicated lane.
+        must = list(image_prefetch.filter.must or [])
+        keys = {c.key for c in must if hasattr(c, "key")}
+        assert "metadata.blockType" in keys
+        assert "metadata.orgId" in keys  # caller's scoping is preserved
+
+    def test_combine_with_image_filter_stacks_block_type_constraint(
+        self, retrieval_service
+    ):
+        """The helper ANDs ``blockType=image`` onto the caller's filter
+        without mutating the original — the caller still passes the
+        original to the text prefetches and top-level QueryRequest."""
+        base = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.orgId", match=models.MatchValue(value="o1")
+                )
+            ],
+            should=[
+                models.FieldCondition(
+                    key="metadata.virtualRecordId",
+                    match=models.MatchAny(any=["v1", "v2"]),
+                )
+            ],
+        )
+
+        combined = retrieval_service._combine_with_image_filter(base)
+
+        assert combined is not base  # must not mutate caller's filter
+        assert len(base.must) == 1  # sanity: caller's must unchanged
+
+        combined_keys = {c.key for c in combined.must if hasattr(c, "key")}
+        assert combined_keys == {"metadata.orgId", "metadata.blockType"}
+
+        image_cond = next(
+            c for c in combined.must if getattr(c, "key", None) == "metadata.blockType"
+        )
+        assert image_cond.match.value == "image"
+
+        # Preserve the should-clause so org-scoped accessible virtual
+        # record IDs still gate the image prefetch.
+        should_keys = {c.key for c in (combined.should or []) if hasattr(c, "key")}
+        assert "metadata.virtualRecordId" in should_keys
+
 
 class TestGetUserCached:
     @pytest.mark.asyncio

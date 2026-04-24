@@ -275,22 +275,25 @@ class VectorStore(Transformer):
     ) -> PointStruct:
         """Build a ``PointStruct`` for an image embedding.
 
-        Image bytes live in blob storage; ``chat_helpers`` / ``citations``
-        can still resolve the original URI from ``block.data.uri`` in the
-        record graph via ``virtualRecordId`` + ``blockId``. To avoid an
-        extra graph round-trip in the hot retrieval path, we also stash
-        the URI on ``metadata.imageUri`` so the retrieval formatter and
-        the frontend citation renderer can read it directly from the
-        Qdrant payload. ``page_content`` stays ``""`` so a megabyte-scale
-        base64 ``data:`` URL never leaks into an LLM prompt or a search
-        response; the ``blockType`` marker lets the retrieval layer
+        The Qdrant payload is identity-only: ``virtualRecordId`` +
+        ``blockId`` + ``orgId`` (plus whatever the caller already put on
+        ``chunk["metadata"]``) and a ``blockType`` marker. The image
+        bytes themselves are NOT stored here — they live in blob
+        storage and are resolved at read time by ``chat_helpers`` via
+        ``block.data.uri`` in the record graph. Stashing the (often
+        megabyte-scale) base64 data URL on ``metadata.imageUri`` would
+        bloat the Qdrant payload, blow up shard memory, and slow down
+        every scroll / query — for no read-path benefit, since the
+        graph round-trip happens anyway when the record is fetched to
+        render citations. ``page_content`` stays ``""`` for the same
+        reason: so the blob never leaks into an LLM prompt or search
+        response. The ``blockType`` marker lets the retrieval layer
         short-circuit empty-content filters.
         """
         base_metadata = chunk.get("metadata", {}) or {}
         metadata = {
             **base_metadata,
             "blockType": BlockType.IMAGE.value,
-            "imageUri": chunk.get("image_uri"),
         }
         return PointStruct(
             id=str(uuid.uuid4()),
