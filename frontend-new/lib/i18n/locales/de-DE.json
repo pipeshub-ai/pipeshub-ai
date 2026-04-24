@@ -338,6 +338,7 @@
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
+    "loadMore": "Mehr laden",
     "moreCollections": "Weitere Sammlungen",
     "searchCollections": "Suchen"
   },
@@ -1970,6 +1971,7 @@
     "toolsetDuplicateNotify": "Es kann jeweils nur ein {{name}}-Toolset auf der Arbeitsfläche sein.",
     "toolsetAuthUpdated": "Toolset-Authentifizierung aktualisiert.",
     "loadMore": "Mehr laden",
+    "loadMoreConnectors": "Weitere Konnektoren laden",
     "loadingMore": "Wird geladen…",
     "notConfiguredReason": "nicht konfiguriert",
     "notAuthenticatedReason": "nicht authentifiziert",

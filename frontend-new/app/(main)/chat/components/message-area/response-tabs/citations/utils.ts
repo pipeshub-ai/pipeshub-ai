@@ -13,13 +13,22 @@ import type { CitationApiResponse } from '@/chat/types';
 // Connector configuration (delegates to centralized ConnectorIcon mapping)
 // ---------------------------------------------------------------------------
 
-import { getConnectorIconConfig } from '@/app/components/ui/ConnectorIcon';
+import {
+  getConnectorIconConfig,
+  resolveConnectorType,
+} from '@/app/components/ui/ConnectorIcon';
+import { i18n } from '@/lib/i18n';
 
 /** Resolve connector key → display config. */
 export function getConnectorConfig(connector: string): ConnectorConfig {
+  const resolved = resolveConnectorType(connector);
   const iconConfig = getConnectorIconConfig(connector);
+  const isCollections =
+    resolved === 'kb' || resolved === 'knowledge-base';
   return {
-    label: connector || 'Source',
+    label: isCollections
+      ? i18n.t('nav.collections')
+      : connector || i18n.t('filter.source'),
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',
   };
 }

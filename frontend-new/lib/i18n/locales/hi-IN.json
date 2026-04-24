@@ -338,6 +338,7 @@
     "suggestedInWorkspace": "वर्कस्पेस में सुझाया गया",
     "createSubFolder": "उप-फ़ोल्डर बनाएँ",
     "more": "और",
+    "loadMore": "और लोड करें",
     "moreCollections": "और कलेक्शन",
     "searchCollections": "खोजें"
   },
@@ -1968,6 +1969,7 @@
     "toolsetDuplicateNotify": "एक समय में केवल एक {{name}} टूलसेट कैनवास पर हो सकता है।",
     "toolsetAuthUpdated": "टूलसेट प्रमाणीकरण अपडेट किया गया।",
     "loadMore": "और लोड करें",
+    "loadMoreConnectors": "और कनेक्टर लोड करें",
     "loadingMore": "लोड हो रहा है…",
     "notConfiguredReason": "कॉन्फ़िगर नहीं",
     "notAuthenticatedReason": "प्रमाणित नहीं",

@@ -291,11 +291,13 @@ function KnowledgeBaseSidebarSlotContent() {
   }, [setPendingSidebarAction]);
 
   const filteredAppNodes = useMemo(
-    () => appNodes.filter((app) => {
-      const children = appChildrenCache.get(app.id);
-      return children && children.length > 0;
-    }),
-    [appNodes, appChildrenCache]
+    () =>
+      appNodes.filter((app) => {
+        if (loadingAppIds.has(app.id)) return true;
+        const children = appChildrenCache.get(app.id);
+        return children != null && children.length > 0;
+      }),
+    [appNodes, appChildrenCache, loadingAppIds]
   );
 
   return (

@@ -206,6 +206,7 @@
     "suggestedInWorkspace": "Suggested in Workspace",
     "createSubFolder": "Create a Sub-Folder",
     "more": "More",
+    "loadMore": "Load more",
     "moreCollections": "More Collections",
     "searchCollections": "Search"
   },
@@ -383,6 +384,7 @@
     "toolsetOAuthTryAgain": "Try Again",
     "toolsetOAuthCloseWindow": "Close window",
     "loadMore": "Load more",
+    "loadMoreConnectors": "Load more connectors",
     "loadingMore": "Loading…",
     "notConfiguredReason": "not configured",
     "notAuthenticatedReason": "not authenticated",

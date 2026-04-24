@@ -74,8 +74,14 @@ export const ChatSections = React.memo(function ChatSections({
 
   // Overflow detection — show "More" if there are more items than fit,
   // OR if the server indicated there are additional pages to fetch.
-  const hasMoreShared = sharedConversations.length > MAX_VISIBLE_CHATS || (sharedPagination?.hasNextPage ?? false);
-  const hasMoreYour = conversations.length > MAX_VISIBLE_CHATS || (pagination?.hasNextPage ?? false);
+  // Only OR in pagination when this section has items: store `pagination` is shared
+  // across loads, so "your" chats' hasNext must not show "More" on empty Shared.
+  const hasMoreShared =
+    sharedConversations.length > MAX_VISIBLE_CHATS ||
+    (sharedConversations.length > 0 && (pagination?.hasNextPage ?? false));
+  const hasMoreYour =
+    conversations.length > MAX_VISIBLE_CHATS ||
+    (conversations.length > 0 && (pagination?.hasNextPage ?? false));
 
   // Slice for overflow limit
   const visibleShared = hasMoreShared

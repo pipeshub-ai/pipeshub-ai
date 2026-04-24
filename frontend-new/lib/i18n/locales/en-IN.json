@@ -338,6 +338,7 @@
     "suggestedInWorkspace": "Suggested in Workspace",
     "createSubFolder": "Create a Sub-Folder",
     "more": "More",
+    "loadMore": "Load more",
     "moreCollections": "More Collections",
     "searchCollections": "Search"
   },
@@ -1956,6 +1957,7 @@
     "toolsetDuplicateNotify": "Only one {{name}} toolset can be on the canvas at a time.",
     "toolsetAuthUpdated": "Toolset authentication updated.",
     "loadMore": "Load more",
+    "loadMoreConnectors": "Load more connectors",
     "loadingMore": "Loading…",
     "notConfiguredReason": "not configured",
     "notAuthenticatedReason": "not authenticated",

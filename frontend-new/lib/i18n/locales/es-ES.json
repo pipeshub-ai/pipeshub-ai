@@ -337,6 +337,7 @@
     "suggestedInWorkspace": "Sugerido en el espacio de trabajo",
     "createSubFolder": "Crear una subcarpeta",
     "more": "Más",
+    "loadMore": "Cargar más",
     "moreCollections": "Más colecciones",
     "searchCollections": "Buscar"
   },
@@ -1967,6 +1968,7 @@
     "toolsetDuplicateNotify": "Solo puede haber un conjunto de herramientas {{name}} en el lienzo a la vez.",
     "toolsetAuthUpdated": "Autenticación del conjunto de herramientas actualizada.",
     "loadMore": "Cargar más",
+    "loadMoreConnectors": "Cargar más conectores",
     "loadingMore": "Cargando…",
     "notConfiguredReason": "no configurado",
     "notAuthenticatedReason": "no autenticado",

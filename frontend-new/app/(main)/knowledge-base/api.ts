@@ -17,13 +17,22 @@ const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>
 function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
-  params?: { page?: number; limit?: number; include?: string; onlyContainers?: boolean }
+  params?: {
+    page?: number;
+    limit?: number;
+    include?: string;
+    onlyContainers?: boolean;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }
 ) {
   const page = params?.page ?? 1;
   const limit = params?.limit ?? 50;
   const include = params?.include ?? '';
+  const sortBy = params?.sortBy ?? '';
+  const sortOrder = params?.sortOrder ?? '';
   const onlyContainers = params?.onlyContainers !== false;
-  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}`;
+  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}\0${sortBy}\0${sortOrder}`;
 }
 
 function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
@@ -199,6 +208,8 @@ export const KnowledgeHubApi = {
       page?: number;
       limit?: number;
       include?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
     }
   ) {
     const key = getNodeChildrenCacheKey(nodeType, nodeId, params);
@@ -217,6 +228,8 @@ export const KnowledgeHubApi = {
               limit: params?.limit ?? 50,
               include: params?.include,
               onlyContainers,
+              ...(params?.sortBy != null ? { sortBy: params.sortBy } : {}),
+              ...(params?.sortOrder != null ? { sortOrder: params.sortOrder } : {}),
             },
           }
         );
