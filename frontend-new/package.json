@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "next dev --turbopack -p 4001",
     "build": "next build",
-    "start": "next start -p 3001",
+    "start": "next start -p 4001",
     "lint": "next lint",
     "deploy:dev": "bash scripts/deploy-dev.sh",
     "test:e2e": "npx playwright test",

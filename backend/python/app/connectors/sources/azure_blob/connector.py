@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -263,7 +264,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/azureblob.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.AZURE_BLOB.value))
         .add_documentation_link(DocumentationLink(
             "Azure Blob Storage Setup",
             "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal",

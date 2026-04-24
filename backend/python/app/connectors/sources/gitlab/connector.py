@@ -9,7 +9,9 @@ from enum import Enum
 from logging import Logger
 from typing import Any
 from urllib.parse import unquote
-
+from app.connectors.core.constants import (
+    IconPaths,
+)
 from fastapi.responses import StreamingResponse
 from gitlab.v4.objects import (
     GroupMember,
@@ -207,14 +209,14 @@ class GitlabLiterals(str, Enum):
                         is_secret=True,
                     ),
                 ],
-                icon_path="/assets/icons/connectors/gitlab.svg",
                 app_description="OAuth application for accessing Gitlab services",
                 app_categories=["Knowledge Management"],
             )
         ]
     )
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/gitlab.svg")
+        lambda builder: builder
+        .with_icon(IconPaths.connector_icon(Connectors.GITLAB.value))
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(
