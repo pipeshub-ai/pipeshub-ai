@@ -98,9 +98,11 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             client = await self._get_client()
 
-            # Convert value to string if it's not already
-            value_str = str(value) if not isinstance(value, str) else value
-            logger.debug("📋 Serialized value: %s", value_str)
+            # Serialize the value to bytes using the configured serializer.
+            # Using str() here would produce a Python repr (e.g. single-quoted
+            # dicts) that is not valid JSON and breaks subsequent deserialization.
+            serialized_value = self.serializer(value)
+            logger.debug("📋 Serialized value: %s", serialized_value)
 
             # Check if key exists
             logger.debug("🔍 Checking if key exists")
@@ -112,7 +114,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             elif existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
-                    lambda: client.put(key, value_str.encode())
+                    lambda: client.put(key, serialized_value)
                 )
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
@@ -120,11 +122,11 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     logger.debug("🔄 Creating lease with TTL: %s seconds", ttl)
                     lease = await asyncio.to_thread(lambda: client.lease(ttl))
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode(), lease=lease)
+                        lambda: client.put(key, serialized_value, lease=lease)
                     )
                 else:
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode())
+                        lambda: client.put(key, serialized_value)
                     )
 
             logger.debug("✅ Key operation successful: %s", success is not None)
