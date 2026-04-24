@@ -76,11 +76,11 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     (async () => {
       try {
         const result = await ChatApi.fetchConversations(1, MORE_CHATS_PAGE_SIZE, {
+          source: sectionType === 'your' ? 'owned' : 'shared',
           search: debouncedSearch.trim() || undefined,
         });
         if (cancelled) return;
-        const items = sectionType === 'your' ? result.conversations : result.sharedConversations;
-        setRows(items);
+        setRows(result.conversations);
         setPagination({
           page: result.pagination.page,
           hasNextPage: result.pagination.hasNextPage,
@@ -117,13 +117,13 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     setIsLoadingMore(true);
     try {
       const result = await ChatApi.fetchConversations(nextPage, MORE_CHATS_PAGE_SIZE, {
+        source: sectionType === 'your' ? 'owned' : 'shared',
         search,
       });
-      const newItems = sectionType === 'your' ? result.conversations : result.sharedConversations;
       setRows((prev) => {
         const seen = new Set(prev.map((c) => c.id));
         const merged = [...prev];
-        for (const row of newItems) {
+        for (const row of result.conversations) {
           if (!seen.has(row.id)) {
             seen.add(row.id);
             merged.push(row);

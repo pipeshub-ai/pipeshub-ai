@@ -72,9 +72,11 @@ export interface ConversationApiResponse {
   accessLevel: string;
 }
 
+export type ConversationSource = 'owned' | 'shared';
+
 export interface ConversationsListResponse {
   conversations: ConversationApiResponse[];
-  sharedWithMeConversations: ConversationApiResponse[];
+  source: ConversationSource;
   pagination: {
     page: number;
     limit: number;
@@ -588,6 +590,12 @@ export interface ChatSlot {
 
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
+
+  /**
+   * From GET conversation detail `access.isOwner`.
+   * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
+   */
+  isOwner: boolean | null;
 }
 
 // ── Search types ──────────────────────────────────────────────────────
