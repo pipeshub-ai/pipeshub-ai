@@ -130,16 +130,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides': { svg: '/icons/connectors/slides.svg', fallback: 'slideshow' },
   'google-forms': { svg: '/icons/connectors/forms.svg', fallback: 'quiz' },
   'ms-onenote': { svg: '/icons/connectors/ms-onenote.svg', fallback: 'note' },
-  // 'notion':           { svg: '/icons/connectors/notion.svg',           fallback: 'description' },
-  // 'confluence':       { svg: '/icons/connectors/confluence.svg',       fallback: 'article' },
-  // 'bookstack':        { svg: '/icons/connectors/BookStack.svg',        fallback: 'menu_book' },
-  'kb': { svg: null, fallback: 'folder' },
-  'knowledge-base': { svg: null, fallback: 'folder' },
-  // 'google-docs':      { svg: '/icons/connectors/Google-Docs.svg',      fallback: 'description' },
-  // 'google-sheets':    { svg: '/icons/connectors/Google-Sheets.svg',    fallback: 'table_chart' },
-  // 'google-slides':    { svg: '/icons/connectors/Google-Slides.svg',    fallback: 'slideshow' },
-  // 'google-forms':     { svg: '/icons/connectors/Google-Forms.svg',     fallback: 'quiz' },
-  // 'ms-onenote':       { svg: '/icons/connectors/MS-Note.svg',          fallback: 'note' },
+  'kb': { svg: '/icons/connectors/kb.svg', fallback: 'folder' },
+  'knowledge-base': { svg: '/icons/connectors/kb.svg', fallback: 'folder' },
   // Project & Issue Tracking (keys sorted A–Z)
   'github': { svg: '/icons/connectors/github.svg', fallback: 'code', needDarkModeInvert: true },
   'gitlab': { svg: '/icons/connectors/gitlab.svg', fallback: 'code' },
@@ -221,6 +213,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['web', 'web'],
   ['clickup', 'clickup'], ['click-up', 'clickup'],
   ['redshift', 'redshift'], ['red-shift', 'redshift'],
+  ['kb', 'kb'],
+  ['knowledge-base', 'knowledge-base'],
 ];
 
 /**
