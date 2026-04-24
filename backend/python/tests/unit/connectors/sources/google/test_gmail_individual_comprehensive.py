@@ -400,18 +400,21 @@ class TestProcessGmailMessageExtended:
         assert result is not None
         assert ":OTHERS" in result.record.external_record_group_id
 
-    async def test_message_date_filtered_out(self):
+    async def test_process_gmail_message_does_not_skip_by_received_date_filter(self):
+        """RECEIVED_DATE applies to threads.list(q=...), not per-message in _process_gmail_message."""
         connector = _make_connector()
         mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 2000000000000  # future
+        mock_filter.get_datetime_start.return_value = 2000000000000  # would exclude msg if applied here
         mock_filter.get_datetime_end.return_value = None
         mock_filters = MagicMock()
         mock_filters.get.return_value = mock_filter
         connector.sync_filters = mock_filters
 
-        msg = _make_gmail_message(internal_date="1000000000000")
+        internal_ms = 1_000_000_000_000
+        msg = _make_gmail_message(internal_date=str(internal_ms))
         result = await connector._process_gmail_message("user@test.com", msg, "thread-1", None)
-        assert result is None
+        assert result is not None
+        assert result.record.source_created_at == internal_ms
 
     async def test_sent_message_group_id(self):
         connector = _make_connector()

@@ -372,10 +372,12 @@ class TestProcessGmailMessage:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_message_filtered_by_date(self, connector):
-        msg = _make_gmail_message(internal_date="1000000000000")
+    async def test_process_gmail_message_does_not_skip_by_received_date_filter(self, connector):
+        """RECEIVED_DATE applies to threads.list(q=...), not per-message in _process_gmail_message."""
+        internal_ms = 1_000_000_000_000
+        msg = _make_gmail_message(internal_date=str(internal_ms))
         mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1500000000000
+        mock_filter.get_datetime_start.return_value = 1_500_000_000_000
         mock_filter.get_datetime_end.return_value = None
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
@@ -383,7 +385,8 @@ class TestProcessGmailMessage:
         result = await connector._process_gmail_message(
             "user@test.com", msg, "thread-1", None
         )
-        assert result is None
+        assert result is not None
+        assert result.record.source_created_at == internal_ms
 
     @pytest.mark.asyncio
     async def test_message_with_other_labels(self, connector):
