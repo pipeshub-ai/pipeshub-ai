@@ -6,15 +6,10 @@ const SHIMMER = {
   animation: 'shimmer-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
 } as const;
 
-/** One list row: icon-sized dot + thin “label” bar (reads like a folder row, not a big tile). */
 const ROW_H = 24;
 const ICON_SHIM = 14;
 const LABEL_H = 8;
 
-/**
- * Placeholder rows while sidebar list data loads — compact “item row” layout
- * (icon + label), similar density to {@link FolderTreeItem} rows.
- */
 /** Replaces the expand chevron while a row’s children are loading (no Lottie). */
 export function SidebarChevronSlotShimmer() {
   return (
@@ -31,6 +26,10 @@ export function SidebarChevronSlotShimmer() {
   );
 }
 
+/**
+ * Placeholder rows while sidebar list data loads — compact “item row” layout
+ * (icon + label bar per row), similar density to {@link FolderTreeItem} rows.
+ */
 export function SidebarListShimmerRows({
   count = 4,
   compact,

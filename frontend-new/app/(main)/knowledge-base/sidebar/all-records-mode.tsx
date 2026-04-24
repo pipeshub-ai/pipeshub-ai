@@ -8,6 +8,7 @@ import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
 import { AppSection } from './section';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
 import type {
@@ -209,36 +210,17 @@ export function AllRecordsMode({
       })}
 
       {rootAppListHasNext && onLoadMoreRootApps ? (
-        <Flex
-          align="center"
-          style={{
-            width: '100%',
-            minWidth: 0,
+        <SidebarLoadMoreButton
+          onClick={onLoadMoreRootApps}
+          disabled={isLoadingRootAppListMore}
+          loading={isLoadingRootAppListMore}
+          idleLabel={t('agentBuilder.loadMoreConnectors', { defaultValue: 'Load more connectors' })}
+          flexStyle={{
             marginBottom: `${SECTION_PADDING_BOTTOM}px`,
             paddingLeft: 'var(--space-2)',
             paddingTop: 'var(--space-1)',
-            boxSizing: 'border-box',
           }}
-        >
-          <button
-            type="button"
-            onClick={onLoadMoreRootApps}
-            disabled={isLoadingRootAppListMore}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: isLoadingRootAppListMore ? 'default' : 'pointer',
-              color: 'var(--olive-9)',
-              fontSize: 12,
-              padding: 0,
-              textAlign: 'left',
-            }}
-          >
-            {isLoadingRootAppListMore
-              ? t('agentBuilder.loadingMore')
-              : t('agentBuilder.loadMoreConnectors', { defaultValue: 'Load more connectors' })}
-          </button>
-        </Flex>
+        />
       ) : null}
 
       {/* Legacy connector sections */}

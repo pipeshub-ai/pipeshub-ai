@@ -12,6 +12,7 @@ import { loadMoreRootAppList, loadMoreAppChildPage } from '../utils/sidebar-pagi
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
 import { AllRecordsMode } from './all-records-mode';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { convertToTreeNode } from './section';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { FolderTreeItem, CollectionItem } from './section-element';
@@ -364,33 +365,15 @@ function KBSidebarContent({
               </Text>
             )}
             {appChildrenPagination.get(appId)?.hasNext ? (
-              <Flex
-                align="center"
-                style={{
-                  width: '100%',
-                  minWidth: 0,
+              <SidebarLoadMoreButton
+                onClick={() => handleLoadMoreAppChildPage(appId)}
+                disabled={loadingAppIds.has(appId)}
+                loading={loadingAppIds.has(appId)}
+                flexStyle={{
                   paddingLeft: 'var(--space-6)',
                   paddingTop: 'var(--space-2)',
-                  boxSizing: 'border-box',
                 }}
-              >
-                <button
-                  type="button"
-                  disabled={loadingAppIds.has(appId)}
-                  onClick={() => handleLoadMoreAppChildPage(appId)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    cursor: loadingAppIds.has(appId) ? 'default' : 'pointer',
-                    color: 'var(--olive-9)',
-                    fontSize: 12,
-                    padding: 0,
-                    textAlign: 'left',
-                  }}
-                >
-                  {loadingAppIds.has(appId) ? t('agentBuilder.loadingMore') : t('agentBuilder.loadMore')}
-                </button>
-              </Flex>
+              />
             ) : null}
           </Flex>
         </SecondaryPanel>

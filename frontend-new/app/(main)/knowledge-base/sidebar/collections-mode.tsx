@@ -13,6 +13,7 @@ import type {
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarListShimmerRows } from './sidebar-list-shimmer';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 
 // ========================================
 // Types
@@ -265,36 +266,16 @@ export function CollectionsMode({
       />
 
       {collectionsRootLoadMoreHasNext && onCollectionsRootLoadMore ? (
-        <Flex
-          align="center"
-          style={{
-            width: '100%',
-            minWidth: 0,
+        <SidebarLoadMoreButton
+          onClick={onCollectionsRootLoadMore}
+          disabled={collectionsRootLoadMoreLoading}
+          loading={collectionsRootLoadMoreLoading}
+          flexStyle={{
             marginBottom: `${SECTION_PADDING_BOTTOM}px`,
             paddingLeft: 'var(--space-2)',
             paddingTop: 'var(--space-1)',
-            boxSizing: 'border-box',
           }}
-        >
-          <button
-            type="button"
-            onClick={onCollectionsRootLoadMore}
-            disabled={collectionsRootLoadMoreLoading}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: collectionsRootLoadMoreLoading ? 'default' : 'pointer',
-              color: 'var(--olive-9)',
-              fontSize: 12,
-              padding: 0,
-              textAlign: 'left',
-            }}
-          >
-            {collectionsRootLoadMoreLoading
-              ? t('agentBuilder.loadingMore')
-              : t('agentBuilder.loadMore')}
-          </button>
-        </Flex>
+        />
       ) : null}
     </>
   );

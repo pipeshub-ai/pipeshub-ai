@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarListShimmerRows } from './sidebar-list-shimmer';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 
 /** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
 export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
@@ -105,7 +106,11 @@ export function AppSection({
   const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
   const treeLen = hierarchicalTree?.length ?? 0;
-  /** When "... More" is shown, child pagination control lives in the secondary panel only. */
+  /**
+   * “⋯ More” overflow: KB uses `categorizedTree` length; non-KB uses flat `children`
+   * when there is no tree yet (`treeLen === 0`). When overflow shows, inline
+   * “Load more” for server pagination is hidden (see `showChildLoadInline`).
+   */
   const showOverflowMore =
     Boolean(maxVisible) &&
     ((treeLen > 0 && treeLen > maxVisible) ||
@@ -213,36 +218,16 @@ export function AppSection({
             No items
           </Text>
         )}
-        {showChildLoadInline ? (
-          <Flex
-            align="center"
-            style={{
-              width: '100%',
-              minWidth: 0,
+        {showChildLoadInline && onLoadMoreAppChildren ? (
+          <SidebarLoadMoreButton
+            onClick={onLoadMoreAppChildren}
+            disabled={appChildLoadMoreDisabled}
+            loading={appChildLoadMoreDisabled}
+            flexStyle={{
               paddingLeft: 'var(--space-6)',
               paddingTop: 'var(--space-1)',
-              boxSizing: 'border-box',
             }}
-          >
-            <button
-              type="button"
-              onClick={onLoadMoreAppChildren}
-              disabled={appChildLoadMoreDisabled}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: appChildLoadMoreDisabled ? 'default' : 'pointer',
-                color: 'var(--olive-9)',
-                fontSize: 12,
-                padding: 0,
-                textAlign: 'left',
-              }}
-            >
-              {appChildLoadMoreDisabled
-                ? t('agentBuilder.loadingMore')
-                : t('agentBuilder.loadMore')}
-            </button>
-          </Flex>
+          />
         ) : null}
       </Flex>
       </Box>

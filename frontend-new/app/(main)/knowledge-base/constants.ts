@@ -10,7 +10,8 @@ export const DIALOG_STYLES = {
 
 /**
  * Page size for knowledge hub sidebar: root app list, per-app children, and
- * `load more` fetches. Set to 5 for pagination testing; increase (e.g. 50) for production.
+ * user-initiated `load more` fetches. Tuned to balance first-paint payload vs.
+ * how often users need “Load more” (bulk refresh uses a larger limit separately).
  */
 export const SIDEBAR_PAGINATION_PAGE_SIZE = 20;
 

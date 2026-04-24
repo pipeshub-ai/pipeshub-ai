@@ -3,12 +3,13 @@ import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { buildConnectorAppSidebarTree, categorizeNodes } from './tree-builder';
 import { isKbCollectionsHubApp } from './all-records-transformer';
+import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
 
 function mergeNodesById(existing: KnowledgeHubNode[], incoming: KnowledgeHubNode[]): KnowledgeHubNode[] {
   const byId = new Map(existing.map((n) => [n.id, n]));
   for (const n of incoming) {
-    if (!byId.has(n.id)) byId.set(n.id, n);
+    byId.set(n.id, n);
   }
   return Array.from(byId.values());
 }
@@ -49,6 +50,11 @@ export async function loadMoreRootAppList(): Promise<void> {
           }
         : null
     );
+  } catch (error) {
+    console.error('loadMoreRootAppList failed:', error);
+    toast.error('Could not load more connectors', {
+      description: 'Please try again or refresh the page.',
+    });
   } finally {
     setLoadingRootAppListMore(false);
   }
@@ -73,6 +79,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     setCategorizedNodes,
     setConnectorAppTree,
     addNodes,
+    reMergeCachedChildrenIntoTree,
   } = useKnowledgeBaseStore.getState();
 
   setAppLoading(appId, true);
@@ -85,7 +92,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
       sortOrder: 'asc',
     });
 
-    const previous = state.appChildrenCache.get(appId) || [];
+    const previous = useKnowledgeBaseStore.getState().appChildrenCache.get(appId) || [];
     const merged = mergeNodesById(previous, response.items);
     cacheAppChildren(appId, merged);
 
@@ -104,11 +111,23 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     if (isKbApp) {
       // Same as initial app-child fetch: table/sidebar use full merged list
       setNodes(merged);
+      const { nodeChildrenCache: freshNodeChildren, addNodes: addNodesFresh } =
+        useKnowledgeBaseStore.getState();
+      const cachedSubfolderNodes = Array.from(freshNodeChildren.values()).flat();
+      if (cachedSubfolderNodes.length > 0) {
+        addNodesFresh(cachedSubfolderNodes);
+      }
       setCategorizedNodes(categorizeNodes(merged, `apps/${appId}`));
+      reMergeCachedChildrenIntoTree();
     } else {
       addNodes(response.items);
       setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, merged));
     }
+  } catch (error) {
+    console.error('loadMoreAppChildPage failed:', { appId, error });
+    toast.error('Could not load more items', {
+      description: 'Please try again or refresh the page.',
+    });
   } finally {
     setAppLoading(appId, false);
   }

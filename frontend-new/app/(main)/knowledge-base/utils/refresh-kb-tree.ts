@@ -30,7 +30,7 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
     setAppRootListPagination,
   } = useKnowledgeBaseStore.getState();
 
-  let kbApp = appNodes.find((n) => n.connector === 'KB');
+  let kbApp = appNodes.find((n) => isKbCollectionsHubApp(n));
 
   if (!kbApp) {
     const boot = getCollectionsHubBootstrapFromToken(useAuthStore.getState().accessToken);
@@ -62,7 +62,7 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
             }
           : null
       );
-      kbApp = useKnowledgeBaseStore.getState().appNodes.find((n) => n.connector === 'KB');
+      kbApp = useKnowledgeBaseStore.getState().appNodes.find((n) => isKbCollectionsHubApp(n));
       if (!kbApp) {
         return;
       }

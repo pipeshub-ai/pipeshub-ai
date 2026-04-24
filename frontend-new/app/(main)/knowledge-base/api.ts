@@ -23,7 +23,7 @@ function getNodeChildrenCacheKey(
     include?: string;
     onlyContainers?: boolean;
     sortBy?: string;
-    sortOrder?: string;
+    sortOrder?: 'asc' | 'desc';
   }
 ) {
   const page = params?.page ?? 1;

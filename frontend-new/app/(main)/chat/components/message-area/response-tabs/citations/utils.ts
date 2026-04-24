@@ -17,6 +17,7 @@ import {
   getConnectorIconConfig,
   resolveConnectorType,
 } from '@/app/components/ui/ConnectorIcon';
+import { i18n } from '@/lib/i18n';
 
 /** Resolve connector key → display config. */
 export function getConnectorConfig(connector: string): ConnectorConfig {
@@ -25,7 +26,9 @@ export function getConnectorConfig(connector: string): ConnectorConfig {
   const isCollections =
     resolved === 'kb' || resolved === 'knowledge-base';
   return {
-    label: isCollections ? 'Collections' : connector || 'Source',
+    label: isCollections
+      ? i18n.t('nav.collections')
+      : connector || i18n.t('filter.source'),
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',
   };
 }
