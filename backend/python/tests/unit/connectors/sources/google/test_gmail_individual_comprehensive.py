@@ -445,6 +445,7 @@ class TestProcessGmailAttachmentExtended:
             message_id="msg-1",
             attachment_info=attachment_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -464,6 +465,7 @@ class TestProcessGmailAttachmentExtended:
             message_id="msg-1",
             attachment_info=attachment_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -484,6 +486,7 @@ class TestProcessGmailAttachmentExtended:
             parent_mail_permissions=[
                 Permission(email="user@test.com", type=PermissionType.OWNER, entity_type=EntityType.USER)
             ],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is not None
         assert result.record.record_name == "report.pdf"

@@ -328,7 +328,7 @@ class TestProcessGmailAttachmentDriveMetadata:
             return_value=mock_drive_client,
         ):
             result = await connector._process_gmail_attachment(
-                "user@test.com", "msg-1", attach_info, permissions
+                "user@test.com", "msg-1", attach_info, permissions, "user@test.com:OTHERS"
             )
 
         assert result is not None
@@ -356,7 +356,7 @@ class TestProcessGmailAttachmentDriveMetadata:
             side_effect=Exception("Drive API unavailable"),
         ):
             result = await connector._process_gmail_attachment(
-                "user@test.com", "msg-1", attach_info, []
+                "user@test.com", "msg-1", attach_info, [], "user@test.com:OTHERS"
             )
 
         assert result is not None
@@ -376,7 +376,7 @@ class TestProcessGmailAttachmentDriveMetadata:
             "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "user@test.com", "msg-1", attach_info, []
+            "user@test.com", "msg-1", attach_info, [], "user@test.com:OTHERS"
         )
         assert result is not None
         assert result.record.extension is None
@@ -395,7 +395,7 @@ class TestProcessGmailAttachmentDriveMetadata:
             "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "user@test.com", "msg-1", attach_info, []
+            "user@test.com", "msg-1", attach_info, [], "user@test.com:OTHERS"
         )
         assert result is not None
         assert result.record.record_name == "unnamed_attachment"
@@ -427,7 +427,7 @@ class TestProcessGmailAttachmentGeneratorCoverage:
 
         results = []
         async for update in connector._process_gmail_attachment_generator(
-            "user@test.com", "msg-1", [attach_info], []
+            "user@test.com", "msg-1", [attach_info], [], "user@test.com:OTHERS"
         ):
             if update:
                 results.append(update)
@@ -467,7 +467,7 @@ class TestProcessGmailAttachmentGeneratorCoverage:
 
         results = []
         async for update in connector._process_gmail_attachment_generator(
-            "user@test.com", "msg-1", attach_infos, []
+            "user@test.com", "msg-1", attach_infos, [], "user@test.com:OTHERS"
         ):
             if update:
                 results.append(update)

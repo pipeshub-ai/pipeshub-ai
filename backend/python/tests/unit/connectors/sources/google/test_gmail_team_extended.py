@@ -460,19 +460,19 @@ class TestProcessGmailAttachment:
             "isDriveFile": False,
         }
         perms = [Permission(email="user@ex.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, perms)
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, perms, "user@ex.com:OTHERS")
         assert result is not None
         assert result.record.record_type == RecordType.FILE
         assert result.record.extension == "pdf"
 
     async def test_no_stable_id_returns_none(self, connector):
         info = {"attachmentId": "att-1", "stableAttachmentId": None, "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
     async def test_no_attachment_id_non_drive_returns_none(self, connector):
         info = {"attachmentId": None, "stableAttachmentId": "stable-1", "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
     @patch("app.connectors.sources.google.gmail.team.connector.GoogleClient")
@@ -495,13 +495,13 @@ class TestProcessGmailAttachment:
             "size": 0,
             "isDriveFile": True,
         }
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is not None
 
     async def test_attachment_exception(self, connector):
         connector._get_existing_record = AsyncMock(side_effect=Exception("boom"))
         info = {"attachmentId": "a", "stableAttachmentId": "s", "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
 
@@ -535,14 +535,14 @@ class TestAttachmentGenerator:
         }
         perms = [Permission(email="u@ex.com", type=PermissionType.READ, entity_type=EntityType.USER)]
         results = []
-        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [info], perms):
+        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [info], perms, "u@ex.com:OTHERS"):
             results.append(update)
         assert len(results) == 1
 
     async def test_skips_errors(self, connector):
         connector._process_gmail_attachment = AsyncMock(side_effect=Exception("fail"))
         results = []
-        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [{"x": 1}], []):
+        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [{"x": 1}], [], "u@ex.com:OTHERS"):
             results.append(update)
         assert len(results) == 0
 

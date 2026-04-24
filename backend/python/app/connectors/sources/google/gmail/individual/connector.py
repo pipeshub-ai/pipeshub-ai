@@ -362,6 +362,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
         return True
 
+    @staticmethod
+    def _mailbox_external_group_id(user_email: str, label_ids: Optional[List[str]]) -> str:
+        """Mailbox record-group external id from Gmail labelIds (same rule as MailRecord)."""
+        labels = label_ids or []
+        if "SENT" in labels:
+            return f"{user_email}:SENT"
+        if "INBOX" in labels:
+            return f"{user_email}:INBOX"
+        return f"{user_email}:OTHERS"
+
     def _parse_gmail_headers(self, headers: List[Dict]) -> Dict[str, str]:
         """
         Parse Gmail message headers into a dictionary.
@@ -462,14 +472,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
 
             # Determine external_record_group_id based on labelIds (SENT or INBOX)
-            # Prefer SENT if both are present
-            external_record_group_id = None
-            if "SENT" in label_ids:
-                external_record_group_id = f"{user_email}:SENT"
-            elif "INBOX" in label_ids:
-                external_record_group_id = f"{user_email}:INBOX"
-            else:
-                external_record_group_id = f"{user_email}:OTHERS"
+            external_record_group_id = self._mailbox_external_group_id(user_email, label_ids)
 
             # Parse headers
             payload = message.get('payload', {})
@@ -782,6 +785,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         message_id: str,
         attachment_info: Dict,
         parent_mail_permissions: List[Permission],
+        external_record_group_id: str,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Gmail attachment and create a FileRecord.
@@ -791,6 +795,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             message_id: ID of the parent message
             attachment_info: Attachment metadata dict with attachmentId, driveFileId, filename, mimeType, size
             parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+            external_record_group_id: Mailbox group key from parent message labelIds (matches MailRecord)
 
         Returns:
             RecordUpdate object or None
@@ -871,6 +876,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.MAILBOX,
                 external_record_id=stable_attachment_id,  # driveFileId for Drive files, stable ID for regular
+                external_record_group_id=external_record_group_id,
                 parent_external_record_id=message_id,
                 parent_record_type=RecordType.MAIL,
                 version=0 if is_new else existing_record.version + 1,
@@ -924,7 +930,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
         user_email: str,
         message_id: str,
         attachment_infos: List[Dict],
-        parent_mail_permissions: List[Permission]
+        parent_mail_permissions: List[Permission],
+        external_record_group_id: str,
     ) -> AsyncGenerator[Optional[RecordUpdate], None]:
         """
         Process Gmail attachments and yield RecordUpdate objects.
@@ -935,6 +942,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             message_id: ID of the parent message
             attachment_infos: List of attachment metadata dictionaries
             parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+            external_record_group_id: Mailbox group key from parent message labelIds
         """
         for attach_info in attachment_infos:
             try:
@@ -942,7 +950,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     user_email,
                     message_id,
                     attach_info,
-                    parent_mail_permissions
+                    parent_mail_permissions,
+                    external_record_group_id,
                 )
 
                 if attach_update:
@@ -1795,13 +1804,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                                     if message:
                                         attachment_infos = self._extract_attachment_infos(message)
+                                        external_record_group_id = mail_record.external_record_group_id
 
                                         # Process attachments using generator
                                         async for attach_update in self._process_gmail_attachment_generator(
                                             user_email,
                                             message_id,
                                             attachment_infos,
-                                            permissions
+                                            permissions,
+                                            external_record_group_id,
                                         ):
                                             if attach_update and attach_update.record:
                                                 # Add attachment to SAME batch_records list
@@ -2176,11 +2187,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         # Extract and process attachments
                         attachment_infos = self._extract_attachment_infos(full_message)
                         if attachment_infos:
+                            external_record_group_id = mail_record.external_record_group_id
                             async for attach_update in self._process_gmail_attachment_generator(
                                 user_email,
                                 message_id,
                                 attachment_infos,
-                                permissions
+                                permissions,
+                                external_record_group_id,
                             ):
                                 if attach_update and attach_update.record:
                                     batch_records.append((
@@ -2665,12 +2678,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 if parent_mail_update and parent_mail_update.new_permissions:
                     parent_mail_permissions = parent_mail_update.new_permissions
 
+                if parent_mail_update and parent_mail_update.record:
+                    external_record_group_id = parent_mail_update.record.external_record_group_id
+                else:
+                    external_record_group_id = self._mailbox_external_group_id(
+                        user_email, parent_message.get("labelIds")
+                    )
                 # Process Drive attachment
                 record_update = await self._process_gmail_attachment(
                     user_email,
                     parent_message_id,
                     matching_attachment,
-                    parent_mail_permissions
+                    parent_mail_permissions,
+                    external_record_group_id,
                 )
 
                 if not record_update or record_update.is_deleted:
@@ -2755,12 +2775,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
             if parent_mail_update and parent_mail_update.new_permissions:
                 parent_mail_permissions = parent_mail_update.new_permissions
 
+            if parent_mail_update and parent_mail_update.record:
+                external_record_group_id = parent_mail_update.record.external_record_group_id
+            else:
+                external_record_group_id = self._mailbox_external_group_id(
+                    user_email, parent_message.get("labelIds")
+                )
             # Process attachment using existing function
             record_update = await self._process_gmail_attachment(
                 user_email,
                 parent_message_id,
                 matching_attachment,
-                parent_mail_permissions
+                parent_mail_permissions,
+                external_record_group_id,
             )
 
             if not record_update or record_update.is_deleted:

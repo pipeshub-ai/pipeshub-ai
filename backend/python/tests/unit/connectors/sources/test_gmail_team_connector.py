@@ -2754,7 +2754,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.record_name == "unnamed_attachment"
 
@@ -2767,7 +2767,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.extension is None
 
@@ -2783,7 +2783,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -2810,7 +2810,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.is_new is False
         assert result.record.id == "existing-att"
@@ -2832,7 +2832,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         # _get_existing_record swallows tx errors and returns None → treated as new attachment
         assert result is not None
@@ -2900,7 +2900,8 @@ class TestAttachmentGeneratorError:
             async for update in connector._process_gmail_attachment_generator(
                 "u@e.com", "msg-1",
                 [{"attachmentId": "att-1", "stableAttachmentId": "msg-1~1", "isDriveFile": False}],
-                []
+                [],
+                "u@e.com:OTHERS",
             ):
                 if update:
                     results.append(update)

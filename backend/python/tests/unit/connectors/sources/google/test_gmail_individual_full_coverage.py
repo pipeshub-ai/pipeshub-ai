@@ -434,7 +434,7 @@ class TestProcessGmailAttachmentException:
             "size": 100,
             "isDriveFile": False,
         }
-        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [], "u@e.com:OTHERS")
         assert result is None
 
     @pytest.mark.asyncio
@@ -453,7 +453,7 @@ class TestProcessGmailAttachmentException:
             "size": 100,
             "isDriveFile": False,
         }
-        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [], "u@e.com:OTHERS")
         assert result.record.version == 3
 
     @pytest.mark.asyncio
@@ -470,7 +470,7 @@ class TestProcessGmailAttachmentException:
             "size": 100,
             "isDriveFile": False,
         }
-        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [], "u@e.com:OTHERS")
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
 

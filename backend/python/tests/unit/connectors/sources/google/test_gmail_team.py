@@ -598,6 +598,7 @@ class TestTeamProcessAttachment:
         result = await connector._process_gmail_attachment(
             user_email="u@e.com", message_id="msg-1",
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
+            external_record_group_id="u@e.com:OTHERS",
         )
         assert result is not None
         assert result.record.record_name == "data.csv"
@@ -609,6 +610,7 @@ class TestTeamProcessAttachment:
         result = await connector._process_gmail_attachment(
             user_email="u@e.com", message_id="msg-1",
             attachment_info=attachment_info, parent_mail_permissions=[],
+            external_record_group_id="u@e.com:OTHERS",
         )
         assert result is None
 
@@ -620,6 +622,7 @@ class TestTeamProcessAttachment:
         result = await connector._process_gmail_attachment(
             user_email="u@e.com", message_id="msg-1",
             attachment_info=attachment_info, parent_mail_permissions=[],
+            external_record_group_id="u@e.com:OTHERS",
         )
         assert result is None
 
@@ -634,6 +637,7 @@ class TestTeamProcessAttachment:
         result = await connector._process_gmail_attachment(
             user_email="u@e.com", message_id="msg-1",
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
+            external_record_group_id="u@e.com:OTHERS",
         )
         assert result.new_permissions == parent_perms
 
@@ -658,6 +662,7 @@ class TestTeamProcessAttachment:
             result = await connector._process_gmail_attachment(
                 user_email="u@e.com", message_id="msg-1",
                 attachment_info=attachment_info, parent_mail_permissions=[],
+                external_record_group_id="u@e.com:OTHERS",
             )
         assert result is not None
         assert result.record.record_name == "report.xlsx"
@@ -674,6 +679,7 @@ class TestTeamProcessAttachment:
             result = await connector._process_gmail_attachment(
                 user_email="u@e.com", message_id="msg-1",
                 attachment_info=attachment_info, parent_mail_permissions=[],
+                external_record_group_id="u@e.com:OTHERS",
             )
         assert result is not None
         assert result.record.record_name == "fallback.bin"
@@ -732,7 +738,7 @@ class TestAttachmentGeneratorWithFilters:
         parent_perms = [Permission(email="u@e.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
         results = []
         async for update in connector._process_gmail_attachment_generator(
-            "user@example.com", "msg-1", attachment_infos, parent_perms
+            "user@example.com", "msg-1", attachment_infos, parent_perms, "user@example.com:OTHERS"
         ):
             if update:
                 results.append(update)
@@ -1834,7 +1840,7 @@ class TestProcessGmailAttachment:
             "isDriveFile": False,
         }
         perms = [Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)]
-        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, perms)
+        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, perms, "u@t.com:OTHERS")
         assert result is not None
         assert result.record.record_name == "file.pdf"
         assert result.record.extension == "pdf"
@@ -1842,7 +1848,7 @@ class TestProcessGmailAttachment:
     @pytest.mark.asyncio
     async def test_no_stable_id(self, connector_fullcov):
         attach_info = {"attachmentId": "att-1", "stableAttachmentId": None, "isDriveFile": False}
-        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result is None
 
     @pytest.mark.asyncio
@@ -1851,7 +1857,7 @@ class TestProcessGmailAttachment:
             "attachmentId": None, "stableAttachmentId": "msg-1~1",
             "isDriveFile": False, "driveFileId": None,
         }
-        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result is None
 
     @pytest.mark.asyncio
@@ -1882,7 +1888,7 @@ class TestProcessGmailAttachment:
                 "size": 0,
                 "isDriveFile": True,
             }
-            result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+            result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
             assert result is not None
             assert result.record.record_name == "drive_file.docx"
 
@@ -1897,7 +1903,7 @@ class TestProcessGmailAttachment:
         mock_filter = MagicMock()
         mock_filter.is_enabled = MagicMock(return_value=False)
         connector_fullcov.indexing_filters = mock_filter
-        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector_fullcov._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
 
@@ -1955,7 +1961,7 @@ class TestProcessGmailAttachmentGenerator:
         connector_fullcov._process_gmail_attachment = AsyncMock(return_value=update)
         attach_info = {"stableAttachmentId": "msg-1~1"}
         results = []
-        async for item in connector_fullcov._process_gmail_attachment_generator("u@t.com", "msg-1", [attach_info], []):
+        async for item in connector_fullcov._process_gmail_attachment_generator("u@t.com", "msg-1", [attach_info], [], "u@t.com:OTHERS"):
             results.append(item)
         assert len(results) == 1
 

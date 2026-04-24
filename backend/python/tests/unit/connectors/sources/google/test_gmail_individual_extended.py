@@ -220,12 +220,12 @@ class TestProcessAttachment:
             "partId": "1", "filename": "f.pdf", "mimeType": "application/pdf",
             "size": 100, "isDriveFile": False,
         }
-        result = await connector._process_gmail_attachment("u@e.com", "m", info, [])
+        result = await connector._process_gmail_attachment("u@e.com", "m", info, [], "u@e.com:OTHERS")
         assert result is not None
 
     async def test_no_stable_id(self, connector):
         info = {"attachmentId": "a", "stableAttachmentId": None, "isDriveFile": False}
-        result = await connector._process_gmail_attachment("u@e.com", "m", info, [])
+        result = await connector._process_gmail_attachment("u@e.com", "m", info, [], "u@e.com:OTHERS")
         assert result is None
 
 

@@ -665,7 +665,7 @@ class TestProcessGmailAttachment:
             "isDriveFile": False,
         }
         perms = [Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)]
-        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, perms)
+        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, perms, "u@t.com:OTHERS")
         assert result is not None
         assert result.record.record_name == "file.pdf"
         assert result.record.extension == "pdf"
@@ -673,7 +673,7 @@ class TestProcessGmailAttachment:
     @pytest.mark.asyncio
     async def test_no_stable_id(self, connector):
         attach_info = {"attachmentId": "att-1", "stableAttachmentId": None, "isDriveFile": False}
-        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result is None
 
     @pytest.mark.asyncio
@@ -682,7 +682,7 @@ class TestProcessGmailAttachment:
             "attachmentId": None, "stableAttachmentId": "msg-1~1",
             "isDriveFile": False, "driveFileId": None,
         }
-        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result is None
 
     @pytest.mark.asyncio
@@ -713,7 +713,7 @@ class TestProcessGmailAttachment:
                 "size": 0,
                 "isDriveFile": True,
             }
-            result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+            result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
             assert result is not None
             assert result.record.record_name == "drive_file.docx"
 
@@ -728,7 +728,7 @@ class TestProcessGmailAttachment:
         mock_filter = MagicMock()
         mock_filter.is_enabled = MagicMock(return_value=False)
         connector.indexing_filters = mock_filter
-        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [])
+        result = await connector._process_gmail_attachment("u@t.com", "msg-1", attach_info, [], "u@t.com:OTHERS")
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
 
@@ -786,7 +786,7 @@ class TestProcessGmailAttachmentGenerator:
         connector._process_gmail_attachment = AsyncMock(return_value=update)
         attach_info = {"stableAttachmentId": "msg-1~1"}
         results = []
-        async for item in connector._process_gmail_attachment_generator("u@t.com", "msg-1", [attach_info], []):
+        async for item in connector._process_gmail_attachment_generator("u@t.com", "msg-1", [attach_info], [], "u@t.com:OTHERS"):
             results.append(item)
         assert len(results) == 1
 

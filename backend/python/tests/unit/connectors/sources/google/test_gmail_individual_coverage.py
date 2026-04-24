@@ -648,6 +648,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=permissions,
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is not None
         assert result.record.record_type == RecordType.FILE
@@ -675,6 +676,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -698,6 +700,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
