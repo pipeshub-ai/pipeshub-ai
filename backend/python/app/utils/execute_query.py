@@ -21,9 +21,49 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.modules.transformers.blob_storage import BlobStorage
 
+from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = create_logger("execute_query")
+
+_SQL_CONNECTOR_TYPES = {Connectors.POSTGRESQL.value, Connectors.SNOWFLAKE.value, Connectors.MARIADB.value}
+async def has_sql_connector_configured(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+) -> bool:
+    """Return True if the user/org has any configured SQL connector instance."""
+    try:
+        instances = await graph_provider.get_user_connector_instances(
+            collection=CollectionNames.APPS.value,
+            user_id=user_id,
+            org_id=org_id,
+            team_scope=ConnectorScope.TEAM.value,
+            personal_scope=ConnectorScope.PERSONAL.value,
+        )
+        return any(
+            str(i.get("type", "")).upper() in _SQL_CONNECTOR_TYPES and i.get("isConfigured") is True
+            for i in (instances or [])
+        )
+    except Exception as e:
+        logger.warning(f"SQL connector check failed: {e}")
+        return False
+
+
+def agent_knowledge_has_sql_connector(agent_knowledge: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True if the agent's attached knowledge includes a SQL connector.
+
+    The default agent is synthesized with every user connector attached, so this
+    is naturally True whenever the org has a SQL connector. Custom agents only
+    return True when the user explicitly attached a SQL connector as knowledge.
+    """
+    if not agent_knowledge:
+        return False
+    return any(
+        isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES
+        for k in agent_knowledge
+    )
 
 
 class ExecuteQueryArgs(BaseModel):

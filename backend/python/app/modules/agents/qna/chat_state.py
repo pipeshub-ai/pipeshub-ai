@@ -154,6 +154,8 @@ class ChatState(TypedDict):
     iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
     is_continue: bool  # Whether this is a continue iteration (multi-step task)
     tool_validation_retry_count: int  # Retry count for tool validation in planner
+    has_sql_connector: bool  # True when org has at least one configured SQL connector
+    has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -385,6 +387,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
     has_knowledge = bool(real_kb or apps or agent_knowledge)
+    
+    from app.utils.execute_query import agent_knowledge_has_sql_connector
+    has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -510,4 +515,5 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "max_iterations": 3,
         "is_continue": False,
         "tool_validation_retry_count": 0,
+        "has_sql_knowledge": has_sql_knowledge,
     }

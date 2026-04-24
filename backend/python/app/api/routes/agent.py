@@ -23,6 +23,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
+from app.utils.execute_query import has_sql_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -1105,6 +1106,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 graph_type,
             )
+        initial_state["has_sql_connector"] = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 30}
@@ -1207,6 +1211,9 @@ async def stream_response(
                 org_info,
                 graph_type,
             )
+        initial_state["has_sql_connector"] = await has_sql_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
 
         config = {"recursion_limit": 50}
         chunk_count = 0
@@ -2800,6 +2807,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 graph_type,
             )
+        initial_state["has_sql_connector"] = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 50}

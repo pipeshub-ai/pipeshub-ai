@@ -1755,7 +1755,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1835,6 +1835,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     query=query,
                     rephrased_queries=[],
                     mode=mode,
+                    has_sql_connector=has_sql_connector,
                     )
 
         content.append({
