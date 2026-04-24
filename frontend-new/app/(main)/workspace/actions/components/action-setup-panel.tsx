@@ -10,12 +10,12 @@ import {
   IconButton,
   Select,
   Separator,
-  Spinner,
   Text,
   TextField,
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
@@ -49,7 +49,7 @@ function buildOAuthAuthConfigForCreate(
   const authConfig: Record<string, unknown> = { type: 'OAUTH' };
   for (const f of fields) {
     const ln = f.name.toLowerCase();
-    if (ln === 'redirecturi' || ln === 'baseurl') continue;
+    if (ln === 'redirecturi') continue;
     const raw = values[f.name];
     if (opts.stripEmptyClientSecret && ln === 'clientsecret' && (!raw || !String(raw).trim())) {
       continue;
@@ -530,11 +530,8 @@ export function ActionSetupPanel({
       onSecondaryClick={() => onOpenChange(false)}
     >
       {schemaLoading ? (
-        <Flex align="center" justify="center" py="8" gap="3">
-          <Spinner size="3" />
-          <Text size="2" color="gray">
-            {t('agentBuilder.loadingSchema')}
-          </Text>
+        <Flex align="center" justify="center" py="8" style={{ width: '100%' }}>
+          <LottieLoader variant="loader" size={48} showLabel label={t('agentBuilder.loadingSchema')} />
         </Flex>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
