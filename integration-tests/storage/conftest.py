@@ -213,19 +213,25 @@ def s3_cleanup_tracker(
             )
             if resp.status_code != 200:
                 logger.warning(
-                    "Skipping S3 key discovery for doc %s (status=%s)",
+                    "Skipping S3 key discovery for doc %s (status=%s, body=%s)",
                     doc_id,
                     resp.status_code,
+                    resp.text[:500],
                 )
                 continue
             object_keys.update(_extract_document_s3_keys(resp.json(), bucket))
         except Exception:
-            logger.warning("Failed to discover S3 keys for doc %s", doc_id, exc_info=True)
+            logger.exception("Failed to discover S3 keys for doc %s", doc_id)
 
     if not object_keys:
+        logger.info(
+            "Centralized S3 cleanup: no object keys discovered for %d document(s)",
+            len(document_ids),
+        )
         return
 
     import boto3
+    from botocore.exceptions import ClientError
 
     s3_client = boto3.client(
         "s3",
@@ -235,19 +241,116 @@ def s3_cleanup_tracker(
     )
 
     keys_to_delete = sorted(object_keys)
+    logger.info(
+        "Centralized S3 cleanup: attempting to delete %d object(s) from bucket '%s'",
+        len(keys_to_delete),
+        bucket,
+    )
+
+    deleted_keys: list[str] = []
+    failed_keys: list[str] = []
+
+    def _log_client_error(action: str, key: str, exc: ClientError) -> None:
+        err = exc.response.get("Error")
+        meta = exc.response.get("ResponseMetadata")
+        logger.error(
+            "S3 %s failed for key '%s' in bucket '%s': "
+            "code=%s, message=%s, http_status=%s, request_id=%s, host_id=%s",
+            action,
+            key,
+            bucket,
+            err.get("Code"),
+            err.get("Message"),
+            meta.get("HTTPStatusCode"),
+            meta.get("RequestId"),
+            meta.get("HostId"),
+        )
+
+    def _retry_delete_single(key: str) -> bool:
+        """Re-attempt delete via delete_object to surface the real S3 error."""
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=key)
+            logger.info("S3 retry delete_object succeeded for key '%s'", key)
+            return True
+        except ClientError as exc:
+            _log_client_error("delete_object (retry)", key, exc)
+        except Exception:
+            logger.exception("S3 retry delete_object raised for key '%s'", key)
+        return False
+
     for key_chunk in _chunked(keys_to_delete, 1000):
         try:
             delete_resp = s3_client.delete_objects(
                 Bucket=bucket,
-                Delete={"Objects": [{"Key": key} for key in key_chunk], "Quiet": True},
+                Delete={"Objects": [{"Key": key} for key in key_chunk], "Quiet": False},
             )
-            errors = delete_resp.get("Errors") or []
-            if errors:
-                logger.warning("S3 cleanup reported %d delete errors", len(errors))
+        except ClientError as exc:
+            err = exc.response.get("Error", {})
+            meta = exc.response.get("ResponseMetadata", {})
+            logger.error(
+                "S3 delete_objects failed for %d key(s) in bucket '%s': "
+                "code=%s, message=%s, http_status=%s, request_id=%s; keys=%s",
+                len(key_chunk),
+                bucket,
+                err.get("Code"),
+                err.get("Message"),
+                meta.get("HTTPStatusCode"),
+                meta.get("RequestId"),
+                key_chunk,
+            )
+            failed_keys.extend(key_chunk)
+            continue
         except Exception:
-            logger.warning("Failed to delete S3 objects in centralized cleanup", exc_info=True)
+            logger.exception(
+                "S3 delete_objects call raised for %d key(s): %s",
+                len(key_chunk),
+                key_chunk,
+            )
+            failed_keys.extend(key_chunk)
+            continue
 
-    logger.info("Centralized S3 cleanup deleted %d object(s)", len(keys_to_delete))
+        for deleted in delete_resp.get("Deleted") or []:
+            key = deleted.get("Key")
+            if key:
+                deleted_keys.append(key)
+
+        errors = delete_resp.get("Errors") or []
+        if errors:
+            for err in errors:
+                logger.error(
+                    "S3 delete_objects reported failure for key '%s' in bucket '%s': "
+                    "code=%s, message=%s, version_id=%s",
+                    err.get("Key"),
+                    bucket,
+                    err.get("Code"),
+                    err.get("Message"),
+                    err.get("VersionId"),
+                )
+                err_key = err.get("Key")
+                if err_key:
+                    failed_keys.append(err_key)
+
+    # Rely on delete_objects' per-key Deleted/Errors response (S3 has
+    # strong read-after-write consistency, so a separate HEAD verification
+    # pass is redundant).  For any key the batch API reported as failed,
+    # retry once via delete_object so the real S3 error (AccessDenied,
+    # object-lock, versioning/MFA-delete, ...) is surfaced in the logs.
+    retry_failed: list[str] = []
+    for key in list(failed_keys):
+        if _retry_delete_single(key):
+            deleted_keys.append(key)
+        else:
+            retry_failed.append(key)
+
+    logger.info(
+        "Centralized S3 cleanup summary: deleted=%d, batch_failed=%d, "
+        "retry_failed=%d",
+        len(deleted_keys),
+        len(failed_keys),
+        len(retry_failed),
+    )
+    if retry_failed:
+        logger.error("S3 cleanup leaked objects (retry also failed): %s", retry_failed)
 
 
 @pytest.fixture(scope="session", params=_available_backends())
