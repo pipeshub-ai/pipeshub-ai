@@ -36,6 +36,9 @@ interface AllRecordsModeProps {
   appChildrenCache: Map<string, KnowledgeHubNode[]>;
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
+  /** Per-app hub child pagination (direct children under each app node) */
+  appChildrenPagination?: Map<string, { hasNext: boolean; nextPage: number }>;
+  onLoadMoreAppChildPage?: (appId: string) => void;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];
 
@@ -69,6 +72,11 @@ interface AllRecordsModeProps {
 
   // Overflow "More" panel
   onOpenMoreFolders?: (appId: string, appName: string, connector: string) => void;
+
+  /** Server-backed pagination: more root app nodes (connectors) available */
+  onLoadMoreRootApps?: () => void;
+  rootAppListHasNext?: boolean;
+  isLoadingRootAppListMore?: boolean;
 }
 
 // ========================================
@@ -90,6 +98,8 @@ export function AllRecordsMode({
   appChildrenCache,
   connectorAppTrees,
   loadingAppIds,
+  appChildrenPagination,
+  onLoadMoreAppChildPage,
   connectors,
   moreConnectors,
   expandedSections,
@@ -110,6 +120,9 @@ export function AllRecordsMode({
   onRename,
   onDelete,
   onOpenMoreFolders,
+  onLoadMoreRootApps,
+  rootAppListHasNext,
+  isLoadingRootAppListMore,
 }: AllRecordsModeProps) {
   const { t } = useTranslation();
 
@@ -144,6 +157,8 @@ export function AllRecordsMode({
       {appNodes.map((app) => {
         const isKbApp = isKbCollectionsHubApp(app);
         const appChildren = appChildrenCache.get(app.id) || [];
+        const childPageMeta = appChildrenPagination?.get(app.id);
+        const appChildListHasMore = childPageMeta?.hasNext === true;
         const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
         // For the KB app, pass the categorized tree (shared + private) so that
         // sub-folder children populated by handleNodeExpand are visible in the tree.
@@ -182,9 +197,49 @@ export function AllRecordsMode({
             onDelete={isKbApp ? onDelete : undefined}
             maxVisible={SIDEBAR_COLLECTION_LIMIT}
             onMore={() => onOpenMoreFolders?.(app.id, app.name, app.connector || app.name)}
+            appChildListHasMore={appChildListHasMore}
+            onLoadMoreAppChildren={
+              appChildListHasMore && onLoadMoreAppChildPage
+                ? () => onLoadMoreAppChildPage(app.id)
+                : undefined
+            }
+            appChildLoadMoreDisabled={loadingAppIds.has(app.id)}
           />
         );
       })}
+
+      {rootAppListHasNext && onLoadMoreRootApps ? (
+        <Flex
+          align="center"
+          style={{
+            width: '100%',
+            minWidth: 0,
+            marginBottom: `${SECTION_PADDING_BOTTOM}px`,
+            paddingLeft: 'var(--space-2)',
+            paddingTop: 'var(--space-1)',
+            boxSizing: 'border-box',
+          }}
+        >
+          <button
+            type="button"
+            onClick={onLoadMoreRootApps}
+            disabled={isLoadingRootAppListMore}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: isLoadingRootAppListMore ? 'default' : 'pointer',
+              color: 'var(--olive-9)',
+              fontSize: 12,
+              padding: 0,
+              textAlign: 'left',
+            }}
+          >
+            {isLoadingRootAppListMore
+              ? t('agentBuilder.loadingMore')
+              : t('agentBuilder.loadMoreConnectors', { defaultValue: 'Load more connectors' })}
+          </button>
+        </Flex>
+      ) : null}
 
       {/* Legacy connector sections */}
       {connectors.map((connector) => (

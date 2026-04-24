@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
+import { loadMoreRootAppList, loadMoreAppChildPage } from '../utils/sidebar-paginated-fetch';
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
 import { AllRecordsMode } from './all-records-mode';
@@ -155,7 +156,31 @@ function KBSidebarContent({
     expandedSections,
     setAllRecordsSidebarSelection,
     toggleSection,
+    appRootListPagination,
+    appChildrenPagination,
+    loadingRootAppListMore,
   } = useKnowledgeBaseStore();
+
+  const handleLoadMoreRootApps = useCallback(() => {
+    void loadMoreRootAppList();
+  }, []);
+
+  const handleLoadMoreAppChildPage = useCallback((appId: string) => {
+    void loadMoreAppChildPage(appId);
+  }, []);
+
+  const kbCollectionsHubAppId = useMemo(
+    () => appNodes.find((n) => isKbCollectionsHubApp(n))?.id,
+    [appNodes]
+  );
+  const collectionsRootLoadMoreHasNext =
+    kbCollectionsHubAppId != null &&
+    appChildrenPagination.get(kbCollectionsHubAppId)?.hasNext === true;
+  const handleCollectionsRootLoadMore = useCallback(() => {
+    if (kbCollectionsHubAppId) {
+      void loadMoreAppChildPage(kbCollectionsHubAppId);
+    }
+  }, [kbCollectionsHubAppId]);
 
   // Local state for secondary panel (replaces store-based MoreCollections)
   const [isSecondaryPanelOpen, setIsSecondaryPanelOpen] = useState(false);
@@ -338,6 +363,35 @@ function KBSidebarContent({
                 No items
               </Text>
             )}
+            {appChildrenPagination.get(appId)?.hasNext ? (
+              <Flex
+                align="center"
+                style={{
+                  width: '100%',
+                  minWidth: 0,
+                  paddingLeft: 'var(--space-6)',
+                  paddingTop: 'var(--space-2)',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <button
+                  type="button"
+                  disabled={loadingAppIds.has(appId)}
+                  onClick={() => handleLoadMoreAppChildPage(appId)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: loadingAppIds.has(appId) ? 'default' : 'pointer',
+                    color: 'var(--olive-9)',
+                    fontSize: 12,
+                    padding: 0,
+                    textAlign: 'left',
+                  }}
+                >
+                  {loadingAppIds.has(appId) ? t('agentBuilder.loadingMore') : t('agentBuilder.loadMore')}
+                </button>
+              </Flex>
+            ) : null}
           </Flex>
         </SecondaryPanel>
       );
@@ -456,6 +510,11 @@ function KBSidebarContent({
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}
+          collectionsRootLoadMoreHasNext={collectionsRootLoadMoreHasNext}
+          onCollectionsRootLoadMore={handleCollectionsRootLoadMore}
+          collectionsRootLoadMoreLoading={
+            kbCollectionsHubAppId != null && loadingAppIds.has(kbCollectionsHubAppId)
+          }
         />
       ) : (
         <AllRecordsMode
@@ -490,6 +549,11 @@ function KBSidebarContent({
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}
           onOpenMoreFolders={handleOpenMoreFolders}
+          onLoadMoreRootApps={handleLoadMoreRootApps}
+          rootAppListHasNext={appRootListPagination?.hasNext === true}
+          isLoadingRootAppListMore={loadingRootAppListMore}
+          appChildrenPagination={appChildrenPagination}
+          onLoadMoreAppChildPage={handleLoadMoreAppChildPage}
         />
       )}
     </SidebarBase>

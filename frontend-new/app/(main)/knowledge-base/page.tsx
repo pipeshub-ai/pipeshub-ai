@@ -49,6 +49,7 @@ import {
   getSourceDisplay,
   buildKbLookup,
   applyClientSideFilters,
+  isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
 import { buildFilterParams, buildAllRecordsFilterParams } from './utils';
 import { ShareSidebar } from '@/app/components/share';
@@ -63,8 +64,10 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
-import { FOLDER_REINDEX_DEPTH } from './constants';
+import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import {
@@ -124,6 +127,8 @@ function KnowledgeBasePageContent() {
     setSearchQuery,
     setAllRecordsSearchQuery,
     setAppNodes,
+    setAppRootListPagination,
+    setAppChildPagination,
     cacheAppChildren,
     setConnectorAppTree,
     setAppLoading,
@@ -438,6 +443,7 @@ function KnowledgeBasePageContent() {
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
+  const accessToken = useAuthStore((s) => s.accessToken);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -450,20 +456,32 @@ function KnowledgeBasePageContent() {
   }, [folderId, isAllRecordsMode, setCurrentFolderId, searchParams]);
 
   useEffect(() => {
-    async function fetchAppNodes() {
+    async function fetchAppNodesAllRecords() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getRootNodes({
+        const response = await KnowledgeHubApi.getNavigationNodes({
           page: 1,
-          limit: 100,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+          include: 'counts',
+          sortBy: 'updatedAt',
+          sortOrder: 'desc',
         });
 
-        // Filter to app-type nodes only (getRootNodes can return kb/folder nodes too)
+        // Filter to app-type nodes only (root can return other node types)
         const appItems = response.items.filter((n) => n.nodeType === 'app');
-        // Sort so the KB (Collections) app always appears first
-        const kbApps = appItems.filter((n) => n.connector === 'KB');
-        const connectorApps = appItems.filter((n) => n.connector !== 'KB');
+        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
+        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
         setAppNodes([...kbApps, ...connectorApps]);
+
+        const p = response.pagination;
+        setAppRootListPagination(
+          p
+            ? {
+                hasNext: p.hasNext,
+                nextPage: p.hasNext ? p.page + 1 : p.page,
+              }
+            : null
+        );
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         toast.error('Failed to load sidebar', {
@@ -474,8 +492,43 @@ function KnowledgeBasePageContent() {
       }
     }
 
-    fetchAppNodes();
-  }, [setAppNodes, setLoadingFlatCollections]);
+    function bootstrapCollectionsHubFromToken() {
+      try {
+        setLoadingFlatCollections(true);
+        const boot = getCollectionsHubBootstrapFromToken(accessToken);
+        if (boot.ok === false) {
+          setAppNodes([]);
+          setAppRootListPagination(null);
+          if (boot.reason === 'missing_token') {
+            toast.error('Failed to load Collections', {
+              description: 'You are not signed in. Please log in again.',
+            });
+          } else {
+            toast.error('Failed to load Collections', {
+              description: 'Could not resolve your organization. Please refresh the page.',
+            });
+          }
+          return;
+        }
+        setAppNodes([boot.app]);
+        setAppRootListPagination(null);
+      } finally {
+        setLoadingFlatCollections(false);
+      }
+    }
+
+    if (isAllRecordsMode) {
+      void fetchAppNodesAllRecords();
+    } else {
+      bootstrapCollectionsHubFromToken();
+    }
+  }, [
+    isAllRecordsMode,
+    accessToken,
+    setAppNodes,
+    setAppRootListPagination,
+    setLoadingFlatCollections,
+  ]);
 
   // Fetch children for each app node (lazy loading); for the KB app, also
   // populate nodes + categorizedNodes so the Collections sidebar tree is driven
@@ -490,7 +543,7 @@ function KnowledgeBasePageContent() {
 
       // In Collections mode, only prefetch the KB app's children.
       // Non-KB connector apps are fetched lazily when the user enters All Records mode.
-      const isKbApp = app.connector === 'KB';
+      const isKbApp = isKbCollectionsHubApp(app);
       if (!isKbApp && !isAllRecordsMode) return;
 
       setAppLoading(app.id, true);
@@ -498,19 +551,28 @@ function KnowledgeBasePageContent() {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
           onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+          sortBy: 'name',
+          sortOrder: 'asc',
         });
         cacheAppChildren(app.id, response.items);
 
-        // For the KB (Collections) app: populate nodes + categorizedNodes
-        // so the Collections sidebar tree renders correctly
+        const pag = response.pagination;
+        setAppChildPagination(
+          app.id,
+          pag
+            ? {
+                hasNext: pag.hasNext,
+                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
+              }
+            : { hasNext: false, nextPage: 1 }
+        );
+
         if (isKbApp) {
           setNodes(response.items);
-          // KB children have parentId = "apps/<appId>" so pass it as rootParentId
           const categorized = categorizeNodes(response.items, `apps/${app.id}`);
           setCategorizedNodes(categorized);
         } else {
-          // Non-KB apps (All Records): same nested sidebar model as KB via connectorAppTrees
           addNodes(response.items);
           const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
           setConnectorAppTree(app.id, connectorTree);
@@ -527,6 +589,7 @@ function KnowledgeBasePageContent() {
     isAllRecordsMode,
     setAppLoading,
     cacheAppChildren,
+    setAppChildPagination,
     setNodes,
     setCategorizedNodes,
     addNodes,

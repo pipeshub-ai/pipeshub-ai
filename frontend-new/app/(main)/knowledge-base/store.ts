@@ -93,6 +93,12 @@ interface KnowledgeBaseState {
   connectors: Connector[]; // DEPRECATED - will be removed
   appNodes: KnowledgeHubNode[]; // Flat list of app nodes (each becomes own section)
   appChildrenCache: Map<string, KnowledgeHubNode[]>; // Cache for app children
+  /** Server pagination for root app list (getNavigationNodes); null before first page */
+  appRootListPagination: { hasNext: boolean; nextPage: number } | null;
+  /** Server pagination for each app's direct children (getNodeChildren with parent app) */
+  appChildrenPagination: Map<string, { hasNext: boolean; nextPage: number }>;
+  /** True while a "load more" for root app list is in flight */
+  loadingRootAppListMore: boolean;
   /** Nested sidebar trees for non-KB apps (All Records), keyed by app id — mirrors categorizedNodes for KB */
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>; // Track which apps are loading children
@@ -207,6 +213,10 @@ interface KnowledgeBaseActions {
   setAllRecords: (records: AllRecordItem[]) => void;
   setConnectors: (connectors: Connector[]) => void;
   setAppNodes: (nodes: KnowledgeHubNode[]) => void;
+  appendAppNodes: (appNodes: KnowledgeHubNode[]) => void;
+  setAppRootListPagination: (p: { hasNext: boolean; nextPage: number } | null) => void;
+  setAppChildPagination: (appId: string, p: { hasNext: boolean; nextPage: number }) => void;
+  setLoadingRootAppListMore: (loading: boolean) => void;
   cacheAppChildren: (appId: string, children: KnowledgeHubNode[]) => void;
   setConnectorAppTree: (appId: string, tree: EnhancedFolderTreeNode[]) => void;
   mergeConnectorAppTreeChildren: (
@@ -323,6 +333,9 @@ const initialState: KnowledgeBaseState = {
   connectors: [],
   appNodes: [],
   appChildrenCache: new Map(),
+  appRootListPagination: null,
+  appChildrenPagination: new Map(),
+  loadingRootAppListMore: false,
   connectorAppTrees: new Map(),
   loadingAppIds: new Set(),
   allRecordsNavigationStack: [],
@@ -674,6 +687,30 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setAppNodes: (nodes) =>
         set((state) => {
           state.appNodes = nodes;
+        }),
+
+      // Append like chat `CollectionsTab.loadMoreApps`: strict API page order at the end (no re-sort).
+      appendAppNodes: (newAppNodes) =>
+        set((state) => {
+          const existingIds = new Set(state.appNodes.map((n) => n.id));
+          const toAdd = newAppNodes.filter((n) => n.nodeType === 'app' && !existingIds.has(n.id));
+          if (toAdd.length === 0) return;
+          state.appNodes = [...state.appNodes, ...toAdd];
+        }),
+
+      setAppRootListPagination: (p) =>
+        set((state) => {
+          state.appRootListPagination = p;
+        }),
+
+      setAppChildPagination: (appId, p) =>
+        set((state) => {
+          state.appChildrenPagination.set(appId, p);
+        }),
+
+      setLoadingRootAppListMore: (loading) =>
+        set((state) => {
+          state.loadingRootAppListMore = loading;
         }),
 
       cacheAppChildren: (appId, children) =>

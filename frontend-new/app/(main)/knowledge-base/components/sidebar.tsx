@@ -6,7 +6,7 @@ import { Flex, Box, Text, Button, TextField, DropdownMenu, IconButton } from '@r
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { FolderIcon } from '@/app/components/ui';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SidebarChevronSlotShimmer, SidebarListShimmerRows } from '../sidebar/sidebar-list-shimmer';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
@@ -209,7 +209,7 @@ function FolderTreeItem({
               }}
             >
               {isLoading ? (
-                <LottieLoader variant="loader" size={16} />
+                <SidebarChevronSlotShimmer />
               ) : (
                 <MaterialIcon
                   name={isExpanded ? 'expand_more' : 'chevron_right'}
@@ -758,9 +758,7 @@ function AppSection({
       {/* Children - same tree structure as Collections */}
       <Flex direction="column" gap="0" style={{ marginTop: '4px' }}>
         {isLoading ? (
-          <Flex align="center" gap="2" style={{ padding: '8px 24px' }}>
-            <LottieLoader variant="loader" size={16} />
-          </Flex>
+          <SidebarListShimmerRows count={3} />
         ) : children.length > 0 ? (
           children.map((child) => (
             <FolderTreeItem
@@ -1061,9 +1059,7 @@ export function Sidebar({
               </Text>
             </Flex>
             {isLoadingNodes && filteredSharedTree.length === 0 ? (
-              <Flex align="center" gap="2" style={{ padding: '4px 8px' }}>
-                <LottieLoader variant="loader" size={16} />
-              </Flex>
+              <SidebarListShimmerRows count={4} compact />
             ) : filteredSharedTree.length > 0 ? (
               <Flex direction="column" gap="0">
                 {filteredSharedTree.map((node) => (
@@ -1117,9 +1113,7 @@ export function Sidebar({
               )}
             </Flex>
             {isLoadingNodes && filteredPrivateTree.length === 0 ? (
-              <Flex align="center" gap="2" style={{ padding: '4px 8px' }}>
-                <LottieLoader variant="loader" size={16} />
-              </Flex>
+              <SidebarListShimmerRows count={4} compact />
             ) : filteredPrivateTree.length > 0 ? (
               <Flex direction="column" gap="0">
                 {filteredPrivateTree.map((node) => (

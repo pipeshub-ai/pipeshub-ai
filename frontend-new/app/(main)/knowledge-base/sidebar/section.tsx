@@ -15,7 +15,7 @@ import type {
   NodeType,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SidebarListShimmerRows } from './sidebar-list-shimmer';
 
 /** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
 export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
@@ -66,6 +66,11 @@ interface AppSectionProps {
   // Overflow limit
   maxVisible?: number;
   onMore?: () => void;
+
+  /** Server pagination: more direct children exist for this app (same hub API as chat picker) */
+  appChildListHasMore?: boolean;
+  onLoadMoreAppChildren?: () => void;
+  appChildLoadMoreDisabled?: boolean;
 }
 
 /**
@@ -91,10 +96,23 @@ export function AppSection({
   onDelete,
   maxVisible,
   onMore,
+  appChildListHasMore,
+  onLoadMoreAppChildren,
+  appChildLoadMoreDisabled,
 }: AppSectionProps) {
+  const { t } = useTranslation();
   const isKbApp = isKbCollectionsHubApp(app);
   const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
+  const treeLen = hierarchicalTree?.length ?? 0;
+  /** When "... More" is shown, child pagination control lives in the secondary panel only. */
+  const showOverflowMore =
+    Boolean(maxVisible) &&
+    ((treeLen > 0 && treeLen > maxVisible) ||
+      (treeLen === 0 && children.length > maxVisible));
+  const showChildLoadInline =
+    !isLoading &&
+    Boolean(appChildListHasMore && onLoadMoreAppChildren && !showOverflowMore);
 
   return (
     <Box style={{ marginBottom: `${SECTION_PADDING_BOTTOM}px` }}>
@@ -125,9 +143,7 @@ export function AppSection({
       >
       <Flex direction="column" gap="0">
         {isLoading ? (
-          <Flex align="center" gap="2" style={{ padding: 'var(--space-2) var(--space-6)' }}>
-            <LottieLoader variant="loader" size={16} />
-          </Flex>
+          <SidebarListShimmerRows count={3} />
         ) : hierarchicalTree && hierarchicalTree.length > 0 ? (
             <>
               {(maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree).map((node) => (
@@ -197,6 +213,37 @@ export function AppSection({
             No items
           </Text>
         )}
+        {showChildLoadInline ? (
+          <Flex
+            align="center"
+            style={{
+              width: '100%',
+              minWidth: 0,
+              paddingLeft: 'var(--space-6)',
+              paddingTop: 'var(--space-1)',
+              boxSizing: 'border-box',
+            }}
+          >
+            <button
+              type="button"
+              onClick={onLoadMoreAppChildren}
+              disabled={appChildLoadMoreDisabled}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: appChildLoadMoreDisabled ? 'default' : 'pointer',
+                color: 'var(--olive-9)',
+                fontSize: 12,
+                padding: 0,
+                textAlign: 'left',
+              }}
+            >
+              {appChildLoadMoreDisabled
+                ? t('agentBuilder.loadingMore')
+                : t('agentBuilder.loadMore')}
+            </button>
+          </Flex>
+        ) : null}
       </Flex>
       </Box>
     </Box>
