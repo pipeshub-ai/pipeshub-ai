@@ -14,8 +14,9 @@ Key differences from Azure Blob/S3:
 import base64
 import mimetypes
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from logging import Logger
 from urllib.parse import quote, unquote
 
@@ -84,7 +85,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_files import AzureFilesClient
 from app.sources.external.azure.azure_files import AzureFilesDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
@@ -128,6 +129,35 @@ def get_mimetype_for_azure_files(file_path: str, *, is_directory: bool = False) 
         except ValueError:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
+
+
+def _share_last_modified_epoch_ms_from_list(
+    shares_data: Iterable[Any] | None, target_names: set[str]
+) -> dict[str, int]:
+    """Map share name -> last_modified as epoch ms from list_shares data."""
+    out: dict[str, int] = {}
+    if not shares_data or not target_names:
+        return out
+    for share in shares_data:
+        name: str | None = None
+        lm: Any = None
+        if isinstance(share, dict):
+            name = share.get("name")
+            lm = share.get("last_modified")
+        else:
+            name = getattr(share, "name", None)
+            lm = getattr(share, "last_modified", None)
+        if not name or name not in target_names:
+            continue
+        ts: int | None = None
+        if lm is not None:
+            if isinstance(lm, datetime):
+                ts = datetime_to_epoch_ms(lm)
+            else:
+                ts = datetime_to_epoch_ms(str(lm))
+        if ts is not None:
+            out[name] = ts
+    return out
 
 
 class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
@@ -446,7 +476,8 @@ class AzureFilesConnector(BaseConnector):
             )
 
             # List all shares or use configured share
-            shares_to_sync = []
+            shares_to_sync: list[str] = []
+            shares_list_payload: list[Any] | None = None
             if selected_shares:
                 shares_to_sync = selected_shares
                 self.logger.info(f"Using filtered shares: {shares_to_sync}")
@@ -461,6 +492,7 @@ class AzureFilesConnector(BaseConnector):
 
                 shares_data = shares_response.data
                 if shares_data:
+                    shares_list_payload = shares_data
                     shares_to_sync = [
                         share.get("name")
                         for share in shares_data
@@ -471,8 +503,24 @@ class AzureFilesConnector(BaseConnector):
                     self.logger.warning("No shares found")
                     return
 
+            target_names = {n for n in shares_to_sync if n}
+            share_ts_ms = _share_last_modified_epoch_ms_from_list(
+                shares_list_payload, target_names
+            )
+            if shares_list_payload is None and target_names:
+                try:
+                    extra = await self.data_source.list_shares()
+                    if extra.success and extra.data:
+                        share_ts_ms = _share_last_modified_epoch_ms_from_list(
+                            extra.data, target_names
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch share timestamps via list_shares: {e}"
+                    )
+
             # Create record groups for shares first
-            await self._create_record_groups_for_shares(shares_to_sync)
+            await self._create_record_groups_for_shares(shares_to_sync, share_ts_ms)
 
             # Sync each share
             for share_name in shares_to_sync:
@@ -493,12 +541,21 @@ class AzureFilesConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_shares(
-        self, share_names: list[str]
+        self,
+        share_names: list[str],
+        share_last_modified_epoch_ms: dict[str, int] | None = None,
     ) -> None:
-        """Create record groups for shares with appropriate permissions."""
+        """Create record groups for shares with appropriate permissions.
+
+        Args:
+            share_names: File shares to represent as record groups.
+            share_last_modified_epoch_ms: Optional map from share name to Azure
+                ``last_modified`` (epoch ms) from list_shares, for hub Created/Updated.
+        """
         if not share_names:
             return
 
+        ts_map = share_last_modified_epoch_ms or {}
         record_groups = []
         for share_name in share_names:
             if not share_name:
@@ -534,6 +591,7 @@ class AzureFilesConnector(BaseConnector):
                         )
                     )
 
+            lm_ms = ts_map.get(share_name)
             record_group = RecordGroup(
                 name=share_name,
                 external_group_id=share_name,
@@ -541,6 +599,9 @@ class AzureFilesConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"Azure File Share: {share_name}",
+                web_url=self._generate_directory_url(share_name, ""),
+                source_created_at=lm_ms,
+                source_updated_at=lm_ms,
             )
             record_groups.append((record_group, permissions))
 

@@ -13,6 +13,7 @@ from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.s3.base_connector import (
     S3CompatibleBaseConnector,
     S3CompatibleDataSourceEntitiesProcessor,
+    _bucket_creation_dates_from_list_buckets,
     get_file_extension,
     get_folder_path_segments_from_key,
     get_mimetype_for_s3,
@@ -251,6 +252,22 @@ class TestGetAppUsers:
         users = [User(email="a@test.com", full_name=None)]
         result = s3_connector.get_app_users(users)
         assert result[0].full_name == "a@test.com"
+
+
+# ===========================================================================
+# _bucket_creation_dates_from_list_buckets
+# ===========================================================================
+class TestBucketCreationDatesFromListBuckets:
+    def test_maps_creation_date_and_skips_unknown_buckets(self):
+        fixed = datetime(2020, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        rows = [{"Name": "my-bucket", "CreationDate": fixed}, {"Name": "other"}]
+        m = _bucket_creation_dates_from_list_buckets(rows, {"my-bucket"})
+        assert m == {"my-bucket": int(fixed.timestamp() * 1000)}
+
+    def test_empty_inputs(self):
+        assert _bucket_creation_dates_from_list_buckets(None, {"a"}) == {}
+        assert _bucket_creation_dates_from_list_buckets([], {"a"}) == {}
+        assert _bucket_creation_dates_from_list_buckets([{"Name": "a"}], set()) == {}
 
 
 # ===========================================================================
