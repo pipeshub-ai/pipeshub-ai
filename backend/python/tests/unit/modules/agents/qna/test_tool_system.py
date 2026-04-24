@@ -1250,13 +1250,12 @@ class TestGetAgentToolsWithSchemasCoverage:
 
     @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
     @patch("app.modules.agents.qna.tool_system._global_tools_registry")
-    def test_sql_query_tool_added_when_config_service_present(
+    def test_sql_query_tool_added_when_config_service_and_sql_flags_set(
         self, mock_registry, mock_wrapper
     ):
         """execute_sql_query must be added exactly once by get_agent_tools_with_schemas
-        when config_service is present, and conversation_id + blob_store are forwarded
-        to create_execute_query_tool (the richer context that the removed get_agent_tools
-        path did not pass).
+        when config_service is present AND both has_sql_connector and has_sql_knowledge
+        are True. conversation_id + blob_store must be forwarded to the factory.
         """
         from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
 
@@ -1283,6 +1282,8 @@ class TestGetAgentToolsWithSchemasCoverage:
             org_id="org-1",
             conversation_id="conv-1",
             blob_store=blob_store,
+            has_sql_connector=True,
+            has_sql_knowledge=True,
         )
 
         fake_sql_tool = MagicMock(name="execute_sql_query_tool")
@@ -1326,6 +1327,79 @@ class TestGetAgentToolsWithSchemasCoverage:
         mock_wrapper.return_value = wrapper_instance
 
         state = _make_state()  # no config_service
+
+        with patch(
+            "app.utils.execute_query.create_execute_query_tool"
+        ) as mock_create:
+            get_agent_tools_with_schemas(state)
+
+        mock_create.assert_not_called()
+
+    @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
+    @patch("app.modules.agents.qna.tool_system._global_tools_registry")
+    def test_sql_query_tool_skipped_without_has_sql_connector(
+        self, mock_registry, mock_wrapper
+    ):
+        """config_service present but has_sql_connector=False: tool must not be added."""
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        mock_tool = _make_registry_tool_cov(
+            app_name="calculator",
+            metadata=SimpleNamespace(category="internal", is_internal=True),
+            description="Calc",
+            parameters=[],
+        )
+        mock_registry.get_all_tools.return_value = {"calculator.add": mock_tool}
+        wrapper_instance = MagicMock()
+        wrapper_instance.name = "calculator.add"
+        wrapper_instance.description = "Calc"
+        wrapper_instance.registry_tool = mock_tool
+        mock_wrapper.return_value = wrapper_instance
+
+        state = _make_state(
+            config_service=MagicMock(),
+            has_sql_connector=False,
+            has_sql_knowledge=True,
+        )
+
+        with patch(
+            "app.utils.execute_query.create_execute_query_tool"
+        ) as mock_create:
+            get_agent_tools_with_schemas(state)
+
+        mock_create.assert_not_called()
+
+    @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
+    @patch("app.modules.agents.qna.tool_system._global_tools_registry")
+    def test_sql_query_tool_skipped_without_has_sql_knowledge(
+        self, mock_registry, mock_wrapper
+    ):
+        """config_service + has_sql_connector set but has_sql_knowledge=False: skip.
+
+        This path represents a custom agent where the user did not attach any SQL
+        connector as knowledge — we must not expose the tool even if the org has
+        a configured SQL connector.
+        """
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        mock_tool = _make_registry_tool_cov(
+            app_name="calculator",
+            metadata=SimpleNamespace(category="internal", is_internal=True),
+            description="Calc",
+            parameters=[],
+        )
+        mock_registry.get_all_tools.return_value = {"calculator.add": mock_tool}
+        wrapper_instance = MagicMock()
+        wrapper_instance.name = "calculator.add"
+        wrapper_instance.description = "Calc"
+        wrapper_instance.registry_tool = mock_tool
+        mock_wrapper.return_value = wrapper_instance
+
+        state = _make_state(
+            config_service=MagicMock(),
+            has_sql_connector=True,
+            has_sql_knowledge=False,
+        )
 
         with patch(
             "app.utils.execute_query.create_execute_query_tool"

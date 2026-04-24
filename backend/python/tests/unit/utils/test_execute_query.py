@@ -11,6 +11,8 @@ from app.utils.execute_query import (
     _is_keyword_present,
     _is_query_safe,
     _results_to_markdown,
+    agent_knowledge_has_sql_connector,
+    has_sql_connector_configured,
 )
 
 
@@ -880,3 +882,154 @@ class TestCreateExecuteQueryTool:
             })
 
         mock_register.assert_not_called()
+
+
+# ===========================================================================
+# has_sql_connector_configured
+# ===========================================================================
+
+
+class TestHasSqlConnectorConfigured:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_configured_sql_connector_exists(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[
+                {"type": "POSTGRESQL", "isConfigured": True},
+                {"type": "GOOGLE_DRIVE", "isConfigured": True},
+            ]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_for_snowflake(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "SNOWFLAKE", "isConfigured": True}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_for_mariadb(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "MARIADB", "isConfigured": True}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is True
+
+    @pytest.mark.asyncio
+    async def test_type_matching_is_case_insensitive(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "postgresql", "isConfigured": True}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_sql_connector_not_configured(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "POSTGRESQL", "isConfigured": False}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_sql_connector_present(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "SLACK", "isConfigured": True}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_empty_list(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(return_value=[])
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_none(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(return_value=None)
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_swallows_exception_and_returns_false(self):
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_forwards_user_and_org_to_graph_provider(self):
+        from app.config.constants.arangodb import CollectionNames
+        from app.connectors.core.registry.connector_builder import ConnectorScope
+
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(return_value=[])
+        await has_sql_connector_configured(graph_provider, "user-42", "org-7")
+
+        graph_provider.get_user_connector_instances.assert_awaited_once_with(
+            collection=CollectionNames.APPS.value,
+            user_id="user-42",
+            org_id="org-7",
+            team_scope=ConnectorScope.TEAM.value,
+            personal_scope=ConnectorScope.PERSONAL.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_requires_both_type_and_is_configured(self):
+        """A SQL type without isConfigured=True should not count."""
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[
+                {"type": "POSTGRESQL"},  # missing isConfigured
+                {"type": "SNOWFLAKE", "isConfigured": "true"},  # string, not bool True
+            ]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+
+# ===========================================================================
+# agent_knowledge_has_sql_connector
+# ===========================================================================
+
+
+class TestAgentKnowledgeHasSqlConnector:
+    def test_none(self):
+        assert agent_knowledge_has_sql_connector(None) is False
+
+    def test_empty_list(self):
+        assert agent_knowledge_has_sql_connector([]) is False
+
+    def test_postgresql_type(self):
+        assert agent_knowledge_has_sql_connector([{"type": "POSTGRESQL"}]) is True
+
+    def test_snowflake_type(self):
+        assert agent_knowledge_has_sql_connector([{"type": "SNOWFLAKE"}]) is True
+
+    def test_mariadb_type(self):
+        assert agent_knowledge_has_sql_connector([{"type": "MARIADB"}]) is True
+
+    def test_case_insensitive(self):
+        assert agent_knowledge_has_sql_connector([{"type": "postgresql"}]) is True
+        assert agent_knowledge_has_sql_connector([{"type": "Snowflake"}]) is True
+
+    def test_non_sql_connector(self):
+        assert agent_knowledge_has_sql_connector(
+            [{"type": "GOOGLE_DRIVE"}, {"type": "SLACK"}]
+        ) is False
+
+    def test_mixed_list_returns_true_when_any_sql(self):
+        assert agent_knowledge_has_sql_connector(
+            [{"type": "GOOGLE_DRIVE"}, {"type": "POSTGRESQL"}]
+        ) is True
+
+    def test_non_dict_items_ignored(self):
+        assert agent_knowledge_has_sql_connector(
+            ["POSTGRESQL", None, 42, {"type": "POSTGRESQL"}]
+        ) is True
+
+    def test_dict_without_type_key(self):
+        assert agent_knowledge_has_sql_connector([{"name": "x"}]) is False

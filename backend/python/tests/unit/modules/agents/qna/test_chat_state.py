@@ -234,6 +234,57 @@ class TestBuildInitialState:
         )
         assert state["org_info"] == {"name": "Acme"}
 
+    def test_has_sql_knowledge_false_when_no_knowledge(
+        self, mock_deps, minimal_chat_query, minimal_user_info
+    ):
+        state = build_initial_state(
+            chat_query=minimal_chat_query,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["has_sql_knowledge"] is False
+
+    def test_has_sql_knowledge_false_when_only_non_sql_knowledge(
+        self, mock_deps, minimal_user_info
+    ):
+        cq = {
+            "query": "q",
+            "knowledge": [
+                {"connectorId": "c1", "type": "GOOGLE_DRIVE", "filters": {}},
+            ],
+        }
+        state = build_initial_state(
+            chat_query=cq, user_info=minimal_user_info, **mock_deps
+        )
+        assert state["has_sql_knowledge"] is False
+
+    def test_has_sql_knowledge_true_when_postgresql_attached(
+        self, mock_deps, minimal_user_info
+    ):
+        cq = {
+            "query": "q",
+            "knowledge": [
+                {"connectorId": "c1", "type": "POSTGRESQL", "filters": {}},
+            ],
+        }
+        state = build_initial_state(
+            chat_query=cq, user_info=minimal_user_info, **mock_deps
+        )
+        assert state["has_sql_knowledge"] is True
+
+    def test_has_sql_knowledge_true_for_snowflake_and_mariadb(
+        self, mock_deps, minimal_user_info
+    ):
+        for t in ("SNOWFLAKE", "MARIADB"):
+            cq = {
+                "query": "q",
+                "knowledge": [{"connectorId": "c1", "type": t, "filters": {}}],
+            }
+            state = build_initial_state(
+                chat_query=cq, user_info=minimal_user_info, **mock_deps
+            )
+            assert state["has_sql_knowledge"] is True, f"expected True for type={t}"
+
 
 # ===================================================================
 # cleanup_state_after_retrieval
