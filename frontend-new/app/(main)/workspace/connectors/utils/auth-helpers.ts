@@ -171,3 +171,35 @@ export function isConnectorConfigAuthenticated(config: unknown): boolean {
   }
   return false;
 }
+
+/** Keep in sync with OAUTH `schemas.OAUTH` field names; otherwise add schema-driven flags before extending. */
+const OAUTH_ORG_CREDENTIAL_FIELD_NAMES = new Set(['clientId', 'clientSecret', 'tenantId']);
+const OAUTH_METADATA_DERIVED_WHEN_APP_LINKED = new Set(['redirectUri', 'scope']);
+
+export interface OAuthAuthFieldVisibilityContext {
+  isCreateMode: boolean;
+  isAdmin: boolean | null;
+  hasLinkedOAuthApp: boolean;
+}
+
+/**
+ * OAUTH form field visibility: org credentials (admin), redirect/scope when no linked app,
+ * and `oauthInstanceName` only for admins creating a new registration (create mode, no `oauthConfigId` yet).
+ */
+export function shouldRenderOAuthAuthSchemaField(
+  fieldName: string,
+  ctx: OAuthAuthFieldVisibilityContext
+): boolean {
+  if (fieldName === 'oauthInstanceName') {
+    return (
+      ctx.isCreateMode && ctx.isAdmin === true && !ctx.hasLinkedOAuthApp
+    );
+  }
+  if (OAUTH_ORG_CREDENTIAL_FIELD_NAMES.has(fieldName)) {
+    return ctx.isAdmin === true;
+  }
+  if (OAUTH_METADATA_DERIVED_WHEN_APP_LINKED.has(fieldName)) {
+    return !ctx.hasLinkedOAuthApp;
+  }
+  return true;
+}
