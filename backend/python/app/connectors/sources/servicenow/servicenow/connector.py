@@ -164,14 +164,14 @@ from app.connectors.sources.servicenow.servicenow.constants import (
                 CommonFields.client_id(f"{ServiceNowConnectorMetadata.NAME} OAuth Application Registry"),
                 CommonFields.client_secret(f"{ServiceNowConnectorMetadata.NAME} OAuth Application Registry")
             ],
-            icon_path=IconPaths.connector_icon(ServiceNowConnectorMetadata.NAME),
+            icon_path=IconPaths.connector_icon(Connectors.SERVICENOW.value),
             app_group=ServiceNowConnectorMetadata.NAME,
             app_description=f"OAuth application for accessing {ServiceNowConnectorMetadata.NAME} API and knowledge base services",
             app_categories=[ConnectorRegistryCategories.KNOWLEDGE_MANAGEMENT]
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon(IconPaths.connector_icon(ServiceNowConnectorMetadata.NAME))
+        .with_icon(IconPaths.connector_icon(Connectors.SERVICENOW.value))
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(

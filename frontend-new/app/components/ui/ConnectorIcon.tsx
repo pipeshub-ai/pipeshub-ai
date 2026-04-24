@@ -36,7 +36,7 @@ export type ConnectorType =
   | 'amazon-s3'
   | 'gcs'
   | 'minio'
-  | 'azure-storage'
+  | 'azure-blob'
   | 'azure-files'
   | 'azure-fileshares'
   | 'nextcloud'
@@ -62,7 +62,7 @@ export type ConnectorType =
   | 'zammad'
   // Enterprise & Admin
   | 'sharepoint'
-  | 'sharepointonline'
+  | 'sharepoint-online'
   | 'google-admin'
   | 'google-cloud'
   | 'salesforce'
@@ -77,6 +77,8 @@ export type ConnectorType =
   | 'seek'
   | 'frame'
   | 'vector'
+  | 'clickup'
+  | 'redshift'
   // Generic / Fallback
   | 'web'
   | 'generic';
@@ -99,64 +101,66 @@ interface ConnectorIconProps {
  */
 export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallback: string }> = {
   // Communication & Collaboration
-  'slack':            { svg: '/icons/connectors/slack.svg',            fallback: 'tag' },
-  'teams':            { svg: '/icons/connectors/teams.svg',            fallback: 'groups' },
-  'zoom':             { svg: '/icons/connectors/zoom.svg',             fallback: 'videocam' },
-  'gmail':            { svg: '/icons/connectors/gmail.svg',            fallback: 'mail' },
-  'outlook':          { svg: '/icons/connectors/outlook.svg',          fallback: 'mail' },
-  'google-meet':      { svg: '/icons/connectors/Google-Meet.svg',      fallback: 'videocam' },
-  'google-calendar':  { svg: '/icons/connectors/Calendar.svg',         fallback: 'calendar_today' },
+  'slack': { svg: '/icons/connectors/slack.svg', fallback: 'tag' },
+  'teams': { svg: '/icons/connectors/teams.svg', fallback: 'groups' },
+  'zoom': { svg: '/icons/connectors/zoom.svg', fallback: 'videocam' },
+  'gmail': { svg: '/icons/connectors/gmail.svg', fallback: 'mail' },
+  'outlook': { svg: '/icons/connectors/outlook.svg', fallback: 'mail' },
+  'google-meet': { svg: '/icons/connectors/meet.svg', fallback: 'videocam' },
+  'google-calendar': { svg: '/icons/connectors/calendar.svg', fallback: 'calendar_today' },
   // Cloud Storage & Drives
-  'google-drive':     { svg: '/icons/connectors/GDrive.svg',           fallback: 'cloud' },
-  'onedrive':         { svg: '/icons/connectors/onedrive.svg',         fallback: 'cloud_upload' },
-  'dropbox':          { svg: '/icons/connectors/dropbox.svg',          fallback: 'cloud_upload' },
-  'box':              { svg: '/icons/connectors/Box-Inc.svg',          fallback: 'inventory_2' },
-  'amazon-s3':        { svg: '/icons/connectors/Amazon-S3-Logo.svg',   fallback: 'cloud' },
-  'gcs':              { svg: '/icons/connectors/Google-Cloud.svg',   fallback: 'cloud' },
-  'minio':            { svg: '/icons/connectors/Minio.svg',            fallback: 'cloud' },
-  'azure-storage':    { svg: '/icons/connectors/azure-storage.svg',    fallback: 'cloud' },
-  'azure-files':      { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
-  'azure-fileshares': { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
-  'nextcloud':        { svg: '/icons/connectors/Nextcloud.svg',        fallback: 'cloud' },
+  'google-drive': { svg: '/icons/connectors/drive.svg', fallback: 'cloud' },
+  'onedrive': { svg: '/icons/connectors/onedrive.svg', fallback: 'cloud_upload' },
+  'dropbox': { svg: '/icons/connectors/dropbox.svg', fallback: 'cloud_upload' },
+  'box': { svg: '/icons/connectors/box.svg', fallback: 'inventory_2' },
+  'amazon-s3': { svg: '/icons/connectors/s3.svg', fallback: 'cloud' },
+  'gcs': { svg: '/icons/connectors/gcs.svg', fallback: 'cloud' },
+  'minio': { svg: '/icons/connectors/minio.svg', fallback: 'cloud' },
+  'azure-blob': { svg: '/icons/connectors/azureblob.svg', fallback: 'cloud' },
+  'azure-files': { svg: '/icons/connectors/azurefiles.svg', fallback: 'folder_shared' },
+  'azure-fileshares': { svg: '/icons/connectors/azure-files.svg', fallback: 'folder_shared' },
+  'nextcloud': { svg: '/icons/connectors/nextcloud.svg', fallback: 'cloud' },
   // Document & Knowledge
-  'notion':           { svg: '/icons/connectors/notion.svg',           fallback: 'description' },
-  'confluence':       { svg: '/icons/connectors/confluence.svg',       fallback: 'article' },
-  'bookstack':        { svg: '/icons/connectors/BookStack.svg',        fallback: 'menu_book' },
-  'kb':               { svg: null,                                      fallback: 'folder' },
-  'knowledge-base':   { svg: null,                                      fallback: 'folder' },
-  'google-docs':      { svg: '/icons/connectors/Google-Docs.svg',      fallback: 'description' },
-  'google-sheets':    { svg: '/icons/connectors/Google-Sheets.svg',    fallback: 'table_chart' },
-  'google-slides':    { svg: '/icons/connectors/Google-Slides.svg',    fallback: 'slideshow' },
-  'google-forms':     { svg: '/icons/connectors/Google-Forms.svg',     fallback: 'quiz' },
-  'ms-onenote':       { svg: '/icons/connectors/MS-Note.svg',          fallback: 'note' },
+  'kb': { svg: null, fallback: 'folder' },
+  'knowledge-base': { svg: null, fallback: 'folder' },
+  'notion': { svg: '/icons/connectors/notion.svg', fallback: 'description' },
+  'confluence': { svg: '/icons/connectors/confluence.svg', fallback: 'article' },
+  'bookstack': { svg: '/icons/connectors/bookstack.svg', fallback: 'menu_book' },
+  'google-docs': { svg: '/icons/connectors/docs.svg', fallback: 'description' },
+  'google-sheets': { svg: '/icons/connectors/sheets.svg', fallback: 'table_chart' },
+  'google-slides': { svg: '/icons/connectors/slides.svg', fallback: 'slideshow' },
+  'google-forms': { svg: '/icons/connectors/forms.svg', fallback: 'quiz' },
+  'ms-onenote': { svg: '/icons/connectors/ms-onenote.svg', fallback: 'note' },
   // Project & Issue Tracking (keys sorted A–Z)
-  'github':           { svg: '/icons/connectors/github.svg',           fallback: 'code' },
-  'gitlab':           { svg: '/icons/connectors/gitlab.svg',           fallback: 'code' },
-  'jira':             { svg: '/icons/connectors/jira.svg',             fallback: 'bug_report' },
-  'linear':           { svg: '/icons/connectors/linear.svg',           fallback: 'view_kanban' },
-  'servicenow':       { svg: '/icons/connectors/service-now.svg',      fallback: 'build' },
-  'zendesk':          { svg: '/icons/connectors/Zendesk.svg',          fallback: 'support' },
-  'zammad':           { svg: '/icons/connectors/Zammad.svg',           fallback: 'support_agent' },
+  'github': { svg: '/icons/connectors/github.svg', fallback: 'code' },
+  'gitlab': { svg: '/icons/connectors/gitlab.svg', fallback: 'code' },
+  'jira': { svg: '/icons/connectors/jira.svg', fallback: 'bug_report' },
+  'linear': { svg: '/icons/connectors/linear.svg', fallback: 'view_kanban' },
+  'servicenow': { svg: '/icons/connectors/servicenow.svg', fallback: 'build' },
+  'zendesk': { svg: '/icons/connectors/zendesk.svg', fallback: 'support' },
+  'zammad': { svg: '/icons/connectors/zammad.svg', fallback: 'support_agent' },
   // Enterprise & Admin
-  'sharepoint':       { svg: '/icons/connectors/sharepoint.svg',       fallback: 'share' },
-  'sharepointonline': { svg: '/icons/connectors/sharepoint.svg',       fallback: 'share' },
-  'google-admin':     { svg: '/icons/connectors/Google-Admin.svg',     fallback: 'admin_panel_settings' },
-  'google-cloud':     { svg: '/icons/connectors/Google-Cloud.svg',     fallback: 'cloud' },
-  'salesforce':       { svg: '/icons/connectors/salesforce.svg',       fallback: 'cloud' },
+  'sharepoint': { svg: '/icons/connectors/sharepoint.svg', fallback: 'share' },
+  'sharepoint-online': { svg: '/icons/connectors/sharepoint.svg', fallback: 'share' },
+  'google-admin': { svg: '/icons/connectors/google-admin.svg', fallback: 'admin_panel_settings' },
+  'google-cloud': { svg: '/icons/connectors/gcs.svg', fallback: 'cloud' },
+  'salesforce': { svg: '/icons/connectors/salesforce.svg', fallback: 'cloud' },
   // Databases
-  'postgresql':       { svg: '/icons/connectors/Postgresql.svg',       fallback: 'storage' },
-  'mariadb':          { svg: '/icons/connectors/MariaDB.svg',          fallback: 'storage' },
-  'snowflake':        { svg: '/icons/connectors/Snowflake.svg',        fallback: 'ac_unit' },
-  'airtable':         { svg: '/icons/connectors/Airtable.svg',         fallback: 'grid_view' },
+  'postgresql': { svg: '/icons/connectors/postgresql.svg', fallback: 'storage' },
+  'mariadb': { svg: '/icons/connectors/mariadb.svg', fallback: 'storage' },
+  'snowflake': { svg: '/icons/connectors/snowflake.svg', fallback: 'ac_unit' },
+  'airtable': { svg: '/icons/connectors/airtable.svg', fallback: 'grid_view' },
   // Media & Other
-  'youtube':          { svg: '/icons/connectors/YT.svg',               fallback: 'smart_display' },
-  'rss':              { svg: '/icons/connectors/RSS.svg',              fallback: 'rss_feed' },
-  'seek':             { svg: '/icons/connectors/seek.svg',             fallback: 'search' },
-  'frame':            { svg: '/icons/connectors/Frame.svg',            fallback: 'frame_inspect' },
-  'vector':           { svg: '/icons/connectors/Vector.svg',           fallback: 'data_array' },
+  'youtube': { svg: '/icons/connectors/yt.svg', fallback: 'smart_display' },
+  'rss': { svg: '/icons/connectors/rss.svg', fallback: 'rss_feed' },
+  'seek': { svg: '/icons/connectors/seek.svg', fallback: 'search' },
+  'frame': { svg: '/icons/connectors/frame.svg', fallback: 'frame_inspect' },
+  'vector': { svg: '/icons/connectors/vector.svg', fallback: 'data_array' },
+  'clickup': { svg: '/icons/connectors/clickup.svg', fallback: 'task_alt' },
+  'redshift': { svg: '/icons/connectors/redshift.svg', fallback: 'storage' },
   // Generic / Fallback
-  'web':              { svg: null,                                      fallback: 'language' },
-  'generic':          { svg: null,                                      fallback: 'extension' },
+  'web': { svg: '/icons/connectors/web.svg', fallback: 'language' },
+  'generic': { svg: '/icons/connectors/default.svg', fallback: 'extension' },
 };
 
 /**
@@ -174,7 +178,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['google-cloud', 'google-cloud'], ['google-calendar', 'google-calendar'],
   ['gmail', 'gmail'],
   // Microsoft suite — specific first
-  ['sharepointonline', 'sharepointonline'], ['sharepoint-online', 'sharepointonline'],
+  ['sharepointonline', 'sharepoint-online'], ['sharepoint-online', 'sharepoint-online'],
   ['sharepoint', 'sharepoint'],
   ['onedrive', 'onedrive'], ['outlook', 'outlook'],
   ['onenote', 'ms-onenote'], ['ms-note', 'ms-onenote'],
@@ -183,7 +187,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   // Cloud storage
   ['azure-files', 'azure-files'],
   ['amazon-s3', 'amazon-s3'], ['aws-s3', 'amazon-s3'], ['s3', 'amazon-s3'],
-  ['azure-fileshare', 'azure-fileshares'], ['azure-storage', 'azure-storage'],
+  ['azure-fileshare', 'azure-fileshares'], ['azure-blob', 'azure-blob'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking
@@ -203,9 +207,11 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['seek', 'seek'], ['frame', 'frame'], ['vector', 'vector'],
   // Broad fallbacks (last — only match if nothing specific matched)
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
-  ['azure', 'azure-storage'], ['drive', 'google-drive'],
+  ['azure', 'azure-blob'], ['drive', 'google-drive'],
   ['calendar', 'google-calendar'],
   ['web', 'web'],
+  ['clickup', 'clickup'], ['click-up', 'clickup'],
+  ['redshift', 'redshift'], ['red-shift', 'redshift'],
 ];
 
 /**

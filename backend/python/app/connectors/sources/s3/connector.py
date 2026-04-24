@@ -9,6 +9,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -76,7 +77,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/s3.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.S3.value))
         .add_documentation_link(DocumentationLink(
             "S3 Access Key Setup",
             "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",

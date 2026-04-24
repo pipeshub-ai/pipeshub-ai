@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -169,12 +170,12 @@ class CreateMeetLinkInput(BaseModel):
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/calendar.svg",
+            icon_path=IconPaths.connector_icon("calendar"),
             app_group="Google Workspace",
             app_description="Calendar OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("calendar"))
         .add_documentation_link(DocumentationLink(
             "Calendar API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",

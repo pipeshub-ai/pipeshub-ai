@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -137,7 +138,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/confluence.svg",
+            icon_path=IconPaths.connector_icon(Connectors.CONFLUENCE.value),
             app_group="Atlassian",
             app_description="OAuth application for accessing Confluence Cloud API and collaboration features",
             app_categories=["Knowledge Management", "Collaboration"]
@@ -177,7 +178,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
     ])\
     .with_info("⚠️ Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public.")\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/confluence.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.CONFLUENCE.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Confluence Cloud OAuth Setup",
