@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import {
   AlertDialog,
   Badge,
@@ -90,6 +91,7 @@ export function AdminManageActionPanel({
   onDeleted,
   onNotify,
 }: AdminManageActionPanelProps) {
+  const router = useRouter();
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(true);
   const { t } = useTranslation();
   const instanceId = instance.instanceId ?? '';
@@ -555,9 +557,9 @@ export function AdminManageActionPanel({
   }, [beginOAuth, instanceId, t]);
 
   const goToPersonalActions = useCallback(() => {
-    if (typeof window === 'undefined' || !toolsetType) return;
-    window.location.href = `/workspace/actions/personal/?toolsetType=${encodeURIComponent(toolsetType)}`;
-  }, [toolsetType]);
+    if (!toolsetType) return;
+    router.push(`/workspace/actions/personal?toolsetType=${encodeURIComponent(toolsetType)}`);
+  }, [router, toolsetType]);
 
   if (!instanceId) {
     return (
@@ -722,7 +724,9 @@ export function AdminManageActionPanel({
       {showPersonalActionsCta ? (
         <Callout.Root color="blue" variant="surface" size="1">
           <Callout.Text>
-            User credentials are managed in My Actions.
+            {t('workspace.actions.manage.personalActionsHint', {
+              defaultValue: 'User credentials are managed in My Actions.',
+            })}
             <Button
               type="button"
               size="1"
@@ -731,7 +735,9 @@ export function AdminManageActionPanel({
               ml="2"
               onClick={goToPersonalActions}
             >
-              Open My Actions
+              {t('workspace.actions.manage.openPersonalActionsCta', {
+                defaultValue: 'Open My Actions',
+              })}
             </Button>
           </Callout.Text>
         </Callout.Root>
