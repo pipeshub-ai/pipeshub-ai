@@ -240,6 +240,17 @@ class TestCheckCollectionInfo:
         collection_info.config.params.vectors = vectors_mock
         collection_info.points_count = 10
         retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        # Config-service spec matches the new identity so the model-change
+        # check treats this as a no-op rather than falling back to the
+        # DEFAULT_EMBEDDING_MODEL identity (which would otherwise block).
+        retrieval_svc.config_service = AsyncMock()
+        retrieval_svc.config_service.get_config = AsyncMock(
+            return_value={
+                "embedding_provider": "",
+                "embedding_model": "model-a",
+                "embedding_dimension": 768,
+            }
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
@@ -251,25 +262,23 @@ class TestCheckCollectionInfo:
     @pytest.mark.asyncio
     async def test_grpc_not_found(self):
         import grpc
+        from grpc._channel import _InactiveRpcError
+
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
 
-        error = grpc._channel._InactiveRpcError(MagicMock())
-        error_mock = MagicMock()
-        error_mock.code.return_value = grpc.StatusCode.NOT_FOUND
-        error._state = error_mock
-
-        type(error).code = MagicMock(return_value=grpc.StatusCode.NOT_FOUND)
+        state = MagicMock()
+        state.code = grpc.StatusCode.NOT_FOUND
+        state.details = "not found"
+        error = _InactiveRpcError(state)
 
         retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
         logger = MagicMock()
         dense_embeddings = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        try:
-            await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        except (HTTPException, Exception):
-            pass
+        await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
+        logger.info.assert_called_with("collection not found - acceptable for health check")
 
     @pytest.mark.asyncio
     async def test_unexpected_exception(self):
@@ -588,12 +597,16 @@ class TestPerformEmbeddingHealthCheck:
     @pytest.mark.asyncio
     async def test_grpc_not_found_during_collection_check(self, mock_request):
         import grpc
+        from grpc._channel import _InactiveRpcError
+
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        error = grpc._channel._InactiveRpcError(MagicMock())
-        type(error).code = MagicMock(return_value=grpc.StatusCode.NOT_FOUND)
+        state = MagicMock()
+        state.code = grpc.StatusCode.NOT_FOUND
+        state.details = "not found"
+        error = _InactiveRpcError(state)
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"

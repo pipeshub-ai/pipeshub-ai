@@ -3,7 +3,13 @@ import os
 from logging import Logger
 from typing import Any, Dict, Optional, Tuple
 
-import grpc  #type: ignore
+import grpc  # type: ignore
+
+try:
+    from grpc._channel import _InactiveRpcError as _GrpcInactiveRpcError
+except ImportError:  # pragma: no cover
+    _GrpcInactiveRpcError = grpc.RpcError  # type: ignore[misc,assignment]
+
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
 from langchain_core.messages import HumanMessage  #type: ignore
@@ -592,7 +598,7 @@ async def check_collection_info(
             identity_source=identity_source,
         )
 
-    except grpc._channel._InactiveRpcError as e:
+    except _GrpcInactiveRpcError as e:
         if e.code() == grpc.StatusCode.NOT_FOUND:
             logger.info("collection not found - acceptable for health check")
         else:
@@ -1148,7 +1154,7 @@ async def perform_embedding_health_check(
                                     "timestamp": get_epoch_timestamp_in_ms(),
                                 },
                             )
-            except grpc._channel._InactiveRpcError as e:
+            except _GrpcInactiveRpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
                     logger.info("Collection not found - acceptable for health check")
                 else:
