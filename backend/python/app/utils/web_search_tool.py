@@ -1,3 +1,5 @@
+import json
+import time
 from typing import Any
 
 import httpx
@@ -5,6 +7,9 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
 from app.utils.logger import create_logger
+
+MAX_RETRIES = 2
+INITIAL_BACKOFF_SECONDS = 2
 
 logger = create_logger(__name__)
 
@@ -124,7 +129,7 @@ def create_web_search_tool(
     search_func = provider_map.get(provider, _search_with_duckduckgo)
 
     @tool("web_search", args_schema=WebSearchArgs)
-    def web_search_tool(query: str) -> dict[str, Any]:
+    def web_search_tool(query: str) -> str:
         """
         This tool searches the web for information.
 
@@ -138,20 +143,31 @@ def create_web_search_tool(
         Example:
             web_search(query="current AI model benchmarks 2026")
         """
-        try:
-            results = search_func(query, provider_config)
-            logger.info(f"Got web search results using {provider}: {len(results)} results")
-            return {
-                "ok": True,
-                "result_type": "web_search",
-                "web_results": results,
-                "query": query,
-            }
-        except Exception as e:
-            print(f"Web search failed with {provider}: {str(e)}")
-            return {
-                "ok": False,
-                "error": f"Web search failed: {str(e)}"
-            }
+        last_error: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                results = search_func(query, provider_config)
+                logger.info(f"Got web search results using {provider}: {len(results)} results")
+                return json.dumps({
+                    "ok": True,
+                    "result_type": "web_search",
+                    "web_results": results,
+                    "query": query,
+                })
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    backoff = INITIAL_BACKOFF_SECONDS * (2 ** attempt)
+                    logger.warning(
+                        f"Web search attempt {attempt + 1}/{MAX_RETRIES} failed with {provider}: {e}. "
+                        f"Retrying in {backoff}s..."
+                    )
+                    time.sleep(backoff)
+
+        logger.error(f"Web search failed after {MAX_RETRIES} attempts with {provider}: {last_error}")
+        return json.dumps({
+            "ok": False,
+            "error": f"Web search failed: {str(last_error)}"
+        })
 
     return web_search_tool

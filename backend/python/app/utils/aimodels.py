@@ -539,7 +539,8 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
-                stream_usage=True,  # Enable token usage tracking for Opik
+                stream_usage=True,
+                use_responses_api=True, # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.COHERE.value:

@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api';
 import type {
   ConfiguredWebSearchProvider,
   WebSearchConfigData,
+  WebSearchProviderAgentUsage,
   WebSearchProviderData,
   WebSearchSettings,
 } from './types';
@@ -104,6 +105,18 @@ export const WebSearchApi = {
       return data;
     }
     throw new Error(data.message || 'Failed to delete provider');
+  },
+
+  async getProviderUsage(provider: string): Promise<WebSearchProviderAgentUsage[]> {
+    try {
+      const { data } = await apiClient.get(`/api/v1/agents/web-search-usage/${encodeURIComponent(provider)}`);
+      if (data.success && Array.isArray(data.agents)) {
+        return data.agents;
+      }
+      return [];
+    } catch {
+      return [];
+    }
   },
 
   async setDefaultProvider(providerKey: string): Promise<unknown> {

@@ -3764,6 +3764,8 @@ export const getAIModelProviderSchema =
       `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
       { query: params, logMessage: 'Error proxying AI model provider schema request' },
     );
+  };
+
 // Web Search Provider Management Functions
 export const getWebSearchProviders =
   (keyValueStoreService: KeyValueStoreService) =>
@@ -4112,7 +4114,7 @@ export const updateWebSearchProvider =
   };
 
 export const deleteWebSearchProvider =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { providerKey } = req.params;
@@ -4151,6 +4153,37 @@ export const deleteWebSearchProvider =
       }
 
       const deletedProvider = webSearchConfig.providers[providerIndex];
+
+      // Check if any agents are using this provider before allowing deletion
+      try {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+          method: HttpMethod.GET,
+          headers: {
+            ...(req.headers as Record<string, string>),
+            'Content-Type': 'application/json',
+          },
+        };
+        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
+        const aiResponse = await aiCommand.execute();
+
+        const agents =
+          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
+            ? aiResponse.data.agents
+            : [];
+
+        if (agents.length > 0) {
+          res.status(409).json({
+            status: 'error',
+            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+            agents,
+          });
+          return;
+        }
+      } catch (usageError: any) {
+        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      }
+
       const wasDefault = deletedProvider.isDefault || false;
 
       // Remove the provider from the configuration

@@ -1093,6 +1093,14 @@ def _extract_tool_results(
         tool_name = msg.name if hasattr(msg, "name") else "unknown"
         result_content = msg.content
 
+        # Parse JSON strings back to dicts so downstream code can access
+        # structured fields (result_type, blocks, web_results, etc.).
+        if isinstance(result_content, str):
+            try:
+                result_content = json.loads(result_content)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
         # Process retrieval results from ToolMessage only if NOT using the buffer
         # (buffer path already handled above — avoids double-processing)
         if "retrieval" in tool_name.lower() and not deep_buffer:
@@ -1535,6 +1543,17 @@ def _build_sub_agent_tool_guidance(
             "```\n"
             "The retrieval results are processed downstream for citations. "
             "Your job is to surface relevant content; do not try to parse or filter results yourself."
+        )
+
+    has_web_tools = any("web_search" in t or "fetch_url" in t for t in tool_names)
+    if has_web_tools:
+        parts.append(
+            "\n## Web Search Rules\n"
+            "- Prefer `web_search` over training data for anything that may have changed: "
+            "news, prices, weather, software versions, docs, regulations, current events.\n"
+            "- Also when the task asks for \"latest\"/\"current\"/\"up-to-date\" info.\n"
+            "- Use training data only for timeless knowledge. When in doubt, prefer `web_search`.\n"
+            "- Use `fetch_url` to get full content from a `web_search` result URL when snippets are insufficient."
         )
 
     # Generic link extraction guidance (for non-retrieval tasks)

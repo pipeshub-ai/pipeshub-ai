@@ -72,7 +72,7 @@ MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
-MAX_TOOL_HOPS = 4
+MAX_TOOL_HOPS = 6
 
 
 def _build_citation_reflection_message(
@@ -433,6 +433,11 @@ async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, 
             str(args),
         )
         tool_result = await tool.arun(args, **tool_runtime_kwargs)
+        if isinstance(tool_result, str):
+            try:
+                tool_result = json.loads(tool_result)
+            except (json.JSONDecodeError, ValueError):
+                tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
         tool_result["tool_name"] = tool_name
         tool_result["call_id"] = call_id
         return tool_result
@@ -471,6 +476,7 @@ async def execute_tool_calls(
     mode: str = "json",  # "json" for structured output, "simple" for raw text
     ref_mapper: CitationRefMapper | None = None,
     chat_mode: str | None = None,
+    initial_web_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -496,7 +502,7 @@ async def execute_tool_calls(
     tool_args = []
     tool_results = []
     records = []
-    web_records = []  # Track web records separately for citation handling
+    web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
     while hops < max_hops:
         current_hop_records = []
         # with error handling for provider-level tool failures
@@ -1120,12 +1126,7 @@ async def handle_json_mode(
                 confidence = None
                 reference_data = None
 
-            normalized, cites = normalize_citations_and_chunks(
-                final_answer, final_results, records,
-                ref_to_url=ref_to_url,
-                web_records=web_records,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-            )
+            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url, web_records=web_records)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -1171,6 +1172,7 @@ async def handle_json_mode(
             target_words_per_chunk,
             virtual_record_id_to_result=virtual_record_id_to_result,
             ref_to_url=ref_to_url,
+            web_records=web_records,
         ):
             yield token
     except Exception as exc:
@@ -1343,6 +1345,7 @@ async def stream_llm_response_with_tools(
     ref_mapper: CitationRefMapper | None = None,
     max_hops: int = MAX_TOOL_HOPS,
     chat_mode: str | None = None,
+    initial_web_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1351,7 +1354,7 @@ async def stream_llm_response_with_tools(
     Now supports tool calls before generating the final answer.
     """
     records = []
-    web_records: list[dict[str, Any]] = []
+    web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
 
     if tools and tool_runtime_kwargs and mode != "no_tools":
         # Execute tools and get updated messages
@@ -1381,6 +1384,7 @@ async def stream_llm_response_with_tools(
                 ref_mapper=ref_mapper,
                 max_hops=max_hops,
                 chat_mode=chat_mode,
+                initial_web_records=initial_web_records,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":
@@ -1467,6 +1471,7 @@ async def stream_llm_response_with_tools(
                 target_words_per_chunk,
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 ref_to_url=_ref_to_url,
+                web_records=web_records,
             ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1638,6 +1643,8 @@ async def call_aiter_llm_stream_simple(
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     original_llm=original_llm,
                     ref_to_url=ref_to_url,
+                    web_records=web_records,
+                    chat_mode=chat_mode,
                 ):
                     yield event
                 return
@@ -1674,6 +1681,7 @@ async def call_aiter_llm_stream(
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
     """
@@ -1876,6 +1884,7 @@ async def call_aiter_llm_stream(
                     citation_reflection_retry_count=citation_reflection_retry_count,
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     ref_to_url=ref_to_url,
+                    web_records=web_records,
                 ):
                     yield event
                 return
@@ -1916,6 +1925,7 @@ async def call_aiter_llm_stream(
                                 citation_reflection_retry_count=citation_reflection_retry_count + 1,
                                 virtual_record_id_to_result=virtual_record_id_to_result,
                                 ref_to_url=ref_to_url,
+                                web_records=web_records,
                             ):
                                 yield event
                             return
@@ -1924,6 +1934,7 @@ async def call_aiter_llm_stream(
                         state.answer_buf, final_results, records,
                         ref_to_url=ref_to_url,
                         virtual_record_id_to_result=virtual_record_id_to_result,
+                        web_records=web_records,
                     )
                     yield {
                         "event": "complete",
@@ -1976,6 +1987,7 @@ async def call_aiter_llm_stream(
                     citation_reflection_retry_count=citation_reflection_retry_count + 1,
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     ref_to_url=ref_to_url,
+                    web_records=web_records,
                 ):
                     yield event
                 return
@@ -1984,6 +1996,7 @@ async def call_aiter_llm_stream(
             final_answer, final_results, records,
             ref_to_url=ref_to_url,
             virtual_record_id_to_result=virtual_record_id_to_result,
+            web_records=web_records,
         )
         complete_data = {
             "answer": normalized,
@@ -2323,5 +2336,6 @@ async def call_aiter_function(
             virtual_record_id_to_result=virtual_record_id_to_result,
             ref_to_url=ref_to_url,
             records=records,
+            web_records=web_records,
         ):
             yield event

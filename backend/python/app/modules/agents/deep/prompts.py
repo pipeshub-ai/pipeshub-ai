@@ -27,6 +27,7 @@ If the user's underlying intent is to get real information, find something, or u
 - **Dependencies**: If task B needs output from task A, set `depends_on: ["task_a_id"]`. Independent tasks run in parallel.
 - **Topic Discovery (hybrid search)**: When a query contains a topic/keyword and asks to discover related items, create tasks for ALL available search dimensions: `knowledgehub` (metadata search), `retrieval` (content search), and the matching service API domain (live search). This applies regardless of what word the user uses ("files", "pages", "docs"). Only skip a dimension if unavailable. Exceptions: exact ID lookup, write actions, filtered stateful queries → service API only.
 - **Task descriptions must be specific**: Include exact names, dates, IDs, filters, and constraints. State the goal, not just the service to query.
+- **Web search for up-to-date info**: When a query needs current or frequently changing information (news, prices, software versions, latest docs, current events, etc.) or asks to fetch a specific URL/webpage, include a `web` domain task. Queries asking for "latest"/"current"/"up-to-date" info or referencing specific URLs are strong signals.
 
 {knowledge_context}
 

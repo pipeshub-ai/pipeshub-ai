@@ -53,6 +53,8 @@ interface MessagePair {
   feedbackInfo?: FeedbackInfo;
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
+  /** ISO timestamp of when the user sent this query */
+  createdAt?: string;
 }
 
 export function MessageList() {
@@ -226,29 +228,29 @@ export function MessageList() {
         const isCurrentlyStreaming =
           isStreaming && isLastAssistant && question === streamingQuestion;
 
-        // Extract collections from the preceding user message metadata
-        const userMessageCollections = prevMsg
-          ? ((prevMsg as { metadata?: { custom?: { collections?: Array<{ id: string; name: string }> } } }).metadata?.custom?.collections as Array<{ id: string; name: string }> | undefined)
+        // Extract collections and timestamp from the preceding user message metadata
+        const userMeta = prevMsg
+          ? (prevMsg as { metadata?: { custom?: { collections?: Array<{ id: string; name: string }>; createdAt?: string } } }).metadata?.custom
           : undefined;
+        const userMessageCollections = userMeta?.collections as Array<{ id: string; name: string }> | undefined;
+        const userCreatedAt = userMeta?.createdAt;
 
         pairs.push({
           key: msg.id ?? `asst-${i}`,
           messageId: metadata?.messageId,
           question,
-          // Clear old answer immediately when regeneration starts so the
-          // stale content doesn't linger until the first streaming chunk.
           answer: isBeingRegenerated ? '' : content,
           citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
-            ? EMPTY_CITATION_MAPS  // streaming citations passed as a separate prop
+            ? EMPTY_CITATION_MAPS
             : (metadata?.citationMaps || EMPTY_CITATION_MAPS),
           confidence: metadata?.confidence,
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
           modelInfo: metadata?.modelInfo,
           feedbackInfo: metadata?.feedbackInfo,
-          // Use streaming collections for the temp message; user metadata for the final message
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
+          createdAt: userCreatedAt,
         });
       }
     }
@@ -897,6 +899,7 @@ export function MessageList() {
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}
+                  createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}

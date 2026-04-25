@@ -2122,26 +2122,31 @@ FRAGMENT_WORD_COUNT = 4
 def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
     if not snippet:
         return "", ""
+        
+    PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
+    # PATTERN = re.compile(r"(?<!\S)[A-Za-z]+(?:[ ][A-Za-z]+)+(?!\S)")
 
-    PATTERN = re.compile(r"(?<!\S)[A-Za-z0-9.',;:]+(?:[ ][A-Za-z0-9.',;:]+)+(?!\S)")
-
-    # --- Find start_text: first matching segment ---
-    first_match = PATTERN.search(snippet)
-    if not first_match:
+    # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
+    all_matches = list(PATTERN.finditer(snippet))
+    if not all_matches:
         return "", ""
 
-    first_text = first_match.group().strip()
+    best_match = next(
+        (m for m in all_matches if len(m.group().strip().split()) >= FRAGMENT_WORD_COUNT),
+        max(all_matches, key=lambda m: len(m.group().strip().split())),
+    )
+    first_text = best_match.group().strip()
     if not first_text:
         return "", ""
 
     words = first_text.split()
     start_text = " ".join(words[:FRAGMENT_WORD_COUNT])
-    start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
+    start_text_end = best_match.start() + len(first_text.split()[0])  # not needed yet
 
     # Compute exact end position of start_text in snippet
-    # It starts at first_match.start() + leading whitespace offset
-    leading_spaces = len(first_match.group()) - len(first_match.group().lstrip())
-    start_text_begin = first_match.start() + leading_spaces
+    # It starts at best_match.start() + leading whitespace offset
+    leading_spaces = len(best_match.group()) - len(best_match.group().lstrip())
+    start_text_begin = best_match.start() + leading_spaces
     start_text_end = start_text_begin + len(start_text)
 
     # --- Find end_text: last matching segment after start_text_end, last 4 words ---
@@ -2167,9 +2172,6 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
         end_text = " ".join(first_text.split()[-diff:])
     else:
         end_text = ""
-
-    while end_text and end_text[-1] == '.':
-        end_text = end_text[:-1]
 
     return start_text, end_text.strip()
 

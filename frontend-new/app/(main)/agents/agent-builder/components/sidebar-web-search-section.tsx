@@ -276,7 +276,7 @@ function ProviderRow({
         </Text>
 
         {isAttached ? (
-          <Tooltip content={t('agentBuilder.webSearchAttached')}>
+          <Tooltip content={t('Attached')}>
             <span
               style={{
                 display: 'inline-flex',

@@ -102,7 +102,11 @@ export function loadHistoricalMessages(
               feedbackInfo: msg.feedback?.[0] || undefined,
             },
           }
-        : undefined,
+        : {
+            custom: {
+              createdAt: msg.createdAt,
+            },
+          },
   }));
 }
 

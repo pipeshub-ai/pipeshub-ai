@@ -4,6 +4,8 @@
 
 export type WebSearchProviderType = 'duckduckgo' | 'serper' | 'tavily';
 
+export const DUCKDUCKGO_PROVIDER_ID: WebSearchProviderType = 'duckduckgo';
+
 // ── API response shapes ──────────────────────────────────────
 
 export interface ConfiguredWebSearchProvider {
@@ -23,6 +25,14 @@ export interface WebSearchConfigData {
   settings: WebSearchSettings;
 }
 
+// ── Web search provider usage (agent check) ─────────────────
+
+export interface WebSearchProviderAgentUsage {
+  name: string;
+  _key: string;
+  creatorName: string | null;
+}
+
 // ── API request payloads ─────────────────────────────────────
 
 export interface WebSearchProviderData {
@@ -30,19 +40,6 @@ export interface WebSearchProviderData {
   configuration: Record<string, string>;
   isDefault?: boolean;
 }
-
-// ── Flat "enabled" state used in UI ──────────────────────────
-
-export interface WebSearchProviderState {
-  type: WebSearchProviderType;
-  enabled: boolean;
-  isDefault: boolean;
-  providerKey: string | null;
-}
-
-// ── Config status (which providers are fully configured) ─────
-
-export type WebSearchConfigStatus = Record<WebSearchProviderType, boolean>;
 
 // ── Panel state ──────────────────────────────────────────────
 
@@ -66,7 +63,7 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
   {
     type: 'duckduckgo',
     label: 'DuckDuckGo',
-    description: 'Web Search Method',
+    description: 'Built-in, no configuration required',
     icon: '/icons/web-search/duckduckgo.svg',
     iconType: 'image',
     configurable: false,

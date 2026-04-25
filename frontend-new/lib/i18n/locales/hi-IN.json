@@ -471,7 +471,7 @@
     "queryModes": {
       "chat": {
         "label": "आंतरिक खोज",
-        "toolbarLabel": "चैट",
+        "toolbarLabel": "आंतरिक खोज",
         "description": "अपने ज्ञान पर बातचीत के दौरान सोचें, पूछें और तर्क करें"
       },
       "web-search": {

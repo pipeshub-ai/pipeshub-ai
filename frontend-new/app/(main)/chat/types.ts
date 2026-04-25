@@ -122,8 +122,8 @@ export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
  */
 export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
 
-/** API `chatMode` for streams: always `quick`, or `agent:<segment>` when in agent query mode. */
-export type StreamChatModePayload = 'quick' | `agent:${AgentStrategyApiSegment}`;
+/** API `chatMode` for streams: `internal search`, `web_search` (live web), or `agent:<segment>` when in agent query mode. */
+export type StreamChatModePayload = 'internal_search' | 'web_search' | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
@@ -480,8 +480,13 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
       chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
     };
   }
+  if (settings.queryMode === 'web-search') {
+    return {
+      chatMode: 'web_search',
+    };
+  }
   return {
-    chatMode: 'quick',
+    chatMode: 'internal_search',
   };
 }
 

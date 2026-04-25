@@ -1,6 +1,12 @@
 import { i18n } from '@/lib/i18n';
 import type { AgentDetail } from '../types';
-import type { AgentFormPayload, KnowledgeReference, ToolsetReference } from './types';
+import type {
+  AgentFormPayload,
+  AgentWebSearchAttachment,
+  KnowledgeReference,
+  ToolsetReference,
+} from './types';
+import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
 interface ToolsetDataInternal {
   name: string;
@@ -292,6 +298,28 @@ export function extractAgentConfigFromFlow(
   const agentCoreNode = nodes.find((n) => n.data?.type === 'agent-core');
   const coreCfg = agentCoreNode?.data?.config ?? {};
 
+  let webSearch: AgentWebSearchAttachment | null = null;
+  const webSearchNode = nodes.find((n) => n.data?.type === 'web-search');
+  if (webSearchNode && agentCoreNode) {
+    const isConnected = edges.some(
+      (edge) =>
+        edge.source === webSearchNode.id &&
+        edge.target === agentCoreNode.id &&
+        edge.targetHandle === 'toolsets',
+    );
+    if (isConnected) {
+      const cfg = webSearchNode.data.config ?? {};
+      const provider = (cfg.provider as string) || '';
+      if (provider) {
+        webSearch = {
+          provider: provider as WebSearchProviderType,
+          providerKey: (cfg.providerKey as string) || '',
+          providerLabel: (cfg.providerLabel as string) || undefined,
+        };
+      }
+    }
+  }
+
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
     id: ts.instanceId || ts.name,
     instanceId: ts.instanceId,
@@ -328,6 +356,7 @@ export function extractAgentConfigFromFlow(
     toolsets,
     knowledge,
     models,
+    webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],
     shareWithOrg: shareWithOrg !== undefined ? shareWithOrg : (currentAgent?.shareWithOrg ?? false),
     isServiceAccount:

@@ -1,3 +1,5 @@
+import dataclasses
+import json
 import logging
 import re
 from typing import Any
@@ -109,7 +111,7 @@ def create_fetch_url_tool(
                     the real URL via this mapper.
     """
     @tool("fetch_url", args_schema=FetchUrlArgs)
-    def fetch_url_tool(url: str) -> dict[str, Any]:
+    def fetch_url_tool(url: str) -> str:
         """
         This tool Fetches and extracts main content from a URL for detailed analysis.
 
@@ -127,33 +129,32 @@ def create_fetch_url_tool(
             url = _resolve_tiny_ref_url(url, ref_mapper)
             if "ref" in url and "xyz" in url:
                 logger.warning(f"failed to resolve tiny ref url: {url}")
-                return {
+                return json.dumps({
                     "ok": False,
                     "error": "Failed to get content from that url, please try again with the correct URL, or use a different one."
-                }
+                })
             parsed = urlparse(url)
             if parsed.scheme not in ('http', 'https'):
-                return {
+                return json.dumps({
                     "ok": False,
                     "error": f"Invalid URL scheme: {parsed.scheme}. Only HTTP/HTTPS supported."
-                }
+                })
 
             if not parsed.netloc:
-                return {
+                return json.dumps({
                     "ok": False,
                     "error": "Invalid URL: no domain specified"
-                }
+                })
 
-            response = fetch_url(url,verbose=True)
+            response = fetch_url(url, verbose=True)
 
             if response.status_code != HTTP_STATUS_OK:
-                return {
+                return json.dumps({
                     "ok": False,
                     "error": f"{response.text}, status: {response.status_code}"
-                }
+                })
 
             html_content = response.text
-
 
             blocks = html_to_blocks(
                 html_content,
@@ -163,25 +164,24 @@ def create_fetch_url_tool(
             )
 
             if not blocks:
-                return {
+                return json.dumps({
                     "ok": False,
                     "error": "No content available from the url"
-                }
-
+                })
 
             logger.info(f"Fetched URL {url}: {len(blocks)} blocks extracted")
 
-            return {
+            return json.dumps({
                 "ok": True,
                 "result_type": "url_content",
                 "url": url,
-                "blocks": blocks,
-            }
+                "blocks": [dataclasses.asdict(b) for b in blocks],
+            })
         except Exception as e:
             logger.exception("Unexpected error fetching URL %s: %s", url, str(e))
-            return {
+            return json.dumps({
                 "ok": False,
                 "error": str(e)
-            }
+            })
 
     return fetch_url_tool

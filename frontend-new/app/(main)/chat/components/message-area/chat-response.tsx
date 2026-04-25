@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Button, Flex, Heading, IconButton } from '@radix-ui/themes';
+import { Button, Heading, IconButton } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
@@ -37,6 +38,24 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
+function formatMessageTime(isoString: string): string {
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) return '';
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const timeStr = date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  if (isToday) return timeStr;
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 interface FeedbackInfo {
   value?: 'like' | 'dislike';
 }
@@ -69,6 +88,8 @@ interface ChatResponseProps {
    * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
    */
   citationMessageRowKey?: string;
+  /** ISO timestamp of when the user sent this query */
+  createdAt?: string;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -88,6 +109,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   streamingCitationMaps = null,
   streamingArtifacts,
   citationMessageRowKey,
+  createdAt,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
 
@@ -111,7 +133,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, feedbackInfo, collections, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps,
+    streamingCitationMaps, createdAt,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -183,6 +205,15 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? streamingCitationMaps
     : citationMaps;
 
+  // Known citation webUrls — lets processMarkdownContent strip web citation links
+  const citationWebUrls = useMemo(() => {
+    const urls = new Set<string>();
+    for (const citation of Object.values(effectiveCitationMaps.citations)) {
+      if (citation.webUrl) urls.add(citation.webUrl);
+    }
+    return urls.size > 0 ? urls : undefined;
+  }, [effectiveCitationMaps]);
+
   // Use streaming content when streaming, otherwise use the final answer.
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
@@ -191,6 +222,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     isStreaming && streamingContent
       ? repairStreamingMarkdown(streamingContent)
       : answer,
+    citationWebUrls,
   );
   // Extract persisted artifact + legacy download-task markers so the markdown
   // pipeline doesn't try to render them as raw text. The backend appends these
@@ -433,6 +465,18 @@ export const ChatResponse = React.memo(function ChatResponse({
               size={ICON_SIZES.PRIMARY}
             />
           </Button>
+        )}
+        {createdAt && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              marginTop: 'var(--space-1)',
+              display: 'block',
+            }}
+          >
+            {formatMessageTime(createdAt)}
+          </Text>
         )}
       </Box>
 

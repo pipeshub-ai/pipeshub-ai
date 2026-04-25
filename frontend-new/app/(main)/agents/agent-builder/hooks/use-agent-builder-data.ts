@@ -16,6 +16,16 @@ import type { AgentToolsListRow, KnowledgeBaseForBuilder } from '../../types';
 
 const TOOLSETS_PAGE = 20;
 
+function deduplicateConnectors(connectors: Connector[]): Connector[] {
+  const seen = new Set<string>();
+  return connectors.filter((c) => {
+    const key = c._key;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Models, KB, and connector lists — fetched once per hook mount (route remount resets the ref). */
 async function fetchStaticBuilderResources() {
   const [models, kbResult, teamActive, personalActive, teamReg, personalReg] = await Promise.all([
@@ -27,11 +37,14 @@ async function fetchStaticBuilderResources() {
     ConnectorsApi.getRegistryConnectors('personal', 1, 200).catch(() => ({ connectors: [] as Connector[] })),
   ]);
 
-  const mergedConfigured = [
+  const mergedConfigured = deduplicateConnectors([
     ...(teamActive.connectors ?? []),
     ...(personalActive.connectors ?? []),
-  ];
-  const mergedRegistry = [...(teamReg.connectors ?? []), ...(personalReg.connectors ?? [])];
+  ]);
+  const mergedRegistry = deduplicateConnectors([
+    ...(teamReg.connectors ?? []),
+    ...(personalReg.connectors ?? []),
+  ]);
 
   return {
     models: models ?? [],

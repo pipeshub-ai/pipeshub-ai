@@ -1,5 +1,15 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { AgentDetail } from '../types';
+import type { WebSearchProviderType } from '../../workspace/web-search/types';
+
+export interface AgentWebSearchAttachment {
+  /** Provider identifier, e.g. 'duckduckgo' | 'serper' | 'tavily'. */
+  provider: WebSearchProviderType;
+  /** Stored provider document key; empty for DuckDuckGo when not explicitly configured. */
+  providerKey: string;
+  /** Human-readable label — cached for display (optional). */
+  providerLabel?: string;
+}
 
 /** Flow node payload (React Flow `data` + metadata). */
 export interface FlowNodeData extends Record<string, unknown> {
@@ -64,6 +74,7 @@ export interface AgentFormPayload {
   isServiceAccount?: boolean;
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
+  webSearch?: AgentWebSearchAttachment | null;
   flow?: { nodes: FlowNode[]; edges: Edge[] };
 }
 
