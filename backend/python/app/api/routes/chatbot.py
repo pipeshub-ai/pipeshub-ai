@@ -40,9 +40,6 @@ from app.utils.time_conversion import build_llm_time_context
 from app.utils.web_search_tool import create_web_search_tool
 
 DEFAULT_CONTEXT_LENGTH = 128000
-DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
-DEFAULT_WEB_SEARCH_MAX_IMAGES = 3
-MAX_WEB_SEARCH_IMAGES = 500
 
 router = APIRouter()
 
@@ -62,33 +59,6 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
-
-
-def normalize_web_search_image_settings(
-    settings: dict[str, Any] | None,
-) -> tuple[bool, int]:
-    include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
-    max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    if isinstance(settings, dict):
-        raw_include_images = settings.get("includeImages")
-        if isinstance(raw_include_images, bool):
-            include_images = raw_include_images
-
-        raw_max_images = settings.get("maxImages")
-        parsed_max_images: int | None = None
-        if isinstance(raw_max_images, int) and not isinstance(raw_max_images, bool):
-            parsed_max_images = raw_max_images
-        elif isinstance(raw_max_images, str):
-            try:
-                parsed_max_images = int(raw_max_images)
-            except ValueError:
-                parsed_max_images = None
-
-        if parsed_max_images is not None and 1 <= parsed_max_images <= MAX_WEB_SEARCH_IMAGES:
-            max_images = parsed_max_images
-
-    return include_images, max_images
 
 
 # Dependency injection functions
@@ -628,9 +598,6 @@ async def _generate_web_search_stream(
                 use_cache=False,
             )
             web_search_provider_config = None
-            include_images, max_images = normalize_web_search_image_settings(
-                web_search_config.get("settings") if isinstance(web_search_config, dict) else None
-            )
             if web_search_config and web_search_config.get("providers"):
                 providers = web_search_config.get("providers", [])
                 default_provider = next(
@@ -662,13 +629,11 @@ async def _generate_web_search_stream(
             tools = [
                 create_web_search_tool(web_search_provider_config),
                 create_fetch_url_tool(
-                    bool(is_multimodal_llm) and include_images,
                     ref_mapper=ref_mapper,
                 ),
             ]
             tool_runtime_kwargs = {
-                "include_images": include_images,
-                "max_images": max_images,
+                "config_service": config_service,
             }
 
         except Exception as e:

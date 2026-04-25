@@ -2,7 +2,7 @@ import io
 import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -125,7 +125,7 @@ class Processor:
             prev_virtual_record_id=prev_virtual_record_id,
         )
 
-    async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[dict[str, Any], None]:
         """Process image content, yielding phase completion events."""
         try:
             # Initialize image parser
@@ -213,7 +213,7 @@ class Processor:
 
     async def process_gmail_message(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
         self.logger.info("🚀 Processing Gmail Message")
 
@@ -237,7 +237,7 @@ class Processor:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
-    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[dict[str, Any], None]:
         """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
         try:
@@ -285,7 +285,7 @@ class Processor:
             self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
@@ -339,7 +339,7 @@ class Processor:
 
     async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process PDF document with OCR, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting PDF document processing for record: {recordName}"
@@ -607,7 +607,7 @@ class Processor:
 
     async def process_doc_document(
         self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process DOC document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting DOC document processing for record: {recordName}"
@@ -622,7 +622,7 @@ class Processor:
 
     async def process_docx_document(
         self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process DOCX document, yielding phase completion events.
 
         Args:
@@ -828,7 +828,7 @@ class Processor:
 
     async def process_blocks(
         self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
 
         For BlockGroups with requires_processing=True, processes their data through docling
@@ -1393,7 +1393,7 @@ class Processor:
 
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process Excel document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting Excel document processing for record: {recordName}"
@@ -1445,7 +1445,7 @@ class Processor:
 
     async def process_xls_document(
         self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process XLS document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting XLS document processing for record: {recordName}"
@@ -1469,7 +1469,7 @@ class Processor:
 
     async def process_delimited_document(
         self, recordName, recordId, file_binary, virtual_record_id, extension=None, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process delimited document (CSV/TSV), yielding phase completion events.
 
         Args:
@@ -1606,7 +1606,7 @@ class Processor:
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process HTML document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting HTML document processing for record: {recordName}"
@@ -1655,7 +1655,7 @@ class Processor:
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process MDX document, yielding phase completion events.
 
         Args:
@@ -1682,7 +1682,7 @@ class Processor:
 
     async def process_md_document(
         self, recordName, recordId, md_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process Markdown document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
@@ -1794,7 +1794,7 @@ class Processor:
 
     async def process_txt_document(
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process TXT document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting TXT document processing for record: {recordName}"
@@ -1837,7 +1837,7 @@ class Processor:
 
     async def process_pptx_document(
         self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process PPTX document, yielding phase completion events.
 
         Args:
@@ -1893,7 +1893,7 @@ class Processor:
 
     async def process_ppt_document(
         self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process PPT document, yielding phase completion events.
 
         Args:
@@ -1917,7 +1917,7 @@ class Processor:
     async def process_sql_structured_data(
         self, recordName: str, recordId: str, json_content: bytes, virtual_record_id: str,
         record_type: str = "SQL_TABLE", event_type: str = None, prev_virtual_record_id: Optional[str] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Process SQL Table or View data, yielding phase completion events.
 
         Uses SQLTableParser or SQLViewParser to create:

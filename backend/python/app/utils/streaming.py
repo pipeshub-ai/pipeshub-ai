@@ -514,7 +514,6 @@ async def execute_tool_calls(
                 llm_to_pass,
                 messages,
                 final_results,
-                records=records,
                 target_words_per_chunk=target_words_per_chunk,
                 original_llm=llm,
                 virtual_record_id_to_result=virtual_record_id_to_result,
@@ -707,8 +706,8 @@ async def execute_tool_calls(
         handler_context = {
             "message_contents": message_contents,
             "ref_mapper": ref_mapper,
-            "include_images": tool_runtime_kwargs.get("include_images", False),
-            "max_images": tool_runtime_kwargs.get("max_images", 3),
+            "config_service": tool_runtime_kwargs.get("config_service"),
+            "is_multimodal_llm": is_multimodal_llm,
         }
 
         for tool_result in tool_results_inner:

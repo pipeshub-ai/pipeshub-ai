@@ -23,6 +23,9 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.utils.fetch_url_tool import create_fetch_url_tool
+from app.config.constants.service import config_node_constants
+from app.utils.web_search_tool import create_web_search_tool
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import build_capability_summary
@@ -290,6 +293,9 @@ async def _deep_respond_impl(
             [] if qna_has_retrieval else final_results,
             has_retrieval_in_context=qna_has_retrieval,
             ref_mapper=state.get("citation_ref_mapper"),
+            config_service=state.get("config_service"),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+
         ) if has_api_results else ""
 
         # Prepend sub-agent analyses as supplementary structured context.
@@ -359,6 +365,17 @@ async def _deep_respond_impl(
             len(virtual_record_map),
             len(final_results),
         )
+    
+   
+    
+
+    fetch_url_tool = create_fetch_url_tool(ref_mapper=state.get("citation_ref_mapper"))
+    tools.append(fetch_url_tool)
+    
+    web_search_provider_config = state.get("web_search_config")
+    if web_search_provider_config:
+        web_search_tool = create_web_search_tool(config=web_search_provider_config)
+        tools.append(web_search_tool)
 
     # Initialize blob_store if missing
     graph_provider = state.get("graph_provider")
@@ -375,12 +392,15 @@ async def _deep_respond_impl(
             state["blob_store"] = blob_store
         except Exception as _bs_err:
             log.warning("Could not initialise BlobStorage: %s", _bs_err)
-
+    
+    
+    
     tool_runtime_kwargs = {
         "blob_store": blob_store,
         "graph_provider": graph_provider,
         "org_id": state.get("org_id", ""),
         "conversation_id": state.get("conversation_id"),
+        "config_service": state.get("config_service"),
     }
 
     # Construct all_queries — prefer decomposed_queries from planner,
