@@ -232,6 +232,21 @@ class LocalSyncManager {
         this.emitStatus(connectorId);
         return;
       }
+      // SCHEDULED strategy: hold the batch in the journal as 'pending' and let
+      // the scheduled tick (or the backend's localfs:resync trigger) drain it
+      // via replay(). Otherwise the user-visible "Every N Minutes" cadence is
+      // a lie — edits would propagate to the backend the moment the watcher
+      // fires.
+      if (runtime.syncStrategy === 'SCHEDULED') {
+        const totalPending = this.journal.getPendingOrFailedBatches(connectorId).length;
+        console.log(
+          `[local-sync:${connectorId}] SCHEDULED: queued batch ${batchId} with ${events.length} event(s) ` +
+          `(${totalPending} pending; next tick will drain)`,
+        );
+        runtime.lastError = null;
+        this.emitStatus(connectorId);
+        return;
+      }
       try {
         if (backlogBeforeAppend.length > 0) {
           await this.replay(connectorId);
@@ -507,12 +522,29 @@ class LocalSyncManager {
   async runScheduledTick(connectorId) {
     const runtime = this.runtimes.get(connectorId);
     if (!runtime) return;
-    try { await this.replay(connectorId); } catch (err) {
-      runtime.lastError = err instanceof Error ? err.message : String(err);
-    }
+    const tickStartedAt = Date.now();
+    const pendingBefore = this.journal.getPendingOrFailedBatches(connectorId).length;
+    console.log(
+      `[local-sync:${connectorId}] scheduled tick: starting ` +
+      `(${pendingBefore} batch(es) pending before rescan)`,
+    );
+    // Rescan first so any offline deltas land in the journal as 'pending'
+    // batches; then replay drains everything (including those new batches and
+    // anything held back by the SCHEDULED gate in processBatch) in one tick.
     try { if (runtime.watcher) await runtime.watcher.rescan(); } catch (err) {
       runtime.lastError = err instanceof Error ? err.message : String(err);
     }
+    let replayResult = { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
+    try { replayResult = await this.replay(connectorId); } catch (err) {
+      runtime.lastError = err instanceof Error ? err.message : String(err);
+    }
+    const elapsedMs = Date.now() - tickStartedAt;
+    console.log(
+      `[local-sync:${connectorId}] scheduled tick: done in ${elapsedMs}ms — ` +
+      `replayed ${replayResult.replayedBatches} batch(es), ` +
+      `${replayResult.replayedEvents} event(s), ` +
+      `${replayResult.skippedBatches} skipped`,
+    );
     this.emitStatus(connectorId);
   }
 
@@ -583,6 +615,7 @@ class LocalSyncManager {
     }
 
     const runtime = this.runtimes.get(connectorId);
+    let drainOnLeavingScheduled = false;
     if (runtime) {
       if (runtime.scheduleTimer) { clearInterval(runtime.scheduleTimer); runtime.scheduleTimer = null; }
       if (strategy === 'SCHEDULED' && interval) {
@@ -592,9 +625,25 @@ class LocalSyncManager {
         }, periodMs);
         if (runtime.scheduleTimer.unref) runtime.scheduleTimer.unref();
       }
+      // Switching from SCHEDULED to anything else must flush whatever the
+      // SCHEDULED gate held back in the journal. Without this, those batches
+      // wait for the next file event (which goes through the backlog branch
+      // in processBatch) — and if no further event ever arrives they sit
+      // pending indefinitely.
+      drainOnLeavingScheduled =
+        runtime.syncStrategy === 'SCHEDULED' && strategy !== 'SCHEDULED';
       runtime.syncStrategy = strategy;
       runtime.scheduledConfig = strategy === 'SCHEDULED' ? scheduledConfig : null;
       runtime.scheduledCron = cron;
+    }
+
+    if (drainOnLeavingScheduled) {
+      try {
+        await this.replay(connectorId);
+      } catch (err) {
+        const rt = this.runtimes.get(connectorId);
+        if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
+      }
     }
 
     this.emitStatus(connectorId);
