@@ -1471,6 +1471,11 @@ async function buildQueryWithThreadContext(
   }
 }
 
+function shouldIgnoreSourcesList(): boolean {
+  const raw = (process.env.IGNORE_SOURCES_LIST || "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
 function getCitationWebUrl(webUrl?: string): string {
   if (!webUrl) {
     return "";
@@ -1554,6 +1559,9 @@ function rewriteInlineRecordCitationsForSlack(
 }
 
 function buildCitationSources(citations?: CitationData[]): any[]  {
+  if (shouldIgnoreSourcesList()) {
+    return [];
+  }
 
   // Deduplicate by recordId, keeping the first occurrence per unique record
   const seenRecordIds = new Set<string>();

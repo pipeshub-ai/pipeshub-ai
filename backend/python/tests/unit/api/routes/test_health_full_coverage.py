@@ -245,8 +245,23 @@ class TestCheckCollectionInfo:
         logger = MagicMock()
         dense_embeddings = MagicMock()
 
+        # When health resolves stored identity via ``get_collection_spec``, an
+        # absent node falls back to ``DEFAULT_EMBEDDING_MODEL`` and would not
+        # match ``model-a`` for a non-empty collection — stub a matching spec.
+        matching_collection_spec = {
+            "embedding_provider": "openai",
+            "embedding_model": "model-a",
+            "embedding_dimension": 768,
+            "signature_version": 1,
+        }
         from app.api.routes.health import check_collection_info
-        await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
+        with patch(
+            f"{MODULE}.get_collection_spec",
+            new_callable=AsyncMock,
+            return_value=matching_collection_spec,
+            create=True,
+        ):
+            await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
 
     @pytest.mark.asyncio
     async def test_grpc_not_found(self):
