@@ -524,9 +524,9 @@ function TagsInput({
       />
       {tags.length > 0 ? (
         <Flex wrap="wrap" gap="2" style={{ marginBottom: 4 }}>
-          {tags.map((tag, index) => (
+          {tags.map((tag) => (
             <Flex
-              key={`${index}-${tag}`}
+              key={tag}
               align="center"
               gap="1"
               style={{

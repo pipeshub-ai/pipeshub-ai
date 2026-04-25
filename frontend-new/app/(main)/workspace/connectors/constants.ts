@@ -1,4 +1,14 @@
 // ========================================
+// Connector schema field names (wire keys from registry / backend)
+// ========================================
+
+/**
+ * Service account JSON credential field. Sync custom-field validation skips
+ * `maxLength` for this name so large pasted JSON is not rejected by a small schema cap.
+ */
+export const CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME = 'serviceAccountJson' as const;
+
+// ========================================
 // Connector instance operational status (backend + optimistic UI)
 // ========================================
 

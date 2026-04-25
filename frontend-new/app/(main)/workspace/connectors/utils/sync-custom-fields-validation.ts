@@ -1,3 +1,4 @@
+import { CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME } from '../constants';
 import type { FieldValidation, SyncCustomField } from '../types';
 
 /**
@@ -35,7 +36,7 @@ export function validateSyncCustomField(field: SyncCustomField, value: unknown):
     maxLength != null &&
     value != null &&
     value !== '' &&
-    field.name !== 'serviceAccountJson'
+    field.name !== CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME
   ) {
     const len = typeof value === 'string' ? value.length : String(value).length;
     if (len > maxLength) {
