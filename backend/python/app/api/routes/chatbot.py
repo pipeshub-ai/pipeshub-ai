@@ -481,6 +481,7 @@ async def _generate_internal_search_stream(
             )
 
             has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+            tools = []
             if has_sql_connector:
                 tools.append(create_execute_query_tool(
                     config_service=config_service,
@@ -503,7 +504,7 @@ async def _generate_internal_search_stream(
             )
 
             fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
-            tools = [fetch_tool]
+            tools.append(fetch_tool)
             tool_runtime_kwargs = {
                 "blob_store": blob_store,
                 "graph_provider": graph_provider,
