@@ -12,6 +12,17 @@ function isKnowledgeHubTableItem(item: KbTableItem): item is KnowledgeHubNode {
 }
 
 /**
+ * Matches legacy all-records DataGrid: do not render indexing status for internal hub records.
+ */
+export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean {
+  return (
+    isKnowledgeHubTableItem(item) &&
+    item.nodeType === 'record' &&
+    item.isInternal === true
+  );
+}
+
+/**
  * Row ⋮ menu "Open": open preview for Hub/legacy file records when `onPreview` exists;
  * otherwise use the same handler as primary row click (navigate into containers, etc.).
  */

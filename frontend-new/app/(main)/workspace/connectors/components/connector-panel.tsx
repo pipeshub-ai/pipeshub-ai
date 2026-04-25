@@ -26,6 +26,7 @@ import {
   isConnectorInstanceAuthenticatedForUi,
 } from '../utils/auth-helpers';
 import { trimConnectorConfig } from '../utils/trim-config';
+import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
   collectRequiredAuthFieldErrors,
@@ -546,11 +547,26 @@ export function ConnectorPanel() {
       return;
     }
 
+    setSaveError(null);
+
+    const syncCustomFields = connectorSchema?.sync?.customFields ?? [];
+    const trimmedCustomValues = trimConnectorConfig(
+      formData.sync.customValues
+    ) as Record<string, unknown>;
+    const syncFieldErrors = collectSyncCustomFieldErrors(syncCustomFields, trimmedCustomValues);
+
+    const syncErrorPatch: Record<string, string | null | undefined> = {};
+    for (const f of syncCustomFields) {
+      syncErrorPatch[f.name] = syncFieldErrors[f.name] ?? '';
+    }
+    mergeFormErrors(syncErrorPatch);
+
+    if (Object.keys(syncFieldErrors).length > 0) {
+      return;
+    }
+
     try {
       setIsSavingConfig(true);
-      setSaveError(null);
-
-      const trimmedCustomValues = trimConnectorConfig(formData.sync.customValues);
       const syncPayload: {
         selectedStrategy: string;
         customValues: Record<string, unknown>;
@@ -611,12 +627,17 @@ export function ConnectorPanel() {
   }, [
     panelConnectorId,
     formData,
+    connectorSchema,
+    mergeFormErrors,
     closePanel,
     connectorType,
     router,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     bumpCatalogRefresh,
+    setSaveError,
+    setIsSavingConfig,
+    t,
   ]);
 
   const isAuthReady =
