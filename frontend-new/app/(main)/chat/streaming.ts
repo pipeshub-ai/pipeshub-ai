@@ -35,6 +35,7 @@ import {
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
+import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
@@ -380,6 +381,7 @@ export async function streamMessageForSlot(
             messages: finalMessages,
             hasLoaded: true,
             abortController: null,
+            conversationModelInfo: data.conversation.modelInfo,
             ...(isNewConversation ? { isOwner: true } : {}),
           });
         });
@@ -404,8 +406,18 @@ export async function streamMessageForSlot(
             },
             { isAgentStream: Boolean(request.agentId) }
           );
-        } else if (slot.convId) {
-          currentStore.moveConversationToTop(slot.convId);
+        } else {
+          const existingConvId = newConvId || slot.convId;
+          if (existingConvId) {
+            currentStore.moveConversationToTop(existingConvId);
+            const listModelInfo = data.conversation.modelInfo;
+            if (listModelInfo) {
+              currentStore.updateConversationModelInfoInLists(
+                existingConvId,
+                listModelInfo
+              );
+            }
+          }
         }
 
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
@@ -637,10 +649,14 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       try {
-        const messages = reloadViaAgentId
-          ? (await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)).messages
-          : (await ChatApi.fetchConversation(slot.convId!)).messages;
-        const finalMessages = loadHistoricalMessages(messages);
+        const detail = reloadViaAgentId
+          ? await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)
+          : await ChatApi.fetchConversation(slot.convId!);
+        const finalMessages = loadHistoricalMessages(detail.messages);
+        const postRegenModelInfo = pickModelInfoFromConversationBundle({
+          modelInfo: detail.conversation.modelInfo,
+          messages: detail.messages,
+        });
 
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
@@ -650,6 +666,7 @@ export async function streamRegenerateForSlot(
           streamingCitationMaps: null,
           messages: finalMessages,
           abortController: null,
+          ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {

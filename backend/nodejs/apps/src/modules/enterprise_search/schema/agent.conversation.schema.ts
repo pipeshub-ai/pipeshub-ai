@@ -176,6 +176,7 @@ const agentConversationSchema = new Schema({
     modelName: { type: String },
     modelProvider: { type: String },
     chatMode: { type: String, default: 'quick' },
+    modelFriendlyName: { type: String },
   },
   // Errors array to track errors during conversation
   conversationErrors: [

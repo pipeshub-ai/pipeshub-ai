@@ -41,7 +41,12 @@ export interface ChatSource {
 export interface ModelInfo {
   modelKey: string;
   modelName: string;
+  /**
+   * Main assistant: often `quick`, or `agent:<segment>` when restoring agent-style modes.
+   * **Agent** conversations: API uses plain `auto` | `quick` | `verification` | `deep` (no `agent:` prefix).
+   */
   chatMode: string;
+  modelFriendlyName?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -596,6 +601,11 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /**
+   * Last known API `modelInfo` for this thread (from list/detail/SSE), used
+   * to restore model + mode in the input when the user returns to this tab.
+   */
+  conversationModelInfo?: ModelInfo;
 }
 
 // ── Search types ──────────────────────────────────────────────────────
