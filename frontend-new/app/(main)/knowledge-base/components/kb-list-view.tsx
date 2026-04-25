@@ -119,6 +119,7 @@ interface TableRowProps {
   item: TableItem;
   isSelected: boolean;
   showSourceColumn?: boolean;
+  isMobile: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -134,6 +135,7 @@ function TableRow({
   item,
   isSelected,
   showSourceColumn,
+  isMobile,
   onSelect,
   onClick,
   onOpen,
@@ -144,7 +146,6 @@ function TableRow({
   onDelete,
   onDownload,
 }: TableRowProps) {
-  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -677,6 +678,7 @@ export function KbListView({
             item={item}
             isSelected={selectedItems.has(item.id)}
             showSourceColumn={showSourceColumn}
+            isMobile={isMobile}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

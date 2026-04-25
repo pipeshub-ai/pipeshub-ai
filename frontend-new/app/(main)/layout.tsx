@@ -33,15 +33,6 @@ import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { FullNameDialog } from './components/full-name-dialog'
 
-/**
- * Horizontal space (px) the fixed mobile hamburger button occupies on the left
- * edge of the viewport. Page headers should reserve this much left padding on
- * mobile so their content does not sit under the hamburger.
- *
- * Value = `var(--space-3)` left offset (12px) + IconButton size-2 (~32px).
- */
-export const MOBILE_HAMBURGER_GUTTER_PX = 44
-
 export default function RootLayout({
   children,
   sidebar,

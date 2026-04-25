@@ -4,7 +4,7 @@ import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Flex, Text, Button, IconButton, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/(main)/layout';
+import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
 import type { ViewMode, PageViewMode, Breadcrumb } from '../types';
 import { FolderIcon } from '@/app/components/ui';

@@ -1,6 +1,6 @@
 'use client';
 
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex, IconButton } from '@radix-ui/themes';
 import Link from 'next/link';
 import { HEADER_ELEMENT_SIZE } from '@/app/components/sidebar';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
@@ -36,19 +36,22 @@ export function ChatSidebarHeader() {
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
       <PipesHubIcon size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
       {isMobile ? (
-        <Box
-          role="button"
-          tabIndex={0}
+        // Use a real <button> via Radix IconButton so keyboard (Enter/Space)
+        // and assistive tech can activate the toast — `<Box role="button">`
+        // alone does not handle keyboard activation.
+        <IconButton
+          variant="ghost"
+          color="gray"
           aria-label="Open profile"
           onClick={() => {
             toast.info('Coming soon', {
               description: 'Profile page on mobile is coming soon.',
             });
           }}
-          style={{ cursor: 'pointer', lineHeight: 0 }}
+          style={{ margin: 0, padding: 0, lineHeight: 0, cursor: 'pointer' }}
         >
           {avatar}
-        </Box>
+        </IconButton>
       ) : (
         <Link href="/workspace/profile/" aria-label="Open profile" style={{ textDecoration: 'none', lineHeight: 0 }}>
           {avatar}
