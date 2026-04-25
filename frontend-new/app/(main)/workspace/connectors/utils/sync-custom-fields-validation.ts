@@ -32,8 +32,10 @@ export function validateSyncCustomField(field: SyncCustomField, value: unknown):
     }
   }
 
+  // maxLength is string-oriented; TAGS values are arrays — String(array) is comma-joined, not a useful limit.
   if (
     maxLength != null &&
+    field.fieldType !== 'TAGS' &&
     value != null &&
     value !== '' &&
     field.name !== CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME

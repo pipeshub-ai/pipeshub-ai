@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useContext } from 'react';
+import React, { useState, useRef, useContext, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
@@ -454,6 +455,19 @@ function TextInput({
   );
 }
 
+/** First occurrence wins casing; later entries that only differ by case are dropped. */
+function dedupeTagsCaseInsensitive(trimmed: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of trimmed) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
 /** Tag list: type in the box and press Enter to add (same UX as legacy MUI TagsFieldRenderer). */
 function TagsInput({
   field,
@@ -468,22 +482,27 @@ function TagsInput({
   disabled: boolean;
   hasError?: boolean;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState('');
   const [isFocused, setIsFocused] = useState(false);
 
-  const tags: string[] = Array.isArray(value)
-    ? (value as unknown[]).map((v) => String(v).trim()).filter((s) => s.length > 0)
-    : [];
+  const { rawTags, tags } = useMemo(() => {
+    const raw: string[] = Array.isArray(value)
+      ? (value as unknown[]).map((v) => String(v).trim()).filter((s) => s.length > 0)
+      : [];
+    return { rawTags: raw, tags: dedupeTagsCaseInsensitive(raw) };
+  }, [value]);
 
   const addTag = () => {
     const next = draft.trim();
-    if (!next || tags.includes(next)) return;
+    if (!next || tags.some((x) => x.toLowerCase() === next.toLowerCase())) return;
     onChange(field.name, [...tags, next]);
     setDraft('');
   };
 
   const removeTag = (tag: string) => {
-    onChange(field.name, tags.filter((t) => t !== tag));
+    const k = tag.toLowerCase();
+    onChange(field.name, rawTags.filter((x) => x.toLowerCase() !== k));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -496,7 +515,7 @@ function TagsInput({
   const placeholder =
     'placeholder' in field && field.placeholder
       ? field.placeholder
-      : 'Type and press Enter to add tags';
+      : t('workspace.connectors.schemaForm.tagsPlaceholder');
 
   return (
     <>
@@ -549,7 +568,7 @@ function TagsInput({
                 variant="ghost"
                 color="gray"
                 disabled={disabled}
-                aria-label={`Remove ${tag}`}
+                aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag })}
                 onClick={() => removeTag(tag)}
                 style={{ flexShrink: 0 }}
               >
