@@ -10,6 +10,13 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { shouldShowPagination } from './utils';
+import {
+  PDF_ZOOM_DEFAULT,
+  PDF_ZOOM_MAX,
+  PDF_ZOOM_MIN,
+  PDF_ZOOM_PRECISION_FACTOR,
+  PDF_ZOOM_STEP,
+} from './types';
 import type { FilePreviewProps, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
 
@@ -32,7 +39,7 @@ export function FilePreviewFullscreen({
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const [pdfScale, setPdfScale] = useState(1);
+  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -47,7 +54,7 @@ export function FilePreviewFullscreen({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
-    setPdfScale(1);
+    setPdfScale(PDF_ZOOM_DEFAULT);
   }, [file.id, file.url, initialPage]);
 
   // Handle page detection callback from renderer
@@ -70,10 +77,20 @@ export function FilePreviewFullscreen({
   };
 
   const handlePdfZoomIn = useCallback(() => {
-    setPdfScale((s) => Math.min(2, Math.round((s + 0.1) * 10) / 10));
+    setPdfScale((s) =>
+      Math.min(
+        PDF_ZOOM_MAX,
+        Math.round((s + PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
+      ),
+    );
   }, []);
   const handlePdfZoomOut = useCallback(() => {
-    setPdfScale((s) => Math.max(0.5, Math.round((s - 0.1) * 10) / 10));
+    setPdfScale((s) =>
+      Math.max(
+        PDF_ZOOM_MIN,
+        Math.round((s - PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
+      ),
+    );
   }, []);
 
   // Bidirectional citation ↔ page sync
@@ -258,7 +275,7 @@ export function FilePreviewFullscreen({
                 color="gray"
                 size="1"
                 onClick={handlePdfZoomOut}
-                disabled={pdfScale <= 0.5}
+                disabled={pdfScale <= PDF_ZOOM_MIN}
                 style={{
                   width: '24px',
                   height: '24px',
@@ -288,7 +305,7 @@ export function FilePreviewFullscreen({
                 color="gray"
                 size="1"
                 onClick={handlePdfZoomIn}
-                disabled={pdfScale >= 2}
+                disabled={pdfScale >= PDF_ZOOM_MAX}
                 style={{
                   width: '24px',
                   height: '24px',

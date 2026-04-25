@@ -14,6 +14,13 @@ import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { getTabsForSource, shouldShowPagination } from './utils';
+import {
+  PDF_ZOOM_DEFAULT,
+  PDF_ZOOM_MAX,
+  PDF_ZOOM_MIN,
+  PDF_ZOOM_PRECISION_FACTOR,
+  PDF_ZOOM_STEP,
+} from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import {
   PANEL_MAX_PX,
@@ -53,7 +60,7 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
-  const [pdfScale, setPdfScale] = useState(1);
+  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
   const tabs = useMemo(
     () => getTabsForSource(source, { hideFileDetails }),
     [source, hideFileDetails],
@@ -71,7 +78,7 @@ export function FilePreviewSidebar({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
-    setPdfScale(1);
+    setPdfScale(PDF_ZOOM_DEFAULT);
   }, [file.id, file.url, initialPage]);
 
   // If the active tab is no longer visible (e.g. we previously had record
@@ -143,10 +150,20 @@ export function FilePreviewSidebar({
   };
 
   const handlePdfZoomIn = useCallback(() => {
-    setPdfScale((s) => Math.min(2, Math.round((s + 0.1) * 10) / 10));
+    setPdfScale((s) =>
+      Math.min(
+        PDF_ZOOM_MAX,
+        Math.round((s + PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
+      ),
+    );
   }, []);
   const handlePdfZoomOut = useCallback(() => {
-    setPdfScale((s) => Math.max(0.5, Math.round((s - 0.1) * 10) / 10));
+    setPdfScale((s) =>
+      Math.max(
+        PDF_ZOOM_MIN,
+        Math.round((s - PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
+      ),
+    );
   }, []);
 
   // Bidirectional citation ↔ page sync
@@ -415,7 +432,7 @@ export function FilePreviewSidebar({
                     color="gray"
                     size="1"
                     onClick={handlePdfZoomOut}
-                    disabled={pdfScale <= 0.5}
+                    disabled={pdfScale <= PDF_ZOOM_MIN}
                     style={{
                       width: '24px',
                       height: '24px',
@@ -445,7 +462,7 @@ export function FilePreviewSidebar({
                     color="gray"
                     size="1"
                     onClick={handlePdfZoomIn}
-                    disabled={pdfScale >= 2}
+                    disabled={pdfScale >= PDF_ZOOM_MAX}
                     style={{
                       width: '24px',
                       height: '24px',

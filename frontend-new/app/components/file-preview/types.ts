@@ -165,6 +165,12 @@ export interface PaginationControls {
   onScaleChange?: (scale: number) => void;
 }
 
+export const PDF_ZOOM_MIN = 0.5;
+export const PDF_ZOOM_MAX = 2.0;
+export const PDF_ZOOM_STEP = 0.1;
+export const PDF_ZOOM_PRECISION_FACTOR = 10;
+export const PDF_ZOOM_DEFAULT = 1;
+
 /**
  * Pagination visibility state
  */
