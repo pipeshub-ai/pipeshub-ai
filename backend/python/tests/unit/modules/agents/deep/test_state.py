@@ -46,6 +46,7 @@ def _mock_deps():
         "graph_provider": MagicMock(),
         "reranker_service": MagicMock(),
         "config_service": MagicMock(),
+        "has_sql_connector": False,
     }
 
 

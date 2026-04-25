@@ -85,7 +85,7 @@ qna_prompt_instructions_1 = """
 
   **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
   </tool>
-
+{% if has_sql_connector %}
   <tool>
     You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
 
@@ -110,6 +110,7 @@ qna_prompt_instructions_1 = """
     - After receiving results, present them in a clear markdown format (tables, lists, summaries).
     - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
   </tool>
+{% endif %}
 </tools>
 
 <context>

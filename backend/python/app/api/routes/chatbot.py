@@ -23,7 +23,7 @@ from app.utils.chat_helpers import (
     get_message_content,
 )
 from app.utils.fetch_full_record import create_fetch_full_record_tool
-from app.utils.execute_query import create_execute_query_tool
+from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
@@ -159,6 +159,7 @@ def _build_chat_llm_messages(
     user_data: str,
     logger: Any,
     is_multimodal_llm: bool=False,
+    has_sql_connector: bool=False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     mode_config = get_model_config_for_mode(query_info.chatMode)
@@ -186,7 +187,7 @@ def _build_chat_llm_messages(
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
     content, ref_mapper = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False
+        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False, has_sql_connector=has_sql_connector
     )
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
@@ -416,6 +417,8 @@ async def askAIStream(
 
                 final_results = sorted(flattened_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
+                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+
                 send_user_info = request.query_params.get('sendUserInfo', True)
                 user_data = await _build_llm_user_context_string(
                     graph_provider, user_id, org_id, send_user_info
@@ -429,20 +432,22 @@ async def askAIStream(
                     user_data,
                     logger,
                     is_multimodal_llm=is_multimodal_llm,
+                    has_sql_connector=has_sql_connector,
                 )
 
                 # Prepare tools
                 fetch_tool = create_fetch_full_record_tool(
                     virtual_record_id_to_result, org_id, graph_provider, blob_store
                 )
-                execute_query_tool = create_execute_query_tool(
-                    config_service=config_service,
-                    graph_provider=graph_provider,
-                    org_id=org_id,
-                    conversation_id=query_info.conversationId,
-                    blob_store=blob_store,
-                )
-                tools = [fetch_tool, execute_query_tool]
+                tools = [fetch_tool]
+                if has_sql_connector:
+                    tools.append(create_execute_query_tool(
+                        config_service=config_service,
+                        graph_provider=graph_provider,
+                        org_id=org_id,
+                        conversation_id=query_info.conversationId,
+                        blob_store=blob_store,
+                    ))
 
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,

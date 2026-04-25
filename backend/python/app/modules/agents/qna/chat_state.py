@@ -5,6 +5,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -154,6 +155,8 @@ class ChatState(TypedDict):
     iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
     is_continue: bool  # Whether this is a continue iteration (multi-step task)
     tool_validation_retry_count: int  # Retry count for tool validation in planner
+    has_sql_connector: bool  # True when org has at least one configured SQL connector
+    has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -340,7 +343,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy") -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -350,6 +353,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     The tools list is extracted from toolsets for the planner.
     Knowledge connector IDs are used for retrieval filtering.
+
+    has_sql_connector is a required keyword arg: callers must resolve it (via
+    has_sql_connector_configured) before building state. This pairs with
+    has_sql_knowledge to gate the execute_sql_query tool in tool_system.
     """
 
     # Get user-defined system prompt or use default
@@ -385,6 +392,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
     has_knowledge = bool(real_kb or apps or agent_knowledge)
+    
+    has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -510,4 +519,6 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "max_iterations": 3,
         "is_continue": False,
         "tool_validation_retry_count": 0,
+        "has_sql_connector": has_sql_connector,
+        "has_sql_knowledge": has_sql_knowledge,
     }

@@ -1300,6 +1300,30 @@ class TestGetMessageContent:
         combined = " ".join(texts)
         assert "custom content" not in combined
 
+    def test_json_mode_sql_tool_section_included_when_has_sql_connector_true(self):
+        """When has_sql_connector=True, the execute_sql_query tool block is rendered."""
+        flattened = [
+            _make_flattened_result(block_index=0, content="data"),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(
+            flattened, vr_map, "", "q", mode="json", has_sql_connector=True
+        )
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "execute_sql_query" in combined
+
+    def test_json_mode_sql_tool_section_excluded_when_has_sql_connector_false(self):
+        """Default has_sql_connector=False must suppress the execute_sql_query block."""
+        flattened = [
+            _make_flattened_result(block_index=0, content="data"),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "execute_sql_query" not in combined
+
 
 # ===================================================================
 # record_to_message_content
