@@ -23,8 +23,12 @@ def _ms_to_after_seconds(start_ms: int) -> int:
     return start_ms // 1000
 
 
-def _ms_to_before_seconds_exclusive(end_ms: int) -> int:
-    """Upper bound in seconds for Gmail `before:` (exclusive semantics in practice)."""
+def _ms_to_before_seconds_inclusive_ceil(end_ms: int) -> int:
+    """
+    Seconds argument for Gmail ``before:`` (exclusive on whole-second boundaries).
+    Ceil ``end_ms`` to the next whole second so messages in the same second as
+    ``end_ms`` are still included.
+    """
     return (end_ms + 999) // 1000
 
 
@@ -53,12 +57,12 @@ def build_gmail_received_date_threads_query(received_filter: Filter | None) -> s
     elif op == DatetimeOperator.IS_BEFORE:
         if end_ms is None:
             return None
-        parts.append(f"before:{_ms_to_before_seconds_exclusive(end_ms)}")
+        parts.append(f"before:{_ms_to_before_seconds_inclusive_ceil(end_ms)}")
     elif op == DatetimeOperator.IS_BETWEEN:
         if start_ms is not None:
             parts.append(f"after:{_ms_to_after_seconds(start_ms)}")
         if end_ms is not None:
-            parts.append(f"before:{_ms_to_before_seconds_exclusive(end_ms)}")
+            parts.append(f"before:{_ms_to_before_seconds_inclusive_ceil(end_ms)}")
         if not parts:
             return None
     else:

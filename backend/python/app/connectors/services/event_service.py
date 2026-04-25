@@ -433,9 +433,7 @@ class EventService:
                 record_ids_to_queue = [
                     rid
                     for r in records
-                    if (rid := getattr(r, "id", None))
-                    and isinstance(rid, str)
-                    and not getattr(r, "is_internal", False)
+                    if (rid := getattr(r, "id", None)) and isinstance(rid, str)
                 ]
                 if record_ids_to_queue:
                     await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(

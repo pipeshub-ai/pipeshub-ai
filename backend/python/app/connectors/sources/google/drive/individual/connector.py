@@ -1103,13 +1103,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _get_file_metadata_from_drive(self, file_id: str) -> Dict:
         """
-        Get file metadata from Google Drive API.
+        Get file metadata from Google Drive API via ``files.get``.
 
         Args:
             file_id: Google Drive file ID
 
         Returns:
-            Dictionary with file metadata including mimeType
+            Dictionary with file metadata from Drive
         """
         try:
             drive_service = self.google_client.get_client()

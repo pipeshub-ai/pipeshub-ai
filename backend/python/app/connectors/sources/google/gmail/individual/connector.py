@@ -437,7 +437,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Extract labelIds from message
             label_ids = message.get('labelIds', [])
-            message.get('snippet', '')
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
 
             # Determine external_record_group_id based on labelIds (SENT or INBOX)

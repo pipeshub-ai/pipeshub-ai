@@ -8,7 +8,6 @@ Extended unit tests for ArangoHTTPProvider covering uncovered methods:
 - get_user_connector_instances (success, empty, exception)
 - get_filtered_connector_instances (various filters, scope counts, exception)
 - reindex_record_group_records (success, missing group, missing user, permission denied)
-- _reset_indexing_status_to_queued (success, already queued, empty, not found, exception)
 - _ensure_departments_seed (success with new departments)
 - _ensure_indexes
 """
@@ -614,53 +613,6 @@ class TestReindexRecordGroupRecords:
         )
         assert result["success"] is False
         assert result["code"] == 500
-
-
-# ---------------------------------------------------------------------------
-# _reset_indexing_status_to_queued
-# ---------------------------------------------------------------------------
-
-
-class TestResetIndexingStatusToQueued:
-    @pytest.mark.asyncio
-    async def test_resets_to_queued(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "r1", "indexingStatus": "COMPLETED"}]
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_already_queued_skips(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "r1", "indexingStatus": "QUEUED"}]
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_empty_status_skips(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "r1", "indexingStatus": "EMPTY"}]
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_exception_handled(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("db error"))
-        # Should not raise
-        await connected_provider._reset_indexing_status_to_queued("r1")
 
 
 # ---------------------------------------------------------------------------

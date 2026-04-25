@@ -1019,8 +1019,9 @@ class IGraphDBProvider(ABC):
     ) -> None:
         """
         Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
-        Skips records with isInternal true. Pass a one-element list for a single record.
-        Used before reindex (API and batched sync). Skips missing records; logs errors without raising.
+        Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
+        for a single record. Used before reindex (API and batched sync). Skips missing records;
+        logs errors without raising.
         """
         pass
 

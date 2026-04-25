@@ -10398,18 +10398,12 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return {}
 
-
-
-    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
-        """Reset indexing status to QUEUED (delegates to bulk path)."""
-        await self.reset_indexing_status_to_queued_for_record_ids([record_id])
-
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
         Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
         """
-        unique_ids = [rid for rid in dict.fromkeys(record_ids) if rid]
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
