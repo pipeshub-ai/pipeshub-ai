@@ -5,6 +5,7 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import { categorizeNode, mergeChildrenIntoTree } from './utils/tree-builder';
+import type { SidebarNodeChildrenPaginationMeta } from './utils/sidebar-child-pagination-meta';
 
 /**
  * Default page size for KB and all-records pagination. Shared across store
@@ -66,6 +67,10 @@ interface KnowledgeBaseState {
   categorizedNodes: CategorizedNodes | null;
   loadingNodeIds: Set<string>;
   nodeChildrenCache: Map<string, KnowledgeHubNode[]>;
+  /** Lazy sidebar children under any non-root parent (folder, kb, recordGroup, …); keyed by parent id */
+  nodeChildrenPagination: Map<string, SidebarNodeChildrenPaginationMeta>;
+  /** Per-parent “load more” in flight for {@link nodeChildrenPagination} */
+  loadingNodeChildrenMoreIds: Set<string>;
 
   // Table data from new endpoint
   tableData: KnowledgeHubApiResponse | null;
@@ -189,6 +194,8 @@ interface KnowledgeBaseActions {
   cacheNodeChildren: (parentId: string, children: KnowledgeHubNode[]) => void;
   clearNodeCacheEntries: (nodeIds: string[]) => void;
   reMergeCachedChildrenIntoTree: () => void;
+  setNodeChildrenPagination: (parentId: string, meta: SidebarNodeChildrenPaginationMeta | null) => void;
+  setLoadingNodeChildrenMore: (parentId: string, loading: boolean) => void;
 
   // Table data actions
   setTableData: (data: KnowledgeHubApiResponse | null) => void;
@@ -314,6 +321,8 @@ const initialState: KnowledgeBaseState = {
   categorizedNodes: null,
   loadingNodeIds: new Set(),
   nodeChildrenCache: new Map(),
+  nodeChildrenPagination: new Map(),
+  loadingNodeChildrenMoreIds: new Set(),
   tableData: null,
   isLoadingTableData: false,
   tableDataError: null,
@@ -588,6 +597,26 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           for (const id of nodeIds) {
             state.nodeChildrenCache.delete(id);
+            state.nodeChildrenPagination.delete(id);
+            state.loadingNodeChildrenMoreIds.delete(id);
+          }
+        }),
+
+      setNodeChildrenPagination: (parentId, meta) =>
+        set((state) => {
+          if (meta == null) {
+            state.nodeChildrenPagination.delete(parentId);
+          } else {
+            state.nodeChildrenPagination.set(parentId, meta);
+          }
+        }),
+
+      setLoadingNodeChildrenMore: (parentId, loading) =>
+        set((state) => {
+          if (loading) {
+            state.loadingNodeChildrenMoreIds.add(parentId);
+          } else {
+            state.loadingNodeChildrenMoreIds.delete(parentId);
           }
         }),
 
@@ -952,6 +981,8 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
 
             // Clear from cache
             state.nodeChildrenCache.delete(nodeId);
+            state.nodeChildrenPagination.delete(nodeId);
+            state.loadingNodeChildrenMoreIds.delete(nodeId);
 
             // Clear selection
             state.selectedItems.delete(nodeId);
