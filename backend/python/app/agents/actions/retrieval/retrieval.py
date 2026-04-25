@@ -158,16 +158,11 @@ class Retrieval:
             # === BUILD FILTERS — always scoped to agent's configured knowledge ===
             # Get agent's configured filters from state
             agent_filters = self.state.get("filters", {}) or {}
-            agent_apps = set(agent_filters.get("apps") or [])
-            agent_kbs = set(agent_filters.get("kb") or [])
+            agent_filter_apps = set(agent_filters.get("apps") or [])
+            agent_filter_kbs = set(agent_filters.get("kb") or [])
 
-            agent_connector_ids_count = len(agent_apps) if agent_apps else 0
-            agent_collection_ids_count = len(agent_kbs) if agent_kbs else 0
-            total_sources = agent_connector_ids_count + agent_collection_ids_count
-            if total_sources <= 1:
-                adjusted_limit = 50
-            else:
-                adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
+            agent_configured_apps = self.state.get("apps", [])
+            agent_configured_kbs = self.state.get("kb", [])
 
             # Start from an empty filter dict — we build it precisely below.
             filter_groups: dict[str, list[str]] = {}
@@ -186,16 +181,35 @@ class Retrieval:
             explicit_collections = bool(collection_ids)
             broad_search = not explicit_connectors and not explicit_collections
 
+            # Placeholder agent: broaden scope to all configured connectors/KBs
+            # since filters are not author-curated for this synthetic agent.
+            is_placeholder_agent = self.state.get("is_placeholder_agent", False)
+            if is_placeholder_agent:
+                agent_filter_apps = list(agent_configured_apps) if agent_configured_apps else []
+                agent_filter_kbs = list(agent_configured_kbs) if agent_configured_kbs else []
+
+            agent_connector_ids_count = len(agent_filter_apps)
+            agent_collection_ids_count = len(agent_filter_kbs)
+            total_sources = agent_connector_ids_count + agent_collection_ids_count
+            if total_sources <= 1:
+                adjusted_limit = 50
+            else:
+                adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
+
+            logger_instance.debug(f"is_placeholder_agent: {is_placeholder_agent}")
+            logger_instance.debug(f"agent_filter_apps: {sorted(agent_filter_apps)}")
+            logger_instance.debug(f"agent_filter_kbs: {sorted(agent_filter_kbs)}")
+
             # --- App connectors ---
             if explicit_connectors:
                 # Scope to the intersection with the agent's allowed connectors.
-                resolved_apps = [cid for cid in connector_ids if cid in agent_apps]
+                resolved_apps = [cid for cid in connector_ids if cid in agent_filter_apps]
                 # If the LLM hallucinated an ID not in scope, ignore it and use
                 # the full agent connector set as a safe fallback.
-                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_apps)
+                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_filter_apps)
             elif broad_search:
                 # No explicit filter — include all agent connectors.
-                filter_groups["apps"] = list(agent_apps) if agent_apps else []
+                filter_groups["apps"] = list(agent_filter_apps) if agent_filter_apps else []
             else:
                 # collection_ids were given but connector_ids were not:
                 # exclude connectors entirely so the search is KB-only.
@@ -204,16 +218,18 @@ class Retrieval:
             # --- KB collections ---
             if explicit_collections:
                 # Scope to the intersection with the agent's allowed KB groups.
-                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
+                resolved_kbs = [cid for cid in collection_ids if cid in agent_filter_kbs]
                 # Fallback to full KB scope if IDs don't match.
-                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_kbs)
+                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_filter_kbs)
             elif broad_search:
                 # No explicit filter — include all agent KB collections.
-                filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
+                filter_groups["kb"] = list(agent_filter_kbs) if agent_filter_kbs else []
             else:
                 # connector_ids were given but collection_ids were not:
                 # exclude KB collections so the search is connector-only.
                 filter_groups["kb"] = ['NO_KB_SELECTED']
+                if is_placeholder_agent:
+                    filter_groups["kb"] = []
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))
@@ -221,6 +237,9 @@ class Retrieval:
                 f"Executing retrieval with limit: {adjusted_limit} "
                 f"(service_account={is_service_account})"
             )
+
+            logger_instance.debug(f"filter_groups: {filter_groups}")
+
             results = await retrieval_service.search_with_filters(
                 queries=[search_query],
                 org_id=org_id,

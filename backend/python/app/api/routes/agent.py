@@ -3172,6 +3172,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
+            "isPlaceholderAgent": agent_id == "agentIdPlaceholder",
             "modelName": model_name,
             "modelKey": model_key,
         }
@@ -3248,7 +3249,49 @@ async def get_assistant_agent(
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}
+        # Same `user_id` the graph expects as in kb_service (User id / document key).
         user_key = user.get("id") or user.get("_key")
+
+        # One knowledge entry per accessible KB record group, matching normal agent shape.
+        try:
+            page_size = 500
+            skip = 0
+            while True:
+                kbs, total, _ = await graph_provider.list_user_knowledge_bases(
+                    user_id=user_key,
+                    org_id=org_id,
+                    skip=skip,
+                    limit=page_size,
+                )
+                for kb in kbs:
+                    kb_id = kb.get("id")
+                    if not kb_id:
+                        continue
+                    title = (kb.get("name") or "").strip() or "Untitled"
+                    one_group = {
+                        "recordGroups": [kb_id],
+                        "records": [],
+                    }
+                    kn: dict[str, Any] = {
+                        "connectorId": f"knowledgeBase_{org_id}",
+                        "name": title,
+                        "displayName": title,
+                        "type": Connectors.KNOWLEDGE_BASE.value,
+                        "filters": one_group,
+                        "filtersParsed": {
+                            "recordGroups": [kb_id],
+                            "records": [],
+                        },
+                    }
+                    knowledge_sources.append(kn)
+                if not kbs or skip + len(kbs) >= total:
+                    break
+                skip += page_size
+        except Exception as e:
+            logger.error(
+                f"Error listing org knowledge bases for assistant: {e}", exc_info=True
+            )
+
         connectors = await graph_provider.get_user_apps(
             user_id=user_key,
         )
@@ -3257,7 +3300,7 @@ async def get_assistant_agent(
             connector_name = connector.get("name", "")
             connector_type = connector.get("type", "")
 
-            if connector_type == Connectors.KNOWLEDGE_BASE:
+            if connector_type == Connectors.KNOWLEDGE_BASE.value:
                 continue
             # Build knowledge source entry
             knowledge_entry = {

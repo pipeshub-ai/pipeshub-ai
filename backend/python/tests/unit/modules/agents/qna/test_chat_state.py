@@ -586,6 +586,21 @@ class TestExtractKnowledgeConnectorIds:
         knowledge = [{"connectorId": "c1"}, "not-a-dict", 42]
         assert _extract_knowledge_connector_ids(knowledge) == ["c1"]
 
+    def test_skips_knowledge_base_pseudo_connectors(self):
+        knowledge = [
+            {"connectorId": "knowledgeBase_org-1"},
+            {"connectorId": "c1"},
+        ]
+        assert _extract_knowledge_connector_ids(knowledge) == ["c1"]
+
+    def test_deduplicates_connector_ids(self):
+        knowledge = [
+            {"connectorId": "c1"},
+            {"connectorId": "c1"},
+            {"connectorId": "c2"},
+        ]
+        assert _extract_knowledge_connector_ids(knowledge) == ["c1", "c2"]
+
 
 # ===================================================================
 # _extract_kb_record_groups
