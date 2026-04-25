@@ -23,6 +23,9 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.utils.fetch_url_tool import create_fetch_url_tool
+from app.config.constants.service import config_node_constants
+from app.utils.web_search_tool import create_web_search_tool
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import build_capability_summary
@@ -168,7 +171,16 @@ async def _deep_respond_impl(
         "Fast-path check: analyses=%d, final_results=%d, virtual_map=%d, tool_results=%d",
         len(analyses), len(final_results), len(virtual_record_map), len(all_tool_results),
     )
-    if analyses and not final_results and not virtual_record_map:
+    _WEB_TOOL_NAMES = {"web_search", "fetch_url"}
+    has_web_tools = any(
+        r.get("tool_name", "") in _WEB_TOOL_NAMES
+        for r in all_tool_results
+        if r.get("status") == "success"
+    )
+    if has_web_tools:
+        log.info("Fast-path skipped: web_search/fetch_url results require standard citation path")
+
+    if analyses and not final_results and not virtual_record_map and not has_web_tools:
         log.info("Fast-path: API-only results with sub-agent analysis, using lightweight response")
         try:
             from app.modules.agents.qna.nodes import _generate_fast_api_response
@@ -276,10 +288,14 @@ async def _deep_respond_impl(
     if has_api_results or analyses:
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
-        context = _build_tool_results_context(
+        context = await _build_tool_results_context(
             all_tool_results,
             [] if qna_has_retrieval else final_results,
             has_retrieval_in_context=qna_has_retrieval,
+            ref_mapper=state.get("citation_ref_mapper"),
+            config_service=state.get("config_service"),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+
         ) if has_api_results else ""
 
         # Prepend sub-agent analyses as supplementary structured context.
@@ -330,15 +346,6 @@ async def _deep_respond_impl(
             else:
                 messages.append(HumanMessage(content=context))
 
-    # Log prompt size
-    total_chars = sum(
-        len(m.content) if isinstance(m.content, str)
-        else sum(len(p.get("text", "")) for p in m.content if isinstance(p, dict))
-        if isinstance(m.content, list) else 0
-        for m in messages
-    )
-    log.info("deep_respond_node: prompt built, %d chars total", total_chars)
-
     # ================================================================
     # Setup tools (fetch_full_record for retrieval)
     # ================================================================
@@ -358,6 +365,17 @@ async def _deep_respond_impl(
             len(virtual_record_map),
             len(final_results),
         )
+    
+   
+    
+
+    fetch_url_tool = create_fetch_url_tool(ref_mapper=state.get("citation_ref_mapper"))
+    tools.append(fetch_url_tool)
+    
+    web_search_provider_config = state.get("web_search_config")
+    if web_search_provider_config:
+        web_search_tool = create_web_search_tool(config=web_search_provider_config)
+        tools.append(web_search_tool)
 
     # Initialize blob_store if missing
     graph_provider = state.get("graph_provider")
@@ -374,12 +392,15 @@ async def _deep_respond_impl(
             state["blob_store"] = blob_store
         except Exception as _bs_err:
             log.warning("Could not initialise BlobStorage: %s", _bs_err)
-
+    
+    
+    
     tool_runtime_kwargs = {
         "blob_store": blob_store,
         "graph_provider": graph_provider,
         "org_id": state.get("org_id", ""),
         "conversation_id": state.get("conversation_id"),
+        "config_service": state.get("config_service"),
     }
 
     # Construct all_queries — prefer decomposed_queries from planner,
@@ -413,12 +434,22 @@ async def _deep_respond_impl(
 
         DEFAULT_CONTEXT_LENGTH = 128000
 
+        # Pre-seed web_records from prior tool execution so that web citations
+        # are available even when the LLM does not re-invoke tools during streaming.
+        from app.modules.agents.qna.nodes import _extract_web_records_from_tool_results
+        _prior_web_records = _extract_web_records_from_tool_results(
+            all_tool_results, state.get("org_id", ""),
+        )
+        if _prior_web_records:
+            log.info("Pre-seeded %d web records from prior tool execution", len(_prior_web_records))
+
         answer_text = ""
         citations: list = []
         reason = None
         confidence = None
         reference_data: list = []
-        any_chunks_sent = False  # Track whether we already sent chunks to the client
+        any_chunks_sent = False
+        _captured_web_records: list[dict] = list(_prior_web_records)
 
         async for stream_event in stream_llm_response_with_tools(
             llm=llm,
@@ -436,17 +467,21 @@ async def _deep_respond_impl(
             tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
-            is_agent=True,
             conversation_id=state.get("conversation_id"),
             ref_mapper=state.get("citation_ref_mapper"),
+            max_hops=1,
+            initial_web_records=_prior_web_records,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
 
+            if event_type == "tool_execution_complete":
+                _captured_web_records = event_data.get("web_records", []) or []
+
             # ── Citation enrichment (second-pass extraction) ──────────
             if (
                 event_type == "complete"
-                and final_results
+                and (final_results or _captured_web_records)
                 and not event_data.get("citations")
             ):
                 _raw_answer = event_data.get("answer", "")
@@ -460,7 +495,7 @@ async def _deep_respond_impl(
                         _ref_to_url_snap = _ref_to_url_snap.ref_to_url if _ref_to_url_snap else None
                         _, _enriched = _ncc_agent(
                             _raw_answer, final_results, virtual_record_map, [],
-                            ref_to_url=_ref_to_url_snap,
+                            ref_to_url=_ref_to_url_snap, web_records=_captured_web_records,
                         )
                         if _enriched:
                             log.info(
@@ -605,9 +640,10 @@ def _build_simple_retrieval_messages(
         "analyses and another only in the blocks, combine both into a unified answer.\n\n"
         "CITATION RULES:\n"
         "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
-        "- Each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
-        "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
-        "- If you cannot find the Citation ID for a claim, omit the citation rather than guessing.\n\n"
+        "- For internal knowledge blocks: each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
+        "- For web search/fetch_url results: cite using the url/citation id.\n"
+        "- Use EXACTLY the Citation ID or URL shown in the context. Do NOT invent or modify them.\n"
+        "- If you cannot find the Citation ID or URL for a claim, omit the citation rather than guessing.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))

@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.modules.agents.qna.chat_state import ChatState
 
@@ -23,7 +23,7 @@ TRUNCATE_THRESHOLD = 50_000  # Truncate content > 50KB
 # STATE PRUNING
 # ============================================================================
 
-def prune_state(state: ChatState, logger: Optional[logging.Logger] = None) -> ChatState:
+def prune_state(state: ChatState, logger: logging.Logger | None = None) -> ChatState:
     """
     Intelligently prune state to reduce memory footprint.
 
@@ -68,11 +68,11 @@ def prune_state(state: ChatState, logger: Optional[logging.Logger] = None) -> Ch
         "search_results"  # Keep only final_results
     ]
     for field in intermediate_fields:
-        if field in state and state[field]:
+        if state.get(field):
             state[field] = []
 
     # 4. Compress query analysis (keep only essential)
-    if "query_analysis" in state and state["query_analysis"]:
+    if state.get("query_analysis"):
         analysis = state["query_analysis"]
         state["query_analysis"] = {
             "is_complex": analysis.get("is_complex", False),
@@ -97,7 +97,7 @@ def prune_state(state: ChatState, logger: Optional[logging.Logger] = None) -> Ch
 # CONTEXT COMPRESSION
 # ============================================================================
 
-def compress_documents(documents: List[Dict], logger: Optional[logging.Logger] = None) -> List[Dict]:
+def compress_documents(documents: list[dict], logger: logging.Logger | None = None) -> list[dict]:
     """
     Compress document list to reduce memory.
 
@@ -170,7 +170,7 @@ def compress_context(context: str, max_size: int = MAX_TOTAL_CONTEXT_SIZE) -> st
 # MESSAGE MANAGEMENT
 # ============================================================================
 
-def optimize_messages(messages: List, logger: Optional[logging.Logger] = None) -> List:
+def optimize_messages(messages: list, logger: logging.Logger | None = None) -> list:
     """
     Optimize message list for efficiency.
 
@@ -220,7 +220,7 @@ def optimize_messages(messages: List, logger: Optional[logging.Logger] = None) -
 # MEMORY MONITORING
 # ============================================================================
 
-def get_state_memory_size(state: ChatState) -> Dict[str, Any]:
+def get_state_memory_size(state: ChatState) -> dict[str, Any]:
     """
     Calculate approximate memory size of state.
 
@@ -253,7 +253,7 @@ def get_state_memory_size(state: ChatState) -> Dict[str, Any]:
     }
 
 
-def check_memory_health(state: ChatState, logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+def check_memory_health(state: ChatState, logger: logging.Logger | None = None) -> dict[str, Any]:
     """
     Check memory health and provide recommendations.
 
@@ -312,7 +312,7 @@ def check_memory_health(state: ChatState, logger: Optional[logging.Logger] = Non
 # AUTO-OPTIMIZATION
 # ============================================================================
 
-def auto_optimize_state(state: ChatState, logger: Optional[logging.Logger] = None) -> ChatState:
+def auto_optimize_state(state: ChatState, logger: logging.Logger | None = None) -> ChatState:
     """
     Automatically optimize state based on memory health.
 
@@ -331,11 +331,11 @@ def auto_optimize_state(state: ChatState, logger: Optional[logging.Logger] = Non
         state = prune_state(state, logger)
 
         # Compress documents
-        if "final_results" in state and state["final_results"]:
+        if state.get("final_results"):
             state["final_results"] = compress_documents(state["final_results"], logger)
 
         # Optimize messages
-        if "messages" in state and state["messages"]:
+        if state.get("messages"):
             state["messages"] = optimize_messages(state["messages"], logger)
 
         if logger:

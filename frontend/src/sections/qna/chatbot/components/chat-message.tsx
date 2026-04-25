@@ -886,7 +886,41 @@ const ChatMessage = React.memo(
 
     const handleOpenRecordDetails = useCallback(
       (record: Record) => {
-        setSelectedRecord({ ...record, citations: aggregatedCitations[record.recordId] || [] });
+        const recordCitations =
+          aggregatedCitations[record.recordId] ||
+          record.citations ||
+          [];
+
+        const isUrlLikeRecordId =
+          typeof record.recordId === 'string' && /^https?:\/\//i.test(record.recordId);
+
+        const isWebCitation = recordCitations.some(
+          (citation) =>
+            citation?.citationType === 'web|url' ||
+            citation?.metadata?.origin === 'WEB_SEARCH'
+        );
+
+        if (isWebCitation || isUrlLikeRecordId) {
+          const webCitation = recordCitations.find(
+            (citation) =>
+              citation?.citationType === 'web|url' ||
+              citation?.metadata?.origin === 'WEB_SEARCH'
+          );
+
+          const webUrl = (typeof webCitation?.metadata?.webUrl === 'string' ? webCitation.metadata.webUrl : undefined) ||
+            (typeof record.webUrl === 'string' ? record.webUrl : undefined) ||
+            (isUrlLikeRecordId ? record.recordId : undefined);
+
+          if (webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+
+          console.warn('Web citation click had no URL to open', { recordId: record.recordId });
+          return;
+        }
+
+        setSelectedRecord({ ...record, citations: recordCitations });
         setRecordDialogOpen(true);
       },
       [aggregatedCitations]

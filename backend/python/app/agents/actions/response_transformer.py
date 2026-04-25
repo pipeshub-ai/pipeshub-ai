@@ -13,7 +13,7 @@ Usage:
     )
 """
 
-from typing import Any, List
+from typing import Any
 
 # Constants for pattern matching
 _PATTERN_SPLIT_PARTS = 2
@@ -42,15 +42,15 @@ class ResponseTransformer:
             .clean()
     """
 
-    def __init__(self, data: Any) -> None:  # noqa: ANN401
+    def __init__(self, data: Any) -> None:
         """Initialize with data to transform.
 
         Args:
             data: The data structure to transform (dict, list, or primitive)
         """
         self.data = data
-        self._remove_fields: List[str] = []
-        self._keep_fields: List[str] = []
+        self._remove_fields: list[str] = []
+        self._keep_fields: list[str] = []
 
     def remove(self, *field_paths: str) -> 'ResponseTransformer':
         """Add field paths to remove (supports nested paths and wildcards).
@@ -84,7 +84,7 @@ class ResponseTransformer:
         self._keep_fields.extend(field_paths)
         return self
 
-    def clean(self) -> Any:  # noqa: ANN401
+    def clean(self) -> Any:
         """Transform the data and return transformed result.
 
         Returns:
@@ -95,7 +95,7 @@ class ResponseTransformer:
 
         return self._clean_recursive(self.data, "")
 
-    def _clean_recursive(self, data: Any, base_path: str) -> Any:  # noqa: ANN401
+    def _clean_recursive(self, data: Any, base_path: str) -> Any:
         """Recursively transform data structure based on patterns.
 
         Args:

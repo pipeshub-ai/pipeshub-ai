@@ -159,13 +159,13 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
             label={t('chat.models', { defaultValue: 'Models' })}
             onClick={() => onNavigate('models')}
           />
-          {!isAgentChat ? (
+          {!isAgentChat && queryMode !== 'web-search' ? (
             <ManageRow
               icon="hub"
               label={t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' })}
               onClick={() => onNavigate('connectors')}
             />
-          ) : (
+          ) : isAgentChat ? (
             <ManageRow
               icon="apps"
               label={t('chat.agentResources.sheetTitle', {
@@ -173,7 +173,7 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
               })}
               onClick={() => onNavigate('agent-resources')}
             />
-          )}
+          ) : null}
           {!isAgentChat && queryMode === 'agent' && (
             <ManageRow
               icon="smart_toy"

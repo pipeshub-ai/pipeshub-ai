@@ -61,6 +61,7 @@ from app.schema.arango.documents import (
     app_role_schema,
     app_schema,
     comment_record_schema,
+    deal_record_schema,
     department_schema,
     file_record_schema,
     link_record_schema,
@@ -68,6 +69,7 @@ from app.schema.arango.documents import (
     meeting_record_schema,
     orgs_schema,
     people_schema,
+    product_record_schema,
     project_record_schema,
     record_group_schema,
     record_schema,
@@ -84,21 +86,21 @@ from app.schema.arango.documents import (
 from app.schema.arango.edges import (
     basic_edge_schema,
     belongs_to_schema,
-    entity_relations_schema,
-    inherit_permissions_schema,
-    is_of_type_schema,
-    permissions_schema,
-    record_relations_schema,
-    user_app_relation_schema,
-    user_drive_relation_schema,
-    deal_of_schema,
     contact_schema,
     customer_schema,
     deal_info_schema,
+    deal_of_schema,
+    entity_relations_schema,
+    inherit_permissions_schema,
+    is_of_type_schema,
     lead_schema,
-    prospect_schema,
-    sold_in_schema,
     member_of_schema,
+    permissions_schema,
+    prospect_schema,
+    record_relations_schema,
+    sold_in_schema,
+    user_app_relation_schema,
+    user_drive_relation_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
@@ -18880,6 +18882,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check agent permission: {str(e)}")
             return None
 
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        try:
+            query = f"""
+            // Collect user keys that belong to this org
+            LET org_user_keys = (
+                FOR bt IN {CollectionNames.BELONGS_TO.value}
+                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                    RETURN PARSE_IDENTIFIER(bt._from).key
+            )
+
+            // Find agents owned by those users that use this web search provider
+            LET user_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm.type == 'USER'
+                    FILTER perm.role == 'OWNER'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                    FILTER owner_key IN org_user_keys
+                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+            )
+
+            // Also include agents shared directly with the org
+            LET org_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER perm.type == 'ORG'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN PARSE_IDENTIFIER(perm._to).key
+            )
+
+            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+
+            FOR agent_key IN all_agent_keys
+                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+                FILTER agent != null
+                FILTER agent.isDeleted != true
+                FILTER agent.webSearch == @provider
+                LET creator = agent.createdBy != null
+                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                    : null
+                RETURN {{
+                    name: agent.name,
+                    _key: agent._key,
+                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+                }}
+            """
+            result = await self.execute_query(
+                query, bind_vars={"org_id": org_id, "provider": provider}
+            )
+            return result or []
+        except Exception as e:
+            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+            return []
+
     async def get_all_agents(
         self,
         user_id: str,
@@ -19129,7 +19188,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "webSearch"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

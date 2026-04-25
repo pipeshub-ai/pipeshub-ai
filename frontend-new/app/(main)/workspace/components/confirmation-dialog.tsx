@@ -17,7 +17,7 @@ export interface ConfirmationDialogProps {
   title: string;
 
   /** Descriptive message body */
-  message: string;
+  message: React.ReactNode;
 
   /** Label for the confirm button (e.g. "Remove") */
   confirmLabel: string;
@@ -33,6 +33,9 @@ export interface ConfirmationDialogProps {
 
   /** Label shown on the confirm button while loading (default: "Removing...") */
   confirmLoadingLabel?: string;
+
+  /** When true, the confirm button is hidden (informational dialog only) */
+  hideConfirm?: boolean;
 
   /** Callback when confirm is clicked */
   onConfirm: () => void;
@@ -61,6 +64,7 @@ export function ConfirmationDialog({
   confirmVariant = 'danger',
   isLoading = false,
   confirmLoadingLabel = 'Removing...',
+  hideConfirm = false,
   onConfirm,
 }: ConfirmationDialogProps) {
   const handleCancel = () => {
@@ -109,9 +113,13 @@ export function ConfirmationDialog({
             <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
               {title}
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
-              {message}
-            </Text>
+            {typeof message === 'string' ? (
+              <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+                {message}
+              </Text>
+            ) : (
+              <Box>{message}</Box>
+            )}
           </Flex>
 
           {/* Action buttons */}
@@ -128,18 +136,20 @@ export function ConfirmationDialog({
               disabled={isLoading}
               style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
             >
-              {cancelLabel}
+              {hideConfirm ? 'Close' : cancelLabel}
             </Button>
-            <LoadingButton
-              variant="solid"
-              color={confirmVariant === 'danger' ? 'red' : undefined}
-              size="2"
-              onClick={onConfirm}
-              loading={isLoading}
-              loadingLabel={confirmLoadingLabel}
-            >
-              {confirmLabel}
-            </LoadingButton>
+            {!hideConfirm && (
+              <LoadingButton
+                variant="solid"
+                color={confirmVariant === 'danger' ? 'red' : undefined}
+                size="2"
+                onClick={onConfirm}
+                loading={isLoading}
+                loadingLabel={confirmLoadingLabel}
+              >
+                {confirmLabel}
+              </LoadingButton>
+            )}
           </Flex>
         </Flex>
       </Dialog.Content>

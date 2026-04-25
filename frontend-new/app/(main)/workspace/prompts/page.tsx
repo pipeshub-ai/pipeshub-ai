@@ -15,7 +15,11 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
-import { PromptsApi, DEFAULT_SYSTEM_PROMPT } from './api';
+import {
+  PromptsApi,
+  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_WEB_SEARCH_PROMPT,
+} from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // ============================================================
@@ -23,12 +27,20 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 // ============================================================
 
 interface PromptSectionCardProps {
+  iconName: string;
+  title: string;
+  description: string;
   children: React.ReactNode;
   action?: React.ReactNode;
 }
 
-function PromptSectionCard({ children, action }: PromptSectionCardProps) {
-  const { t } = useTranslation();
+function PromptSectionCard({
+  iconName,
+  title,
+  description,
+  children,
+  action,
+}: PromptSectionCardProps) {
   return (
     <Flex
       direction="column"
@@ -47,27 +59,26 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
         gap="3"
         style={{ padding: 'var(--space-3) var(--space-4)' }}
       >
-        <Flex align="center" gap="3">
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              padding: 'var(--space-2)',
-              borderRadius: 'var(--radius-1)',
-              background: 'var(--slate-a2)',
-              flexShrink: 0,
-            }}
-          >
-            <MaterialIcon name="chat" size={16} color="var(--slate-11)" />
-          </Flex>
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('workspace.prompts.systemPrompt')}
-            </Text>
-            <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-              {t('workspace.prompts.systemPromptDescription')}
-            </Text>
-          </Flex>
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 'var(--radius-1)',
+            backgroundColor: 'var(--accent-2)',
+            flexShrink: 0,
+          }}
+        >
+          <MaterialIcon name={iconName} size={20} color="var(--accent-9)" />
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1 }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            {title}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+            {description}
+          </Text>
         </Flex>
         {action}
       </Flex>
@@ -81,6 +92,54 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
         {children}
       </Flex>
     </Flex>
+  );
+}
+
+interface PromptEditorProps {
+  label: string;
+  value: string;
+  placeholder: string;
+  helperText: string;
+  onChange: (value: string) => void;
+  onUseDefault: () => void;
+}
+
+function PromptEditor({
+  label,
+  value,
+  placeholder,
+  helperText,
+  onChange,
+  onUseDefault,
+}: PromptEditorProps) {
+  return (
+    <>
+      <Flex align="center" justify="between">
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {label}
+        </Text>
+        <Button
+          variant="outline"
+          color="gray"
+          size="2"
+          onClick={onUseDefault}
+        >
+          Use Default Prompt
+        </Button>
+      </Flex>
+
+      <TextArea
+        rows={6}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ resize: 'vertical' }}
+      />
+
+      <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
+        {helperText}
+      </Text>
+    </>
   );
 }
 
@@ -121,20 +180,26 @@ export default function PromptsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
-  // The prompt currently in the textarea
+  // Current editor state
   const [customPrompt, setCustomPrompt] = useState('');
-  // Snapshot of what is saved on the server (to detect dirty state)
-  const [savedPrompt, setSavedPrompt] = useState('');
+  const [customPromptWebSearch, setCustomPromptWebSearch] = useState('');
 
-  const isDirty = customPrompt !== savedPrompt;
+  // Saved snapshot for dirty-state detection
+  const [savedPrompt, setSavedPrompt] = useState('');
+  const [savedPromptWebSearch, setSavedPromptWebSearch] = useState('');
+
+  const isDirty =
+    customPrompt !== savedPrompt || customPromptWebSearch !== savedPromptWebSearch;
 
   // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
     const load = async () => {
       try {
-        const prompt = await PromptsApi.getSystemPrompt();
-        setCustomPrompt(prompt);
-        setSavedPrompt(prompt);
+        const prompts = await PromptsApi.getSystemPrompts();
+        setCustomPrompt(prompts.customSystemPrompt);
+        setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
+        setSavedPrompt(prompts.customSystemPrompt);
+        setSavedPromptWebSearch(prompts.customSystemPromptWebSearch);
       } finally {
         setIsLoading(false);
       }
@@ -143,15 +208,23 @@ export default function PromptsPage() {
   }, []);
 
   // ── Handlers ───────────────────────────────────────────────
-  const handleUseDefault = useCallback(() => {
+  const handleUseDefaultInternal = useCallback(() => {
     setCustomPrompt(DEFAULT_SYSTEM_PROMPT);
+  }, []);
+
+  const handleUseDefaultWebSearch = useCallback(() => {
+    setCustomPromptWebSearch(DEFAULT_WEB_SEARCH_PROMPT);
   }, []);
 
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      await PromptsApi.saveSystemPrompt(customPrompt);
+      await PromptsApi.saveSystemPrompts({
+        customSystemPrompt: customPrompt,
+        customSystemPromptWebSearch: customPromptWebSearch,
+      });
       setSavedPrompt(customPrompt);
+      setSavedPromptWebSearch(customPromptWebSearch);
       addToast({
         variant: 'success',
         title: t('workspace.prompts.toasts.saved'),
@@ -167,16 +240,17 @@ export default function PromptsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [customPrompt, addToast]);
+  }, [customPrompt, customPromptWebSearch, addToast]);
 
   const handleDiscard = useCallback(() => {
     setCustomPrompt(savedPrompt);
+    setCustomPromptWebSearch(savedPromptWebSearch);
     addToast({
       variant: 'success',
       title: t('workspace.prompts.toasts.discarded'),
       description: t('workspace.prompts.toasts.discardedDescription'),
     });
-  }, [savedPrompt, addToast]);
+  }, [savedPrompt, savedPromptWebSearch, addToast]);
 
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {
@@ -196,10 +270,10 @@ export default function PromptsPage() {
         <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('workspace.prompts.heading')}
+              Custom System Prompts
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
-              {t('workspace.prompts.subtitle')}
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+              Configure separate system prompts for internal search and web search modes
             </Text>
           </Box>
           <Button
@@ -215,38 +289,39 @@ export default function PromptsPage() {
           </Button>
         </Flex>
 
-        {/* ── System Prompt Section ── */}
-        <Box style={{ marginBottom: 'var(--space-5)' }}>
-          <PromptSectionCard>
-            {/* Label row + button + textarea grouped */}
-            <Flex direction="column" gap="2">
-              <Flex align="center" justify="between">
-                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  {t('workspace.prompts.heading')}
-                </Text>
-                <Button
-                  variant="ghost"
-                  color="gray"
-                  size="1"
-                  onClick={handleUseDefault}
-                  style={{ border: '1px solid var(--emerald-a8)', borderRadius: 'var(--radius-1)', color: 'var(--emerald-a11)', gap: 4, background: 'var(--olive-2)', marginRight: 0 }}
-                >
-                  {t('workspace.prompts.useDefault')}
-                </Button>
-              </Flex>
-              <TextArea
-                rows={6}
-                placeholder={t('workspace.prompts.placeholder')}
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                style={{ resize: 'vertical' }}
-              />
-            </Flex>
+        {/* ── Internal Search Prompt Section ── */}
+        <Box style={{ marginBottom: 20 }}>
+          <PromptSectionCard
+            iconName="edit_note"
+            title="Internal Search"
+            description="System prompt used when answering from your internal knowledge base"
+          >
+            <PromptEditor
+              label=""
+              value={customPrompt}
+              placeholder="Enter your custom system prompt for internal search here"
+              helperText="This prompt guides the AI when answering from internal documents. Changes take effect immediately for new conversations."
+              onChange={setCustomPrompt}
+              onUseDefault={handleUseDefaultInternal}
+            />
+          </PromptSectionCard>
+        </Box>
 
-            {/* Helper text */}
-            <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
-              {t('workspace.prompts.helperText')}
-            </Text>
+        {/* ── Web Search Prompt Section ── */}
+        <Box style={{ marginBottom: 20 }}>
+          <PromptSectionCard
+            iconName="travel_explore"
+            title="Web Search"
+            description="System prompt used when answering with live web search results"
+          >
+            <PromptEditor
+              label=""
+              value={customPromptWebSearch}
+              placeholder="Enter your custom system prompt for web search here"
+              helperText="This prompt guides the AI when answering using web search results. Changes take effect immediately for new conversations."
+              onChange={setCustomPromptWebSearch}
+              onUseDefault={handleUseDefaultWebSearch}
+            />
           </PromptSectionCard>
         </Box>
 

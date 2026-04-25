@@ -3,10 +3,10 @@ import io
 import os
 import tempfile
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -198,9 +198,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
         # Google Drive client and data source (initialized in init())
-        self.google_client: Optional[GoogleClient] = None
-        self.drive_data_source: Optional[GoogleDriveDataSource] = None
-        self.config: Optional[Dict] = None
+        self.google_client: GoogleClient | None = None
+        self.drive_data_source: GoogleDriveDataSource | None = None
+        self.config: dict | None = None
 
     async def init(self) -> bool:
         """Initialize the Google Drive connector with credentials and services."""
@@ -320,7 +320,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         user_id: str,
         user_email: str,
         drive_id: str
-    ) -> Optional[RecordUpdate]:
+    ) -> RecordUpdate | None:
         """
         Process a single Google Drive file and detect changes.
 
@@ -400,7 +400,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             source_updated_at = int(parse_timestamp(modified_time)) if modified_time else timestamp_ms
 
             # Get file extension
-            file_extension = metadata.get("fileExtension", None)
+            file_extension = metadata.get("fileExtension")
             if not file_extension:
                 file_name = metadata.get("name", "")
                 if "." in file_name:
@@ -417,7 +417,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=drive_id,
                 external_record_id=str(file_id),
-                external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
+                external_revision_id=metadata.get("headRevisionId") or metadata.get("version"),
                 parent_external_record_id=parent_external_record_id if parent_external_record_id != drive_id else None,
                 parent_record_type=RecordType.FILE if parent_external_record_id != drive_id else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
@@ -428,19 +428,19 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
-                weburl=metadata.get("webViewLink", None),
+                weburl=metadata.get("webViewLink"),
                 mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,
-                path=metadata.get("path", None),
-                etag=metadata.get("etag", None),
-                ctag=metadata.get("ctag", None),
-                quick_xor_hash=metadata.get("quickXorHash", None),
-                crc32_hash=metadata.get("crc32Hash", None),
-                sha1_hash=metadata.get("sha1Checksum", None),
-                sha256_hash=metadata.get("sha256Checksum", None),
-                md5_hash=metadata.get("md5Checksum", None),
+                path=metadata.get("path"),
+                etag=metadata.get("etag"),
+                ctag=metadata.get("ctag"),
+                quick_xor_hash=metadata.get("quickXorHash"),
+                crc32_hash=metadata.get("crc32Hash"),
+                sha1_hash=metadata.get("sha1Checksum"),
+                sha256_hash=metadata.get("sha256Checksum"),
+                md5_hash=metadata.get("md5Checksum"),
                 is_shared=is_shared,
             )
 
@@ -479,7 +479,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             return None
 
-    def _parse_datetime(self, dt_obj) -> Optional[int]:
+    def _parse_datetime(self, dt_obj) -> int | None:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:
             return None
@@ -593,7 +593,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # 5. For non-Google docs, filter by file extension
         # Get the file extension from the metadata
         # Try fileExtension field first, then extract from name
-        file_extension = metadata.get("fileExtension", None)
+        file_extension = metadata.get("fileExtension")
         if not file_extension:
             file_name = metadata.get("name", "")
             if "." in file_name:
@@ -639,11 +639,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _process_drive_items_generator(
         self,
-        files: List[dict],
+        files: list[dict],
         user_id: str,
         user_email: str,
         drive_id: str
-    ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
+    ) -> AsyncGenerator[tuple[FileRecord | None, list[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
         Generator for non-blocking processing of large datasets.
@@ -1097,7 +1097,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error during conversion: {str(conv_error)}")
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
-    async def _get_file_metadata_from_drive(self, file_id: str) -> Dict:
+    async def _get_file_metadata_from_drive(self, file_id: str) -> dict:
         """
         Get file metadata from Google Drive API.
 
@@ -1129,11 +1129,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 detail=f"Error getting file metadata: {str(e)}"
             )
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """Get a signed URL for a specific record."""
         raise NotImplementedError("get_signed_url is not yet implemented for Google Drive")
 
-    async def stream_record(self, record: Record, convertTo: Optional[str] = None) -> StreamingResponse:
+    async def stream_record(self, record: Record, convertTo: str | None = None) -> StreamingResponse:
         """
         Stream a record from Google Drive.
 
@@ -1300,7 +1300,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
         return record_group
 
-    async def _create_app_user(self, user_about: Dict) -> None:
+    async def _create_app_user(self, user_about: dict) -> None:
         try:
 
             user = AppUser(
@@ -1358,7 +1358,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         await self._sync_user_personal_drive()
         self.logger.info("Incremental sync completed for Google Drive Individual")
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from Google Drive."""
         raise NotImplementedError("handle_webhook_notification is not yet implemented for Google Drive")
 
@@ -1382,7 +1382,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex records for Google Drive."""
         try:
             if not records:
@@ -1437,7 +1437,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record, user_id: str, user_email: str
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from Google Drive and return data for reindexing if changed."""
         try:
             file_id = record.external_record_id
@@ -1497,8 +1497,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Google Drive connector does not support dynamic filter options."""
         raise NotImplementedError("Google Drive connector does not support dynamic filter options")

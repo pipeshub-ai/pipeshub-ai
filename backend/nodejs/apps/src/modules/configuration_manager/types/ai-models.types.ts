@@ -27,5 +27,6 @@ export interface AIModelsConfig {
   tts?: AIModelConfiguration[];
   stt?: AIModelConfiguration[];
   customSystemPrompt?: string;
+  customSystemPromptWebSearch?: string;
 }
 

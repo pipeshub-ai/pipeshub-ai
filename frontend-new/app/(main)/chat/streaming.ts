@@ -191,7 +191,7 @@ export async function streamMessageForSlot(
       : {}),
     messages: [
       ...slot.messages,
-      { role: 'user', content: [{ type: 'text', text: query }] },
+      { role: 'user', content: [{ type: 'text', text: query }], metadata: { custom: { createdAt: new Date().toISOString() } } },
       {
         role: 'assistant' as const,
         id: pendingAssistantId,

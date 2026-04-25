@@ -15,6 +15,7 @@ import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import type { AgentWebSearchAttachment } from '../types';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
 const PALETTE_ICON_SIZE = 20;
@@ -117,6 +118,8 @@ export function AgentBuilderSidebar(props: {
   paletteDragBlockedMessage?: string;
   /** SA viewer without edit: lock org toolset credential UI inside Tools. */
   toolsetsOrgCredentialLocked?: boolean;
+  /** Web-search provider currently attached to the agent (null if none). */
+  webSearchAttached: AgentWebSearchAttachment | null;
 }) {
   const {
     open,
@@ -135,6 +138,7 @@ export function AgentBuilderSidebar(props: {
     paletteStructureLocked = false,
     paletteDragBlockedMessage = '',
     toolsetsOrgCredentialLocked = false,
+    webSearchAttached,
   } = props;
 
   const { t } = useTranslation();
@@ -433,7 +437,7 @@ export function AgentBuilderSidebar(props: {
             onToggle={() => toggle('tools')}
           />
           {expanded.tools ? (
-            <Box className="agent-builder-palette-nest">
+            <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <AgentBuilderToolsetsSection
                 toolsets={toolsets}
                 loading={loading}
@@ -447,6 +451,7 @@ export function AgentBuilderSidebar(props: {
                 structureLocked={paletteStructureLocked}
                 orgCredentialUiLocked={toolsetsOrgCredentialLocked}
                 onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                webSearchAttached={webSearchAttached}
               />
             </Box>
           ) : null}

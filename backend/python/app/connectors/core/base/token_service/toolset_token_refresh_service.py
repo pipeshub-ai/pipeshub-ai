@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -35,13 +35,13 @@ class ToolsetTokenRefreshService:
     def __init__(self, configuration_service: ConfigurationService) -> None:
         self.configuration_service = configuration_service
         self.logger = logging.getLogger("connector_service")
-        self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_toolsets: set = set()  # Track toolsets currently being processed to prevent recursion
-        self._toolset_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks to prevent concurrent refreshes
-        self._schedule_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks for atomic task scheduling
-        self._last_refresh_time: Dict[str, float] = {}  # Track last successful refresh time (prevents duplicates)
+        self._toolset_locks: dict[str, asyncio.Lock] = {}  # Per-toolset locks to prevent concurrent refreshes
+        self._schedule_locks: dict[str, asyncio.Lock] = {}  # Per-toolset locks for atomic task scheduling
+        self._last_refresh_time: dict[str, float] = {}  # Track last successful refresh time (prevents duplicates)
 
     def _get_toolset_lock(self, config_path: str) -> asyncio.Lock:
         """
@@ -348,7 +348,7 @@ class ToolsetTokenRefreshService:
         self,
         config_path: str,
         toolset_type: str
-    ) -> Optional[Dict[str, any]]:
+    ) -> dict[str, any] | None:
         """
         Load admin-created OAuth config for a toolset instance.
 
@@ -434,7 +434,7 @@ class ToolsetTokenRefreshService:
 
     def _enrich_from_toolset_registry(
         self,
-        oauth_flow_config: Dict[str, any],
+        oauth_flow_config: dict[str, any],
         toolset_type: str
     ) -> None:
         """
@@ -482,8 +482,8 @@ class ToolsetTokenRefreshService:
         self,
         config_path: str,
         toolset_type: str,
-        auth_config: Dict[str, any]
-    ) -> Dict[str, any]:
+        auth_config: dict[str, any]
+    ) -> dict[str, any]:
         """
         Build complete OAuth flow configuration for toolset.
 
@@ -818,7 +818,7 @@ class ToolsetTokenRefreshService:
         """Remove toolset from processing set."""
         self._processing_toolsets.discard(config_path)
 
-    async def _load_token_from_config(self, config_path: str) -> tuple[Optional[OAuthToken], bool]:
+    async def _load_token_from_config(self, config_path: str) -> tuple[OAuthToken | None, bool]:
         """
         Load OAuth token from toolset config.
 
@@ -1016,7 +1016,7 @@ class ToolsetTokenRefreshService:
         config_path: str,
         toolset_type: str,
         token: OAuthToken
-    ) -> tuple[Optional[OAuthToken], bool]:
+    ) -> tuple[OAuthToken | None, bool]:
         """
         Perform immediate token refresh.
 
@@ -1077,22 +1077,22 @@ class ToolsetTokenRefreshService:
         """
         cancelled_count = 0
         instance_prefix = f"/services/toolsets/{instance_id}/"
-        
+
         # Find all tasks that match this instance prefix
         tasks_to_cancel = [
-            config_path for config_path in self._refresh_tasks.keys()
+            config_path for config_path in self._refresh_tasks
             if config_path.startswith(instance_prefix)
         ]
-        
+
         for config_path in tasks_to_cancel:
             self._cancel_existing_refresh_task(config_path)
             cancelled_count += 1
-        
+
         if cancelled_count > 0:
             self.logger.info(
                 f"⏹️ Cancelled {cancelled_count} refresh task(s) for instance {instance_id}"
             )
-        
+
         return cancelled_count
 
     def _create_refresh_task(

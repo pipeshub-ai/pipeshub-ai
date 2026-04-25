@@ -5290,7 +5290,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             team_id = f"all_{org_id}"
             ts = get_epoch_timestamp_in_ms()
-            
+
             # 1. Create team node only if it doesn't exist
             existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
             if not existing_team:
@@ -12540,7 +12540,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
             if not people:
-                return
+                return None
 
             collection = CollectionNames.PEOPLE.value
             people_dicts = [
@@ -16924,6 +16924,57 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check agent permission: {str(e)}")
             return None
 
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            org_label = collection_to_label(CollectionNames.ORGS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
+
+            query = f"""
+            // Agents owned by users in this org (covers private + shared)
+            MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
+            MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'USER' AND p.role = 'OWNER'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND agent.webSearch = $provider
+            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+            RETURN DISTINCT agent.name AS name,
+                   agent.id AS _key,
+                   COALESCE(creator.fullName, creator.name) AS creatorName
+
+            UNION
+
+            // Agents shared directly with this org
+            MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'ORG'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND agent.webSearch = $provider
+            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+            RETURN DISTINCT agent.name AS name,
+                   agent.id AS _key,
+                   COALESCE(creator.fullName, creator.name) AS creatorName
+            """
+            result = await self.client.execute_query(
+                query, parameters={"org_id": org_id, "provider": provider}
+            )
+            if not result:
+                return []
+            seen = set()
+            deduped = []
+            for row in result:
+                key = row.get("_key")
+                if key and key not in seen:
+                    seen.add(key)
+                    deduped.append(row)
+            return deduped
+        except Exception as e:
+            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+            return []
+
     async def get_all_agents(
         self,
         user_id: str,
@@ -17164,7 +17215,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "webSearch"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

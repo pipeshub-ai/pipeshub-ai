@@ -16,7 +16,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Utility tools always included for every sub-agent
-UTILITY_DOMAINS = {"calculator", "datetime", "utility", "web_search"}
+UTILITY_DOMAINS = {"calculator", "datetime", "utility"}
+
+# Web tools get their own visible domain so the orchestrator can plan web tasks
+_WEB_TOOL_NAMES = {"fetch_url", "web_search"}
 
 # Domain aliases (normalize variations)
 _DOMAIN_ALIASES: dict[str, str] = {
@@ -76,8 +79,10 @@ def group_tools_by_domain(state: DeepAgentState) -> dict[str, list[str]]:
         sanitized_name = getattr(tool, "name", "")
         original_name = getattr(tool, "_original_name", sanitized_name)
 
-        # Use original name (with dots) for domain grouping
-        if "." in original_name:
+        # Web tools get their own visible domain
+        if original_name in _WEB_TOOL_NAMES or sanitized_name in _WEB_TOOL_NAMES:
+            domain = "web"
+        elif "." in original_name:
             domain = original_name.split(".", 1)[0].lower()
         else:
             domain = "utility"

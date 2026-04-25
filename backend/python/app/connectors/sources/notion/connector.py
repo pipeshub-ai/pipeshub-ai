@@ -8,9 +8,10 @@ import asyncio
 import base64
 import mimetypes
 from collections import defaultdict
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, NoReturn
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -20,7 +21,12 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -83,7 +89,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 # Notion OAuth URLs
@@ -195,8 +201,8 @@ class NotionConnector(BaseConnector):
         )
 
         # Client instances
-        self.notion_client: Optional[NotionClient] = None
-        self.data_source: Optional[NotionDataSource] = None
+        self.notion_client: NotionClient | None = None
+        self.data_source: NotionDataSource | None = None
         self.connector_id: str = connector_id
 
         # Initialize sync points for incremental sync
@@ -215,8 +221,8 @@ class NotionConnector(BaseConnector):
 
         # Tracking state for deduplication
         # Workspace information from bot owner
-        self.workspace_id: Optional[str] = None
-        self.workspace_name: Optional[str] = None
+        self.workspace_id: str | None = None
+        self.workspace_name: str | None = None
 
     async def init(self) -> bool:
         """Initialize the Notion connector with credentials and client."""
@@ -304,7 +310,7 @@ class NotionConnector(BaseConnector):
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """
         Get a signed URL for a file record by fetching the latest URL from Notion API.
 
@@ -326,7 +332,7 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"Failed to get signed URL for {record.external_record_id}: {e}", exc_info=True)
             raise e
 
-    async def _get_comment_attachment_url(self, record: Record) -> Optional[str]:
+    async def _get_comment_attachment_url(self, record: Record) -> str | None:
         """
         Get signed URL for a comment attachment by fetching from Notion API.
 
@@ -394,7 +400,7 @@ class NotionConnector(BaseConnector):
         )
         return record.signed_url
 
-    async def _get_block_file_url(self, record: Record) -> Optional[str]:
+    async def _get_block_file_url(self, record: Record) -> str | None:
         """
         Get signed URL for a block file by fetching from Notion API.
 
@@ -557,7 +563,7 @@ class NotionConnector(BaseConnector):
                 status_code=500, detail=f"Failed to stream record: {str(e)}"
             )
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """
         Reindex a list of Notion records.
 
@@ -590,8 +596,8 @@ class NotionConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> NoReturn:
         """Notion connector does not support dynamic filter options."""
         raise NotImplementedError("Notion connector does not support dynamic filter options")
@@ -623,7 +629,7 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during Notion connector cleanup: {e}", exc_info=True)
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications (not implemented)."""
         self.logger.warning("Webhook notifications not yet supported for Notion")
         pass
@@ -798,7 +804,7 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _add_users_to_workspace_permissions(self, user_emails: List[str]) -> None:
+    async def _add_users_to_workspace_permissions(self, user_emails: list[str]) -> None:
         """
         Add READ permissions for users to the workspace record group.
 
@@ -926,7 +932,7 @@ class NotionConnector(BaseConnector):
                     self.logger.info(f"No {object_type}s found after time {last_sync_time}")
                     break
 
-                records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+                records_with_permissions: list[tuple[Record, list[Permission]]] = []
 
                 for obj_data in objects:
                     obj_id = obj_data.get("id")
@@ -1070,8 +1076,8 @@ class NotionConnector(BaseConnector):
         self,
         page_id: str,
         parser: NotionBlockParser,
-        parent_page_url: Optional[str] = None,
-        comments_by_block: Optional[Dict[str, List[Tuple[Dict[str, Any], str]]]] = None
+        parent_page_url: str | None = None,
+        comments_by_block: dict[str, list[tuple[dict[str, Any], str]]] | None = None
     ) -> BlocksContainer:
         """
         Fetch all blocks from a Notion page recursively and build BlocksContainer.
@@ -1085,8 +1091,8 @@ class NotionConnector(BaseConnector):
         Returns:
             BlocksContainer with all blocks and block groups
         """
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
 
         # Recursively process all blocks starting from root
         await self._process_blocks_recursive(
@@ -1139,7 +1145,7 @@ class NotionConnector(BaseConnector):
         metadata = metadata_response.data.json() if metadata_response.data else {}
 
         # Step 2: Fetch all rows with pagination
-        all_rows: List[Dict[str, Any]] = []
+        all_rows: list[dict[str, Any]] = []
         cursor = None
         page_size = 100
 
@@ -1193,7 +1199,7 @@ class NotionConnector(BaseConnector):
         self,
         page_id: str,
         page_url: str = ""
-    ) -> Tuple[List[FileRecord], Dict[str, List[Tuple[Dict[str, Any], str]]]]:
+    ) -> tuple[list[FileRecord], dict[str, list[tuple[dict[str, Any], str]]]]:
         """
         Fetch all attachments and comments from a Notion page in a single traversal.
 
@@ -1210,7 +1216,7 @@ class NotionConnector(BaseConnector):
             Tuple of (List of FileRecord objects, Dict of block_id -> List of (comment_dict, block_id) tuples)
         """
         try:
-            file_records: List[FileRecord] = []
+            file_records: list[FileRecord] = []
 
             # Single traversal to collect attachment blocks and all block IDs
             attachment_blocks, all_block_ids = await self._fetch_attachment_blocks_and_block_ids_recursive(page_id)
@@ -1225,7 +1231,7 @@ class NotionConnector(BaseConnector):
             all_comments = await self._fetch_comments_for_blocks(page_id, all_block_ids)
 
             # Group comments by block_id
-            comments_by_block: Dict[str, List[Tuple[Dict[str, Any], str]]] = {}
+            comments_by_block: dict[str, list[tuple[dict[str, Any], str]]] = {}
             for comment, block_id in all_comments:
                 if block_id not in comments_by_block:
                     comments_by_block[block_id] = []
@@ -1240,7 +1246,7 @@ class NotionConnector(BaseConnector):
     async def _fetch_attachment_blocks_and_block_ids_recursive(
         self,
         block_id: str
-    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """
         Recursively fetch attachment blocks and collect all block IDs in a single traversal.
 
@@ -1260,9 +1266,9 @@ class NotionConnector(BaseConnector):
         Returns:
             Tuple of (List of attachment blocks, List of all block IDs encountered)
         """
-        attachment_blocks: List[Dict[str, Any]] = []
-        all_block_ids: List[str] = []
-        cursor: Optional[str] = None
+        attachment_blocks: list[dict[str, Any]] = []
+        all_block_ids: list[str] = []
+        cursor: str | None = None
         page_size = 50  # Notion API max
 
         while True:
@@ -1341,7 +1347,7 @@ class NotionConnector(BaseConnector):
     async def _fetch_comments_for_block(
         self,
         block_id: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Fetch all comments for a specific block with pagination.
 
@@ -1355,8 +1361,8 @@ class NotionConnector(BaseConnector):
         if not block_id or not block_id.strip():
             return []
 
-        all_comments: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        all_comments: list[dict[str, Any]] = []
+        cursor: str | None = None
         page_size = 100  # Notion API max for comments
 
         while True:
@@ -1425,8 +1431,8 @@ class NotionConnector(BaseConnector):
     async def _fetch_comments_for_blocks(
         self,
         page_id: str,
-        block_ids: List[str]
-    ) -> List[Tuple[Dict[str, Any], str]]:
+        block_ids: list[str]
+    ) -> list[tuple[dict[str, Any], str]]:
         """
         Fetch comments for a page and a list of block IDs.
 
@@ -1442,7 +1448,7 @@ class NotionConnector(BaseConnector):
             List of (comment_dict, block_id) tuples. All original comment fields
             including discussion_id are preserved for future threading support.
         """
-        all_comments: List[Tuple[Dict[str, Any], str]] = []
+        all_comments: list[tuple[dict[str, Any], str]] = []
 
         try:
             # Fetch comments for the page itself
@@ -1484,7 +1490,7 @@ class NotionConnector(BaseConnector):
         self,
         block_id: str,
         parser: 'NotionBlockParser'
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Fetch a block and extract plain text content from its rich_text fields.
 
@@ -1525,7 +1531,7 @@ class NotionConnector(BaseConnector):
     async def _fetch_block_children_recursive(
         self,
         block_id: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Fetch all children blocks from a Notion block/page with pagination.
 
@@ -1535,8 +1541,8 @@ class NotionConnector(BaseConnector):
         Returns:
             List of all child blocks (flattened, no pagination)
         """
-        all_blocks: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        all_blocks: list[dict[str, Any]] = []
+        cursor: str | None = None
         page_size = 100  # Notion API max
 
         while True:
@@ -1591,12 +1597,12 @@ class NotionConnector(BaseConnector):
         self,
         parent_id: str,
         parser: NotionBlockParser,
-        blocks: List[Block],
-        block_groups: List[BlockGroup],
-        parent_group_index: Optional[int],
-        parent_page_url: Optional[str] = None,
-        parent_page_id: Optional[str] = None,
-    ) -> List[BlockContainerIndex]:
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        parent_group_index: int | None,
+        parent_page_url: str | None = None,
+        parent_page_id: str | None = None,
+    ) -> list[BlockContainerIndex]:
         """
         Recursively process Notion blocks and their children.
 
@@ -1619,7 +1625,7 @@ class NotionConnector(BaseConnector):
         if not child_blocks:
             return []
 
-        current_level_indices: List[BlockContainerIndex] = []
+        current_level_indices: list[BlockContainerIndex] = []
 
         # Process each child block
         for notion_block in child_blocks:
@@ -1794,8 +1800,8 @@ class NotionConnector(BaseConnector):
 
     async def _convert_image_blocks_to_base64(
         self,
-        blocks: List[Block],
-        parent_page_url: Optional[str] = None
+        blocks: list[Block],
+        parent_page_url: str | None = None
     ) -> None:
         """
         Convert image blocks to base64 format by fetching images from URLs.
@@ -1826,7 +1832,7 @@ class NotionConnector(BaseConnector):
         image_parser = ImageParser(self.logger)
 
         # Batch fetch images in parallel
-        async def fetch_image(block: Block) -> Tuple[Block, Optional[str], Optional[Exception]]:
+        async def fetch_image(block: Block) -> tuple[Block, str | None, Exception | None]:
             """Fetch a single image and return block, base64_data_url, and any error"""
             image_url = str(block.public_data_link)  # Signed URL from Notion
             block_id = block.source_id or block.id
@@ -1918,8 +1924,8 @@ class NotionConnector(BaseConnector):
 
     async def _batch_get_or_create_child_records(
         self,
-        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]]
-    ) -> Dict[str, ChildRecord]:
+        children_to_resolve: dict[str, tuple[str, RecordType, str | None]]
+    ) -> dict[str, ChildRecord]:
         """
         Batch get or create child records for multiple external IDs.
 
@@ -1936,10 +1942,10 @@ class NotionConnector(BaseConnector):
             return {}
 
         external_ids = list(children_to_resolve.keys())
-        child_record_map: Dict[str, ChildRecord] = {}
+        child_record_map: dict[str, ChildRecord] = {}
 
         # Step 1: Batch lookup all external IDs in one transaction
-        existing_records: Dict[str, Record] = {}
+        existing_records: dict[str, Record] = {}
         async with self.data_store_provider.transaction() as tx_store:
             for ext_id in external_ids:
                 record = await tx_store.get_record_by_external_id(
@@ -1961,7 +1967,7 @@ class NotionConnector(BaseConnector):
         # Step 3: Create minimal records for missing ones
         missing_ids = [ext_id for ext_id in external_ids if ext_id not in existing_records]
         if missing_ids:
-            records_to_create: List[Tuple[Record, List]] = []
+            records_to_create: list[tuple[Record, list]] = []
 
             for ext_id in missing_ids:
                 name, record_type, parent_ext_id = children_to_resolve[ext_id]
@@ -2031,7 +2037,7 @@ class NotionConnector(BaseConnector):
 
         return child_record_map
 
-    async def _resolve_database_to_data_sources(self, database_id: str) -> List[ChildRecord]:
+    async def _resolve_database_to_data_sources(self, database_id: str) -> list[ChildRecord]:
         """
         Resolve a database to its data_sources and return ChildRecords for each.
 
@@ -2081,7 +2087,7 @@ class NotionConnector(BaseConnector):
 
             # Batch resolve all data_sources to ChildRecords
             # Collect data_sources to resolve
-            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            data_sources_to_resolve: dict[str, tuple[str, RecordType, str | None]] = {}
             for data_source in data_sources:
                 data_source_id = data_source.get("id")
                 data_source_name = data_source.get("name", "Untitled Data Source")
@@ -2113,8 +2119,8 @@ class NotionConnector(BaseConnector):
 
     async def _resolve_child_reference_blocks(
         self,
-        blocks: List[Block],
-        parent_record: Optional[Record] = None
+        blocks: list[Block],
+        parent_record: Record | None = None
     ) -> None:
         """
         Resolve internal record IDs for child reference blocks.
@@ -2144,8 +2150,8 @@ class NotionConnector(BaseConnector):
             return
 
         # Step 1: Separate database references from other references
-        database_blocks: List[Block] = []
-        other_blocks: List[Block] = []
+        database_blocks: list[Block] = []
+        other_blocks: list[Block] = []
 
         for block in child_ref_blocks:
             reference_type = block.source_type or ""
@@ -2155,7 +2161,7 @@ class NotionConnector(BaseConnector):
                 other_blocks.append(block)
 
         # Step 2: Handle database references - resolve to data_sources
-        database_child_records_map: Dict[str, List[ChildRecord]] = {}
+        database_child_records_map: dict[str, list[ChildRecord]] = {}
         if database_blocks:
             # Collect unique database IDs
             unique_database_ids = set()
@@ -2171,11 +2177,11 @@ class NotionConnector(BaseConnector):
                     database_child_records_map[database_id] = data_source_child_records
 
         # Step 3: Handle non-database references using existing logic
-        child_record_map: Dict[str, ChildRecord] = {}
+        child_record_map: dict[str, ChildRecord] = {}
         if other_blocks:
             # Collect unique child references (deduplicate by external_id)
             parent_ext_id = parent_record.external_record_id if parent_record else None
-            children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            children_to_resolve: dict[str, tuple[str, RecordType, str | None]] = {}
             for block in other_blocks:
                 ext_id = block.source_id
                 if ext_id and ext_id not in children_to_resolve:
@@ -2208,8 +2214,8 @@ class NotionConnector(BaseConnector):
 
     async def _resolve_table_row_children(
         self,
-        blocks: List[Block],
-        parent_data_source_record: Optional[Record] = None
+        blocks: list[Block],
+        parent_data_source_record: Record | None = None
     ) -> None:
         """
         Resolve child records for table rows that have child pages.
@@ -2228,9 +2234,9 @@ class NotionConnector(BaseConnector):
 
         # Step 1: Fetch child pages for each row in parallel (API calls are safe to parallelize)
         # Store as: row_page_id -> list of (child_page_id, child_title)
-        row_children_map: Dict[str, List[Tuple[str, str]]] = {}
+        row_children_map: dict[str, list[tuple[str, str]]] = {}
 
-        async def fetch_row_children(block: Block) -> Tuple[str, List[Tuple[str, str]]]:
+        async def fetch_row_children(block: Block) -> tuple[str, list[tuple[str, str]]]:
             row_page_id = block.source_id
             datasource = await self._get_fresh_datasource()
             response = await datasource.retrieve_block_children(
@@ -2260,7 +2266,7 @@ class NotionConnector(BaseConnector):
             row_children_map[row_page_id] = children
 
         # Step 2: Collect unique child page IDs across all rows and build batch input
-        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+        children_to_resolve: dict[str, tuple[str, RecordType, str | None]] = {}
         for row_page_id, children in row_children_map.items():
             for child_id, title in children:
                 if child_id not in children_to_resolve:
@@ -2288,10 +2294,10 @@ class NotionConnector(BaseConnector):
 
     async def _extract_comment_attachment_file_records(
         self,
-        comments_by_block: Dict[str, List[Tuple[Dict[str, Any], str]]],
+        comments_by_block: dict[str, list[tuple[dict[str, Any], str]]],
         page_id: str,
-        page_url: Optional[str] = None
-    ) -> List[FileRecord]:
+        page_url: str | None = None
+    ) -> list[FileRecord]:
         """
         Extract FileRecords from comment attachments for database storage during sync.
 
@@ -2306,7 +2312,7 @@ class NotionConnector(BaseConnector):
         Returns:
             List of FileRecord objects from all comment attachments
         """
-        all_file_records: List[FileRecord] = []
+        all_file_records: list[FileRecord] = []
 
         # Process all comments to extract attachment FileRecords
         for block_id, comment_list in comments_by_block.items():
@@ -2365,13 +2371,13 @@ class NotionConnector(BaseConnector):
 
     async def _attach_comments_to_blocks(
         self,
-        blocks: List[Block],
-        block_groups: List[BlockGroup],
-        comments_by_block: Dict[str, List[Tuple[Dict[str, Any], str]]],
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        comments_by_block: dict[str, list[tuple[dict[str, Any], str]]],
         page_id: str,
-        page_url: Optional[str],
+        page_url: str | None,
         parser: 'NotionBlockParser'
-    ) -> List[FileRecord]:
+    ) -> list[FileRecord]:
         """
         Attach comments to blocks and create COMMENT_THREAD BlockGroups for page-level comments.
 
@@ -2389,16 +2395,16 @@ class NotionConnector(BaseConnector):
         Returns:
             List of FileRecord objects from comment attachments
         """
-        all_file_records: List[FileRecord] = []
+        all_file_records: list[FileRecord] = []
 
         # Create a map of block source_id -> Block for quick lookup
-        block_by_source_id: Dict[str, Block] = {}
+        block_by_source_id: dict[str, Block] = {}
         for block in blocks:
             if block.source_id:
                 block_by_source_id[block.source_id] = block
 
         # Fetch block text content for all blocks that have comments
-        block_text_map: Dict[str, Optional[str]] = {}
+        block_text_map: dict[str, str | None] = {}
         blocks_with_comments = [bid for bid in comments_by_block if bid != page_id]
         if blocks_with_comments:
             block_text_tasks = [
@@ -2418,7 +2424,7 @@ class NotionConnector(BaseConnector):
                 continue  # Handle page-level comments separately
 
             # Group comments by thread_id (discussion_id)
-            comments_by_thread: Dict[str, List[BlockComment]] = defaultdict(list)
+            comments_by_thread: dict[str, list[BlockComment]] = defaultdict(list)
 
             for comment_dict, _ in comment_list:
                 try:
@@ -2455,7 +2461,7 @@ class NotionConnector(BaseConnector):
 
         return all_file_records
 
-    async def _resolve_author_name(self, notion_comment: Dict[str, Any]) -> Optional[str]:
+    async def _resolve_author_name(self, notion_comment: dict[str, Any]) -> str | None:
         """
         Resolve author name from Notion comment via user lookup.
 
@@ -2479,11 +2485,11 @@ class NotionConnector(BaseConnector):
 
     async def _process_comment_attachments(
         self,
-        notion_comment: Dict[str, Any],
+        notion_comment: dict[str, Any],
         comment_id: str,
         page_id: str,
-        page_url: Optional[str]
-    ) -> Tuple[List[FileRecord], List[CommentAttachment]]:
+        page_url: str | None
+    ) -> tuple[list[FileRecord], list[CommentAttachment]]:
         """
         Process comment attachments and create FileRecords.
 
@@ -2496,8 +2502,8 @@ class NotionConnector(BaseConnector):
         Returns:
             Tuple of (List of FileRecord objects, List of CommentAttachment objects)
         """
-        file_records: List[FileRecord] = []
-        comment_attachments: List[CommentAttachment] = []
+        file_records: list[FileRecord] = []
+        comment_attachments: list[CommentAttachment] = []
 
         # Track seen normalized filenames per comment to prevent duplicates
         seen_filenames: set[str] = set()
@@ -2549,12 +2555,12 @@ class NotionConnector(BaseConnector):
 
     async def _create_block_comment_from_notion_comment(
         self,
-        notion_comment: Dict[str, Any],
+        notion_comment: dict[str, Any],
         page_id: str,
         parser: 'NotionBlockParser',
-        page_url: Optional[str] = None,
-        quoted_text: Optional[str] = None
-    ) -> Tuple[Optional[BlockComment], List[FileRecord]]:
+        page_url: str | None = None,
+        quoted_text: str | None = None
+    ) -> tuple[BlockComment | None, list[FileRecord]]:
         """
         Create BlockComment from a Notion comment object.
 
@@ -2600,13 +2606,13 @@ class NotionConnector(BaseConnector):
 
     async def _create_page_level_comment_groups(
         self,
-        block_groups: List[BlockGroup],
-        blocks: List[Block],
-        page_level_comments: List[Tuple[Dict[str, Any], str]],
+        block_groups: list[BlockGroup],
+        blocks: list[Block],
+        page_level_comments: list[tuple[dict[str, Any], str]],
         page_id: str,
         parser: 'NotionBlockParser',
-        page_url: Optional[str] = None
-    ) -> List[FileRecord]:
+        page_url: str | None = None
+    ) -> list[FileRecord]:
         """
         Create COMMENT_THREAD BlockGroups for page-level comments.
 
@@ -2624,17 +2630,17 @@ class NotionConnector(BaseConnector):
         Returns:
             List of FileRecord objects from comment attachments
         """
-        all_file_records: List[FileRecord] = []
+        all_file_records: list[FileRecord] = []
 
         # Group comments by discussion_id (thread)
-        comments_by_thread: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        comments_by_thread: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for comment_dict, _ in page_level_comments:
             discussion_id = comment_dict.get("discussion_id", "default")
             comments_by_thread[discussion_id].append(comment_dict)
 
         # Create one BlockGroup per thread
         for discussion_id, thread_comments in comments_by_thread.items():
-            thread_group_indices: List[BlockContainerIndex] = []
+            thread_group_indices: list[BlockContainerIndex] = []
 
             # Calculate thread group index (will be after all comment groups in this thread)
             thread_group_index = len(block_groups) + len(thread_comments)
@@ -2664,7 +2670,7 @@ class NotionConnector(BaseConnector):
                     comment_group_index = len(block_groups)
 
                     # Create CHILD_RECORD blocks for attachments
-                    attachment_block_indices: List[BlockContainerIndex] = []
+                    attachment_block_indices: list[BlockContainerIndex] = []
                     if block_comment.attachments:
                         for attachment in block_comment.attachments:
                             # attachment.id is the FileRecord.id (internal DB ID)
@@ -2758,7 +2764,7 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ Failed to create workspace record group: {e}", exc_info=True)
             raise
 
-    def _transform_to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+    def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """
         Transform Notion user data to AppUser entity.
 
@@ -2820,8 +2826,8 @@ class NotionConnector(BaseConnector):
         self,
         block_id: str,
         max_depth: int = 10,
-        visited: Optional[set] = None
-    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        visited: set | None = None
+    ) -> tuple[str | None, RecordType | None]:
         """
         Recursively resolve a block_id parent until we find a page_id, database_id, or data_source_id.
 
@@ -2897,7 +2903,7 @@ class NotionConnector(BaseConnector):
             )
             return None, None
 
-    async def _get_database_parent_page_id(self, database_id: str) -> Optional[str]:
+    async def _get_database_parent_page_id(self, database_id: str) -> str | None:
         """
         Fetch a database and return its parent ID (page_id, database_id, block_id, or data_source_id).
 
@@ -2947,10 +2953,10 @@ class NotionConnector(BaseConnector):
 
     async def _transform_to_webpage_record(
         self,
-        obj_data: Dict[str, Any],
+        obj_data: dict[str, Any],
         object_type: str,
-        database_parent_id: Optional[str] = None
-    ) -> Optional[WebpageRecord]:
+        database_parent_id: str | None = None
+    ) -> WebpageRecord | None:
         """
         Unified transform for pages, databases, and data_sources to WebpageRecord.
 
@@ -3059,10 +3065,10 @@ class NotionConnector(BaseConnector):
 
     def _transform_to_file_record(
         self,
-        notion_block: Dict[str, Any],
+        notion_block: dict[str, Any],
         page_id: str,
         page_url: str = ""
-    ) -> Optional[FileRecord]:
+    ) -> FileRecord | None:
         """
         Create FileRecord from a Notion attachment block.
 
@@ -3188,11 +3194,11 @@ class NotionConnector(BaseConnector):
 
     async def _transform_to_comment_file_record(
         self,
-        attachment: Dict[str, Any],
+        attachment: dict[str, Any],
         comment_id: str,
         page_id: str,
-        page_url: Optional[str] = None
-    ) -> Optional[FileRecord]:
+        page_url: str | None = None
+    ) -> FileRecord | None:
         """
         Create FileRecord from a comment attachment.
 
@@ -3315,7 +3321,7 @@ class NotionConnector(BaseConnector):
 
     # ==================== Utility Methods ====================
 
-    def _extract_page_title(self, page_data: Dict[str, Any]) -> str:
+    def _extract_page_title(self, page_data: dict[str, Any]) -> str:
         """Extract title from page data."""
         properties = page_data.get("properties", {})
 
@@ -3334,7 +3340,7 @@ class NotionConnector(BaseConnector):
 
         return "Untitled"
 
-    async def resolve_page_title_by_id(self, page_id: str) -> Optional[str]:
+    async def resolve_page_title_by_id(self, page_id: str) -> str | None:
         """
         Resolve a Notion page ID to its title.
 
@@ -3370,7 +3376,7 @@ class NotionConnector(BaseConnector):
             self.logger.warning(f"Failed to resolve page title for {page_id}: {e}")
             return None
 
-    async def resolve_user_name_by_id(self, user_id: str) -> Optional[str]:
+    async def resolve_user_name_by_id(self, user_id: str) -> str | None:
         """
         Resolve a Notion user ID to the user's name.
 
@@ -3419,7 +3425,7 @@ class NotionConnector(BaseConnector):
             self.logger.warning(f"Failed to resolve user name for {user_id}: {e}")
             return None
 
-    async def get_record_by_external_id(self, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, external_id: str) -> Record | None:
         """
         Get record by external ID from ArangoDB.
 
@@ -3442,8 +3448,8 @@ class NotionConnector(BaseConnector):
     async def get_record_child_by_external_id(
         self,
         external_id: str,
-        parent_data_source_id: Optional[str] = None
-    ) -> Optional[ChildRecord]:
+        parent_data_source_id: str | None = None
+    ) -> ChildRecord | None:
         """
         Get or create ChildRecord for a record (page/datasource) by external ID.
 
@@ -3515,7 +3521,7 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"Error getting record child for {external_id}: {e}")
             return None
 
-    async def get_user_child_by_external_id(self, user_id: str) -> Optional[ChildRecord]:
+    async def get_user_child_by_external_id(self, user_id: str) -> ChildRecord | None:
         """
         Get ChildRecord for a user by external ID (Notion user ID).
 
@@ -3561,7 +3567,7 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"Error getting user child for {user_id}: {e}")
             return None
 
-    def _parse_iso_timestamp(self, timestamp_str: str) -> Optional[int]:
+    def _parse_iso_timestamp(self, timestamp_str: str) -> int | None:
         """Parse ISO 8601 timestamp to epoch milliseconds."""
         try:
             return parse_timestamp(timestamp_str)
@@ -3573,7 +3579,7 @@ class NotionConnector(BaseConnector):
         """Get current time in ISO 8601 format with Z suffix (matching Notion format)."""
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    def _is_embed_platform_url(self, url: Optional[str]) -> bool:
+    def _is_embed_platform_url(self, url: str | None) -> bool:
         """
         Check if a URL is from an embed platform (YouTube, Vimeo, etc.) vs. a direct file URL.
 
