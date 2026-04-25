@@ -4970,6 +4970,44 @@ class TestGetMessageContentFKRelations:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
+        # Table summary must still render even when child_results is empty
+        # (FK_ENRICHMENT blocks bake DDL+sample rows into table_summary and
+        # always have empty child_results — they used to be silently dropped).
+        assert "Table summary" in combined
+        assert "Block Group Type: table" in combined
+
+    def test_empty_children_with_fk_relations_renders_summary_and_fk(self):
+        # FK_ENRICHMENT blocks: child_results is [] by construction; DDL and
+        # sample rows live inside table_summary. The table branch must render
+        # both the summary and the FK info even when child_results is empty.
+        flattened = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=GroupType.TABLE.value,
+                content=("DDL:\nCREATE TABLE users(...)", []),
+                block_group_index=0,
+                fk_parent_relations=[{
+                    "record_id": "rec-p",
+                    "parentTable": "departments",
+                    "sourceColumn": "dept_id",
+                    "targetColumn": "id",
+                }],
+                fk_child_relations=[{
+                    "record_id": "rec-c",
+                    "childTable": "orders",
+                    "sourceColumn": "user_id",
+                    "targetColumn": "id",
+                }],
+            ),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "CREATE TABLE users" in combined
+        assert "FK Relations" in combined
+        assert "departments" in combined
+        assert "orders" in combined
 
 
 # ===================================================================
