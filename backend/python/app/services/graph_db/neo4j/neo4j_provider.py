@@ -7681,9 +7681,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            if not record.get("isInternal"):
-                # Reset indexing status to QUEUED before reindexing
-                await self.reset_indexing_status_to_queued_for_record_ids([record_id])
+            # Reset indexing status to QUEUED before reindexing (skips isInternal in bulk helper)
+            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -10402,46 +10401,54 @@ class Neo4jProvider(IGraphDBProvider):
 
 
     async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
-        """
-        Reset indexing status to QUEUED before sending update/reindex events.
-        Only resets if status is not already QUEUED or EMPTY.
-        """
-        try:
-            # Get the record
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
-                self.logger.warning(f"Record {record_id} not found for status reset")
-                return
-
-            current_status = record.get("indexingStatus")
-
-            # Only reset if not already QUEUED or EMPTY
-            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
-                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
-                return
-
-            # Update indexing status to QUEUED
-            doc = {
-                "id": record_id,
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            }
-
-            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
-        except Exception as e:
-            # Log but don't fail the main operation if status update fails
-            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+        """Reset indexing status to QUEUED (delegates to bulk path)."""
+        await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
-        Set QUEUED for each id (one or many; deduplicated). Same logic as the reindex pre-reset
-        and event-service batch path; caller supplies ids (e.g. from a graph batch just loaded).
+        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
+        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
         """
-        if not record_ids:
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if rid]
+        if not unique_ids:
             return
-        for rid in dict.fromkeys(record_ids):
-            if rid:
-                await self._reset_indexing_status_to_queued(rid)
+        coll = CollectionNames.RECORDS.value
+        skip_status = frozenset({ProgressStatus.EMPTY.value, ProgressStatus.QUEUED.value})
+        try:
+            label = collection_to_label(coll)
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.id IN $ids
+            RETURN n
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"ids": unique_ids},
+                txn_id=None,
+            )
+            if not results:
+                return
+
+            to_upsert: list[dict] = []
+            for row in results:
+                node_data = dict(row["n"])
+                record = self._neo4j_to_arango_node(node_data, coll)
+                rid = record.get("id") or record.get("_key")
+                if not rid:
+                    continue
+                if record.get("isInternal"):
+                    continue
+                if record.get("indexingStatus") in skip_status:
+                    continue
+                to_upsert.append({"id": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+
+            if to_upsert:
+                await self.batch_upsert_nodes(to_upsert, coll)
+                self.logger.debug(
+                    "✅ Reset %s record(s) indexing status to QUEUED", len(to_upsert)
+                )
+        except Exception as e:
+            self.logger.error(f"❌ Failed bulk reset records to QUEUED: {str(e)}")
 
     async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""

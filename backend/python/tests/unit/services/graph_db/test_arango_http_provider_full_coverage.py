@@ -296,28 +296,34 @@ class TestReindexRecordGroupRecords:
 class TestResetIndexingStatusToQueued:
     @pytest.mark.asyncio
     async def test_already_queued(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "QUEUED"})
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"_key": "r1", "indexingStatus": "QUEUED"}]
+        )
         connected_provider.batch_upsert_nodes = AsyncMock()
         await connected_provider._reset_indexing_status_to_queued("r1")
         connected_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_already_empty(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "EMPTY"})
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"_key": "r1", "indexingStatus": "EMPTY"}]
+        )
         connected_provider.batch_upsert_nodes = AsyncMock()
         await connected_provider._reset_indexing_status_to_queued("r1")
         connected_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_resets_to_queued(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "INDEXED"})
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"_key": "r1", "indexingStatus": "INDEXED"}]
+        )
         connected_provider.batch_upsert_nodes = AsyncMock()
         await connected_provider._reset_indexing_status_to_queued("r1")
         connected_provider.batch_upsert_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_record_not_found(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value=None)
+        connected_provider.execute_query = AsyncMock(return_value=[])
         await connected_provider._reset_indexing_status_to_queued("r1")
 
 
