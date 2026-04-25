@@ -110,6 +110,18 @@ describe('enterprise_search/schema/conversation.schema', () => {
       expect(Conversation.schema.path('modelInfo.modelProvider')).to.exist
       expect(Conversation.schema.path('modelInfo.chatMode')).to.exist
     })
+
+    it('should have appliedFilters.apps as an array', () => {
+      const path = Conversation.schema.path('appliedFilters.apps')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
+    })
+
+    it('should have appliedFilters.kb as an array', () => {
+      const path = Conversation.schema.path('appliedFilters.kb')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
+    })
   })
 
   describe('message sub-schema', () => {
@@ -163,6 +175,20 @@ describe('enterprise_search/schema/conversation.schema', () => {
     it('should have referenceData array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
       expect(messageSchema.path('referenceData')).to.exist
+    })
+
+    it('should have appliedFilters.apps as an array in messages', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      const path = messageSchema.path('appliedFilters.apps')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
+    })
+
+    it('should have appliedFilters.kb as an array in messages', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      const path = messageSchema.path('appliedFilters.kb')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
     })
   })
 

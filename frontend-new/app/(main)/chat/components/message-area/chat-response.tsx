@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Box, Button, Flex, Heading, IconButton } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
+import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { AnswerContent } from './answer-content';
@@ -17,7 +18,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact } from '../../types';
+import type { ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
@@ -52,6 +53,7 @@ interface ChatResponseProps {
   feedbackInfo?: FeedbackInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
   collections?: Array<{ id: string; name: string }>;
+  appliedFilters?: AppliedFiltersData;
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
   /** Whether this is the last bot message in the conversation */
@@ -81,6 +83,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   modelInfo,
   feedbackInfo,
   collections,
+  appliedFilters,
   messageId,
   isLastMessage = false,
   streamingContent = '',
@@ -90,7 +93,6 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMessageRowKey,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
-
   const { t } = useTranslation();
   const isMobile = useIsMobile();
 
@@ -109,7 +111,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const prevCRRef = useRef<Record<string, unknown>>({});
   const currentCRVals: Record<string, unknown> = {
     question, answer, citationMaps, citationCallbacks, confidence,
-    isStreaming, modelInfo, feedbackInfo, collections, messageId,
+    isStreaming, modelInfo, feedbackInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
     streamingCitationMaps,
   };
@@ -367,7 +369,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         onMouseEnter={() => setIsQuestionHovered(true)}
         onMouseLeave={() => setIsQuestionHovered(false)}
         style={{
-          marginBottom: collections && collections.length > 0 ? 'var(--space-3)' : 'var(--space-4)',
+          marginBottom: (collections && collections.length > 0) || (appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0)) ? 'var(--space-3)' : 'var(--space-4)',
         }}
       >
         <Flex align="start" gap="2">
@@ -436,10 +438,10 @@ export const ChatResponse = React.memo(function ChatResponse({
         )}
       </Box>
 
-      {/* Collection cards — shown when KBs were attached to this message */}
-      {collections && collections.length > 0 && (
-        <Box style={{ marginBottom: 'var(--space-4)' }}>
-          <SelectedCollections collections={collections} />
+      {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
+      {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
+        <Box style={{ marginBottom: 'var(--space-3)' }}>
+          <AppliedFilters appliedFilters={appliedFilters} />
         </Box>
       )}
 

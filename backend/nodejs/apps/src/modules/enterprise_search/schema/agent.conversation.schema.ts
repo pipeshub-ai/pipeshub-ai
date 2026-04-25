@@ -134,6 +134,10 @@ const messageSchema = new Schema<IMessage>(
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
     },
+    appliedFilters: {
+      apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+    },
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
   },
@@ -190,6 +194,12 @@ const agentConversationSchema = new Schema({
     },
   ],
   
+  // Applied filters stored when the conversation was initiated or last updated
+  // appliedFilters: {
+  //   apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+  //   kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+  // },
+
   // Agent conversation specific fields
   conversationSource: {
     type: String,

@@ -14,6 +14,7 @@ import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansio
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
+import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   ModeSwitcher,
   AgentStrategyModeSwitcher,
@@ -153,6 +154,7 @@ export function ChatInput({
   const setFilters = useChatStore((s) => s.setFilters);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
   const collectionNamesCache = useChatStore((s) => s.collectionNamesCache);
+  const collectionMetaCache = useChatStore((s) => s.collectionMetaCache);
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
@@ -232,21 +234,33 @@ export function ChatInput({
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
 
-  // Build selected collections from store (roots → apps API; record groups → kb API)
+  // Build selected collections from store (roots → apps API; record groups → kb API).
+  // Includes connector metadata so pills show the right icon per source type.
   const selectedCollections = useMemo(() => {
     const hubApps = settings.filters?.apps ?? [];
     const groups = settings.filters?.kb ?? [];
     return [
-      ...hubApps.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
-      ...groups.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
+      ...hubApps.map((id) => {
+        const meta = collectionMetaCache[id];
+        const isConnector = meta?.nodeType === 'app';
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: (isConnector ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
+      ...groups.map((id) => {
+        const meta = collectionMetaCache[id];
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: 'collection' as const,
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
     ];
-  }, [settings.filters, collectionNamesCache]);
+  }, [settings.filters, collectionNamesCache, collectionMetaCache]);
 
   const handleRemoveCollection = useCallback(
     (id: string) => {

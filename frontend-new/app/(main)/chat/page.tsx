@@ -530,6 +530,35 @@ function ChatContent() {
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
         });
+        // Restore filter state from the most recent user message that carried filters.
+        // This brings back the selected connectors/collections after a hard refresh.
+        const lastFiltered = [...messages]
+          .reverse()
+          .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
+
+        if (lastFiltered?.appliedFilters) {
+          const af = lastFiltered.appliedFilters;
+          const store = useChatStore.getState();
+
+          store.setFilters({
+            apps: af.apps.map((n) => n.id),
+            kb: af.kb.map((n) => n.id),
+          });
+
+          const namesCache: Record<string, string> = {};
+          const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
+          for (const node of [...af.apps, ...af.kb]) {
+            namesCache[node.id] = node.name;
+            metaCache[node.id] = {
+              name: node.name,
+              nodeType: node.nodeType,
+              connector: node.connector,
+            };
+          }
+          store.setCollectionNamesCache(namesCache);
+          store.setCollectionMetaCache(metaCache);
+        }
+
         const formattedMessages = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
