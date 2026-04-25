@@ -119,6 +119,7 @@ interface TableRowProps {
   item: TableItem;
   isSelected: boolean;
   showSourceColumn?: boolean;
+  showCheckbox?: boolean;
   isMobile: boolean;
   onSelect: () => void;
   onClick: () => void;
@@ -135,6 +136,7 @@ function TableRow({
   item,
   isSelected,
   showSourceColumn,
+  showCheckbox = true,
   isMobile,
   onSelect,
   onClick,
@@ -353,19 +355,21 @@ function TableRow({
       onKeyDown={handleKeyDown}
       onClick={onClick}
     >
-      {/* Checkbox */}
+      {/* Checkbox column — kept as a spacer when hidden so the file name doesn't shift left */}
       <Flex
         align="center"
         justify="center"
-        style={{ width: '38px', padding: '0 8px', cursor: 'pointer' }}
-        onClick={(e) => e.stopPropagation()}
+        style={{ width: '38px', padding: '0 8px', cursor: showCheckbox ? 'pointer' : 'default' }}
+        onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
-        <Checkbox
-          size="1"
-          checked={isSelected}
-          onCheckedChange={() => onSelect()}
-          style={{cursor: 'pointer'}}
-        />
+        {showCheckbox && (
+          <Checkbox
+            size="1"
+            checked={isSelected}
+            onCheckedChange={() => onSelect()}
+            style={{cursor: 'pointer'}}
+          />
+        )}
       </Flex>
 
       {/* File Name */}
@@ -508,25 +512,25 @@ function TableRow({
         </Flex>
       )}
 
-      {/* Created — hidden on mobile */}
+      {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!isMobile && (
         <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
             {isKnowledgeHubNode(item)
-              ? formatDate(new Date(item.createdAt).toISOString())
-              : formatDate(item.createdAt)
+              ? (item.createdAt ? formatDate(new Date(item.createdAt).toISOString()) : '-')
+              : (item.createdAt ? formatDate(item.createdAt) : '-')
             }
           </Text>
         </Flex>
       )}
 
-      {/* Updated — hidden on mobile */}
+      {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
         <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
             {isKnowledgeHubNode(item)
-              ? formatDate(new Date(item.updatedAt).toISOString())
-              : formatDate(item.updatedAt)
+              ? (item.updatedAt ? formatDate(new Date(item.updatedAt).toISOString()) : '-')
+              : (item.updatedAt ? formatDate(item.updatedAt) : '-')
             }
           </Text>
         </Flex>
@@ -561,6 +565,7 @@ interface KbListViewProps {
   selectedItems: Set<string>;
   allSelected: boolean;
   showSourceColumn?: boolean;
+  showCheckbox?: boolean;
   sort: SortConfig | AllRecordsSortConfig;
   pagination?: {
     page: number;
@@ -590,6 +595,7 @@ export function KbListView({
   selectedItems,
   allSelected,
   showSourceColumn,
+  showCheckbox = true,
   sort,
   pagination,
   onSelectAll,
@@ -622,19 +628,21 @@ export function KbListView({
           flexShrink: 0,
         }}
       >
-        {/* Checkbox */}
+        {/* Checkbox column — kept as a spacer when hidden so the File Name column doesn't shift left */}
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', padding: '0 var(--space-2)', cursor: 'pointer' }}
-          onClick={(e) => e.stopPropagation()}
+          style={{ width: '38px', padding: '0 var(--space-2)', cursor: showCheckbox ? 'pointer' : 'default' }}
+          onClick={(e: React.MouseEvent) => e.stopPropagation()}
         >
-          <Checkbox
-            size="1"
-            checked={allSelected}
-            onCheckedChange={onSelectAll}
-            style={{cursor: 'pointer'}}
-          />
+          {showCheckbox && (
+            <Checkbox
+              size="1"
+              checked={allSelected}
+              onCheckedChange={onSelectAll}
+              style={{cursor: 'pointer'}}
+            />
+          )}
         </Flex>
 
         {/* File Name */}
@@ -678,6 +686,7 @@ export function KbListView({
             item={item}
             isSelected={selectedItems.has(item.id)}
             showSourceColumn={showSourceColumn}
+            showCheckbox={showCheckbox}
             isMobile={isMobile}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}

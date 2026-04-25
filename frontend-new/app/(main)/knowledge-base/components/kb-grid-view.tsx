@@ -27,6 +27,7 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
 interface GridCardProps {
   item: TableItem;
   isSelected: boolean;
+  showCheckbox?: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -42,6 +43,7 @@ interface GridCardProps {
 function GridCard({
   item,
   isSelected,
+  showCheckbox = true,
   onSelect,
   onClick,
   onOpen,
@@ -396,22 +398,25 @@ function GridCard({
       onKeyDown={handleKeyDown}
       onClick={onClick}
     >
-      {/* Checkbox column - only visible on hover or when selected */}
+      {/* Checkbox column - only visible on hover or when selected.
+          Kept as a spacer when fully hidden so the card layout doesn't shift. */}
       <Flex
         align="center"
         style={{
           paddingTop: 'var(--space-1)',
           paddingBottom: 'var(--space-1)',
           flexShrink: 0,
-          visibility: isHovered || isSelected ? 'visible' : 'hidden',
+          visibility: showCheckbox && (isHovered || isSelected) ? 'visible' : 'hidden',
         }}
       >
-        <Checkbox
-          size="1"
-          checked={isSelected}
-          onCheckedChange={() => onSelect()}
-          onClick={(e) => e.stopPropagation()}
-        />
+        {showCheckbox && (
+          <Checkbox
+            size="1"
+            checked={isSelected}
+            onCheckedChange={() => onSelect()}
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+          />
+        )}
       </Flex>
 
       {/* Main content column */}
@@ -628,6 +633,7 @@ function GridCard({
 interface KbGridViewProps {
   items: TableItem[];
   selectedItems: Set<string>;
+  showCheckbox?: boolean;
   pagination?: {
     page: number;
     limit: number;
@@ -652,6 +658,7 @@ interface KbGridViewProps {
 export function KbGridView({
   items,
   selectedItems,
+  showCheckbox = true,
   pagination,
   onSelectItem,
   onItemClick,
@@ -689,6 +696,7 @@ export function KbGridView({
               key={item.id}
               item={item}
               isSelected={selectedItems.has(item.id)}
+              showCheckbox={showCheckbox}
               onSelect={() => onSelectItem(item.id)}
               onClick={() => onItemClick(item)}
               onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

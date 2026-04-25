@@ -13779,8 +13779,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
-                    createdAt: rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0),
-                    updatedAt: rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0),
+                    createdAt: rg.connectorName == "KB"
+                        ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
+                        : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
+                    updatedAt: rg.connectorName == "KB"
+                        ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
+                        : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15020,8 +15024,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15189,8 +15197,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15435,8 +15447,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
