@@ -1227,7 +1227,7 @@ class TestExtractEssentialOAuthFields:
     def test_defaults_for_missing_fields(self):
         config = {"_id": "oa2"}
         result = _extract_essential_oauth_fields(config, "SLACK")
-        assert result["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert result["iconPath"] == "/icons/connectors/default.svg"
         assert result["appGroup"] == ""
         assert result["appDescription"] == ""
         assert result["appCategories"] == []

@@ -10,7 +10,7 @@ from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
     AIModelProviderBuilder("Anthropic", "anthropic")
     .with_description("Claude models for advanced text processing")
     .with_capabilities([ModelCapability.TEXT_GENERATION])
-    .with_icon("/assets/icons/ai-models/claude-color.svg")
+    .with_icon("/icons/ai-models/claude-color.svg")
     .with_color("#D97706")
     .popular()
     .add_field(API_KEY)

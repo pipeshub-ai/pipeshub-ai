@@ -66,7 +66,7 @@ from app.connectors.core.registry.types import AuthField, DocumentationLink
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/example.svg")
+        .with_icon("/icons/connectors/example.svg")
         .with_sync_support(True)
         .with_agent_support(True)
     )\
@@ -227,7 +227,7 @@ jira_tools = [
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/toolsets/jira.svg")
+        .with_icon("/icons/toolsets/jira.svg")
         .add_documentation_link(DocumentationLink(
             "Jira API Documentation",
             "https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
