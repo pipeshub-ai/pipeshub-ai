@@ -374,9 +374,25 @@ async def _deep_respond_impl(
     tools.append(fetch_url_tool)
     
     web_search_provider_config = state.get("web_search_config")
+    has_web_search_tool = False
     if web_search_provider_config:
         web_search_tool = create_web_search_tool(config=web_search_provider_config)
         tools.append(web_search_tool)
+        has_web_search_tool = True
+
+    if has_web_search_tool and messages:
+        web_tool_hint = (
+            "\n\n## Web Tools Available (CRITICAL — READ BEFORE RESPONDING)\n"
+            "You have `web_search` and `fetch_url` tools available.\n\n"
+            "**MANDATORY RULE**: If the retrieved knowledge blocks and sub-agent analyses above "
+            "do NOT contain sufficient information to answer the user's question, you MUST use "
+            "`web_search` (and/or `fetch_url` for specific URLs) to find the answer "
+            "from the web BEFORE responding.\n\n"
+        )
+        if isinstance(messages[0], SystemMessage):
+            messages[0] = SystemMessage(content=messages[0].content + web_tool_hint)
+        else:
+            messages.insert(0, SystemMessage(content=web_tool_hint))
 
     # Initialize blob_store if missing
     graph_provider = state.get("graph_provider")

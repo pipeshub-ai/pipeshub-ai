@@ -6695,10 +6695,6 @@ async def respond_node(
                 "`web_search` (and/or `fetch_url` for specific URLs) to find the answer "
                 "from the web BEFORE responding. "
                 "Always attempt a web search first.\n\n"
-                "Use web tools when:\n"
-                "- The provided context blocks are irrelevant, incomplete for the query\n"
-                "- The query asks about topics not covered in internal knowledge\n"
-                "- The query asks for current/real-time information (prices, news, latest versions)\n"
             )
             from langchain_core.messages import SystemMessage as _SysMsg
             if isinstance(messages[0], _SysMsg):
@@ -8423,7 +8419,7 @@ When you have internal knowledge from retrieval tools:
 - Prefer `web_search` for general/public knowledge queries: product recommendations, comparisons, reviews, health/medical info, consumer advice, market research, "best X" queries, travel, recipes, scientific research.
 - Use training data only for timeless knowledge (math, science, core concepts). When in doubt, prefer `web_search`.
 - When a query could have BOTH internal AND external relevance, use BOTH `retrieval.search_internal_knowledge` AND `web_search` in parallel.
-- If retrieval results do NOT answer the query, you can call `web_search`.
+- **MANDATORY**: If the available context or retrieval results do NOT contain sufficient information to answer the user's question, you MUST use `web_search` to find relevant information BEFORE telling the user that you don't have enough information or context.
 - Cite web results as [source](URL/citation id). Use EXACTLY the URL/citation id shown.
 """
 
