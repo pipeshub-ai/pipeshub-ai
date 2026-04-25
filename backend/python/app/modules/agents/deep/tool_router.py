@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.agents.tool_domain import DOMAIN_ALIASES, derive_tool_domain
+
 if TYPE_CHECKING:
     from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
 
@@ -18,16 +20,10 @@ logger = logging.getLogger(__name__)
 # Utility tools always included for every sub-agent
 UTILITY_DOMAINS = {"calculator", "datetime", "utility", "web_search"}
 
-# Domain aliases (normalize variations)
-_DOMAIN_ALIASES: dict[str, str] = {
-    "googledrive": "google_drive",
-    "google_drive": "google_drive",
-    "google-drive": "google_drive",
-    "googlecalendar": "google_calendar",
-    "google_calendar": "google_calendar",
-    "onedrive": "onedrive",
-    "one_drive": "onedrive",
-}
+# Backwards-compatible alias for any in-tree consumers that still import
+# `_DOMAIN_ALIASES` from this module — the canonical map now lives in
+# `app.modules.agents.tool_domain`.
+_DOMAIN_ALIASES = DOMAIN_ALIASES
 
 # Max description length per tool in orchestrator prompt
 _MAX_TOOL_DESC_LEN = 150
@@ -76,16 +72,11 @@ def group_tools_by_domain(state: DeepAgentState) -> dict[str, list[str]]:
         sanitized_name = getattr(tool, "name", "")
         original_name = getattr(tool, "_original_name", sanitized_name)
 
-        # Use original name (with dots) for domain grouping
-        if "." in original_name:
-            domain = original_name.split(".", 1)[0].lower()
-        else:
-            domain = "utility"
+        # Single source of truth — see app.modules.agents.tool_domain.
+        domain, _ = derive_tool_domain(tool)
 
-        # Normalize domain name
-        domain = _DOMAIN_ALIASES.get(domain, domain)
-
-        # Classify into utility if it's a known utility domain
+        # Tool-router-specific: collapse known utility domains so they
+        # share one bucket and aren't planned as standalone sub-agent tasks.
         if domain in UTILITY_DOMAINS:
             domain = "utility"
 

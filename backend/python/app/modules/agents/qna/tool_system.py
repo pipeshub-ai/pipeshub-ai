@@ -767,6 +767,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                     conversation_id=conversation_id,
                     blob_store=blob_store,
                 )
+
+                setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
                 structured_tools.append(execute_query_tool)
                 state_logger = state.get("logger")
                 if state_logger:
