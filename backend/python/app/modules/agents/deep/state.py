@@ -150,6 +150,8 @@ def build_deep_agent_state(
     org_info: Dict[str, Any] | None = None,
     model_name: str = None,
     model_key: str = None,
+    *,
+    has_sql_connector: bool,
 ) -> DeepAgentState:
     """
     Build a DeepAgentState by extending the standard ChatState.
@@ -170,6 +172,7 @@ def build_deep_agent_state(
         model_key,
         org_info,
         graph_type="deep",
+        has_sql_connector=has_sql_connector,
     )
 
     # Overlay deep-agent fields

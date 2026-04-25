@@ -43,7 +43,7 @@ async def has_sql_connector_configured(
             personal_scope=ConnectorScope.PERSONAL.value,
         )
         return any(
-            str(i.get("type", "")).upper() in _SQL_CONNECTOR_TYPES and i.get("isConfigured") is True
+            str(i.get("type", "")).upper() in _SQL_CONNECTOR_TYPES and bool(i.get("isConfigured"))
             for i in (instances or [])
         )
     except Exception as e:

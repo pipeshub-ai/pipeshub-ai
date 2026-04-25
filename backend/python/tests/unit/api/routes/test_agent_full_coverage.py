@@ -339,7 +339,7 @@ class TestStreamResponse:
             with patch("app.api.routes.agent.build_initial_state", return_value={}):
                 chunks = []
                 async for chunk in stream_response(
-                    {"chatMode": "quick"}, {"userId": "u1"}, mock_llm, log, rs, gp, rr, cs
+                    {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log, rs, gp, rr, cs
                 ):
                     chunks.append(chunk)
                 assert len(chunks) >= 1
@@ -355,7 +355,7 @@ class TestStreamResponse:
         with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=Exception("fail")):
             chunks = []
             async for chunk in stream_response(
-                {"chatMode": "quick"}, {"userId": "u1"}, mock_llm, log,
+                {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log,
                 MagicMock(), AsyncMock(), MagicMock(), MagicMock()
             ):
                 chunks.append(chunk)

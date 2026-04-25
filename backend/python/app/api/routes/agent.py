@@ -1076,6 +1076,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # Build and execute graph
         selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info.model_dump(),
@@ -1089,6 +1092,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 query_info.modelName,
                 query_info.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1105,10 +1109,8 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 query_info.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
-        initial_state["has_sql_connector"] = await has_sql_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 30}
@@ -1180,6 +1182,9 @@ async def stream_response(
     try:
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
@@ -1194,6 +1199,7 @@ async def stream_response(
                 org_info,
                 modelName,
                 modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1210,10 +1216,8 @@ async def stream_response(
                 modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
-        initial_state["has_sql_connector"] = await has_sql_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
 
         config = {"recursion_limit": 50}
         chunk_count = 0
@@ -2777,6 +2781,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info,
@@ -2790,6 +2797,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 chat_query.modelName,
                 chat_query.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2806,10 +2814,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 chat_query.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
-        initial_state["has_sql_connector"] = await has_sql_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 50}

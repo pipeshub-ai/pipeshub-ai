@@ -979,16 +979,36 @@ class TestHasSqlConnectorConfigured:
         )
 
     @pytest.mark.asyncio
-    async def test_requires_both_type_and_is_configured(self):
-        """A SQL type without isConfigured=True should not count."""
+    async def test_missing_is_configured_field_is_treated_as_not_configured(self):
+        """A SQL type with no isConfigured field should not count (default falsy)."""
         graph_provider = MagicMock()
         graph_provider.get_user_connector_instances = AsyncMock(
-            return_value=[
-                {"type": "POSTGRESQL"},  # missing isConfigured
-                {"type": "SNOWFLAKE", "isConfigured": "true"},  # string, not bool True
-            ]
+            return_value=[{"type": "POSTGRESQL"}]
         )
         assert await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+
+    @pytest.mark.asyncio
+    async def test_is_configured_uses_truthy_check(self):
+        """isConfigured uses truthy semantics for consistency with the rest of the codebase
+        (e.g. connector_registry.py uses .get('isConfigured', False) in a truthy context).
+        Truthy non-bool values (e.g. a string 'true' from a JSON path) should count."""
+        graph_provider = MagicMock()
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[{"type": "SNOWFLAKE", "isConfigured": "true"}]
+        )
+        assert await has_sql_connector_configured(graph_provider, "u1", "o1") is True
+
+    @pytest.mark.asyncio
+    async def test_falsy_is_configured_values_are_not_configured(self):
+        """Empty string, 0, None, and False should all be treated as not configured."""
+        for falsy in ("", 0, None, False):
+            graph_provider = MagicMock()
+            graph_provider.get_user_connector_instances = AsyncMock(
+                return_value=[{"type": "POSTGRESQL", "isConfigured": falsy}]
+            )
+            assert (
+                await has_sql_connector_configured(graph_provider, "u1", "o1") is False
+            ), f"expected False for isConfigured={falsy!r}"
 
 
 # ===========================================================================
