@@ -29,6 +29,7 @@ from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
+from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import build_direct_answer_time_context
 
@@ -1017,7 +1018,15 @@ async def _handle_direct_answer(
     if agent_instructions and agent_instructions.strip():
         instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
 
-    system_content = f"{instructions_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
+    role_prefix = ""
+    persona = state.get("system_prompt")
+    if is_custom_agent_system_prompt(persona):
+        role_prefix = f"{persona.strip()}\n\n"
+
+    system_content = (
+        f"{instructions_prefix}{role_prefix}"
+        "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+    )
 
     user_info = state.get("user_info") or {}
     org_info = state.get("org_info") or {}
