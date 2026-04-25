@@ -115,7 +115,7 @@ export type ChatMode = 'chat' | 'search';
 
 /**
  * Query sub-modes selectable from the dropdown panel.
- * All requests use quick chatMode at the API; these control behavior/features.
+ * These map to API `chatMode` for assistant streams.
  */
 export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
 
@@ -127,8 +127,12 @@ export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
  */
 export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
 
-/** API `chatMode` for streams: always `quick`, or `agent:<segment>` when in agent query mode. */
-export type StreamChatModePayload = 'quick' | `agent:${AgentStrategyApiSegment}`;
+/** API `chatMode` for streams (assistant modes + agent strategy variant). */
+export type StreamChatModePayload =
+  | 'quick'
+  | 'web-search'
+  | 'image'
+  | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
@@ -483,6 +487,16 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
   if (settings.queryMode === 'agent') {
     return {
       chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
+    };
+  }
+  if (settings.queryMode === 'web-search') {
+    return {
+      chatMode: 'web-search',
+    };
+  }
+  if (settings.queryMode === 'image') {
+    return {
+      chatMode: 'image',
     };
   }
   return {

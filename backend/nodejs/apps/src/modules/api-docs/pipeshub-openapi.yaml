@@ -2720,6 +2720,10 @@ components:
           type: string
           description: Display name of the AI model
           example: "GPT-4 Turbo"
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the selected model
+          example: "GPT-4 Turbo"
         chatMode:
           type: string
           description: |
@@ -2760,6 +2764,9 @@ components:
         modelName:
           type: string
           description: Display name of the model
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the model
         chatMode:
           type: string
           description: Chat mode for this message
@@ -3015,6 +3022,8 @@ components:
               type: string
             modelName:
               type: string
+            modelFriendlyName:
+              type: string
             modelProvider:
               type: string
             chatMode:
@@ -3119,6 +3128,9 @@ components:
         modelName:
           type: string
           description: Display name of the model
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the model
         chatMode:
           type: string
           description: Processing mode configuration
@@ -14239,6 +14251,8 @@ paths:
                   description: Override model for regeneration
                 modelName:
                   type: string
+                modelFriendlyName:
+                  type: string
                 chatMode:
                   type: string
       responses:
@@ -16002,6 +16016,10 @@ paths:
                 filters:
                   $ref: '#/components/schemas/Filters'
                 modelKey:
+                  type: string
+                modelName:
+                  type: string
+                modelFriendlyName:
                   type: string
                 chatMode:
                   type: string

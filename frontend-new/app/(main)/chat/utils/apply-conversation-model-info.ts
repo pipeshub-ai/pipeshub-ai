@@ -119,6 +119,71 @@ function mapApiSegmentToAgentStrategy(
   }
 }
 
+type ChatStoreState = ReturnType<typeof useChatStore.getState>;
+
+function applyModeAndStrategy(
+  store: ChatStoreState,
+  rawMode: string,
+  isAgentContext: boolean
+): void {
+  const mode = rawMode === 'web_search' ? 'web-search' : rawMode;
+
+  if (mode === 'web-search') {
+    store.setQueryMode('web-search');
+    store.setMode('chat');
+    return;
+  }
+
+  if (mode === 'image') {
+    store.setQueryMode('image');
+    store.setMode('chat');
+    return;
+  }
+
+  const hasAgentPrefix = mode.startsWith('agent:');
+  const agentSegment = hasAgentPrefix
+    ? mode.slice(6)
+    : isAgentContext
+      ? mode
+      : null;
+
+  if (agentSegment !== null) {
+    store.setQueryMode('agent');
+    store.setAgentStrategy(mapApiSegmentToAgentStrategy(agentSegment));
+    store.setMode('chat');
+    return;
+  }
+
+  store.setQueryMode('chat');
+  store.setMode('chat');
+}
+
+async function refreshSelectedModelFromCatalog(
+  modelInfo: ModelInfo,
+  ctxKey: string
+): Promise<void> {
+  try {
+    const models = await fetchModelsForContext(ctxKey);
+    const k = modelInfo.modelKey?.trim();
+    const n = modelInfo.modelName?.trim();
+    const valid =
+      k &&
+      n &&
+      models.some((m) => m.modelKey === k && m.modelName === n);
+
+    if (!valid) {
+      return;
+    }
+
+    useChatStore.getState().setSelectedModelForCtx(
+      ctxKey,
+      buildModelOverrideFromInfoAndCatalog(modelInfo, models)
+    );
+  } catch {
+    // Keep optimistic value from cached catalog if refresh fails.
+  }
+}
+
 /**
  * Applies API `modelInfo` to global chat settings for `ctxKey` and refreshes
  * the LLM list so the selector stays consistent with
@@ -140,61 +205,11 @@ export function applyConversationModelInfoToStore(
 
   const store = useChatStore.getState();
   const mode = (modelInfo.chatMode || 'quick').trim();
-  const isAgentContext = ctxKey !== ASSISTANT_CTX;
-
-  if (isAgentContext) {
-    if (mode === 'web-search' || mode === 'web_search') {
-      store.setQueryMode('web-search');
-      store.setMode('chat');
-    } else if (mode === 'image') {
-      store.setQueryMode('image');
-      store.setMode('chat');
-    } else if (mode.startsWith('agent:')) {
-      const seg = mode.slice(6);
-      store.setQueryMode('agent');
-      store.setAgentStrategy(mapApiSegmentToAgentStrategy(seg));
-      store.setMode('chat');
-    } else {
-      // API stores plain strategy segments for agentChat (e.g. deep, verification)
-      store.setQueryMode('agent');
-      store.setAgentStrategy(mapApiSegmentToAgentStrategy(mode));
-      store.setMode('chat');
-    }
-  } else if (mode.startsWith('agent:')) {
-    const seg = mode.slice(6);
-    store.setQueryMode('agent');
-    store.setAgentStrategy(mapApiSegmentToAgentStrategy(seg));
-    store.setMode('chat');
-  } else if (mode === 'web-search' || mode === 'web_search') {
-    store.setQueryMode('web-search');
-    store.setMode('chat');
-  } else if (mode === 'image') {
-    store.setQueryMode('image');
-    store.setMode('chat');
-  } else {
-    // `quick` and any unknown non-agent value → default chat panel
-    store.setQueryMode('chat');
-    store.setMode('chat');
-  }
+  applyModeAndStrategy(store, mode, ctxKey !== ASSISTANT_CTX);
 
   const cached = store.settings.availableModels[ctxKey]?.models;
   const ovr = buildModelOverrideFromInfoAndCatalog(modelInfo, cached);
   store.setSelectedModelForCtx(ctxKey, ovr);
 
-  void fetchModelsForContext(ctxKey).then((models) => {
-    const k = modelInfo.modelKey?.trim();
-    const n = modelInfo.modelName?.trim();
-    const valid =
-      k &&
-      n &&
-      models.some((m) => m.modelKey === k && m.modelName === n);
-    if (valid) {
-      useChatStore
-        .getState()
-        .setSelectedModelForCtx(
-          ctxKey,
-          buildModelOverrideFromInfoAndCatalog(modelInfo, models)
-        );
-    }
-  });
+  void refreshSelectedModelFromCatalog(modelInfo, ctxKey);
 }
