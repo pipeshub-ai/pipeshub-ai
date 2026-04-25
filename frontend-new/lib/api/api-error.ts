@@ -9,6 +9,7 @@ export enum ErrorType {
   SERVER_ERROR = 'SERVER_ERROR',
   TIMEOUT_ERROR = 'TIMEOUT_ERROR',
   UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+  REQUEST_CANCELLED = 'REQUEST_CANCELLED',
 }
 
 export interface ProcessedError {
@@ -72,9 +73,20 @@ export function extractApiErrorMessage(data: unknown): string | null {
   return null;
 }
 
+function isAxiosRequestCancelled(error: AxiosError): boolean {
+  return error.code === 'ERR_CANCELED' || error.message === 'canceled';
+}
+
 export function processError(error: AxiosError<ApiErrorResponse>): ProcessedError {
   // Network error - no response received
   if (!error.response) {
+    if (isAxiosRequestCancelled(error)) {
+      return {
+        type: ErrorType.REQUEST_CANCELLED,
+        message: 'Request was cancelled.',
+        originalError: error,
+      };
+    }
     if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
       return {
         type: ErrorType.TIMEOUT_ERROR,
@@ -168,5 +180,21 @@ export function isProcessedError(error: unknown): error is ProcessedError {
     'type' in error &&
     'message' in error &&
     Object.values(ErrorType).includes((error as ProcessedError).type)
+  );
+}
+
+/** Backend search returns NOT_FOUND with this phrase when filters match no indexed docs. */
+export const SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT = 'No accessible documents found';
+
+export function isRequestCancelledError(error: unknown): boolean {
+  return isProcessedError(error) && error.type === ErrorType.REQUEST_CANCELLED;
+}
+
+/** Empty search results (not a failure): API reports no docs for current scope. */
+export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
+  return (
+    isProcessedError(error) &&
+    error.type === ErrorType.NOT_FOUND &&
+    (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT)
   );
 }

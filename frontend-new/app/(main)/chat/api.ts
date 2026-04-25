@@ -451,7 +451,12 @@ export const ChatApi = {
     const { data } = await apiClient.post<SearchResponse>(
       '/api/v1/search',
       request,
-      { signal }
+      {
+        signal,
+        // Search errors are shown inline on the chat page; suppress avoids duplicate
+        // toasts and odd UX when a request is superseded by a newer search (abort).
+        suppressErrorToast: true,
+      }
     );
     return data;
   },

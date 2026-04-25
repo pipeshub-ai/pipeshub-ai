@@ -8,6 +8,10 @@ import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
 import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
+import {
+  isRequestCancelledError,
+  isSearchNoAccessibleDocumentsNotFound,
+} from '@/lib/api/api-error';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -43,15 +47,6 @@ export function ChatInputWrapper() {
     });
   }, [effectiveAgentId]);
 
-  useEffect(() => {
-    return () => {
-      if (currentSearchAbort) {
-        currentSearchAbort.abort();
-        currentSearchAbort = null;
-      }
-    };
-  }, []);
-
   const handleSearchSubmit = async (query: string) => {
     const store = useChatStore.getState();
 
@@ -85,7 +80,11 @@ export function ChatInputWrapper() {
         query
       );
     } catch (error: unknown) {
-      if ((error as { name?: string })?.name === 'AbortError' || (error as { name?: string })?.name === 'CanceledError') return;
+      if (isRequestCancelledError(error)) return;
+      if (isSearchNoAccessibleDocumentsNotFound(error)) {
+        store.setSearchResults([], '', query);
+        return;
+      }
       store.setSearchError((error as Error)?.message || 'Search failed');
     } finally {
       store.setIsSearching(false);

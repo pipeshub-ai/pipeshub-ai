@@ -9,7 +9,14 @@ export { streamRequest, createStreamController, streamSSERequest } from './strea
 export type { StreamingOptions, SSEEvent, SSEStreamingOptions } from './streaming';
 
 // Error handling
-export { processError, ErrorType, isProcessedError } from './api-error';
+export {
+  processError,
+  ErrorType,
+  isProcessedError,
+  isRequestCancelledError,
+  isSearchNoAccessibleDocumentsNotFound,
+  SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT,
+} from './api-error';
 export type { ProcessedError } from './api-error';
 
 // Mutation helpers (loading state + toast integration)
