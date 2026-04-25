@@ -918,8 +918,8 @@ class TestGetAssistantAgentHelper:
         toolset_registry = MagicMock()
         logger = MagicMock()
         kbs = [
-            {"id": "rg-1", "name": "Alpha", "userRole": "READER"},
-            {"id": "rg-2", "name": "Beta", "userRole": "OWNER"},
+            {"id": "rg-1", "name": "Alpha"},
+            {"id": "rg-2", "name": "Beta"},
         ]
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
             mock_get_toolsets.return_value = []
@@ -944,8 +944,6 @@ class TestGetAssistantAgentHelper:
             assert item["type"] == "KB"
             assert item["filters"]["recordGroups"] == [expected_id]
             assert item["filtersParsed"]["recordGroups"] == [expected_id]
-        assert kn[0]["userRole"] == "READER"
-        assert kn[1]["userRole"] == "OWNER"
 
     @pytest.mark.asyncio
     async def test_handles_errors_gracefully(self) -> None:

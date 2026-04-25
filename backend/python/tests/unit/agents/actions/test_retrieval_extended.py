@@ -342,9 +342,13 @@ class TestNoFilterIdsProvided:
         retrieval_service.search_with_filters = AsyncMock(
             return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
         )
+        # Full agent scope is taken from state["apps"] / state["kb"], not from
+        # state["filters"] (see search_internal_knowledge broad_search branch).
         state = _make_state(
             retrieval_service=retrieval_service,
             filters={"apps": ["app-1"], "kb": ["kb-1"]},
+            apps=["app-1"],
+            kb=["kb-1"],
         )
         r = Retrieval(state=state)
         await r.search_internal_knowledge(query="test")
