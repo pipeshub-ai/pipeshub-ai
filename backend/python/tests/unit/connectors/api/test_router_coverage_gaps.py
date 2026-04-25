@@ -1087,7 +1087,7 @@ class TestExtractEssentialOAuthFields:
         config = {"_id": "id1"}
         result = _extract_essential_oauth_fields(config, "SLACK")
         assert result["connectorType"] == "SLACK"
-        assert result["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert result["iconPath"] == "/icons/connectors/default.svg"
         assert result["appGroup"] == ""
         assert result["appCategories"] == []
 

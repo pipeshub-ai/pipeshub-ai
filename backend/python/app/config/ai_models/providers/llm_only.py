@@ -13,7 +13,7 @@ from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
 @AIModelProviderBuilder("xAI", "xai") \
     .with_description("Grok models with real-time capabilities") \
     .with_capabilities([ModelCapability.TEXT_GENERATION]) \
-    .with_icon("/assets/icons/ai-models/xai.svg") \
+    .with_icon("/icons/ai-models/xai.svg") \
     .with_color("#1DA1F2") \
     .add_field(API_KEY) \
     .add_field(model_field("e.g. grok-3-latest")) \
@@ -33,7 +33,7 @@ class XAIProvider:
 @AIModelProviderBuilder("Groq", "groq") \
     .with_description("High-speed inference for LLM models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION]) \
-    .with_icon("/assets/icons/ai-models/groq.svg") \
+    .with_icon("/icons/ai-models/groq.svg") \
     .with_color("#F55036") \
     .add_field(API_KEY) \
     .add_field(model_field("e.g. meta-llama/llama-4-scout-17b-16e-instruct")) \
@@ -53,7 +53,7 @@ class GroqProvider:
 @AIModelProviderBuilder("MiniMax", "minimax") \
     .with_description("MiniMax M2.7 models with 1M context") \
     .with_capabilities([ModelCapability.TEXT_GENERATION]) \
-    .with_icon("/assets/icons/ai-models/minimax.svg") \
+    .with_icon("/icons/ai-models/minimax.svg") \
     .with_color("#1A1A2E") \
     .add_field(API_KEY) \
     .add_field(model_field("e.g., MiniMax-M2.7, MiniMax-M2.7-highspeed")) \
@@ -73,7 +73,7 @@ class MiniMaxProvider:
 @AIModelProviderBuilder("Fireworks", "fireworks") \
     .with_description("Fast inference for generative AI") \
     .with_capabilities([ModelCapability.TEXT_GENERATION]) \
-    .with_icon("/assets/icons/ai-models/fireworks-color.svg") \
+    .with_icon("/icons/ai-models/fireworks-color.svg") \
     .with_color("#FF6B35") \
     .add_field(API_KEY) \
     .add_field(model_field("e.g. accounts/fireworks/models/kimi-k2-instruct")) \

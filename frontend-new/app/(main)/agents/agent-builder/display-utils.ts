@@ -8,24 +8,24 @@ import {
 export { AGENT_LLM_FALLBACK_ICON, AGENT_LLM_ICONS_BASE, resolveLlmProviderIconPath };
 
 /** Used when no collection artwork is available (legacy agent builder parity). */
-export const AGENT_KNOWLEDGE_FALLBACK_ICON = '/assets/icons/connectors/collections-gray.svg';
+export const AGENT_KNOWLEDGE_FALLBACK_ICON = '/icons/connectors/collections-gray.svg';
 
 /** Neutral connector glyph when a tool/app connector asset is missing or fails to load. */
-export const AGENT_TOOLSET_FALLBACK_ICON = '/assets/icons/connectors/default.svg';
+export const AGENT_TOOLSET_FALLBACK_ICON = '/icons/connectors/default.svg';
 
 function isIconPathString(s: string): boolean {
   const t = s.trim();
   return t.startsWith('/') || t.startsWith('http');
 }
 
-/** Maps a display name or id fragment to `/assets/icons/connectors/<slug>.svg` (toolset / tool rows). */
+/** Maps a display name or id fragment to `/icons/connectors/<slug>.svg` (toolset / tool rows). */
 function connectorIconPathFromLabel(raw: string): string | undefined {
   const slug = raw
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return slug ? `/assets/icons/connectors/${slug}.svg` : undefined;
+  return slug ? `/icons/connectors/${slug}.svg` : undefined;
 }
 
 function isAppConnectorNodeType(type: string): boolean {
@@ -60,9 +60,9 @@ export function resolveNodeHeaderIconUrl(data: FlowNodeData): string | undefined
   if (isAppConnectorNodeType(data.type)) {
     const connectorType =
       typeof cfg.connectorType === 'string' ? cfg.connectorType.toLowerCase().replace(/\s+/g, '') : '';
-    if (connectorType) return `/assets/icons/connectors/${connectorType}.svg`;
+    if (connectorType) return `/icons/connectors/${connectorType}.svg`;
     const slug = data.type.slice(4).toLowerCase().replace(/\s+/g, '');
-    if (slug) return `/assets/icons/connectors/${slug}.svg`;
+    if (slug) return `/icons/connectors/${slug}.svg`;
   }
 
   if (data.type.startsWith('kb-') && data.type !== 'kb-group') {
