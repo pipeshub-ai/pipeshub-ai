@@ -469,8 +469,8 @@
     },
     "queryModes": {
       "chat": {
-        "label": "Búsqueda interna",
-        "toolbarLabel": "Chat",
+        "label": "Búsqueda Interna",
+        "toolbarLabel": "Búsqueda Interna",
         "description": "Piensa, pregunta y razona sobre tu conocimiento en un flujo conversacional"
       },
       "web-search": {

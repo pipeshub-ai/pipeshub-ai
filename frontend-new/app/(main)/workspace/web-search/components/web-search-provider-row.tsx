@@ -2,13 +2,12 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Box, Text, Switch, Badge, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, Switch, Badge, Button, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type {
   WebSearchProviderMeta,
-  WebSearchProviderState,
   ConfigurableProvider,
-  WebSearchConfigStatus,
+  ConfiguredWebSearchProvider,
 } from '../types';
 
 // ========================================
@@ -17,12 +16,13 @@ import type {
 
 interface WebSearchProviderRowProps {
   meta: WebSearchProviderMeta;
-  state: WebSearchProviderState;
-  isEditing: boolean;
-  configStatus: WebSearchConfigStatus;
-  anotherProviderEnabled: boolean;
-  onToggle: (type: string) => void;
+  configured: ConfiguredWebSearchProvider | null;
+  isDefault: boolean;
+  isSettingDefault: boolean;
+  anyActionInProgress: boolean;
+  onSetDefault: () => void;
   onConfigure: (type: ConfigurableProvider) => void;
+  onDelete: () => void;
 }
 
 // ========================================
@@ -31,58 +31,45 @@ interface WebSearchProviderRowProps {
 
 export function WebSearchProviderRow({
   meta,
-  state,
-  isEditing,
-  configStatus,
-  anotherProviderEnabled,
-  onToggle,
+  configured,
+  isDefault,
+  isSettingDefault,
+  anyActionInProgress,
+  onSetDefault,
   onConfigure,
+  onDelete,
 }: WebSearchProviderRowProps) {
   const { t } = useTranslation();
   const isConfigurable = meta.configurable;
-  const isConfigured = isConfigurable
-    ? configStatus[state.type] ?? false
-    : true;
+  // DuckDuckGo is always considered "configured" (built-in)
+  const isConfigured = isConfigurable ? !!configured : true;
 
-  // ── Derive disabled state ────────────────────────────────
-  let toggleDisabled = !isEditing;
-  let disabledReason = '';
-
-  if (isEditing) {
-    if (isConfigurable && !isConfigured) {
-      toggleDisabled = true;
-      disabledReason = t('workspace.webSearch.disabledReasonConfigure');
-    } else if (!state.enabled && anotherProviderEnabled) {
-      toggleDisabled = true;
-      disabledReason = t('workspace.webSearch.disabledReasonActive');
-    }
-  }
-
-  // ── Badge rendering ─────────────────────────────────────
-  const renderBadges = () => {
-    if (state.enabled && state.isDefault) {
+  const renderBadge = () => {
+    if (isDefault) {
       return (
         <Badge color="blue" variant="soft" size="1">
           {t('workspace.webSearch.badges.default')}
         </Badge>
       );
     }
-    if (state.enabled) {
+    if (!isConfigurable) {
       return (
-        <Badge color="green" variant="soft" size="1">
-          {t('workspace.webSearch.badges.active')}
+        <Badge color="gray" variant="soft" size="1">
+          Built-in
         </Badge>
       );
     }
-    if (isConfigurable) {
-      return (
-        <Badge color={isConfigured ? 'green' : 'orange'} variant="soft" size="1">
-          {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
-        </Badge>
-      );
-    }
-    return null;
+    return (
+      <Badge color={isConfigured ? 'green' : 'orange'} variant="soft" size="1">
+        {isConfigured ? 'Configured' : 'Not Configured'}
+      </Badge>
+    );
   };
+
+  const setDefaultDisabled = !isConfigured || isDefault || anyActionInProgress;
+  const setDefaultTooltip = !isConfigured
+    ? 'Configure this provider first before setting it as default.'
+    : '';
 
   return (
     <Flex
@@ -139,44 +126,76 @@ export function WebSearchProviderRow({
         </Text>
       </Box>
 
-      {/* Right side: badges + gear + toggle */}
+      {/* Right side: badge + set-default + configure + delete */}
       <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-        {renderBadges()}
+        {renderBadge()}
 
+        {/* Set as Default */}
+        {!isDefault && (
+          setDefaultTooltip ? (
+            <Tooltip content={setDefaultTooltip}>
+              <span style={{ display: 'inline-flex' }}>
+                <Button
+                  variant="outline"
+                  color="gray"
+                  size="1"
+                  disabled
+                  style={{ cursor: 'not-allowed', gap: 4 }}
+                >
+                  <MaterialIcon name="star" size={14} color="var(--slate-10)" />
+                  Set as default
+                </Button>
+              </span>
+            </Tooltip>
+          ) : (
+            <Button
+              variant="outline"
+              color="gray"
+              size="1"
+              onClick={onSetDefault}
+              disabled={setDefaultDisabled}
+              style={{ cursor: setDefaultDisabled ? 'not-allowed' : 'pointer', gap: 4 }}
+            >
+              <MaterialIcon name="star" size={14} color="var(--slate-10)" />
+              {isSettingDefault ? 'Setting...' : 'Set as default'}
+            </Button>
+          )
+        )}
+
+        {/* Configure (gear) */}
         {isConfigurable && (
-          <Tooltip content={t('workspace.webSearch.configureTip')}>
+          <Tooltip content={isConfigured ? 'Edit configuration' : 'Configure'}>
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
-              onClick={() => onConfigure(state.type as ConfigurableProvider)}
-              style={{ cursor: 'pointer' }}
+              onClick={() => onConfigure(meta.type as ConfigurableProvider)}
+              disabled={anyActionInProgress}
+              style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
             >
-              <MaterialIcon name="settings" size={16} color="var(--slate-10)" />
+              <MaterialIcon
+                name={isConfigured ? 'edit' : 'settings'}
+                size={16}
+                color="var(--slate-10)"
+              />
             </IconButton>
           </Tooltip>
         )}
 
-        {toggleDisabled && disabledReason ? (
-          <Tooltip content={disabledReason}>
-            <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <Switch
-                color="jade"
-                size="2"
-                checked={state.enabled}
-                disabled={toggleDisabled}
-                onCheckedChange={() => onToggle(state.type)}
-              />
-            </span>
+        {/* Delete */}
+        {isConfigurable && isConfigured && (
+          <Tooltip content="Delete configuration">
+            <IconButton
+              variant="ghost"
+              color="red"
+              size="2"
+              onClick={onDelete}
+              disabled={anyActionInProgress}
+              style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
+            >
+              <MaterialIcon name="delete" size={16} color="var(--red-10)" />
+            </IconButton>
           </Tooltip>
-        ) : (
-          <Switch
-            color="jade"
-            size="2"
-            checked={state.enabled}
-            disabled={toggleDisabled}
-            onCheckedChange={() => onToggle(state.type)}
-          />
         )}
       </Flex>
     </Flex>

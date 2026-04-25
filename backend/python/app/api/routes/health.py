@@ -3,6 +3,7 @@ import os
 from logging import Logger
 from typing import Any
 
+import httpx
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
@@ -109,10 +110,35 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
         )
     except asyncio.TimeoutError:
         return JSONResponse(
-            status_code=500,
+            status_code=408,
             content={
                 "status": "not healthy",
                 "error": f"Web search health check timed out for provider '{provider}'",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "not healthy",
+                "error": str(e),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status in (401, 403):
+            error_msg = f"Invalid API key for provider '{provider}'"
+        elif status == 429:
+            error_msg = f"Rate limit exceeded for provider '{provider}'"
+        else:
+            error_msg = f"Provider '{provider}' returned HTTP {status}"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "not healthy",
+                "error": error_msg,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

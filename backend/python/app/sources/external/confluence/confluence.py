@@ -151,7 +151,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachments\n\nHTTP GET /attachments\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachments\n\nHTTP GET /attachments\nQuery params:\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -336,7 +336,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for attachment\n\nHTTP GET /attachments/{attachment-id}/properties\nPath params:\n  - attachment-id (str)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for attachment\n\nHTTP GET /attachments/{attachment-id}/properties\nPath params:\n  - attachment-id (str)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -438,7 +438,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for attachment by id\n\nHTTP PUT /attachments/{attachment-id}/properties/{property-id}\nPath params:\n  - attachment-id (str)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for attachment by id\n\nHTTP PUT /attachments/{attachment-id}/properties/{property-id}\nPath params:\n  - attachment-id (str)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -505,7 +505,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachment versions\n\nHTTP GET /attachments/{id}/versions\nPath params:\n  - id (str)\nQuery params:\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get attachment versions\n\nHTTP GET /attachments/{id}/versions\nPath params:\n  - id (str)\nQuery params:\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -572,7 +572,7 @@ class ConfluenceDataSource:
         version: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachment comments\n\nHTTP GET /attachments/{id}/footer-comments\nPath params:\n  - id (str)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)\n  - version (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachment comments\n\nHTTP GET /attachments/{id}/footer-comments\nPath params:\n  - id (str)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)\n  - version (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -616,7 +616,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get blog posts\n\nHTTP GET /blogposts\nQuery params:\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get blog posts\n\nHTTP GET /blogposts\nQuery params:\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -698,7 +698,7 @@ class ConfluenceDataSource:
         include_collaborators: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get blog post by id\n\nHTTP GET /blogposts/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - get-draft (bool, optional)\n  - status (list[str], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-favorited-by-current-user-status (bool, optional)\n  - include-webresources (bool, optional)\n  - include-collaborators (bool, optional)"""
+        """Auto-generated from OpenAPI: Get blog post by id\n\nHTTP GET /blogposts/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - get-draft (bool, optional)\n  - status (list[str], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-favorited-by-current-user-status (bool, optional)\n  - include-webresources (bool, optional)\n  - include-collaborators (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -818,7 +818,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachments for blog post\n\nHTTP GET /blogposts/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachments for blog post\n\nHTTP GET /blogposts/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -862,7 +862,7 @@ class ConfluenceDataSource:
         body_format: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content by type in blog post\n\nHTTP GET /blogposts/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content by type in blog post\n\nHTTP GET /blogposts/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1001,7 +1001,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for blog post\n\nHTTP GET /blogposts/{blogpost-id}/properties\nPath params:\n  - blogpost-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for blog post\n\nHTTP GET /blogposts/{blogpost-id}/properties\nPath params:\n  - blogpost-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1103,7 +1103,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for blog post by id\n\nHTTP PUT /blogposts/{blogpost-id}/properties/{property-id}\nPath params:\n  - blogpost-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for blog post by id\n\nHTTP PUT /blogposts/{blogpost-id}/properties/{property-id}\nPath params:\n  - blogpost-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1198,7 +1198,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get blog post versions\n\nHTTP GET /blogposts/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get blog post versions\n\nHTTP GET /blogposts/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1293,7 +1293,7 @@ class ConfluenceDataSource:
         body_format: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content by type\n\nHTTP GET /custom-content\nQuery params:\n  - type (str, required)\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content by type\n\nHTTP GET /custom-content\nQuery params:\n  - type (str, required)\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1364,7 +1364,7 @@ class ConfluenceDataSource:
         include_collaborators: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content by id\n\nHTTP GET /custom-content/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-collaborators (bool, optional)"""
+        """Auto-generated from OpenAPI: Get custom content by id\n\nHTTP GET /custom-content/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-collaborators (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1471,7 +1471,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachments for custom content\n\nHTTP GET /custom-content/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachments for custom content\n\nHTTP GET /custom-content/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1514,7 +1514,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content comments\n\nHTTP GET /custom-content/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content comments\n\nHTTP GET /custom-content/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1619,7 +1619,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for custom content\n\nHTTP GET /custom-content/{custom-content-id}/properties\nPath params:\n  - custom-content-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for custom content\n\nHTTP GET /custom-content/{custom-content-id}/properties\nPath params:\n  - custom-content-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1721,7 +1721,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for custom content by id\n\nHTTP PUT /custom-content/{custom-content-id}/properties/{property-id}\nPath params:\n  - custom-content-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for custom content by id\n\nHTTP PUT /custom-content/{custom-content-id}/properties/{property-id}\nPath params:\n  - custom-content-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1827,7 +1827,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachments for label\n\nHTTP GET /labels/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachments for label\n\nHTTP GET /labels/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1865,7 +1865,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get blog posts for label\n\nHTTP GET /labels/{id}/blogposts\nPath params:\n  - id (int)\nQuery params:\n  - space-id (list[int], optional)\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get blog posts for label\n\nHTTP GET /labels/{id}/blogposts\nPath params:\n  - id (int)\nQuery params:\n  - space-id (list[int], optional)\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1907,7 +1907,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get pages for label\n\nHTTP GET /labels/{id}/pages\nPath params:\n  - id (int)\nQuery params:\n  - space-id (list[int], optional)\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get pages for label\n\nHTTP GET /labels/{id}/pages\nPath params:\n  - id (int)\nQuery params:\n  - space-id (list[int], optional)\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -1952,7 +1952,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get pages\n\nHTTP GET /pages\nQuery params:\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (Dict[str, Any], optional)\n  - subtype (str, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get pages\n\nHTTP GET /pages\nQuery params:\n  - id (list[int], optional)\n  - space-id (list[int], optional)\n  - sort (dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (dict[str, Any], optional)\n  - subtype (str, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -2570,7 +2570,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get attachments for page\n\nHTTP GET /pages/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get attachments for page\n\nHTTP GET /pages/{id}/attachments\nPath params:\n  - id (int)\nQuery params:\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - status (list[str], optional)\n  - mediaType (str, optional)\n  - filename (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -2614,7 +2614,7 @@ class ConfluenceDataSource:
         body_format: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content by type in page\n\nHTTP GET /pages/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content by type in page\n\nHTTP GET /pages/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -2780,7 +2780,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for page\n\nHTTP GET /pages/{page-id}/properties\nPath params:\n  - page-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for page\n\nHTTP GET /pages/{page-id}/properties\nPath params:\n  - page-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -2882,7 +2882,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for page by id\n\nHTTP PUT /pages/{page-id}/properties/{property-id}\nPath params:\n  - page-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for page by id\n\nHTTP PUT /pages/{page-id}/properties/{property-id}\nPath params:\n  - page-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3035,7 +3035,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get page versions\n\nHTTP GET /pages/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get page versions\n\nHTTP GET /pages/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3168,7 +3168,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for whiteboard\n\nHTTP GET /whiteboards/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for whiteboard\n\nHTTP GET /whiteboards/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3270,7 +3270,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for whiteboard by id\n\nHTTP PUT /whiteboards/{whiteboard-id}/properties/{property-id}\nPath params:\n  - whiteboard-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for whiteboard by id\n\nHTTP PUT /whiteboards/{whiteboard-id}/properties/{property-id}\nPath params:\n  - whiteboard-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3561,7 +3561,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for database\n\nHTTP GET /databases/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for database\n\nHTTP GET /databases/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3663,7 +3663,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for database by id\n\nHTTP PUT /databases/{database-id}/properties/{property-id}\nPath params:\n  - database-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for database by id\n\nHTTP PUT /databases/{database-id}/properties/{property-id}\nPath params:\n  - database-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -3951,7 +3951,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for Smart Link in the content tree\n\nHTTP GET /embeds/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for Smart Link in the content tree\n\nHTTP GET /embeds/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4053,7 +4053,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for Smart Link in the content tree by id\n\nHTTP PUT /embeds/{embed-id}/properties/{property-id}\nPath params:\n  - embed-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for Smart Link in the content tree by id\n\nHTTP PUT /embeds/{embed-id}/properties/{property-id}\nPath params:\n  - embed-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4341,7 +4341,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for folder\n\nHTTP GET /folders/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for folder\n\nHTTP GET /folders/{id}/properties\nPath params:\n  - id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4443,7 +4443,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for folder by id\n\nHTTP PUT /folders/{folder-id}/properties/{property-id}\nPath params:\n  - folder-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for folder by id\n\nHTTP PUT /folders/{folder-id}/properties/{property-id}\nPath params:\n  - folder-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4669,7 +4669,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content versions\n\nHTTP GET /custom-content/{custom-content-id}/versions\nPath params:\n  - custom-content-id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content versions\n\nHTTP GET /custom-content/{custom-content-id}/versions\nPath params:\n  - custom-content-id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4744,7 +4744,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get spaces\n\nHTTP GET /spaces\nQuery params:\n  - ids (list[int], optional)\n  - keys (list[str], optional)\n  - type (str, optional)\n  - status (str, optional)\n  - labels (list[str], optional)\n  - favorited-by (str, optional)\n  - not-favorited-by (str, optional)\n  - sort (Dict[str, Any], optional)\n  - description-format (Dict[str, Any], optional)\n  - include-icon (bool, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get spaces\n\nHTTP GET /spaces\nQuery params:\n  - ids (list[int], optional)\n  - keys (list[str], optional)\n  - type (str, optional)\n  - status (str, optional)\n  - labels (list[str], optional)\n  - favorited-by (str, optional)\n  - not-favorited-by (str, optional)\n  - sort (dict[str, Any], optional)\n  - description-format (dict[str, Any], optional)\n  - include-icon (bool, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4793,8 +4793,8 @@ class ConfluenceDataSource:
         space_key: Optional[str] = None,
         name: Optional[str] = None,
         description: str = "",
-        body: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        body: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
         """Create space using v1 API (v2 is restricted to RBAC-enabled sites).
         
@@ -4822,7 +4822,7 @@ class ConfluenceDataSource:
 
         v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
         url = f"{v1_base_url}/space"
-        _headers: Dict[str, Any] = dict(headers or {})
+        _headers: dict[str, Any] = dict(headers or {})
 
         req = HTTPRequest(
             method='POST',
@@ -4847,7 +4847,7 @@ class ConfluenceDataSource:
         include_labels: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get space by id\n\nHTTP GET /spaces/{id}\nPath params:\n  - id (int)\nQuery params:\n  - description-format (Dict[str, Any], optional)\n  - include-icon (bool, optional)\n  - include-operations (bool, optional)\n  - include-properties (bool, optional)\n  - include-permissions (bool, optional)\n  - include-role-assignments (bool, optional)\n  - include-labels (bool, optional)"""
+        """Auto-generated from OpenAPI: Get space by id\n\nHTTP GET /spaces/{id}\nPath params:\n  - id (int)\nQuery params:\n  - description-format (dict[str, Any], optional)\n  - include-icon (bool, optional)\n  - include-operations (bool, optional)\n  - include-properties (bool, optional)\n  - include-permissions (bool, optional)\n  - include-role-assignments (bool, optional)\n  - include-labels (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -4894,7 +4894,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get blog posts in space\n\nHTTP GET /spaces/{id}/blogposts\nPath params:\n  - id (int)\nQuery params:\n  - sort (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get blog posts in space\n\nHTTP GET /spaces/{id}/blogposts\nPath params:\n  - id (int)\nQuery params:\n  - sort (dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5015,7 +5015,7 @@ class ConfluenceDataSource:
         body_format: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get custom content by type in space\n\nHTTP GET /spaces/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get custom content by type in space\n\nHTTP GET /spaces/{id}/custom-content\nPath params:\n  - id (int)\nQuery params:\n  - type (str, required)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - body-format (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5083,7 +5083,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get pages in space\n\nHTTP GET /spaces/{id}/pages\nPath params:\n  - id (int)\nQuery params:\n  - depth (str, optional)\n  - sort (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get pages in space\n\nHTTP GET /spaces/{id}/pages\nPath params:\n  - id (int)\nQuery params:\n  - depth (str, optional)\n  - sort (dict[str, Any], optional)\n  - status (list[str], optional)\n  - title (str, optional)\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5227,7 +5227,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update space property by id\n\nHTTP PUT /spaces/{space-id}/properties/{property-id}\nPath params:\n  - space-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update space property by id\n\nHTTP PUT /spaces/{space-id}/properties/{property-id}\nPath params:\n  - space-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5360,7 +5360,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get available space roles\n\nHTTP GET /space-roles\nQuery params:\n  - space-id (str, optional)\n  - role-type (str, optional)\n  - principal-id (str, optional)\n  - principal-type (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get available space roles\n\nHTTP GET /space-roles\nQuery params:\n  - space-id (str, optional)\n  - role-type (str, optional)\n  - principal-id (str, optional)\n  - principal-type (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5454,7 +5454,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get space role assignments\n\nHTTP GET /spaces/{id}/role-assignments\nPath params:\n  - id (int)\nQuery params:\n  - role-id (str, optional)\n  - role-type (str, optional)\n  - principal-id (str, optional)\n  - principal-type (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get space role assignments\n\nHTTP GET /spaces/{id}/role-assignments\nPath params:\n  - id (int)\nQuery params:\n  - role-id (str, optional)\n  - role-type (str, optional)\n  - principal-id (str, optional)\n  - principal-type (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5526,7 +5526,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get footer comments for page\n\nHTTP GET /pages/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get footer comments for page\n\nHTTP GET /pages/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - status (list[str], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5569,7 +5569,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get inline comments for page\n\nHTTP GET /pages/{id}/inline-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - resolution-status (list[str], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get inline comments for page\n\nHTTP GET /pages/{id}/inline-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - status (list[str], optional)\n  - resolution-status (list[str], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5613,7 +5613,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get footer comments for blog post\n\nHTTP GET /blogposts/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get footer comments for blog post\n\nHTTP GET /blogposts/{id}/footer-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - status (list[str], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5656,7 +5656,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get inline comments for blog post\n\nHTTP GET /blogposts/{id}/inline-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - status (list[str], optional)\n  - resolution-status (list[str], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get inline comments for blog post\n\nHTTP GET /blogposts/{id}/inline-comments\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - status (list[str], optional)\n  - resolution-status (list[str], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5698,7 +5698,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get footer comments\n\nHTTP GET /footer-comments\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get footer comments\n\nHTTP GET /footer-comments\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5781,7 +5781,7 @@ class ConfluenceDataSource:
         include_version: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get footer comment by id\n\nHTTP GET /footer-comments/{comment-id}\nPath params:\n  - comment-id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - version (int, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)"""
+        """Auto-generated from OpenAPI: Get footer comment by id\n\nHTTP GET /footer-comments/{comment-id}\nPath params:\n  - comment-id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - version (int, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5825,7 +5825,7 @@ class ConfluenceDataSource:
         _links: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update footer comment\n\nHTTP PUT /footer-comments/{comment-id}\nPath params:\n  - comment-id (int)\nBody (application/json) fields:\n  - version (Dict[str, Any], optional)\n  - body (str, optional)\n  - _links (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update footer comment\n\nHTTP PUT /footer-comments/{comment-id}\nPath params:\n  - comment-id (int)\nBody (application/json) fields:\n  - version (dict[str, Any], optional)\n  - body (str, optional)\n  - _links (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -5890,7 +5890,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get children footer comments\n\nHTTP GET /footer-comments/{id}/children\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get children footer comments\n\nHTTP GET /footer-comments/{id}/children\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6016,7 +6016,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get footer comment versions\n\nHTTP GET /footer-comments/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get footer comment versions\n\nHTTP GET /footer-comments/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6083,7 +6083,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get inline comments\n\nHTTP GET /inline-comments\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get inline comments\n\nHTTP GET /inline-comments\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6120,7 +6120,7 @@ class ConfluenceDataSource:
         inlineCommentProperties: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Create inline comment\n\nHTTP POST /inline-comments\nBody (application/json) fields:\n  - blogPostId (str, optional)\n  - pageId (str, optional)\n  - parentCommentId (str, optional)\n  - body (str, optional)\n  - inlineCommentProperties (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Create inline comment\n\nHTTP POST /inline-comments\nBody (application/json) fields:\n  - blogPostId (str, optional)\n  - pageId (str, optional)\n  - parentCommentId (str, optional)\n  - body (str, optional)\n  - inlineCommentProperties (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6163,7 +6163,7 @@ class ConfluenceDataSource:
         include_version: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get inline comment by id\n\nHTTP GET /inline-comments/{comment-id}\nPath params:\n  - comment-id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - version (int, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)"""
+        """Auto-generated from OpenAPI: Get inline comment by id\n\nHTTP GET /inline-comments/{comment-id}\nPath params:\n  - comment-id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - version (int, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6207,7 +6207,7 @@ class ConfluenceDataSource:
         resolved: Optional[bool] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update inline comment\n\nHTTP PUT /inline-comments/{comment-id}\nPath params:\n  - comment-id (int)\nBody (application/json) fields:\n  - version (Dict[str, Any], optional)\n  - body (str, optional)\n  - resolved (bool, optional)"""
+        """Auto-generated from OpenAPI: Update inline comment\n\nHTTP PUT /inline-comments/{comment-id}\nPath params:\n  - comment-id (int)\nBody (application/json) fields:\n  - version (dict[str, Any], optional)\n  - body (str, optional)\n  - resolved (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6272,7 +6272,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get children inline comments\n\nHTTP GET /inline-comments/{id}/children\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get children inline comments\n\nHTTP GET /inline-comments/{id}/children\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6398,7 +6398,7 @@ class ConfluenceDataSource:
         sort: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get inline comment versions\n\nHTTP GET /inline-comments/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get inline comment versions\n\nHTTP GET /inline-comments/{id}/versions\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)\n  - sort (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6466,7 +6466,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get content properties for comment\n\nHTTP GET /comments/{comment-id}/properties\nPath params:\n  - comment-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get content properties for comment\n\nHTTP GET /comments/{comment-id}/properties\nPath params:\n  - comment-id (int)\nQuery params:\n  - key (str, optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6568,7 +6568,7 @@ class ConfluenceDataSource:
         version: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update content property for comment by id\n\nHTTP PUT /comments/{comment-id}/properties/{property-id}\nPath params:\n  - comment-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Update content property for comment by id\n\nHTTP PUT /comments/{comment-id}/properties/{property-id}\nPath params:\n  - comment-id (int)\n  - property-id (int)\nBody (application/json) fields:\n  - key (str, optional)\n  - value (str, optional)\n  - version (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6649,7 +6649,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get tasks\n\nHTTP GET /tasks\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - include-blank-tasks (bool, optional)\n  - status (str, optional)\n  - task-id (list[int], optional)\n  - space-id (list[int], optional)\n  - page-id (list[int], optional)\n  - blogpost-id (list[int], optional)\n  - created-by (list[str], optional)\n  - assigned-to (list[str], optional)\n  - completed-by (list[str], optional)\n  - created-at-from (int, optional)\n  - created-at-to (int, optional)\n  - due-at-from (int, optional)\n  - due-at-to (int, optional)\n  - completed-at-from (int, optional)\n  - completed-at-to (int, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get tasks\n\nHTTP GET /tasks\nQuery params:\n  - body-format (dict[str, Any], optional)\n  - include-blank-tasks (bool, optional)\n  - status (str, optional)\n  - task-id (list[int], optional)\n  - space-id (list[int], optional)\n  - page-id (list[int], optional)\n  - blogpost-id (list[int], optional)\n  - created-by (list[str], optional)\n  - assigned-to (list[str], optional)\n  - completed-by (list[str], optional)\n  - created-at-from (int, optional)\n  - created-at-to (int, optional)\n  - due-at-from (int, optional)\n  - due-at-to (int, optional)\n  - completed-at-from (int, optional)\n  - completed-at-to (int, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6711,7 +6711,7 @@ class ConfluenceDataSource:
         body_format: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get task by id\n\nHTTP GET /tasks/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)"""
+        """Auto-generated from OpenAPI: Get task by id\n\nHTTP GET /tasks/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -6742,7 +6742,7 @@ class ConfluenceDataSource:
         body: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Update task\n\nHTTP PUT /tasks/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\nBody: application/json (Any)"""
+        """Auto-generated from OpenAPI: Update task\n\nHTTP PUT /tasks/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (dict[str, Any], optional)\nBody: application/json (Any)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -7048,7 +7048,7 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get spaces with data policies\n\nHTTP GET /data-policies/spaces\nQuery params:\n  - ids (list[int], optional)\n  - keys (list[str], optional)\n  - sort (Dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
+        """Auto-generated from OpenAPI: Get spaces with data policies\n\nHTTP GET /data-policies/spaces\nQuery params:\n  - ids (list[int], optional)\n  - keys (list[str], optional)\n  - sort (dict[str, Any], optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})
@@ -7528,7 +7528,7 @@ class ConfluenceDataSource:
         body: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Create or update a Forge app property.\n\nHTTP PUT /app/properties/{propertyKey}\nPath params:\n  - propertyKey (str)\nBody: application/json (Dict[str, Any])"""
+        """Auto-generated from OpenAPI: Create or update a Forge app property.\n\nHTTP PUT /app/properties/{propertyKey}\nPath params:\n  - propertyKey (str)\nBody: application/json (dict[str, Any])"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: dict[str, Any] = dict(headers or {})

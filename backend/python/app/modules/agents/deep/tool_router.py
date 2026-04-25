@@ -18,7 +18,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Utility tools always included for every sub-agent
-UTILITY_DOMAINS = {"calculator", "datetime", "utility", "web_search"}
+UTILITY_DOMAINS = {"calculator", "datetime", "utility"}
+
+# Web tools get their own visible domain so the orchestrator can plan web tasks
+_WEB_TOOL_NAMES = {"fetch_url", "web_search"}
 
 # Backwards-compatible alias for any in-tree consumers that still import
 # `_DOMAIN_ALIASES` from this module — the canonical map now lives in

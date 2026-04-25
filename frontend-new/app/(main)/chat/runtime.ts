@@ -109,9 +109,14 @@ export function loadHistoricalMessages(
         ? {
             custom: {
               appliedFilters: msg.appliedFilters,
+              createdAt: msg.createdAt,
             },
           }
-        : undefined,
+        : {
+          custom: {
+            createdAt: msg.createdAt,
+          },
+        },
   }));
 }
 

@@ -43,6 +43,29 @@ SKIP_TAGS = {              # tags whose subtree we ignore completely
     "header", "aside", "form", "svg",
     "meta", "head",
 }
+BLOCK_LEVEL_TAGS = {       # block-level tags that need separator but not a new block
+    "div", "section", "article", "main", "details", "summary",
+    "dl", "dt", "dd", "figure", "address",
+    "ol", "ul", "table", "tbody", "thead", "tfoot", "tr",
+}
+
+BOILERPLATE_ROLES = frozenset({
+    "navigation", "complementary", "banner", "contentinfo", "search",
+})
+
+_BOILERPLATE_CLS_RE = re.compile(
+    r"sidebar|side-?bar|infobox|info-?box"
+    r"|navbox|nav-?box|breadcrumb"
+    r"|cookie|consent|gdpr"
+    r"|popup|modal|overlay"
+    r"|ad-slot|ad-container|ad-banner|advert"
+    r"|social.?share|share.?button"
+    r"|skip.?link|skip.?nav|mw-jump"
+    r"|site.?notice|announcement.?banner"
+    r"|dropdown.?menu"
+    r"|table.?of.?contents|toc-container",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,6 +82,27 @@ def _resolve_url(src: str, base_url: str) -> str:
     if src.startswith("data:"):
         return ""          # skip inline base64 blobs
     return urljoin(base_url, src)
+
+
+def _strip_boilerplate(soup: BeautifulSoup) -> None:
+    """Remove boilerplate elements by ARIA role, hidden state, and class/ID patterns."""
+    for role in BOILERPLATE_ROLES:
+        for el in list(soup.find_all(attrs={"role": role})):
+            el.decompose()
+
+    for el in list(soup.find_all(attrs={"hidden": True})):
+        el.decompose()
+    for el in list(soup.find_all(attrs={"aria-hidden": "true"})):
+        el.decompose()
+
+    for el in list(soup.find_all(True)):
+        if el.decomposed:
+            continue
+        classes = " ".join(el.get("class", []))
+        el_id = el.get("id", "")
+        haystack = f"{classes} {el_id}"
+        if haystack.strip() and _BOILERPLATE_CLS_RE.search(haystack):
+            el.decompose()
 
 
 def _split_long_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> list[str]:
@@ -125,10 +169,16 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
                 blocks.append(ImageBlock(url=url, alt=alt))
             continue
 
+        # ── Line-break elements ───────────────────────────────────────────
+        if tag_name in ("br", "hr"):
+            buffer.append("\n")
+            continue
+
         # ── Block-level text containers ──────────────────────────────────
         if tag_name in SPLIT_TAGS:
             _flush_buffer(buffer, blocks)
-            # Collect all text inside this tag
+            for br in child.find_all("br"):
+                br.replace_with("\n")
             inner = child.get_text("")
             if inner:
                 for chunk in _split_long_text(inner):
@@ -136,6 +186,13 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
             # Still walk for nested images
             if is_multimodal_llm:
                 _walk_images_only(child, base_url, blocks)
+            continue
+
+        # ── Block-level wrappers (div, section, etc.) ────────────────────
+        if tag_name in BLOCK_LEVEL_TAGS:
+            buffer.append("\n")
+            _walk(child, base_url, blocks, buffer, is_multimodal_llm)
+            buffer.append("\n")
             continue
 
         # ── Recurse into everything else ─────────────────────────────────
@@ -156,8 +213,10 @@ def _flush_buffer(buffer: list[str], blocks: list[Block]) -> None:
     """Join buffered text fragments into one or more TextBlocks."""
     if not buffer:
         return
-    combined = "".join(buffer)
+    combined = re.sub(r"\n{3,}", "\n\n", "".join(buffer)).strip()
     buffer.clear()
+    if not combined:
+        return
 
     for chunk in _split_long_text(combined):
         blocks.append(TextBlock(content=chunk))
@@ -209,6 +268,9 @@ def html_to_blocks(
     for tag in soup(list(SKIP_TAGS)):
         tag.decompose()
 
+    if not use_trafilatura:
+        _strip_boilerplate(soup)
+
     # ── 3. Walk the tree ─────────────────────────────────────────────────
     blocks: list[Block] = []
     buffer: list[str] = []
@@ -233,7 +295,7 @@ def _merge_tiny_blocks(blocks: list[Block]) -> list[Block]:
             and len(merged[-1].content) + len(block.content) < MAX_TEXT_CHARS
             and len(merged[-1].content) < MIN_TEXT_CHARS
         ):
-            merged[-1].content = _clean(merged[-1].content + " " + block.content)
+            merged[-1].content = _clean(merged[-1].content + "\n\n" + block.content)
         else:
             merged.append(block)
     return merged

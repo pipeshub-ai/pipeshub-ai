@@ -957,7 +957,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/web-search',
     authMiddleware.authenticate,
-    userAdminCheck,
     metricsMiddleware(container),
     getWebSearchProviders(keyValueStoreService),
   );
@@ -1017,7 +1016,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteWebSearchProviderSchema),
-    deleteWebSearchProvider(keyValueStoreService),
+    deleteWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   /**

@@ -1249,16 +1249,16 @@ export function ChatInput({
 
               {/* Action buttons group */}
               <Flex align="center" gap="1">
-                {/* Apps — assistant: collections; agent: connectors / collections / actions */}
-                {!isAgentChat ? (
+                  
+                {!isAgentChat && settings.queryMode !== 'web-search' ? (
                   <Tooltip
-                    content={
-                      settings.queryMode === 'agent'
-                        ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
-                        : t('chat.connectorsTooltip')
-                    }
-                    side="top"
-                  >
+                  content={
+                    settings.queryMode === 'agent'
+                      ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                      : t('chat.connectorsTooltip')
+                  }
+                  side="top"
+                >
                     <IconButton
                       variant={
                         isCollectionsPanelOpen ||
@@ -1286,7 +1286,7 @@ export function ChatInput({
                       <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                     </IconButton>
                   </Tooltip>
-                ) : (
+                ) : isAgentChat ? (
                   <Tooltip content={t('chat.agentResourcesTooltip')} side="top">
                     <IconButton
                       variant={
@@ -1311,7 +1311,7 @@ export function ChatInput({
                       <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                     </IconButton>
                   </Tooltip>
-                )}
+                ) : null}
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex

@@ -36,6 +36,9 @@ export function connectionError(
   if (st.startsWith('toolset-') && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
     return 'agentBuilder.connectionToolsetToToolsets';
   }
+  if (st === 'web-search' && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
+    return 'agentBuilder.connectionWebSearchToToolsets';
+  }
   if (
     st.startsWith('tool-') &&
     !st.startsWith('tool-group-') &&
@@ -154,6 +157,13 @@ export function applyAutoConnectToEdges(
       source: droppedNode.id,
       target: agent.id,
       sourceHandle: 'output',
+      targetHandle: 'toolsets',
+    });
+  } else if (st === 'web-search') {
+    proposals.push({
+      source: droppedNode.id,
+      target: agent.id,
+      sourceHandle: 'results',
       targetHandle: 'toolsets',
     });
   } else if (st.startsWith('connector-group-')) {

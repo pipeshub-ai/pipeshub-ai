@@ -256,7 +256,7 @@ class KnowledgeBaseConnector(BaseConnector):
         # KB connector doesn't maintain state, so cleanup is a no-op
         self.logger.info("✅ Knowledge Base connector cleanup completed")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex KB records by publishing them to the indexing service."""
         # Exclude folders — they can't be indexed
         file_records = [r for r in record_results if r.mime_type != "application/vnd.folder"]

@@ -133,11 +133,12 @@ class WebSearchHandler(ToolResultHandler):
             link = result.get("link", "")
             snippet = result.get("snippet", "")
 
-            display_url = display_url_for_llm(link, ref_mapper)
+            citation_url = generate_text_fragment_url(link, snippet) if snippet else link
+            display_url = display_url_for_llm(citation_url, ref_mapper)
 
             formatted_blocks.append({
                 "type": "text",
-                "text": f"title: {title}\nurl/citation id: {display_url}\ncontent: {snippet}",
+                "text": f"title: {title}\nurl/Citation ID: {display_url}\ncontent: {snippet}",
             })
 
         return formatted_blocks
@@ -154,8 +155,9 @@ class WebSearchHandler(ToolResultHandler):
             link = result.get("link", "")
             snippet = result.get("snippet", "")
             title = result.get("title", "")
+            citation_url = generate_text_fragment_url(link, snippet) if snippet else link
             records.append({
-                "url": link,
+                "url": citation_url,
                 "title": title,
                 "content": snippet or title or "Search result",
                 "source_type": "web",
@@ -165,6 +167,13 @@ class WebSearchHandler(ToolResultHandler):
         return records
 
 
+def _block_attr(block, attr: str, default: str = "") -> str:
+    """Access a block attribute that may be a dataclass or a plain dict."""
+    if isinstance(block, dict):
+        return block.get(attr, default)
+    return getattr(block, attr, default)
+
+
 def _block_citation_url(base_url: str, block) -> str:
     """Build the citation URL for a single block of a fetched page.
 
@@ -172,12 +181,12 @@ def _block_citation_url(base_url: str, block) -> str:
     resolves to its own location. Image blocks use the image's own URL when it is
     a full http(s) URL; otherwise they fall back to the page URL.
     """
-    if block.type == "image":
-        img_uri = getattr(block, "url", "") or ""
+    if _block_attr(block, "type") == "image":
+        img_uri = _block_attr(block, "url", "")
         if img_uri.startswith("http"):
             return img_uri
         return base_url
-    return generate_text_fragment_url(base_url, getattr(block, "content", "") or "")
+    return generate_text_fragment_url(base_url, _block_attr(block, "content", ""))
 
 
 class UrlContentHandler(ToolResultHandler):
@@ -204,8 +213,8 @@ class UrlContentHandler(ToolResultHandler):
 
         if include_images:
             for index, block in enumerate(blocks):
-                if block.type == "image":
-                    img_uri = block.url
+                if _block_attr(block, "type") == "image":
+                    img_uri = _block_attr(block, "url", "")
                     if img_uri and img_uri.startswith("http"):
                         if not img_uri.endswith((".svg", ".gif", ".ico")):
                             images_to_fetch.append((index, img_uri))
@@ -233,10 +242,11 @@ class UrlContentHandler(ToolResultHandler):
         for index, block in enumerate(blocks):
             block_citation_url = _block_citation_url(url, block)
             display_url = display_url_for_llm(block_citation_url, ref_mapper)
-            if block.type == "image":
+            block_type = _block_attr(block, "type")
+            if block_type == "image":
                 if not include_images or count >= max_images:
                     continue
-                img_uri = block.url
+                img_uri = _block_attr(block, "url", "")
 
                 if img_uri:
 
@@ -248,7 +258,7 @@ class UrlContentHandler(ToolResultHandler):
                             continue
                         formatted_blocks.append({
                             "type": "text",
-                            "text": f"url/citation id: {display_url}\ncontent(image):",
+                            "text": f"url/Citation ID: {display_url}\ncontent(image):",
                         })
                         formatted_blocks.append({
                             "type": "image",
@@ -265,7 +275,7 @@ class UrlContentHandler(ToolResultHandler):
                                 continue
                             formatted_blocks.append({
                                 "type": "text",
-                                "text": f"url/citation id: {display_url}\ncontent(image):",
+                                "text": f"url/Citation ID: {display_url}\ncontent(image):",
                             })
                             formatted_blocks.append({
                                 "type": "image",
@@ -278,7 +288,7 @@ class UrlContentHandler(ToolResultHandler):
             else:
                 formatted_blocks.append({
                     "type": "text",
-                    "text": f"url/citation id: {display_url}\ncontent: {block.content}",
+                    "text": f"url/Citation ID: {display_url}\ncontent: {_block_attr(block, 'content', '')}",
                 })
 
         return formatted_blocks
@@ -291,10 +301,10 @@ class UrlContentHandler(ToolResultHandler):
         records = []
         for block in blocks:
             block_citation_url = _block_citation_url(url, block)
-            if block.type == "text":
-                content = getattr(block, "content", "") or ""
+            if _block_attr(block, "type") == "text":
+                content = _block_attr(block, "content", "")
             else:
-                content = getattr(block, "alt", "") or "Image"
+                content = _block_attr(block, "alt", "") or "Image"
             records.append({
                 "url": block_citation_url,
                 "content": content,

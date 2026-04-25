@@ -143,6 +143,7 @@ export type StreamChatModePayload =
   | 'quick'
   | 'web-search'
   | 'image'
+  | 'internal-search'
   | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
@@ -529,7 +530,7 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
     };
   }
   return {
-    chatMode: 'quick',
+    chatMode: 'internal_search',
   };
 }
 

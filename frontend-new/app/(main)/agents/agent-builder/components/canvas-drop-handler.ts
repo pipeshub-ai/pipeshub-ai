@@ -387,6 +387,43 @@ export function handleFlowCanvasDrop(
     return;
   }
 
+  if (type === 'web-search') {
+    const existingWebSearch = nodes.find((n) => n.data?.type === 'web-search');
+    if (existingWebSearch) {
+      onError?.(t('agentBuilder.webSearchOnlyOne'));
+      return;
+    }
+    const wsProvider = event.dataTransfer.getData('provider');
+    const wsProviderKey = event.dataTransfer.getData('providerKey');
+    const wsProviderLabel = event.dataTransfer.getData('providerLabel');
+    const wsIconPath = event.dataTransfer.getData('iconPath');
+    const wsTemplate = nodeTemplates.find((tmpl) => tmpl.type === 'web-search');
+    const wsId = `web-search-${Date.now()}`;
+    appendNodeWithAutoConnect({
+      id: wsId,
+      type: 'flowNode',
+      position: place('web-search'),
+      data: {
+        id: wsId,
+        type: 'web-search',
+        label: wsProviderLabel || 'Web Search',
+        description: wsTemplate?.description ?? '',
+        icon: 'public',
+        category: 'tools',
+        config: {
+          provider: wsProvider,
+          providerKey: wsProviderKey,
+          providerLabel: wsProviderLabel,
+          iconPath: wsIconPath,
+        },
+        inputs: wsTemplate?.inputs ?? ['query'],
+        outputs: wsTemplate?.outputs ?? ['results'],
+        isConfigured: true,
+      },
+    });
+    return;
+  }
+
   const template = nodeTemplates.find((t) => t.type === type);
   if (!template) return;
 
