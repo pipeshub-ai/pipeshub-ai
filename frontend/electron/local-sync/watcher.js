@@ -358,6 +358,11 @@ class ConnectorFsWatcher {
     const filtered = this.applyFilters(events);
     const dispatchable = this.expandForDispatch(filtered, replayFiles);
     if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
+    // Drain the dispatcher synchronously so callers (e.g. runScheduledTick)
+    // can rely on every reconcile event having reached onBatch/the journal
+    // before this returns. Without this, the 1s scheduleFlush timer would
+    // delay rescan deltas under SCHEDULED until the next tick.
+    await this.dispatcher.flush();
     return dispatchable;
   }
 }

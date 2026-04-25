@@ -618,6 +618,31 @@ class LocalFsConnector(BaseConnector):
         )
         return True
 
+    async def _has_existing_records(self) -> bool:
+        """True if any records already exist for this connector.
+
+        Used to decide whether ``run_sync`` should do a first-time full
+        filesystem walk, or skip it because subsequent deltas arrive via
+        ``apply_file_event_batch`` (Electron app journal / CLI replay).
+        """
+        try:
+            status_filters = [status.value for status in ProgressStatus]
+            async with self.data_store_provider.transaction() as tx_store:
+                records = await tx_store.get_records_by_status(
+                    self.data_entities_processor.org_id,
+                    self.connector_id,
+                    status_filters,
+                    limit=1,
+                    offset=0,
+                )
+            return bool(records)
+        except Exception as e:
+            self.logger.warning(
+                "Local FS: existing-records check failed (%s); proceeding with full walk",
+                e,
+            )
+            return False
+
     async def _reset_existing_records(self, owner_user_id: str) -> int:
         status_filters = [status.value for status in ProgressStatus]
         deleted = 0
@@ -808,6 +833,19 @@ class LocalFsConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         await self._reload_sync_settings()
+
+        # Once seeded, deltas flow exclusively through apply_file_event_batch
+        # (Electron app journal replay or CLI). Skip before path validation so
+        # Electron-mode connectors — where sync_root_path lives on the user's
+        # machine, not the backend host — return cleanly without warnings.
+        if await self._has_existing_records():
+            self.logger.info(
+                "Local FS: existing records detected for %s; skipping full re-scan. "
+                "Incremental changes are applied via the file event batch endpoint.",
+                self.connector_id,
+            )
+            return
+
         root_raw = self.sync_root_path.strip()
         if not root_raw:
             self.logger.warning(
@@ -817,9 +855,12 @@ class LocalFsConnector(BaseConnector):
 
         ok_path, detail = _validate_host_path(root_raw)
         if not ok_path:
-            self.logger.warning(
-                "Local FS: cannot use sync_root_path (%s). "
-                "Ensure the path exists inside the connector process (volume mount in Docker).",
+            # Expected for Electron-managed connectors: the path lives on the
+            # user's desktop, not the backend host. The Electron watcher seeds
+            # records via apply_file_event_batch, so this is informational.
+            self.logger.info(
+                "Local FS: backend cannot read sync_root_path (%s); "
+                "deferring initial seed to the client (Electron app / CLI).",
                 detail,
             )
             return
