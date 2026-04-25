@@ -1569,6 +1569,10 @@
         "authBannerTitle": "Persönliches Konto authentifizieren",
         "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
+        "removeTagAriaLabel": "{{tag}} entfernen"
+      },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",
         "preparing": "Synchronisierung wird vorbereitet...",

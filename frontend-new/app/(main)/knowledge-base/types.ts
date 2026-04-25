@@ -195,6 +195,7 @@ export interface KnowledgeHubNode {
   extension?: string | null;
   subType?: string;
   sourceType?: string;
+  isInternal?: boolean;
 }
 
 /**

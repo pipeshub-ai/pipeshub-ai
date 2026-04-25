@@ -7,7 +7,10 @@ import { FileIcon, FolderIcon } from '@/app/components/ui';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
-import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import {
+  runItemMenuOpenFromMenu,
+  shouldHideIndexingStatusForHubRecord,
+} from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 
 import type { 
@@ -139,6 +142,9 @@ function GridCard({
   // Status badge component (only shown for files)
   const getStatusBadge = () => {
     if (isFolder) return null;
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return null;
+    }
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
@@ -607,7 +613,7 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {isFolder ? null : (getStatusBadge() || (
+          {isFolder ? null : shouldHideIndexingStatusForHubRecord(item) ? (
             <Text
               size="2"
               weight="medium"
@@ -616,9 +622,22 @@ function GridCard({
                 lineHeight: 'var(--line-height-2)',
               }}
             >
-              -
+              —
             </Text>
-          ))}
+          ) : (
+            getStatusBadge() || (
+              <Text
+                size="2"
+                weight="medium"
+                style={{
+                  color: 'var(--slate-9)',
+                  lineHeight: 'var(--line-height-2)',
+                }}
+              >
+                -
+              </Text>
+            )
+          )}
         </Flex>
       </Flex>
     </Flex>

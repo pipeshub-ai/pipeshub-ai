@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useContext } from 'react';
+import React, { useState, useRef, useContext, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
@@ -143,6 +144,20 @@ export function SchemaFormField({
             error={error}
             isOptional={isOptional}
           />
+        );
+
+      case 'TAGS':
+        return (
+          <Flex direction="column" gap="1">
+            <FormField
+              label={field.displayName}
+              required={isRequired}
+              optional={isOptional}
+              error={error}
+            >
+              <TagsInput field={field} value={value} onChange={onChange} disabled={disabled} hasError={invalid} />
+            </FormField>
+          </Flex>
         );
 
       default: {
@@ -436,6 +451,138 @@ function TextInput({
         </Text>
       )}
       {examples && examples.length > 0 ? <FieldExamples examples={examples} /> : null}
+    </>
+  );
+}
+
+/** First occurrence wins casing; later entries that only differ by case are dropped. */
+function dedupeTagsCaseInsensitive(trimmed: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of trimmed) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+/** Tag list: type in the box and press Enter to add (same UX as legacy MUI TagsFieldRenderer). */
+function TagsInput({
+  field,
+  value,
+  onChange,
+  disabled,
+  hasError,
+}: {
+  field: SchemaField;
+  value: unknown;
+  onChange: (name: string, value: unknown) => void;
+  disabled: boolean;
+  hasError?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState('');
+  const [isFocused, setIsFocused] = useState(false);
+
+  const { rawTags, tags } = useMemo(() => {
+    const raw: string[] = Array.isArray(value)
+      ? (value as unknown[]).map((v) => String(v).trim()).filter((s) => s.length > 0)
+      : [];
+    return { rawTags: raw, tags: dedupeTagsCaseInsensitive(raw) };
+  }, [value]);
+
+  const addTag = () => {
+    const next = draft.trim();
+    if (!next || tags.some((x) => x.toLowerCase() === next.toLowerCase())) return;
+    onChange(field.name, [...tags, next]);
+    setDraft('');
+  };
+
+  const removeTag = (tag: string) => {
+    const k = tag.toLowerCase();
+    onChange(field.name, rawTags.filter((x) => x.toLowerCase() !== k));
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addTag();
+    }
+  };
+
+  const placeholder =
+    'placeholder' in field && field.placeholder
+      ? field.placeholder
+      : t('workspace.connectors.schemaForm.tagsPlaceholder');
+
+  return (
+    <>
+      <input
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={onKeyDown}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
+        style={{
+          ...inputStyle,
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle
+            : {}),
+          marginBottom: tags.length > 0 ? 8 : 0,
+          opacity: disabled ? 0.6 : 1,
+        }}
+      />
+      {tags.length > 0 ? (
+        <Flex wrap="wrap" gap="2" style={{ marginBottom: 4 }}>
+          {tags.map((tag) => (
+            <Flex
+              key={tag}
+              align="center"
+              gap="1"
+              style={{
+                paddingLeft: 8,
+                paddingRight: 2,
+                paddingTop: 2,
+                paddingBottom: 2,
+                borderRadius: 'var(--radius-2)',
+                border: '1px solid var(--accent-a6)',
+                backgroundColor: 'var(--accent-a2)',
+                maxWidth: '100%',
+              }}
+            >
+              <Text size="1" style={{ color: 'var(--gray-12)', wordBreak: 'break-word' }}>
+                {tag}
+              </Text>
+              <IconButton
+                type="button"
+                size="1"
+                variant="ghost"
+                color="gray"
+                disabled={disabled}
+                aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag })}
+                onClick={() => removeTag(tag)}
+                style={{ flexShrink: 0 }}
+              >
+                <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+              </IconButton>
+            </Flex>
+          ))}
+        </Flex>
+      ) : null}
+      {field.description ? (
+        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+          {field.description}
+        </Text>
+      ) : null}
     </>
   );
 }

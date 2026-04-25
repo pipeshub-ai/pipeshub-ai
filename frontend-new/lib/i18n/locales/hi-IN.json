@@ -1567,6 +1567,10 @@
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",
+        "removeTagAriaLabel": "{{tag}} हटाएँ"
+      },
       "syncStatus": {
         "paused": "Sync Paused",
         "preparing": "Preparing to Sync...",

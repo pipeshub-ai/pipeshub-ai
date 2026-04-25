@@ -20,7 +20,10 @@ import { FolderIcon } from '@/app/components/ui';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import {
+  runItemMenuOpenFromMenu,
+  shouldHideIndexingStatusForHubRecord,
+} from '../utils/kb-table-item-actions';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -231,6 +234,9 @@ function TableRow({
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return '';
+    }
     if (isKnowledgeHubNode(item)) {
       // No status from API — do not imply "Queued"
       if (item.indexingStatus == null) {
@@ -260,6 +266,9 @@ function TableRow({
   // Status indicator
   const getStatusIcon = () => {
     if (isFolder) return null;
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return null;
+    }
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
@@ -468,6 +477,13 @@ function TableRow({
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
         {(() => {
+          if (shouldHideIndexingStatusForHubRecord(item)) {
+            return (
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                —
+              </Text>
+            );
+          }
           const statusIcon = getStatusIcon();
           const statusLabel = getStatusLabel();
           if (!statusIcon) {

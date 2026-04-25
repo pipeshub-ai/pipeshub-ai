@@ -13,6 +13,7 @@ import type {
   PanelFormData,
   SyncStrategy,
 } from '../types';
+import { CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME } from '../constants';
 
 /** The merged structure used to initialize form state. */
 export interface MergedConfig {
@@ -97,12 +98,12 @@ function extractAuthValues(
       if (key in flat) result[key] = flat[key];
     }
 
-    // If the schema has a `serviceAccountJson` FILE field but no value was found for it,
+    // If the schema has a service-account JSON FILE field but no value was found for it,
     // try to reconstruct the JSON string from flat service account fields stored by the
     // legacy OAUTH connector. The FILE field component stores/expects raw JSON text.
     if (
-      fieldNames.includes('serviceAccountJson') &&
-      result.serviceAccountJson === undefined &&
+      fieldNames.includes(CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME) &&
+      result[CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME] === undefined &&
       flat.type === 'service_account' &&
       flat.client_id &&
       flat.project_id
@@ -112,7 +113,7 @@ function extractAuthValues(
         if (k in flat) saObj[k] = flat[k];
       }
       if (Object.keys(saObj).length > 0) {
-        result.serviceAccountJson = JSON.stringify(saObj, null, 2);
+        result[CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME] = JSON.stringify(saObj, null, 2);
       }
     }
 

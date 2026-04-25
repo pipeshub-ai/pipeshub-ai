@@ -1566,6 +1566,10 @@
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "Escriba y pulse Intro para añadir etiquetas",
+        "removeTagAriaLabel": "Quitar {{tag}}"
+      },
       "syncStatus": {
         "paused": "Sync Paused",
         "preparing": "Preparing to Sync...",

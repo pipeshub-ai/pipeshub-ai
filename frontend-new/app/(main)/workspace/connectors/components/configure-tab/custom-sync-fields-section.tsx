@@ -4,7 +4,8 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { SchemaFormField } from '../schema-form-field';
-import type { SyncCustomField } from '../../types';
+import type { ConnectorConfig, SyncCustomField } from '../../types';
+import { isNonEditableSyncFieldLocked } from '../../utils/sync-custom-field-lock';
 
 // ========================================
 // CustomSyncFieldsSection
@@ -15,11 +16,13 @@ export function CustomSyncFieldsSection({
   values,
   errors,
   onChange,
+  connectorConfig,
 }: {
   fields: SyncCustomField[];
   values: Record<string, unknown>;
   errors: Record<string, string>;
   onChange: (key: string, value: unknown) => void;
+  connectorConfig: ConnectorConfig | null;
 }) {
   const { t } = useTranslation();
   return (
@@ -49,6 +52,7 @@ export function CustomSyncFieldsSection({
           value={values[field.name]}
           onChange={onChange}
           error={errors[field.name]}
+          disabled={isNonEditableSyncFieldLocked(field, connectorConfig)}
         />
       ))}
     </Flex>
