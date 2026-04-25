@@ -4339,21 +4339,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
     ) -> list[dict]:
         if is_external:
-            external_filter = "org.isExternal == true"
+            external_filter = "FILTER org.isExternal == true"
         else:
-            external_filter = "(org.isExternal == false OR !HAS(org, 'isExternal'))"
+            external_filter = "FILTER (org.isExternal == false OR !HAS(org, 'isExternal'))"
 
         if active:
             query = f"""
             FOR org IN {CollectionNames.ORGS.value}
                 FILTER org.isActive == true
-                FILTER {external_filter}
+                {external_filter}
                 RETURN org
             """
         else:
             query = f"""
             FOR org IN {CollectionNames.ORGS.value}
-                FILTER {external_filter}
+                {external_filter}
                 RETURN org
             """
 
