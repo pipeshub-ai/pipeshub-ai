@@ -21,6 +21,38 @@ from app.utils.citations import (
 )
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
+from app.config.constants.service import config_node_constants
+
+DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
+DEFAULT_WEB_SEARCH_MAX_IMAGES = 3
+MAX_WEB_SEARCH_IMAGES = 500
+
+
+def normalize_web_search_image_settings(
+    settings: dict[str, Any] | None,
+) -> tuple[bool, int]:
+    include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
+    max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
+
+    if isinstance(settings, dict):
+        raw_include_images = settings.get("includeImages")
+        if isinstance(raw_include_images, bool):
+            include_images = raw_include_images
+
+        raw_max_images = settings.get("maxImages")
+        parsed_max_images: int | None = None
+        if isinstance(raw_max_images, int) and not isinstance(raw_max_images, bool):
+            parsed_max_images = raw_max_images
+        elif isinstance(raw_max_images, str):
+            try:
+                parsed_max_images = int(raw_max_images)
+            except ValueError:
+                parsed_max_images = None
+
+        if parsed_max_images is not None and 1 <= parsed_max_images <= MAX_WEB_SEARCH_IMAGES:
+            max_images = parsed_max_images
+
+    return include_images, max_images
 
 logger = create_logger(__name__)
 
@@ -196,14 +228,18 @@ class UrlContentHandler(ToolResultHandler):
         url = tool_result.get("url", "")
         blocks = tool_result.get("blocks", [])
         ref_mapper = context.get("ref_mapper")
-        include_images = context.get("include_images")
-        include_images = include_images if isinstance(include_images, bool) else False
-        raw_max_images = context.get("max_images", 3)
-        try:
-            max_images = int(raw_max_images)
-        except (TypeError, ValueError):
-            max_images = 3
-        max_images = max(1, min(max_images, 500))
+        config_service = context.get("config_service")
+        is_multimodal_llm = context.get("is_multimodal_llm", False)
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+        include_images, max_images = normalize_web_search_image_settings(
+            web_search_config.get("settings") if isinstance(web_search_config, dict) else None
+        )
+
+        include_images = is_multimodal_llm and include_images
 
         # Phase 1: Collect all remote image URLs that need fetching
         images_to_fetch = []

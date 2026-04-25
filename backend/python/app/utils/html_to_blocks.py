@@ -132,7 +132,7 @@ def _split_long_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> list[str]:
 # Core walker
 # ---------------------------------------------------------------------------
 
-def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_multimodal_llm: bool = False) -> None:
+def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> None:
     """
     Recursively walk the DOM tree, appending to `blocks`.
     `buffer` accumulates text fragments until a flush point is reached.
@@ -152,7 +152,7 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
             continue
 
         # ── Image ────────────────────────────────────────────────────────
-        if tag_name == "img" and is_multimodal_llm:
+        if tag_name == "img":
             # Flush pending text first
             _flush_buffer(buffer, blocks)
 
@@ -184,19 +184,18 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
                 for chunk in _split_long_text(inner):
                     blocks.append(TextBlock(content=chunk))
             # Still walk for nested images
-            if is_multimodal_llm:
-                _walk_images_only(child, base_url, blocks)
+            _walk_images_only(child, base_url, blocks)
             continue
 
         # ── Block-level wrappers (div, section, etc.) ────────────────────
         if tag_name in BLOCK_LEVEL_TAGS:
             buffer.append("\n")
-            _walk(child, base_url, blocks, buffer, is_multimodal_llm)
+            _walk(child, base_url, blocks, buffer)
             buffer.append("\n")
             continue
 
         # ── Recurse into everything else ─────────────────────────────────
-        _walk(child, base_url, blocks, buffer, is_multimodal_llm)
+        _walk(child, base_url, blocks, buffer)
 
 
 def _walk_images_only(node: Tag, base_url: str, blocks: list[Block]) -> None:
@@ -229,7 +228,6 @@ def html_to_blocks(
     html: str,
     base_url: str = "",
     use_trafilatura: bool = True,
-    is_multimodal_llm: bool = False,
 ) -> list[Block]:
     """
     Parse an HTML page and return a list of TextBlock / ImageBlock objects
@@ -275,7 +273,7 @@ def html_to_blocks(
     blocks: list[Block] = []
     buffer: list[str] = []
     root = soup.find("body") or soup
-    _walk(root, base_url, blocks, buffer, is_multimodal_llm)
+    _walk(root, base_url, blocks, buffer)
     _flush_buffer(buffer, blocks)   # flush any remaining text
 
     # ── 4. Post-process: merge tiny adjacent text blocks ─────────────────

@@ -21,6 +21,8 @@ import time
 from typing import Any, Literal, Union
 from uuid import UUID
 
+from app.config.constants.service import config_node_constants
+from app.config.configuration_service import ConfigurationService
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -5701,8 +5703,8 @@ async def execute_node(
     ref_mapper = state.get("citation_ref_mapper")
     handler_context = {
         "ref_mapper": ref_mapper,
-        "include_images": False,
-        "max_images": 0,
+        "config_service": state.get("config_service"),
+        "is_multimodal_llm": state.get("is_multimodal_llm", False),
     }
     for result in tool_results:
         if result.get("tool_id"):
@@ -6577,6 +6579,8 @@ async def respond_node(
             [] if qna_has_retrieval else final_results,
             has_retrieval_in_context=qna_has_retrieval,
             ref_mapper=state.get("citation_ref_mapper"),
+            config_service=state.get("config_service"),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
         )) if has_api_results else ""
 
         if context.strip():
@@ -6678,29 +6682,39 @@ async def respond_node(
         except Exception as e:
             log.warning(f"Failed to add web tools to respond_node: {e}")
 
-        # Instruct the LLM to use web_search when retrieval results are irrelevant.
+        # Instruct the LLM to use web tools when retrieval results are insufficient.
         # This is the safety net: even if the planner didn't select web_search,
         # the respond-phase LLM can still call it when the provided context
         # clearly does not answer the user's question.
         if has_web_search_tool and messages:
             web_tool_hint = (
-                "\n\n## Web Tools Available\n"
-                "You have `web_search` and `fetch_url` tools available. "
-                "If the retrieved knowledge blocks above do NOT contain information relevant to the user's question, "
-                "you can call `web_search` to find the answer from the web before responding."
+                "\n\n## Web Tools Available (CRITICAL — READ BEFORE RESPONDING)\n"
+                "You have `web_search` and `fetch_url` tools available.\n\n"
+                "**MANDATORY RULE**: If the retrieved knowledge blocks above do NOT contain "
+                "sufficient information to answer the user's question, you MUST use "
+                "`web_search` (and/or `fetch_url` for specific URLs) to find the answer "
+                "from the web BEFORE responding. "
+                "Always attempt a web search first.\n\n"
+                "Use web tools when:\n"
+                "- The provided context blocks are irrelevant, incomplete for the query\n"
+                "- The query asks about topics not covered in internal knowledge\n"
+                "- The query asks for current/real-time information (prices, news, latest versions)\n"
             )
             from langchain_core.messages import SystemMessage as _SysMsg
             if isinstance(messages[0], _SysMsg):
                 messages[0] = _SysMsg(content=messages[0].content + web_tool_hint)
             else:
                 messages.insert(0, _SysMsg(content=web_tool_hint))
-
+        
+      
+      
         # Create tool_runtime_kwargs
         tool_runtime_kwargs = {
             "blob_store": blob_store,
             "graph_provider": graph_provider,
             "org_id": org_id,
             "conversation_id": state.get("conversation_id"),
+            "config_service": config_service,
         }
 
         # Pre-seed web_records from prior tool execution so that web citations
@@ -7269,6 +7283,8 @@ async def _build_tool_results_context(
     *,
     has_retrieval_in_context: bool = False,
     ref_mapper: object | None = None,
+    config_service: ConfigurationService | None = None,
+    is_multimodal_llm: bool = False,
 ) -> str:
     """Build context from tool results for response generation.
 
@@ -7345,7 +7361,7 @@ async def _build_tool_results_context(
                 tool_name = r.get("tool_name", "unknown")
                 handler = ToolHandlerRegistry.get_handler(content)
                 formatted_blocks = await handler.format_message(
-                    content, {"ref_mapper": ref_mapper}
+                    content, {"ref_mapper": ref_mapper, "config_service": config_service, "is_multimodal_llm": is_multimodal_llm}
                 )
                 parts.append(f"### {tool_name}\n")
                 for block in formatted_blocks:

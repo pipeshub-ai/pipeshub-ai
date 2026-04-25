@@ -99,7 +99,6 @@ def _resolve_tiny_ref_url(url: str, ref_mapper: CitationRefMapper | None) -> str
 
 
 def create_fetch_url_tool(
-    is_multimodal_llm: bool = False,
     ref_mapper: CitationRefMapper | None = None,
 ) -> BaseTool:
     """
@@ -116,8 +115,6 @@ def create_fetch_url_tool(
         This tool Fetches and extracts main content from a URL for detailed analysis.
 
         Use this tool when you need the full content from a specific webpage to answer the query accurately. If multiple URLs are available, select the ones most likely to contain the required information and invoke the tool separately for each selected URL.
-
-        The content is returned as array of blocks.
 
         Args:
             url: The URL to fetch content from (must be HTTP/HTTPS)
@@ -160,7 +157,6 @@ def create_fetch_url_tool(
                 html_content,
                 use_trafilatura=False,
                 base_url=f"{parsed.scheme}://{parsed.netloc}",
-                is_multimodal_llm=is_multimodal_llm,
             )
 
             if not blocks:

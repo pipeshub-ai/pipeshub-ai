@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
-
     from app.agents.tools.models import Tool
 
 from app.agents.tools.registry import _global_tools_registry
@@ -74,7 +73,6 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
 
     # Default to sanitized for safety — dots break most LLM function-calling APIs
     return True
-
 
 def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'], state: ChatState) -> str:
     """
@@ -527,9 +525,8 @@ def _create_web_tools(state: ChatState) -> list:
 
     try:
         from app.utils.fetch_url_tool import create_fetch_url_tool
-        is_multimodal = state.get("is_multimodal_llm", False)
+           
         fetch_url_tool = create_fetch_url_tool(
-            is_multimodal_llm=is_multimodal,
             ref_mapper=ref_mapper,
         )
         tools.append(fetch_url_tool)
