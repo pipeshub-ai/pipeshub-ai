@@ -17,6 +17,8 @@ import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import type { NodeType, EnhancedFolderTreeNode, KnowledgeHubNode } from '../../knowledge-base/types';
 
 function KnowledgeBaseSidebarSlotContent() {
@@ -25,6 +27,11 @@ function KnowledgeBaseSidebarSlotContent() {
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
 
   const isAdmin = useUserStore(selectIsAdmin);
+  const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const closeOnMobile = useCallback(() => {
+    if (isMobile) closeMobileSidebar();
+  }, [isMobile, closeMobileSidebar]);
 
   const {
     categorizedNodes,
@@ -63,8 +70,9 @@ function KnowledgeBaseSidebarSlotContent() {
       } else {
         router.push(isAllRecordsMode ? '/knowledge-base?view=all-records' : '/knowledge-base');
       }
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleNodeExpand = useCallback(
@@ -191,34 +199,39 @@ function KnowledgeBaseSidebarSlotContent() {
         setAllRecordsSidebarSelection({ type: 'explorer' });
       }
       router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection]
+    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection, closeOnMobile]
   );
 
   // --- All Records mode handlers ---
   const handleAllRecordsSelectAll = useCallback(() => {
     router.push('/knowledge-base?view=all-records');
-  }, [router]);
+    closeOnMobile();
+  }, [router, closeOnMobile]);
 
   const handleAllRecordsSelectCollection = useCallback(
     (id: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'recordGroup', nodeId: id }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectConnectorItem = useCallback(
     (nodeType: string, nodeId: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectApp = useCallback(
     (appId: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: appId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleSidebarReindex = useCallback((nodeId: string) => {

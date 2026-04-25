@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { Flex, Text, Button, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
+import { Flex, Text, Button, IconButton, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
 import type { ViewMode, PageViewMode, Breadcrumb } from '../types';
 import { FolderIcon } from '@/app/components/ui';
@@ -177,6 +179,7 @@ export function Header({
   isSearchActive,
 }: KBHeaderProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const { viewMode, setViewMode, tableData } = useKnowledgeBaseStore();
   const isCollectionsMode = pageViewMode === 'collections';
 
@@ -293,17 +296,32 @@ export function Header({
     <Flex
       align="center"
       justify="between"
+      gap={isMobile ? '2' : '3'}
       style={{
         height: '40px',
-        padding: '0 var(--space-3)',
+        // Leave room on the left for the fixed mobile hamburger button so the
+        // breadcrumb does not sit underneath it.
+        padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
         borderBottom: '1px solid var(--olive-3)',
         backdropFilter: 'blur(8px)',
         backgroundColor: 'var(--effects-translucent)',
         flexShrink: 0,
       }}
     >
-      {/* Left: Breadcrumbs */}
-      <Flex align="center" gap="2" style={{ overflow: 'hidden', minWidth: 0 }}>
+      {/* Left: Breadcrumbs — on mobile, scroll horizontally so every ancestor
+          stays tappable instead of getting clipped by overflow: hidden. */}
+      <Flex
+        align="center"
+        gap="2"
+        wrap="nowrap"
+        className={isMobile ? 'no-scrollbar' : undefined}
+        style={{
+          overflowX: isMobile ? 'auto' : 'hidden',
+          overflowY: 'hidden',
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
         {isSearchActive ? (
           <Flex align="center" gap="2">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -316,30 +334,48 @@ export function Header({
       </Flex>
 
       {/* Right: Actions */}
-      <Flex align="center" gap="4" style={{ flexShrink: 0 }}>
-        {/* Common actions - always shown */}
-         <Flex align="center" gap="5">
-        <Button variant="ghost" size="1" color="gray" onClick={onFind} style={{ cursor: 'pointer', fontSize: "14px"}}>
-          <MaterialIcon name="search" size={16} color="var(--slate-11)" />
-          {t('action.find')}
-        </Button>
-        <Button variant="ghost" size="1" color="gray" onClick={onRefresh} style={{ cursor: 'pointer', fontSize: "14px" }}>
-          <MaterialIcon name="refresh" size={16} color="var(--slate-11)" />
-          {t('action.refresh')}
-        </Button>
+      <Flex align="center" gap={isMobile ? '1' : '4'} style={{ flexShrink: 0 }}>
+        {/* Common actions - always shown. Icon-only on mobile to save room. */}
+        <Flex align="center" gap={isMobile ? '1' : '5'}>
+          {isMobile ? (
+            <IconButton variant="ghost" size="2" color="gray" onClick={onFind} style={{ cursor: 'pointer' }} aria-label={t('action.find')}>
+              <MaterialIcon name="search" size={18} color="var(--slate-11)" />
+            </IconButton>
+          ) : (
+            <Button variant="ghost" size="1" color="gray" onClick={onFind} style={{ cursor: 'pointer', fontSize: '14px' }}>
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
+              {t('action.find')}
+            </Button>
+          )}
+          {isMobile ? (
+            <IconButton variant="ghost" size="2" color="gray" onClick={onRefresh} style={{ cursor: 'pointer' }} aria-label={t('action.refresh')}>
+              <MaterialIcon name="refresh" size={18} color="var(--slate-11)" />
+            </IconButton>
+          ) : (
+            <Button variant="ghost" size="1" color="gray" onClick={onRefresh} style={{ cursor: 'pointer', fontSize: '14px' }}>
+              <MaterialIcon name="refresh" size={16} color="var(--slate-11)" />
+              {t('action.refresh')}
+            </Button>
+          )}
         </Flex>
 
         {/* Collections mode only actions */}
         {isCollectionsMode && (
           <>
-            {/* New button with dropdown */}
+            {/* New button with dropdown — icon-only on mobile */}
             {tableData?.permissions?.canCreateFolders !== false && (
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                  <Button variant="solid" size="1" style={{ cursor: 'pointer' }}>
-                    <MaterialIcon name="add" size={16} color="white" />
-                    {t('action.new')}
-                  </Button>
+                  {isMobile ? (
+                    <IconButton variant="solid" size="2" style={{ cursor: 'pointer' }} aria-label={t('action.new')}>
+                      <MaterialIcon name="add" size={18} color="white" />
+                    </IconButton>
+                  ) : (
+                    <Button variant="solid" size="1" style={{ cursor: 'pointer' }}>
+                      <MaterialIcon name="add" size={16} color="white" />
+                      {t('action.new')}
+                    </Button>
+                  )}
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
                   <DropdownMenu.Item onClick={() => onCreateFolder?.()}>
@@ -354,7 +390,8 @@ export function Header({
               </DropdownMenu.Root>
             )}
 
-            {onShare && (
+            {/* Share group — hide on mobile to avoid cramming; users can share from item menu */}
+            {onShare && !isMobile && (
               <ShareHeaderGroup
                 members={sharedMembers}
                 onShareClick={onShare}

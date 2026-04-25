@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
 import { AppSection } from './section';
@@ -126,6 +127,7 @@ export function AllRecordsMode({
   isLoadingRootAppListMore,
 }: AllRecordsModeProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   return (
     <>
@@ -254,8 +256,8 @@ export function AllRecordsMode({
         </Box>
       ))}
 
-      {/* More Connectors section */}
-      {moreConnectors.length > 0 && (
+      {/* More Connectors section — hidden on mobile to keep the drawer compact */}
+      {!isMobile && moreConnectors.length > 0 && (
         <Box style={{ marginTop: `${SECTION_PADDING_BOTTOM}px` }}>
           <Text
             size="2"

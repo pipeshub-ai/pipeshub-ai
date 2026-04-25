@@ -5,6 +5,7 @@ import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ItemActionMenu } from './item-action-menu';
 import type {
   KnowledgeBaseItem,
@@ -118,6 +119,7 @@ interface TableRowProps {
   item: TableItem;
   isSelected: boolean;
   showSourceColumn?: boolean;
+  isMobile: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -133,6 +135,7 @@ function TableRow({
   item,
   isSelected,
   showSourceColumn,
+  isMobile,
   onSelect,
   onClick,
   onOpen,
@@ -493,35 +496,41 @@ function TableRow({
         </Flex>
       )}
 
-      {/* Size */}
-      <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatSize(item.sizeInBytes ?? undefined)
-            : formatSize(item.size)
-          }
-        </Text>
-      </Flex>
+      {/* Size — hidden on mobile to keep the row readable */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? formatSize(item.sizeInBytes ?? undefined)
+              : formatSize(item.size)
+            }
+          </Text>
+        </Flex>
+      )}
 
-      {/* Created */}
-      <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatDate(new Date(item.createdAt).toISOString())
-            : formatDate(item.createdAt)
-          }
-        </Text>
-      </Flex>
+      {/* Created — hidden on mobile */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? formatDate(new Date(item.createdAt).toISOString())
+              : formatDate(item.createdAt)
+            }
+          </Text>
+        </Flex>
+      )}
 
-      {/* Updated */}
-      <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatDate(new Date(item.updatedAt).toISOString())
-            : formatDate(item.updatedAt)
-          }
-        </Text>
-      </Flex>
+      {/* Updated — hidden on mobile */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? formatDate(new Date(item.updatedAt).toISOString())
+              : formatDate(item.updatedAt)
+            }
+          </Text>
+        </Flex>
+      )}
 
       {/* Actions */}
       <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
@@ -597,8 +606,9 @@ export function KbListView({
   onDelete,
   onDownload,
 }: KbListViewProps) {
+  const isMobile = useIsMobile();
   console.log('pagination data', pagination);
-  
+
   return (
     <>
       {/* Table Header */}
@@ -638,14 +648,20 @@ export function KbListView({
           <TableHeaderCell label="Source" width="70px" sort={sort} onSort={onSort} />
         )}
 
-        {/* Size */}
-        <TableHeaderCell label="Size" field="size" sortable width="89px" sort={sort} onSort={onSort} />
+        {/* Size — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Size" field="size" sortable width="89px" sort={sort} onSort={onSort} />
+        )}
 
-        {/* Created */}
-        <TableHeaderCell label="Created" field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+        {/* Created — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Created" field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+        )}
 
-        {/* Updated */}
-        <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+        {/* Updated — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+        )}
 
         {/* Actions */}
         <Box style={{ width: '80px' }} />
@@ -662,6 +678,7 @@ export function KbListView({
             item={item}
             isSelected={selectedItems.has(item.id)}
             showSourceColumn={showSourceColumn}
+            isMobile={isMobile}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

@@ -8,6 +8,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SecondaryPanel, SidebarBackHeader } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatSectionElement } from './chat-section-element';
@@ -39,6 +41,8 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
   const currentConversationId = searchParams.get('conversationId');
 
   const moveConversationToTop = useChatStore((s) => s.moveConversationToTop);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const isMobile = useIsMobile();
 
   const { t } = useTranslation();
 
@@ -103,6 +107,7 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
     moveConversationToTop(id);
     router.push(buildChatHref({ agentId, conversationId: id }));
     onBack();
+    if (isMobile) closeMobileSidebar();
   };
 
   const loadMore = useCallback(async () => {

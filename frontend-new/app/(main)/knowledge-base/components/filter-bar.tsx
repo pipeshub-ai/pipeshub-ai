@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon, FilterDropdown, DateRangePicker, type DateFilterType } from '@/app/components/ui';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -23,6 +24,7 @@ interface KBFilterBarProps {
 
 export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     // Collections mode state and actions
     filter,
@@ -212,17 +214,24 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   return (
     <Flex
       align="center"
-      gap="3"
+      gap={isMobile ? '2' : '3'}
+      className={isMobile ? 'kb-filter-bar-mobile no-scrollbar' : undefined}
       style={{
         minHeight: '40px',
-        padding: 'var(--space-2) var(--space-4)',
+        padding: isMobile ? 'var(--space-2)' : 'var(--space-2) var(--space-4)',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
         backdropFilter: 'blur(8px)',
-        flexWrap: 'wrap',
+        // Mobile: single-row horizontal scroll so chips never wrap.
+        // Desktop: keep the wrap behavior.
+        flexWrap: isMobile ? 'nowrap' : 'wrap',
+        overflowX: isMobile ? 'auto' : 'visible',
       }}
     >
-      <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />
+      {/* Pin chip widths on mobile so they scroll instead of shrinking below
+          their content. Scoped by `.kb-filter-bar-mobile` so desktop is unaffected. */}
+      {isMobile && <style>{`.kb-filter-bar-mobile > * { flex-shrink: 0; }`}</style>}
+      {!isMobile && <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />}
 
       {/* Type Filter */}
       <FilterDropdown

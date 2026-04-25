@@ -6,6 +6,8 @@ import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { loadMoreRootAppList, loadMoreAppChildPage } from '../utils/sidebar-paginated-fetch';
@@ -93,6 +95,9 @@ function KBSidebarFromStore() {
   const router = useRouter();
   const store = useKnowledgeBaseStore();
   const pageViewMode = store.currentViewMode || 'collections';
+  const isMobile = useIsMobile();
+  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   const handleBack = () => {
     router.push('/chat');
@@ -101,7 +106,12 @@ function KBSidebarFromStore() {
   const title = pageViewMode === 'collections' ? t('nav.collections') : t('nav.allRecords');
 
   return (
-    <SidebarBase header={<SidebarBackHeader title={title} onBack={handleBack} />}>
+    <SidebarBase
+      header={<SidebarBackHeader title={title} onBack={handleBack} />}
+      isMobile={isMobile}
+      mobileOpen={isMobileOpen}
+      onMobileClose={closeMobileSidebar}
+    >
       <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2)' }}>
         {t('action.loading')}
       </Text>
@@ -149,6 +159,9 @@ function KBSidebarContent({
   const router = useRouter();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const isMobile = useIsMobile();
+  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const {
     currentFolderId,
     expandedFolders,
@@ -475,6 +488,9 @@ function KBSidebarContent({
       header={<SidebarBackHeader title={headerTitle} onBack={onBack} />}
       secondaryPanel={buildSecondaryPanel()}
       onDismissSecondaryPanel={isSecondaryPanelOpen ? handleDismissSecondaryPanel : undefined}
+      isMobile={isMobile}
+      mobileOpen={isMobileOpen}
+      onMobileClose={closeMobileSidebar}
     >
       {isCollectionsMode ? (
         <CollectionsMode

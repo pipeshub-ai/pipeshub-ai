@@ -1062,16 +1062,31 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
-      // Immediate refetch when clearing search (bypasses debounce)
-      fetchAllRecordsTableData();
+      // Immediate refetch when clearing search (bypasses debounce).
+      // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
+      const nt = searchParams.get('nodeType');
+      const nid = searchParams.get('nodeId');
+      if (nt && nid) {
+        void fetchAllRecordsTableData(nt, nid);
+      } else {
+        void fetchAllRecordsTableData();
+      }
     } else {
       setSearchQuery('');
       // Immediate refetch when clearing search (bypasses debounce)
       if (selectedNode) {
-        fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
+        void fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
       }
     }
-  }, [isAllRecordsMode, selectedNode, setAllRecordsSearchQuery, setSearchQuery, fetchAllRecordsTableData, fetchTableData]);
+  }, [
+    isAllRecordsMode,
+    searchParams,
+    selectedNode,
+    setAllRecordsSearchQuery,
+    setSearchQuery,
+    fetchAllRecordsTableData,
+    fetchTableData,
+  ]);
 
   // Handle search change - updates search query in store
   const handleSearchChange = useCallback(
