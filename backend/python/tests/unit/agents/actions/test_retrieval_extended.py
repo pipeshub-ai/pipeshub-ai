@@ -342,19 +342,57 @@ class TestNoFilterIdsProvided:
         retrieval_service.search_with_filters = AsyncMock(
             return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
         )
-        # Full agent scope is taken from state["apps"] / state["kb"], not from
-        # state["filters"] (see search_internal_knowledge broad_search branch).
+        # For non-placeholder agents, broad search should use curated filters.
         state = _make_state(
             retrieval_service=retrieval_service,
             filters={"apps": ["app-1"], "kb": ["kb-1"]},
-            apps=["app-1"],
-            kb=["kb-1"],
+            apps=["app-from-knowledge"],
+            kb=["kb-from-knowledge"],
         )
         r = Retrieval(state=state)
         await r.search_internal_knowledge(query="test")
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
         assert call_kwargs["filter_groups"]["apps"] == ["app-1"]
         assert call_kwargs["filter_groups"]["kb"] == ["kb-1"]
+
+    @pytest.mark.asyncio
+    async def test_placeholder_no_ids_uses_state_apps_and_kb(self):
+        """Placeholder agents should broaden to state apps/kb instead of filters."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": ["curated-app"], "kb": ["curated-kb"]},
+            apps=["a1", "a2"],
+            kb=["k1", "k2", "k3"],
+            is_placeholder_agent=True,
+        )
+        r = Retrieval(state=state)
+        await r.search_internal_knowledge(query="test")
+        call_kwargs = retrieval_service.search_with_filters.call_args[1]
+        assert set(call_kwargs["filter_groups"]["apps"]) == {"a1", "a2"}
+        assert set(call_kwargs["filter_groups"]["kb"]) == {"k1", "k2", "k3"}
+
+    @pytest.mark.asyncio
+    async def test_placeholder_limit_uses_state_scope_counts(self):
+        """Placeholder adjusted limit should use state apps/kb count."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": [], "kb": []},
+            apps=["a1", "a2"],
+            kb=["k1", "k2", "k3"],
+            is_placeholder_agent=True,
+        )
+        r = Retrieval(state=state)
+        await r.search_internal_knowledge(query="test")
+        call_kwargs = retrieval_service.search_with_filters.call_args[1]
+        assert call_kwargs["limit"] == 100 // 5
 
 
 # ============================================================================
