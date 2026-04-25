@@ -369,7 +369,8 @@ export function ConnectorPanel() {
     const fieldErrs = collectRequiredAuthFieldErrors(
       vFields,
       formData.auth,
-      (f) => t('workspace.actions.validation.fieldRequired', { field: f.displayName })
+      (f) => t('workspace.actions.validation.fieldRequired', { field: f.displayName }),
+      (f) => t('workspace.actions.validation.fieldMustBeTrue', { field: f.displayName })
     );
     if (Object.keys(fieldErrs).length > 0) {
       mergeFormErrors(fieldErrs);

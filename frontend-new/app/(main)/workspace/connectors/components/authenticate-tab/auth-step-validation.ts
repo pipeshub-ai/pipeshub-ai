@@ -24,9 +24,8 @@ function valueMissingForField(
   field: AuthSchemaField & { fieldType?: string }
 ): boolean {
   const ft = (field as { fieldType?: string }).fieldType;
-  if (ft === 'BOOLEAN' || ft === 'CHECKBOX') {
-    if (!field.required) return false;
-    return value === undefined || value === null;
+  if (ft === 'CHECKBOX') {
+    return false;
   }
   if (value === undefined || value === null) return true;
   if (typeof value === 'string' && value.trim() === '') return true;
@@ -34,17 +33,34 @@ function valueMissingForField(
   return false;
 }
 
+function fieldTypeIsCheckboxAuthField(field: AuthSchemaField): boolean {
+  // Auth schema uses CHECKBOX for booleans; AuthSchemaField has no 'BOOLEAN' (see types.ts).
+  return field.fieldType === 'CHECKBOX';
+}
+
 /**
  * Per-field error messages for empty required values (i18n keys in caller, or short labels).
+ * Required CHECKBOX auth fields must be strictly `true` (not merely "present").
  */
 export function collectRequiredAuthFieldErrors(
   fields: AuthSchemaField[],
   formDataAuth: Record<string, unknown>,
-  messageFor: (field: AuthSchemaField) => string
+  messageFor: (field: AuthSchemaField) => string,
+  messageWhenRequiredCheckboxMustBeTrue?: (field: AuthSchemaField) => string
 ): Record<string, string> {
   const out: Record<string, string> = {};
+  const mustBeTrue =
+    messageWhenRequiredCheckboxMustBeTrue ??
+    ((f: AuthSchemaField) => `${f.displayName} must be true`);
+
   for (const field of fields) {
     if (!field.required) continue;
+    if (fieldTypeIsCheckboxAuthField(field)) {
+      if (formDataAuth[field.name] !== true) {
+        out[field.name] = mustBeTrue(field);
+      }
+      continue;
+    }
     const v = formDataAuth[field.name];
     if (!valueMissingForField(v, field as AuthSchemaField & { fieldType?: string })) continue;
     out[field.name] = messageFor(field);

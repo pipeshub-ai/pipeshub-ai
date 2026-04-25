@@ -1270,6 +1270,7 @@
       },
       "validation": {
         "fieldRequired": "{{field}} आवश्यक है",
+        "fieldMustBeTrue": "{{field}} सही होना चाहिए",
         "fixErrorsAbove": "जारी रखने के लिए ऊपर हाइलाइट किए गए फ़ील्ड ठीक करें।"
       }
     },
