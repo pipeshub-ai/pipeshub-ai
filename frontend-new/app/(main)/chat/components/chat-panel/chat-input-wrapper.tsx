@@ -11,10 +11,12 @@ import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchReq
 import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
-} from '@/lib/api/api-error';
+} from '@/lib/api';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
+/** Increments on each submit so superseded requests never clear loading for a newer search. */
+let searchSubmitGeneration = 0;
 
 /**
  * Wrapper component that connects ChatInput to assistant-ui runtime.
@@ -54,7 +56,9 @@ export function ChatInputWrapper() {
     if (currentSearchAbort) {
       currentSearchAbort.abort();
     }
-    currentSearchAbort = new AbortController();
+    const myGeneration = ++searchSubmitGeneration;
+    const searchController = new AbortController();
+    currentSearchAbort = searchController;
 
     store.setIsSearching(true);
     store.setSearchError(null);
@@ -73,7 +77,7 @@ export function ChatInputWrapper() {
     };
 
     try {
-      const response = await ChatApi.search(request, currentSearchAbort.signal);
+      const response = await ChatApi.search(request, searchController.signal);
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
@@ -82,13 +86,17 @@ export function ChatInputWrapper() {
     } catch (error: unknown) {
       if (isRequestCancelledError(error)) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
-        store.setSearchResults([], '', query);
+        store.setSearchResults([], null, query);
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');
     } finally {
-      store.setIsSearching(false);
-      currentSearchAbort = null;
+      if (currentSearchAbort === searchController) {
+        currentSearchAbort = null;
+      }
+      if (myGeneration === searchSubmitGeneration) {
+        store.setIsSearching(false);
+      }
     }
   };
 

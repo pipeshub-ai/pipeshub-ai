@@ -27,6 +27,8 @@ interface ApiErrorResponse {
   details?: Record<string, unknown>;
   /** FastAPI / similar */
   detail?: string | Array<string | { msg?: string }>;
+  /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
+  status?: string;
 }
 
 /**
@@ -130,14 +132,18 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
         originalError: error,
       };
 
-    case 404:
+    case 404: {
+      const bodyStatus = typeof data?.status === 'string' ? data.status : undefined;
+      const baseDetails =
+        data?.details && typeof data.details === 'object' ? { ...data.details } : {};
       return {
         type: ErrorType.NOT_FOUND,
         message: message || 'The requested resource was not found.',
         statusCode: status,
-        details: data?.details,
+        details: bodyStatus ? { ...baseDetails, apiStatus: bodyStatus } : data?.details,
         originalError: error,
       };
+    }
 
     case 400:
     case 422:
@@ -183,7 +189,10 @@ export function isProcessedError(error: unknown): error is ProcessedError {
   );
 }
 
-/** Backend search returns NOT_FOUND with this phrase when filters match no indexed docs. */
+/** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND` — search ran but no docs in scope. */
+export const SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS = 'accessible_records_not_found';
+
+/** Fallback if response body omits `status` (message copy may change). */
 export const SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT = 'No accessible documents found';
 
 export function isRequestCancelledError(error: unknown): boolean {
@@ -192,9 +201,8 @@ export function isRequestCancelledError(error: unknown): boolean {
 
 /** Empty search results (not a failure): API reports no docs for current scope. */
 export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
-  return (
-    isProcessedError(error) &&
-    error.type === ErrorType.NOT_FOUND &&
-    (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT)
-  );
+  if (!isProcessedError(error) || error.type !== ErrorType.NOT_FOUND) return false;
+  const apiStatus = error.details?.apiStatus;
+  if (apiStatus === SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS) return true;
+  return (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT);
 }
