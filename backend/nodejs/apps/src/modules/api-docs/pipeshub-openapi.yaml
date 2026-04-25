@@ -3024,6 +3024,7 @@ components:
               type: string
             modelFriendlyName:
               type: string
+              description: Friendly display name of the selected model
             modelProvider:
               type: string
             chatMode:
@@ -14253,6 +14254,7 @@ paths:
                   type: string
                 modelFriendlyName:
                   type: string
+                  description: Friendly display name of the selected model
                 chatMode:
                   type: string
       responses:

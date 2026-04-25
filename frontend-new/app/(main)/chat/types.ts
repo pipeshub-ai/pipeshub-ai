@@ -127,7 +127,11 @@ export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
  */
 export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
 
-/** API `chatMode` for streams (assistant modes + agent strategy variant). */
+/**
+ * API `chatMode` for streams (assistant modes + agent strategy variant).
+ * `web-search`/`image` are UI mode tags persisted for restore; Python route
+ * model config currently treats unrecognized values as standard behavior.
+ */
 export type StreamChatModePayload =
   | 'quick'
   | 'web-search'

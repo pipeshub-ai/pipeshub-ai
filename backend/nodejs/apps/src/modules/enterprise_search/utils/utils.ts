@@ -785,7 +785,21 @@ export const saveCompleteConversation = async (
 
     // Update conversation
     conversation.messages.push(aiResponseMessage);
-    conversation.modelInfo = modelInfo;
+    if (modelInfo) {
+      const fieldsToUpdate: Array<keyof IAIModel> = [
+        'modelKey',
+        'modelName',
+        'modelProvider',
+        'chatMode',
+        'modelFriendlyName',
+      ];
+      for (const field of fieldsToUpdate) {
+        const value = modelInfo[field];
+        if (value !== undefined && value !== null) {
+          (conversation.modelInfo as IAIModel)[field] = value;
+        }
+      }
+    }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -998,7 +1012,21 @@ export const saveCompleteAgentConversation = async (
 
     // Update conversation
     conversation.messages.push(aiResponseMessage);
-    conversation.modelInfo = modelInfo;
+    if (modelInfo) {
+      const fieldsToUpdate: Array<keyof IAIModel> = [
+        'modelKey',
+        'modelName',
+        'modelProvider',
+        'chatMode',
+        'modelFriendlyName',
+      ];
+      for (const field of fieldsToUpdate) {
+        const value = modelInfo[field];
+        if (value !== undefined && value !== null) {
+          (conversation.modelInfo as IAIModel)[field] = value;
+        }
+      }
+    }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
 

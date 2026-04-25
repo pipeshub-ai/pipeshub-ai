@@ -49,9 +49,7 @@ export function findModelInfoInConversationLists(
 ): ModelInfo | undefined {
   if (forAgentId?.trim()) {
     const fromAgent = state.agentConversations.find((c) => c.id === conversationId);
-    if (fromAgent?.modelInfo) {
-      return fromAgent.modelInfo;
-    }
+    return fromAgent?.modelInfo;
   }
   const row =
     state.conversations.find((c) => c.id === conversationId) ??
@@ -130,13 +128,11 @@ function applyModeAndStrategy(
 
   if (mode === 'web-search') {
     store.setQueryMode('web-search');
-    store.setMode('chat');
     return;
   }
 
   if (mode === 'image') {
     store.setQueryMode('image');
-    store.setMode('chat');
     return;
   }
 
