@@ -2380,12 +2380,19 @@ components:
         recordType:
           type: string
           nullable: true
+          description: Record type (only when nodeType is record)
         recordGroupType:
           type: string
           nullable: true
+          description: Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)
         indexingStatus:
           type: string
           nullable: true
+          description: Indexing status (only when nodeType is record)
+        reason:
+          type: string
+          nullable: true
+          description: Reason for current indexing status (e.g. failure reason)
         isInternal:
           type: boolean
           description: True when the node is an internal/system record group or record (doesn't come from source)

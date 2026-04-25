@@ -34,7 +34,7 @@ export interface KnowledgeBaseItem {
   nodeType?: string;
   sourceType?: string;
   connector?: string;
-  reason?: string;
+  reason?: string | null;
 }
 
 export interface FolderTreeNode {
