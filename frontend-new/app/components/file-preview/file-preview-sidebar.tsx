@@ -13,13 +13,11 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { getTabsForSource, shouldShowPagination } from './utils';
 import {
-  PDF_ZOOM_DEFAULT,
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
-  PDF_ZOOM_PRECISION_FACTOR,
-  PDF_ZOOM_STEP,
 } from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import {
@@ -60,7 +58,11 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
-  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
   const tabs = useMemo(
     () => getTabsForSource(source, { hideFileDetails }),
     [source, hideFileDetails],
@@ -78,7 +80,6 @@ export function FilePreviewSidebar({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
-    setPdfScale(PDF_ZOOM_DEFAULT);
   }, [file.id, file.url, initialPage]);
 
   // If the active tab is no longer visible (e.g. we previously had record
@@ -148,23 +149,6 @@ export function FilePreviewSidebar({
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
   };
-
-  const handlePdfZoomIn = useCallback(() => {
-    setPdfScale((s) =>
-      Math.min(
-        PDF_ZOOM_MAX,
-        Math.round((s + PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
-  const handlePdfZoomOut = useCallback(() => {
-    setPdfScale((s) =>
-      Math.max(
-        PDF_ZOOM_MIN,
-        Math.round((s - PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
 
   // Bidirectional citation ↔ page sync
   const {

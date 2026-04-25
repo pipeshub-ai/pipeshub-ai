@@ -11,13 +11,11 @@ import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { shouldShowPagination } from './utils';
 import {
-  PDF_ZOOM_DEFAULT,
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
-  PDF_ZOOM_PRECISION_FACTOR,
-  PDF_ZOOM_STEP,
 } from './types';
 import type { FilePreviewProps, PaginationControls, PreviewCitation } from './types';
 
@@ -39,7 +37,11 @@ export function FilePreviewMobile({
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
 
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -56,7 +58,6 @@ export function FilePreviewMobile({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
-    setPdfScale(PDF_ZOOM_DEFAULT);
   }, [file.id, file.url, initialPage]);
 
   const handleTotalPagesDetected = useCallback((numPages: number) => {
@@ -76,23 +77,6 @@ export function FilePreviewMobile({
       setCurrentPage(prev => Math.min(totalPages, prev + 1));
     }
   };
-
-  const handlePdfZoomIn = useCallback(() => {
-    setPdfScale((s) =>
-      Math.min(
-        PDF_ZOOM_MAX,
-        Math.round((s + PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
-  const handlePdfZoomOut = useCallback(() => {
-    setPdfScale((s) =>
-      Math.max(
-        PDF_ZOOM_MIN,
-        Math.round((s - PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
 
   // Bidirectional citation <-> page sync
   const {
@@ -326,6 +310,7 @@ export function FilePreviewMobile({
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
                   backdropFilter: 'blur(25px)',
+                  // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
                   zIndex: 20,
                   isolation: 'isolate',
                   pointerEvents: 'auto',
@@ -373,7 +358,7 @@ export function FilePreviewMobile({
                   style={{
                     width: '1px',
                     height: '16px',
-                    backgroundColor: 'var(--olive-5)',
+                    backgroundColor: 'var(--slate-4)',
                     flexShrink: 0,
                   }}
                   aria-hidden

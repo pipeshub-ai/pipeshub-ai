@@ -1477,19 +1477,20 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, isSelectedKbPrivate, handleAccessRevoked, shareAdapter]);
 
+  const getPreviewErrorMessage = useCallback((err: unknown): string => {
+    if (err instanceof Error && err.message) return err.message;
+
+    const maybeMessage = (err as { message?: unknown })?.message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
+
+    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
+    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
+
+    return 'Failed to load file';
+  }, []);
+
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
-    const getPreviewErrorMessage = (err: unknown): string => {
-      if (err instanceof Error && err.message) return err.message;
-
-      const maybeMessage = (err as { message?: unknown })?.message;
-      if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
-
-      const maybeStatusText = (err as { statusText?: unknown })?.statusText;
-      if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
-
-      return 'Failed to load file';
-    };
 
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
@@ -1637,7 +1638,7 @@ function KnowledgeBasePageContent() {
         } : null);
       }
     }
-  }, []);
+  }, [getPreviewErrorMessage]);
 
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(

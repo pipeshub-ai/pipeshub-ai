@@ -13,11 +13,18 @@ import {
 import type { IHighlight } from 'react-pdf-highlighter';
 import type { PDFRendererProps, PreviewCitation } from '../types';
 
-// Constants matching the demo (scaled “paper” space for citation rects)
+// Constants matching the demo (scaled "paper" space for citation rects)
 const PDF_PAGE_WIDTH = 967;
 const PDF_PAGE_HEIGHT = 747.2272727272727;
 const SCROLL_DELAY_MS = 300;
 const NAVIGATION_SETTLE_MS = 500;
+
+type PdfJsViewer = {
+  currentPageNumber: number;
+  currentScaleValue: string;
+  pagesCount?: number;
+  container?: HTMLElement;
+};
 
 function toValidPageNumber(value: unknown): number | null {
   const normalized =
@@ -32,24 +39,7 @@ function toValidPageNumber(value: unknown): number | null {
 
 /** `window.PdfViewer` is the PdfHighlighter instance; `.viewer` is the pdf.js `PDFViewer`. */
 function getPdfJsViewer() {
-  return (window as unknown as {
-    PdfViewer?: {
-      viewer?: {
-        currentPageNumber: number;
-        currentScaleValue: string;
-        pagesCount?: number;
-        container?: HTMLElement;
-      };
-    };
-  })
-    .PdfViewer?.viewer as
-    | {
-      currentPageNumber: number;
-      currentScaleValue: string;
-      pagesCount?: number;
-      container?: HTMLElement;
-    }
-    | undefined;
+  return (window as unknown as { PdfViewer?: { viewer?: PdfJsViewer } }).PdfViewer?.viewer;
 }
 
 function clampToPageBounds(
@@ -169,12 +159,26 @@ export function PDFRenderer({
   const isViewerReady = useRef(false);
   // Holds a citation highlight to scroll to once the viewer becomes ready.
   const pendingCitationScroll = useRef<IHighlight | null>(null);
+  const navigatingTimeoutRef = useRef<number | null>(null);
 
   const clearNavigatingSoon = useCallback(() => {
-    setTimeout(() => {
+    if (navigatingTimeoutRef.current !== null) {
+      window.clearTimeout(navigatingTimeoutRef.current);
+    }
+    navigatingTimeoutRef.current = window.setTimeout(() => {
       isNavigating.current = false;
+      navigatingTimeoutRef.current = null;
     }, NAVIGATION_SETTLE_MS);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (navigatingTimeoutRef.current !== null) {
+        window.clearTimeout(navigatingTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   const navigateToHighlightSafely = useCallback(
     (scrollTo: (highlight: IHighlight) => void, highlight: IHighlight) => {
@@ -193,9 +197,14 @@ export function PDFRenderer({
       if (viewer) {
         try {
           viewer.currentPageNumber = safePageNumber;
+          lastReportedPage.current = safePageNumber;
+          paginationRef.current?.onPageChange?.(safePageNumber);
         } catch {
           // Ignore invalid-page throws during document/viewer transitions.
         }
+      } else {
+        lastReportedPage.current = safePageNumber;
+        paginationRef.current?.onPageChange?.(safePageNumber);
       }
 
       try {
@@ -205,8 +214,6 @@ export function PDFRenderer({
         // We already synced page number above, so keep non-fatal.
       }
 
-      lastReportedPage.current = safePageNumber;
-      paginationRef.current?.onPageChange?.(safePageNumber);
       clearNavigatingSoon();
     },
     [clearNavigatingSoon],
@@ -286,9 +293,9 @@ export function PDFRenderer({
 
     const detectCurrentPage = () => {
       if (isNavigating.current) return;
-      const viewer = (window as unknown as { PdfViewer?: { viewer?: { currentPageNumber?: number } } }).PdfViewer?.viewer;
+      const viewer = getPdfJsViewer();
       if (!viewer) return;
-      const pageNum: number | undefined = viewer.currentPageNumber;
+      const pageNum = toValidPageNumber(viewer.currentPageNumber);
       if (pageNum && pageNum !== lastReportedPage.current) {
         lastReportedPage.current = pageNum;
         paginationRef.current?.onPageChange?.(pageNum);
@@ -302,7 +309,7 @@ export function PDFRenderer({
 
     // Poll until the viewer container is available (created after pagesinit)
     const timer = setInterval(() => {
-      const container = (window as unknown as { PdfViewer?: { viewer?: { container?: HTMLElement } } }).PdfViewer?.viewer?.container as HTMLElement | undefined;
+      const container = getPdfJsViewer()?.container;
       if (container) {
         clearInterval(timer);
         scrollEl = container;
@@ -343,9 +350,9 @@ export function PDFRenderer({
     if (safeTargetPage === lastReportedPage.current) return;
 
     isNavigating.current = true;
-    lastReportedPage.current = safeTargetPage;
     try {
       viewer.currentPageNumber = safeTargetPage;
+      lastReportedPage.current = safeTargetPage;
     } catch {
       // Ignore invalid-page throws during document/viewer transitions.
     }
@@ -495,10 +502,6 @@ export function PDFRenderer({
                 if (!isViewerReady.current) {
                   isViewerReady.current = true;
                   setViewerReadyEpoch((n) => n + 1);
-                }
-                const viewer = getPdfJsViewer();
-                if (viewer) {
-                  viewer.currentScaleValue = String(paginationRef.current?.scale ?? 1);
                 }
 
                 // Execute any citation scroll that was requested before the viewer was ready

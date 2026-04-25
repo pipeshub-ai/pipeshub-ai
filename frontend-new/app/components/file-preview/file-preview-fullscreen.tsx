@@ -9,13 +9,11 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { shouldShowPagination } from './utils';
 import {
-  PDF_ZOOM_DEFAULT,
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
-  PDF_ZOOM_PRECISION_FACTOR,
-  PDF_ZOOM_STEP,
 } from './types';
 import type { FilePreviewProps, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
@@ -39,7 +37,11 @@ export function FilePreviewFullscreen({
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -54,7 +56,6 @@ export function FilePreviewFullscreen({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
-    setPdfScale(PDF_ZOOM_DEFAULT);
   }, [file.id, file.url, initialPage]);
 
   // Handle page detection callback from renderer
@@ -75,23 +76,6 @@ export function FilePreviewFullscreen({
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
   };
-
-  const handlePdfZoomIn = useCallback(() => {
-    setPdfScale((s) =>
-      Math.min(
-        PDF_ZOOM_MAX,
-        Math.round((s + PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
-  const handlePdfZoomOut = useCallback(() => {
-    setPdfScale((s) =>
-      Math.max(
-        PDF_ZOOM_MIN,
-        Math.round((s - PDF_ZOOM_STEP) * PDF_ZOOM_PRECISION_FACTOR) / PDF_ZOOM_PRECISION_FACTOR,
-      ),
-    );
-  }, []);
 
   // Bidirectional citation ↔ page sync
   const {
@@ -265,6 +249,7 @@ export function FilePreviewFullscreen({
                 border: '1px solid var(--slate-3)',
                 borderRadius: 'var(--radius-1)',
                 boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
+                // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
                 zIndex: 20,
                 isolation: 'isolate',
                 pointerEvents: 'auto',
