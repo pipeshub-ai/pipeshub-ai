@@ -13551,8 +13551,12 @@ class Neo4jProvider(IGraphDBProvider):
                        recordType: null,
                        recordGroupType: rg.groupType,
                        indexingStatus: null,
-                       createdAt: COALESCE(rg.sourceCreatedAtTimestamp, 0),
-                       updatedAt: COALESCE(rg.sourceLastModifiedTimestamp, 0),
+                       createdAt: CASE WHEN rg.connectorName = 'KB'
+                           THEN COALESCE(rg.createdAtTimestamp, 0)
+                           ELSE COALESCE(rg.sourceCreatedAtTimestamp, 0) END,
+                       updatedAt: CASE WHEN rg.connectorName = 'KB'
+                           THEN COALESCE(rg.updatedAtTimestamp, 0)
+                           ELSE COALESCE(rg.sourceLastModifiedTimestamp, 0) END,
                        sizeInBytes: null,
                        mimeType: null,
                        extension: null,
@@ -14366,8 +14370,12 @@ class Neo4jProvider(IGraphDBProvider):
             recordType: null,
             recordGroupType: rg.groupType,
             indexingStatus: null,
-            createdAt: coalesce(rg.sourceCreatedAtTimestamp, 0),
-            updatedAt: coalesce(rg.sourceLastModifiedTimestamp, 0),
+            createdAt: CASE WHEN rg.connectorName = 'KB'
+                THEN coalesce(rg.createdAtTimestamp, 0)
+                ELSE coalesce(rg.sourceCreatedAtTimestamp, 0) END,
+            updatedAt: CASE WHEN rg.connectorName = 'KB'
+                THEN coalesce(rg.updatedAtTimestamp, 0)
+                ELSE coalesce(rg.sourceLastModifiedTimestamp, 0) END,
             sizeInBytes: null,
             mimeType: null,
             extension: null,
@@ -14542,8 +14550,12 @@ class Neo4jProvider(IGraphDBProvider):
                 recordType: null,
                 recordGroupType: node.groupType,
                 indexingStatus: null,
-                createdAt: coalesce(node.sourceCreatedAtTimestamp, node.createdAtTimestamp, 0),
-                updatedAt: coalesce(node.sourceLastModifiedTimestamp, node.updatedAtTimestamp, 0),
+                createdAt: CASE WHEN node.connectorName = 'KB'
+                    THEN coalesce(node.createdAtTimestamp, 0)
+                    ELSE coalesce(node.sourceCreatedAtTimestamp, node.createdAtTimestamp, 0) END,
+                updatedAt: CASE WHEN node.connectorName = 'KB'
+                    THEN coalesce(node.updatedAtTimestamp, 0)
+                    ELSE coalesce(node.sourceLastModifiedTimestamp, node.updatedAtTimestamp, 0) END,
                 sizeInBytes: null,
                 mimeType: null,
                 extension: null,

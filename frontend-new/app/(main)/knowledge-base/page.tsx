@@ -1792,7 +1792,6 @@ function KnowledgeBasePageContent() {
   const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
 
     const toastId = toast.loading('Re-indexing...', {
-      description: `Collection ${item.name} is getting re-indexed. This may take a few seconds`,
       icon: 'lap_timer',
     });
 
@@ -1810,19 +1809,19 @@ function KnowledgeBasePageContent() {
         await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
+      const typeLabel =
+        nodeType === 'recordGroup' ? 'collection' : nodeType === 'folder' ? 'folder' : 'file';
+
       toast.update(toastId, {
         variant: 'success',
-        title: 'Reindexed successfully',
-        description: `"${item.name}" has been reindexed`,
+        title: `Reindexing of "${item.name}" ${typeLabel} has started`,
       });
 
       await refreshData();
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
+    } catch {
       toast.update(toastId, {
         variant: 'error',
-        title: 'Re-indexing failed',
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        title: 'Failed to start reindexing',
         action: {
           label: 'Try Again',
           icon: 'refresh',
@@ -2171,6 +2170,7 @@ function KnowledgeBasePageContent() {
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
+          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           onRefresh={() => { void handleRefresh(); }}
@@ -2206,15 +2206,20 @@ function KnowledgeBasePageContent() {
           refreshData={refreshData}
         />
 
-        {/* Selection Action Bar - shows when items are selected */}
-        <SelectionActionBar
-          selectedCount={selectedCount}
-          onDeselectAll={handleDeselectAll}
-          onChat={handleBulkChat}
-          onReindex={handleBulkReindex}
-          onDelete={handleBulkDeleteClick}
-          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-        />
+        {/* Selection Action Bar - shows when items are selected.
+            Hidden in the All Records "All" view because rows there are top-level
+            app/collection aggregates (e.g. "jira", "Collections") that aren't
+            individually reindexable; drilling into them shows actionable items. */}
+        {!(isAllRecordsMode && allRecordsSidebarSelection.type === 'all') && (
+          <SelectionActionBar
+            selectedCount={selectedCount}
+            onDeselectAll={handleDeselectAll}
+            onChat={handleBulkChat}
+            onReindex={handleBulkReindex}
+            onDelete={handleBulkDeleteClick}
+            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          />
+        )}
 
         {/* Chat Bar (temporarily disabled)
         {selectedCount === 0 &&
