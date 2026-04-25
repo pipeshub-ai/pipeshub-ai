@@ -124,7 +124,14 @@ async def run_orchestrator_with_reflection(
             invoke_kwargs["config"] = config
 
         response = await llm.ainvoke(messages, **invoke_kwargs)
-        raw = response.content if hasattr(response, "content") else str(response)
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        if isinstance(raw_content, list):
+            raw = "\n".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+        else:
+            raw = str(raw_content)
 
         log.debug(
             "Orchestrator LLM response (attempt %d, %d chars): %s...",

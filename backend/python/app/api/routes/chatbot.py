@@ -548,7 +548,7 @@ async def _generate_internal_search_stream(
                 target_words_per_chunk=1,
                 mode=query_info.mode,
                 ref_mapper=ref_mapper,
-                max_hops=1,
+                max_hops=2,
                 conversation_id=query_info.conversationId,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
