@@ -6,6 +6,11 @@ import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } f
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { AgentChatHeader } from './components/agent-chat-header';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import {
+  applyConversationModelInfoToStore,
+  findModelInfoInConversationLists,
+  pickModelInfoFromConversationBundle,
+} from '@/chat/utils/apply-conversation-model-info';
 import { ChatSuggestion } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
@@ -183,6 +188,9 @@ function ChatContent() {
   );
   const activeSlotIsOwner = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
+  );
+  const activeSlotConversationModelInfo = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
   );
   /** Prefer slot scope so history/share stay correct if URL query is missing agentId. */
   const historyAndShareAgentId =
@@ -448,6 +456,18 @@ function ChatContent() {
       }
     }
 
+    // Pre-fill per-thread model from sidebar/list rows (GET /conversations) before history GET finishes
+    if (conversationId) {
+      const st = useChatStore.getState();
+      const targetSid = st.activeSlotId;
+      if (targetSid) {
+        const fromList = findModelInfoInConversationLists(st, conversationId, agentId);
+        if (fromList) {
+          st.updateSlot(targetSid, { conversationModelInfo: fromList });
+        }
+      }
+    }
+
     // Allow store→URL sync again after a tick
     requestAnimationFrame(() => {
       urlSyncingRef.current = false;
@@ -506,12 +526,17 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
+        const modelInfo = pickModelInfoFromConversationBundle({
+          modelInfo: detail.conversation.modelInfo,
+          messages: detail.messages,
+        });
         const formattedMessages = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
           isInitialized: true,
           hasLoaded: true,
           isOwner,
+          ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
         });
       } catch (error) {
         console.error('Failed to load conversation history:', error);
@@ -532,6 +557,40 @@ function ChatContent() {
       cancelled = true;
     };
   }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+
+  // When sidebar/list rows arrive after the URL+slot are ready, backfill
+  // `modelInfo` from GET /conversations (before history fetch completes)
+  const conversations = useChatStore((s) => s.conversations);
+  const sharedConversations = useChatStore((s) => s.sharedConversations);
+  const agentConversations = useChatStore((s) => s.agentConversations);
+  useEffect(() => {
+    if (!conversationId || !activeSlotId) return;
+    const store = useChatStore.getState();
+    const slot = store.slots[activeSlotId];
+    if (!slot || slot.convId !== conversationId) return;
+    if (slot.conversationModelInfo) return;
+    const fromList = findModelInfoInConversationLists(store, conversationId, historyAndShareAgentId);
+    if (fromList) {
+      store.updateSlot(activeSlotId, { conversationModelInfo: fromList });
+    }
+  }, [
+    conversations,
+    sharedConversations,
+    agentConversations,
+    conversationId,
+    activeSlotId,
+    historyAndShareAgentId,
+  ]);
+
+  // Restore model + mode for the active thread (per-slot `conversationModelInfo`)
+  const modelCtxKey = useMemo(
+    () => ctxKeyFromAgent(historyAndShareAgentId),
+    [historyAndShareAgentId]
+  );
+  useEffect(() => {
+    if (!activeSlotId || !activeSlotConversationModelInfo) return;
+    applyConversationModelInfoToStore(activeSlotConversationModelInfo, modelCtxKey);
+  }, [activeSlotId, activeSlotConversationModelInfo, modelCtxKey]);
 
   // Handle suggestion click - send message through runtime
   const handleSuggestionClick = (suggestion: ChatSuggestion) => {

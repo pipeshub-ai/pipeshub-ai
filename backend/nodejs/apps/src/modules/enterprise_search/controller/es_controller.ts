@@ -1386,6 +1386,7 @@ export const addMessageStream =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -5630,6 +5631,7 @@ export const createAgentConversation =
           'modelName',
           'modelProvider',
           'chatMode',
+          'modelFriendlyName',
         ];
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
@@ -5920,6 +5922,7 @@ export const addMessageStreamToAgentConversation =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];

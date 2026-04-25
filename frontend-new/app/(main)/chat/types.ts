@@ -41,7 +41,12 @@ export interface ChatSource {
 export interface ModelInfo {
   modelKey: string;
   modelName: string;
+  /**
+   * Main assistant: often `quick`, or `agent:<segment>` when restoring agent-style modes.
+   * **Agent** conversations: API uses plain `auto` | `quick` | `verification` | `deep` (no `agent:` prefix).
+   */
   chatMode: string;
+  modelFriendlyName?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -110,7 +115,7 @@ export type ChatMode = 'chat' | 'search';
 
 /**
  * Query sub-modes selectable from the dropdown panel.
- * All requests use quick chatMode at the API; these control behavior/features.
+ * These map to API `chatMode` for assistant streams.
  */
 export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
 
@@ -122,8 +127,16 @@ export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
  */
 export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
 
-/** API `chatMode` for streams: always `quick`, or `agent:<segment>` when in agent query mode. */
-export type StreamChatModePayload = 'quick' | `agent:${AgentStrategyApiSegment}`;
+/**
+ * API `chatMode` for streams (assistant modes + agent strategy variant).
+ * `web-search`/`image` are UI mode tags persisted for restore; Python route
+ * model config currently treats unrecognized values as standard behavior.
+ */
+export type StreamChatModePayload =
+  | 'quick'
+  | 'web-search'
+  | 'image'
+  | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
@@ -480,6 +493,16 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
       chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
     };
   }
+  if (settings.queryMode === 'web-search') {
+    return {
+      chatMode: 'web-search',
+    };
+  }
+  if (settings.queryMode === 'image') {
+    return {
+      chatMode: 'image',
+    };
+  }
   return {
     chatMode: 'quick',
   };
@@ -596,6 +619,11 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /**
+   * Last known API `modelInfo` for this thread (from list/detail/SSE), used
+   * to restore model + mode in the input when the user returns to this tab.
+   */
+  conversationModelInfo?: ModelInfo;
 }
 
 // ── Search types ──────────────────────────────────────────────────────

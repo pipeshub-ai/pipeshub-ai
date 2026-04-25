@@ -10,6 +10,7 @@ import {
   ChatSlot,
   MAX_SLOTS,
   SearchResultItem,
+  type ModelInfo,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
@@ -262,6 +263,15 @@ interface ChatState {
   appendConversations: (convs: Conversation[]) => void;
   appendSharedConversations: (convs: Conversation[]) => void;
   moveConversationToTop: (conversationId: string) => void;
+  /**
+   * After a follow-up stream completes, merge the latest `modelInfo` into
+   * sidebar list rows. `moveConversationToTop` only reorders and would leave
+   * a stale `modelInfo` on the row otherwise.
+   */
+  updateConversationModelInfoInLists: (
+    conversationId: string,
+    modelInfo: ModelInfo | undefined
+  ) => void;
   removeConversation: (conversationId: string) => void;
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
@@ -743,6 +753,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (next === state.conversations && nextAgent === state.agentConversations) return state;
       return { conversations: next, agentConversations: nextAgent };
     }),
+
+  updateConversationModelInfoInLists: (conversationId, modelInfo) => {
+    if (!modelInfo) return;
+    set((state) => {
+      const patch = (list: Conversation[]) => {
+        if (!list.some((c) => c.id === conversationId)) return list;
+        return list.map((c) =>
+          c.id === conversationId ? { ...c, modelInfo } : c
+        );
+      };
+      const nextC = patch(state.conversations);
+      const nextS = patch(state.sharedConversations);
+      const nextA = patch(state.agentConversations);
+      if (
+        nextC === state.conversations &&
+        nextS === state.sharedConversations &&
+        nextA === state.agentConversations
+      ) {
+        return state;
+      }
+      return {
+        conversations: nextC,
+        sharedConversations: nextS,
+        agentConversations: nextA,
+      };
+    });
+  },
 
   removeConversation: (conversationId) =>
     set((state) => ({
