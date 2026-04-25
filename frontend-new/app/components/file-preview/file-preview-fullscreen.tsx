@@ -32,6 +32,7 @@ export function FilePreviewFullscreen({
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
+  const [pdfScale, setPdfScale] = useState(1);
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -46,6 +47,7 @@ export function FilePreviewFullscreen({
   useEffect(() => {
     setCurrentPage(initialPage ?? 1);
     setTotalPages(null);
+    setPdfScale(1);
   }, [file.id, file.url, initialPage]);
 
   // Handle page detection callback from renderer
@@ -66,6 +68,13 @@ export function FilePreviewFullscreen({
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
   };
+
+  const handlePdfZoomIn = useCallback(() => {
+    setPdfScale((s) => Math.min(2, Math.round((s + 0.1) * 10) / 10));
+  }, []);
+  const handlePdfZoomOut = useCallback(() => {
+    setPdfScale((s) => Math.max(0.5, Math.round((s - 0.1) * 10) / 10));
+  }, []);
 
   // Bidirectional citation ↔ page sync
   const {
@@ -88,6 +97,8 @@ export function FilePreviewFullscreen({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
+    scale: pdfScale,
+    onScaleChange: setPdfScale,
   };
 
   const handleHighlightClick = useCallback(
@@ -237,8 +248,67 @@ export function FilePreviewFullscreen({
                 border: '1px solid var(--slate-3)',
                 borderRadius: 'var(--radius-1)',
                 boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
+                zIndex: 20,
+                isolation: 'isolate',
+                pointerEvents: 'auto',
               }}
             >
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={handlePdfZoomOut}
+                disabled={pdfScale <= 0.5}
+                style={{
+                  width: '24px',
+                  height: '24px',
+                  padding: 0,
+                }}
+                aria-label="Zoom out"
+              >
+                <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
+              </IconButton>
+              <Box
+                style={{
+                  minWidth: '40px',
+                  textAlign: 'center',
+                }}
+              >
+                <Text
+                  as="span"
+                  size="2"
+                  weight="medium"
+                  style={{ color: 'var(--slate-11)' }}
+                >
+                  {Math.round(pdfScale * 100)}%
+                </Text>
+              </Box>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={handlePdfZoomIn}
+                disabled={pdfScale >= 2}
+                style={{
+                  width: '24px',
+                  height: '24px',
+                  padding: 0,
+                }}
+                aria-label="Zoom in"
+              >
+                <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+              </IconButton>
+
+              <Box
+                style={{
+                  width: '1px',
+                  height: '16px',
+                  backgroundColor: 'var(--slate-4)',
+                  flexShrink: 0,
+                }}
+                aria-hidden
+              />
+
               <IconButton
                 variant="ghost"
                 color="gray"

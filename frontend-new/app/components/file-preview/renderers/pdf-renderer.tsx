@@ -13,10 +13,18 @@ import {
 import type { IHighlight } from 'react-pdf-highlighter';
 import type { PDFRendererProps, PreviewCitation } from '../types';
 
-// Constants matching the demo
+// Constants matching the demo (scaled “paper” space for citation rects)
 const PDF_PAGE_WIDTH = 967;
 const PDF_PAGE_HEIGHT = 747.2272727272727;
 const SCROLL_DELAY_MS = 300;
+
+/** `window.PdfViewer` is the PdfHighlighter instance; `.viewer` is the pdf.js `PDFViewer`. */
+function getPdfJsViewer() {
+  return (window as unknown as { PdfViewer?: { viewer?: { currentPageNumber: number; currentScaleValue: string } } })
+    .PdfViewer?.viewer as
+    | { currentPageNumber: number; currentScaleValue: string }
+    | undefined;
+}
 
 /**
  * Small component that reports page count via useEffect,
@@ -117,10 +125,9 @@ export function PDFRenderer({
   const paginationRef = useRef(pagination);
   useEffect(() => { paginationRef.current = pagination; });
 
-  // Page tracking refs
-  const lastReportedPage = useRef<number>(pagination?.currentPage ?? 1);
+  // 0 = “not yet synchronized” with the pdf.js viewer; never a real page.
+  const lastReportedPage = useRef<number>(0);
   const isNavigating = useRef(false);
-  const citationScrollPending = useRef(false);
   // Set to true when scrollRef fires (i.e. PDFViewer "pagesinit" is done).
   const isViewerReady = useRef(false);
   // Holds a citation highlight to scroll to once the viewer becomes ready.
@@ -133,20 +140,6 @@ export function PDFRenderer({
       .map(citationToHighlight)
       .filter((h): h is IHighlight => h !== null);
   }, [citations]);
-
-  // Build a synthetic highlight for jumping to the top of a given page.
-  // PdfHighlighter's scrollTo() uses destArray-based navigation which works
-  // even for lazy-rendered pages (unlike scrollPageIntoView with no destArray).
-  const pageJumpHighlight = useCallback((pageNumber: number): IHighlight => ({
-    id: `__pg_${pageNumber}`,
-    content: { text: '' },
-    position: {
-      boundingRect: { x1: 0, y1: 0, x2: 100, y2: 20, width: PDF_PAGE_WIDTH, height: PDF_PAGE_HEIGHT, pageNumber },
-      rects: [],
-      pageNumber,
-    },
-    comment: { text: '', emoji: '' },
-  }), []);
 
   // Inject custom highlight CSS (matching demo styling)
   useEffect(() => {
@@ -245,34 +238,43 @@ export function PDFRenderer({
     };
   }, []);
 
-  // Navigate to page when prev/next buttons are clicked.
-  // Uses scrollViewerTo with a synthetic page-jump highlight so PdfHighlighter's
-  // destArray-based path handles the navigation (works for all pages, including
-  // those not yet rendered in the DOM).
+  // New document: reset the viewer; keep lastReported at 0 so the page sync effect
+  // runs and applies `currentPage` (e.g. citation initial page) once `pagesinit` is done.
+  useEffect(() => {
+    lastReportedPage.current = 0;
+    isViewerReady.current = false;
+  }, [fileUrl]);
+
+  // When toolbar prev/next (or any host-driven page change) updates `currentPage`,
+  // use pdf.js `currentPageNumber` so navigation works for pages that are not yet
+  // laid out the way `PdfHighlighter.scrollTo` expects (it calls `getPageView` for the dest).
   useEffect(() => {
     const targetPage = pagination?.currentPage;
     if (!targetPage || targetPage === lastReportedPage.current) return;
     if (!isViewerReady.current) return;
 
-    // A citation scroll is about to handle navigation — just sync the ref.
-    if (citationScrollPending.current) {
-      lastReportedPage.current = targetPage;
-      return;
-    }
+    const viewer = getPdfJsViewer();
+    if (!viewer) return;
 
     isNavigating.current = true;
     lastReportedPage.current = targetPage;
-    scrollViewerTo.current(pageJumpHighlight(targetPage));
+    viewer.currentPageNumber = targetPage;
 
     setTimeout(() => { isNavigating.current = false; }, 500);
-  }, [pagination?.currentPage, pageJumpHighlight]);
+  }, [pagination?.currentPage]);
+
+  // react-pdf-highlighter only applies `pdfScaleValue` on `pagesinit`; re-apply when
+  // scale (or a new document) changes once the global pdf.js viewer is present.
+  const scale = pagination?.scale ?? 1;
+  useEffect(() => {
+    const viewer = getPdfJsViewer();
+    if (!viewer) return;
+    viewer.currentScaleValue = String(scale);
+  }, [scale, fileUrl]);
 
   // Sync selected highlight with activeCitationId from external citation panel
   useEffect(() => {
     setSelectedHighlightId(activeCitationId ?? null);
-    if (activeCitationId) {
-      citationScrollPending.current = true;
-    }
   }, [activeCitationId]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
@@ -291,7 +293,6 @@ export function PDFRenderer({
     }
 
     const timer = setTimeout(() => {
-      citationScrollPending.current = false;
       isNavigating.current = true;
       scrollViewerTo.current(targetHighlight);
       lastReportedPage.current = targetHighlight.position.pageNumber;
@@ -395,6 +396,10 @@ export function PDFRenderer({
               scrollRef={(scrollTo) => {
                 scrollViewerTo.current = scrollTo;
                 isViewerReady.current = true;
+                const viewer = getPdfJsViewer();
+                if (viewer) {
+                  viewer.currentScaleValue = String(paginationRef.current?.scale ?? 1);
+                }
 
                 // Execute any citation scroll that was requested before the viewer was ready
                 if (pendingCitationScroll.current) {
@@ -402,7 +407,6 @@ export function PDFRenderer({
                   pendingCitationScroll.current = null;
                   setTimeout(() => {
                     isNavigating.current = true;
-                    citationScrollPending.current = false;
                     scrollTo(highlight);
                     lastReportedPage.current = highlight.position.pageNumber;
                     paginationRef.current?.onPageChange?.(highlight.position.pageNumber);
@@ -410,6 +414,7 @@ export function PDFRenderer({
                   }, 100);
                 }
               }}
+              pdfScaleValue={String(pagination?.scale ?? 1)}
               onSelectionFinished={() => null}
               highlightTransform={(
                 highlight,

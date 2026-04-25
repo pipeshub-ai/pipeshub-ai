@@ -538,7 +538,9 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                 borderRadius: 'var(--radius-full)',
                 boxShadow: '0px 12px 32px rgba(0, 0, 0, 0.35)',
                 maxWidth: 'calc(100% - var(--space-8))',
-                zIndex: 10,
+                zIndex: 20,
+                isolation: 'isolate',
+                pointerEvents: 'auto',
               }}
             >
               {paginationVisibility.shouldShow ? (
