@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.modules.agents.tool_domain import derive_tool_domain
+
 
 # ---------------------------------------------------------------------------
 # Connector filter fetch (route handlers only — filters only, not full config)
@@ -759,18 +761,6 @@ def _build_actions_section(
     parts.append("")
 
 
-# Known compound-word domain prefixes for built-in tools whose runtime names
-# use underscores (e.g. "date_calculator_get_exclusion_dates"). Single-word
-# built-in domains (calculator, retrieval, knowledgehub, …) resolve via the
-# first-underscore split without needing an entry here.
-_BUILTIN_COMPOUND_DOMAINS = frozenset({
-    "date_calculator",
-    "coding_sandbox",
-    "image_generator",
-    "database_sandbox",
-})
-
-
 def _extract_domain_note(description: str, max_chars: int = 130) -> str:
     """
     Extract a concise capability note from a tool's description string.
@@ -826,12 +816,10 @@ def _get_all_tool_domains(
     service connectors, already deduplicated by the tool registry.
     Fallback: state["tools"] flat list (service tools only; deduped here).
     """
-    # Build sanitized→dotted lookup for reversing Anthropic-style underscore names
     state_dotted: list[str] = [
         t for t in (state.get("tools") or [])
         if isinstance(t, str) and "." in t
     ]
-    sanitize_map: dict[str, str] = {t.replace(".", "_"): t for t in state_dotted}
     # Service domains come from configured toolsets — their names are self-explanatory
     service_domains: set[str] = {t.split(".", 1)[0] for t in state_dotted}
 
@@ -852,25 +840,7 @@ def _get_all_tool_domains(
                 continue
             seen.add(raw)
 
-            if "." in raw:
-                domain, action = raw.split(".", 1)
-            else:
-                # Underscore name — try service-tool reverse lookup first
-                dotted = sanitize_map.get(raw, "")
-                if dotted:
-                    domain, action = dotted.split(".", 1)
-                else:
-                    # Built-in: check known compound prefixes, then first `_`
-                    matched = next(
-                        (p for p in _BUILTIN_COMPOUND_DOMAINS if raw.startswith(p + "_")),
-                        None,
-                    )
-                    if matched:
-                        domain, action = matched, raw[len(matched) + 1:]
-                    else:
-                        idx = raw.find("_")
-                        domain, action = (raw[:idx], raw[idx + 1:]) if idx > 0 else (raw, "")
-
+            domain, action = derive_tool_domain(tool)
             action_display = action.replace("_", " ")
             if action_display and action_display not in domains.get(domain, []):
                 domains.setdefault(domain, []).append(action_display)
