@@ -279,6 +279,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 config_node_constants.ENDPOINTS.value,
                 config_node_constants.STORAGE.value,
                 config_node_constants.MIGRATIONS.value,
+                config_node_constants.DEPLOYMENT.value,
             ]
 
             decrypted_keys = []
