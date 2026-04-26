@@ -1,6 +1,7 @@
 'use client';
 
 import React, { memo } from 'react';
+import Link from 'next/link';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { getConnectorConfig } from './utils';
@@ -63,16 +64,24 @@ function CitationPopoverContentInner({
         </Flex>
 
         <Flex align="center" gap="2">
-          {!citation.hideWeburl && (<Button
-            size="1"
-            variant="outline"
-            color="gray"
-            tabIndex={-1}
-            onClick={handleOpenInSource}
-            style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
-          >
-            {openInLabel}
-          </Button>)}
+          {!citation.hideWeburl && citation.webUrl && (
+            <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
+              <Link
+                href={citation.webUrl}
+                target={isCollectionSource ? undefined : '_blank'}
+                rel={isCollectionSource ? undefined : 'noopener noreferrer'}
+                onClick={(event) => {
+                  if (isCollectionSource) {
+                    event.preventDefault();
+                    handleOpenInSource();
+                  }
+                }}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {openInLabel}
+              </Link>
+            </Button>
+          )}
 
           {citation.previewRenderable && (
             <Button
