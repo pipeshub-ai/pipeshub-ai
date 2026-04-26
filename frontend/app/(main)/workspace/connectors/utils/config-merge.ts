@@ -258,7 +258,7 @@ export function initializeFormData(
       if (field.defaultValue !== undefined) {
         authData[field.name] = field.defaultValue;
       } else if (
-        ['TEXT', 'PASSWORD', 'EMAIL', 'URL', 'TEXTAREA'].includes(field.fieldType)
+        ['TEXT', 'PASSWORD', 'EMAIL', 'URL', 'TEXTAREA', 'FOLDER'].includes(field.fieldType)
       ) {
         authData[field.name] = '';
       }
