@@ -4309,33 +4309,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         *,
         active: bool = True,
+        is_external: bool = False,
         transaction: str | None = None,
     ) -> list[dict]:
-        """
-        Get all organizations.
-
-        Uses generic get_nodes_by_filters if filtering by active,
-        or returns all orgs if no filter.
-        """
-        if active:
-            return await self.get_nodes_by_filters(
-                collection=CollectionNames.ORGS.value,
-                filters={"isActive": True},
-                transaction=transaction
-            )
+        if is_external:
+            external_filter = "FILTER org.isExternal == true"
         else:
-            # Get all orgs using execute_aql
+            external_filter = "FILTER (org.isExternal == false OR !HAS(org, 'isExternal'))"
+
+        if active:
             query = f"""
             FOR org IN {CollectionNames.ORGS.value}
+                FILTER org.isActive == true
+                {external_filter}
+                RETURN org
+            """
+        else:
+            query = f"""
+            FOR org IN {CollectionNames.ORGS.value}
+                {external_filter}
                 RETURN org
             """
 
-            try:
-                results = await self.http_client.execute_aql(query, txn_id=transaction)
-                return results if results else []
-            except Exception as e:
-                self.logger.error(f"❌ Get all orgs failed: {str(e)}")
-                return []
+        try:
+            results = await self.http_client.execute_aql(query, txn_id=transaction)
+            return results if results else []
+        except Exception as e:
+            self.logger.error(f"❌ Get all orgs failed: {str(e)}")
+            return []
 
     async def batch_upsert_records(
         self,
@@ -8312,13 +8313,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def organization_exists(
         self,
-        organization_name: str
+        organization_name: str,
+        is_external: bool = False,
     ) -> bool:
         """Check if organization exists"""
         try:
-            query = """
+            if is_external:
+                external_filter = "FILTER org.isExternal == true"
+            else:
+                external_filter = "FILTER (org.isExternal == false OR !HAS(org, 'isExternal'))"
+
+            query = f"""
             FOR org IN @@collection
                 FILTER org.name == @organization_name
+                {external_filter}
                 LIMIT 1
                 RETURN org
             """
@@ -14813,6 +14821,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_account_type(
         self,
         org_id: str,
+        is_external: bool = False,
         transaction: str | None = None
     ) -> str | None:
         """
@@ -14820,6 +14829,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             org_id (str): Organization ID
+            is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -14828,9 +14838,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info(f"🚀 Getting account type for organization {org_id}")
 
+            if is_external:
+                external_filter = "FILTER org.isExternal == true"
+            else:
+                external_filter = "FILTER (org.isExternal == false OR !HAS(org, 'isExternal'))"
+
             query = f"""
             FOR org IN {CollectionNames.ORGS.value}
                 FILTER org._key == @org_id
+                {external_filter}
                 RETURN org.accountType
             """
 
