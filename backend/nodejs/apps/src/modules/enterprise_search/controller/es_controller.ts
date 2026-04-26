@@ -399,8 +399,6 @@ export const streamChat =
           status: CONVERSATION_STATUS.INPROGRESS,
           // Store model and mode information
           modelInfo: modelInfo,
-          // Store applied filters at conversation creation
-          // appliedFilters: req.body.appliedFilters || {},
         };
 
         // Start transaction if replica set is available
@@ -812,7 +810,6 @@ export const createConversation =
           lastActivityAt: Date.now(),
           status: CONVERSATION_STATUS.INPROGRESS,
           modelInfo: modelInfo,
-          // appliedFilters: req.body.appliedFilters || {},
         };
 
         const conversation = new Conversation(userConversationData);
@@ -1125,11 +1122,6 @@ export const addMessage =
           conversation.messages.push(userQueryMessage as IMessageDocument);
           conversation.lastActivityAt = Date.now();
 
-          // if (req.body.appliedFilters) {
-          //   conversation.appliedFilters = req.body.appliedFilters;
-          //   conversation.markModified('appliedFilters');
-          // }
-
           // Save the user message to the existing conversation first
           const savedConversation = session
             ? await conversation.save({ session })
@@ -1407,11 +1399,6 @@ export const addMessageStream =
           buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
         );
         conversation.lastActivityAt = Date.now();
-
-        // if (req.body.appliedFilters) {
-        //   conversation.appliedFilters = req.body.appliedFilters;
-        //   conversation.markModified('appliedFilters');
-        // }
 
         // Save the user message to the existing conversation first
         const savedConversation = session
@@ -2036,7 +2023,6 @@ export const getConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
-        // appliedFilters : 1,
       })
       .populate({
         path: 'messages.citations.citationId',
@@ -5038,7 +5024,6 @@ export const streamAgentConversation =
           status: CONVERSATION_STATUS.INPROGRESS,
           agentKey,
           modelInfo,
-          // appliedFilters: req.body.appliedFilters || {},
         };
 
         // Start transaction if replica set is available
@@ -5377,7 +5362,6 @@ export const createAgentConversation =
           status: CONVERSATION_STATUS.INPROGRESS,
           agentKey,
           modelInfo,
-          // appliedFilters: req.body.appliedFilters || {},
         };
 
         const conversation = new AgentConversation(userConversationData);
@@ -5653,11 +5637,6 @@ export const addMessageToAgentConversation =
               (conversation.modelInfo as IAIModel)[field] = value;
             }
           }
-
-          // if (req.body.appliedFilters) {
-          //   conversation.appliedFilters = req.body.appliedFilters;
-          //   conversation.markModified('appliedFilters');
-          // }
 
           // Save the user message to the existing conversation first
           const savedConversation = session
@@ -5954,11 +5933,6 @@ export const addMessageStreamToAgentConversation =
           buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
         );
         conversation.lastActivityAt = Date.now();
-
-        // if (req.body.appliedFilters) {
-        //   conversation.appliedFilters = req.body.appliedFilters;
-        //   conversation.markModified('appliedFilters');
-        // }
 
         // Save the user message to the existing conversation first
         const savedConversation = session

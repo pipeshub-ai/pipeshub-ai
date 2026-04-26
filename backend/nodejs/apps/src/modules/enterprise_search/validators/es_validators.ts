@@ -156,6 +156,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
       .string()
       .min(1, { message: 'Model friendly name is required' })
       .optional(),
+    appliedFilters: appliedFiltersSchema,
     timezone: z
       .string()
       .min(1, { message: 'Timezone must be a non-empty string' })
