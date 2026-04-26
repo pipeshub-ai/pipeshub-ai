@@ -271,15 +271,18 @@ class TestNativePathsEmitCleanPoints:
         assert points[0].payload["metadata"]["blockType"] == "image"
 
     @pytest.mark.asyncio
-    async def test_gemini_sends_retrieval_document_task_type(self):
-        """Regression: Gemini's ``embedContent`` API defaults ``taskType``
-        to ``RETRIEVAL_QUERY`` when omitted. LangChain's text path calls
-        ``embed_documents`` which sets ``RETRIEVAL_DOCUMENT``; the query
-        side uses ``RETRIEVAL_QUERY``. The model's training assumes this
-        asymmetric DOC<->QUERY pairing, so omitting ``taskType`` on the
-        image path left image vectors in *query* subspace and a text
-        search could not reach them. This asserts the image body carries
-        ``taskType=RETRIEVAL_DOCUMENT`` to match the text indexing path.
+    async def test_gemini_v2_omits_task_type(self):
+        """Regression: ``gemini-embedding-2*`` (the multimodal family —
+        ``-2-preview``, ``-2``, …) does NOT use ``taskType``. Per
+        Google's docs the recommended asymmetric-retrieval signal for
+        v2 is a prompt-prefix on text inputs (handled by the LangChain
+        wrapper around the text path); image inputs need no signal at
+        all because they share the unified embedding space.
+
+        Sending ``taskType=RETRIEVAL_DOCUMENT`` on the v2 image path was
+        observed to push image vectors into a sub-space unreachable from
+        text queries — the "PNG retrieval 0-hit" bug. This test pins the
+        image body to omit ``taskType`` so we don't regress.
         """
         vs = _make_vectorstore()
         vs.api_key = "fake-key"
@@ -327,15 +330,70 @@ class TestNativePathsEmitCleanPoints:
             )
 
         assert len(points) == 1
-        # The whole point of this test: the body must pin the task type
-        # to RETRIEVAL_DOCUMENT so the stored vector lines up with the
-        # RETRIEVAL_QUERY encoding used at search time.
-        assert captured["body"]["taskType"] == "RETRIEVAL_DOCUMENT"
+        # The whole point of this test: v2 must NOT send taskType, or the
+        # image vectors land in a subspace unreachable from text queries.
+        assert "taskType" not in captured["body"]
         # And keep the other invariants intact.
         assert captured["body"]["output_dimensionality"] == 3072
         assert points[0].payload["page_content"] == ""
         assert points[0].payload["metadata"]["blockType"] == "image"
         assert "imageUri" not in points[0].payload["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_gemini_v1_sends_retrieval_document_task_type(self):
+        """Regression: ``gemini-embedding-001`` (the text-only generation)
+        DOES honour ``taskType`` and pairs ``RETRIEVAL_DOCUMENT`` ↔
+        ``RETRIEVAL_QUERY`` vectors. Even though v1 returns HTTP 400 for
+        ``inline_data`` parts in production, we keep ``taskType`` on the
+        body so the early-400 detection path sees a well-formed request
+        and the caller can fall back to VLM captioning cleanly.
+        """
+        vs = _make_vectorstore()
+        vs.api_key = "fake-key"
+        vs.model_name = "gemini-embedding-001"
+        vs.output_dimensions = 768
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"embedding": {"values": [0.1, 0.2, 0.3]}}
+
+            def raise_for_status(self):
+                return None
+
+        class _Client:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *args):
+                return None
+
+            async def post(self_inner, url, headers=None, json=None):
+                captured["url"] = url
+                captured["headers"] = headers
+                captured["body"] = json
+                return _Resp()
+
+        chunks = [
+            {
+                "metadata": {"orgId": "o", "virtualRecordId": "vr1", "blockIndex": 0},
+                "image_uri": "data:image/png;base64,aW1n",
+            }
+        ]
+
+        async def _fake_normalize(uri):
+            return ("aW1n", "image/png")
+
+        with patch.object(vs, "_normalize_image_with_mime", side_effect=_fake_normalize), \
+             patch("httpx.AsyncClient", return_value=_Client()):
+            await vs._process_image_embeddings_gemini(
+                chunks, ["data:image/png;base64,aW1n"]
+            )
+
+        assert captured["body"]["taskType"] == "RETRIEVAL_DOCUMENT"
 
 
 # ===================================================================
