@@ -327,10 +327,23 @@ export function ConnectorPanel() {
       setSaveError(t('workspace.connectors.loadingConfig'));
       return false;
     }
+    const oauthConfigIdStr =
+      typeof formData.auth.oauthConfigId === 'string'
+        ? formData.auth.oauthConfigId.trim()
+        : '';
+    const hasLinkedOAuthApp = Boolean(oauthConfigIdStr);
+
     const vFields = visibleAuthSchemaFields(
       connectorSchema.auth,
       selectedAuthType,
-      conditionalDisplay
+      conditionalDisplay,
+      selectedAuthType === 'OAUTH'
+        ? {
+            isCreateMode,
+            isAdmin,
+            hasLinkedOAuthApp,
+          }
+        : null
     );
     const clearPatch: Record<string, null> = { oauthConfigId: null };
     for (const f of vFields) {
