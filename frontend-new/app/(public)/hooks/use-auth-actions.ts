@@ -6,6 +6,7 @@ import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -262,14 +263,32 @@ export function useAuthActions({
       typeof window !== 'undefined'
         ? sessionStorage.getItem('auth_session_token')
         : null;
-    // Default to '' so a missing build-time env var resolves to a same-origin
-    // URL instead of the literal string "undefined" in the path.
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
-    let url = `${baseUrl}/api/v1/saml/signIn?email=${encodeURIComponent(email)}`;
-    if (sessionToken) {
-      url += `&sessionToken=${encodeURIComponent(sessionToken)}`;
+    const baseUrl = getApiBaseUrl().trim();
+    if (!baseUrl) {
+      toast.error('API base URL is not configured.');
+      return;
     }
-    window.location.href = url;
+
+    let target: URL;
+    try {
+      const base = baseUrl.replace(/\/+$/, '');
+      target = new URL(`${base}/api/v1/saml/signIn`);
+    } catch {
+      toast.error('Invalid API base URL.');
+      return;
+    }
+
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      toast.error('Invalid API base URL.');
+      return;
+    }
+
+    target.searchParams.set('email', email);
+    if (sessionToken) {
+      target.searchParams.set('sessionToken', sessionToken);
+    }
+
+    window.location.assign(target.href);
   }, [email]);
 
   /**

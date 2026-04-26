@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    // output: 'export',
+    // Static HTML for Electron packaging (see scripts/next-build-electron.mjs).
+    ...(process.env.ELECTRON_STATIC === '1' ? { output: 'export' } : {}),
     trailingSlash: true,
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map

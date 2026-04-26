@@ -1,0 +1,54 @@
+appId: com.pipeshub.desktop
+productName: PipesHub
+icon: electron/out/logo/pipes-hub-1024.png
+directories:
+  output: dist-electron
+files:
+  - electron/main.js
+  - electron/preload.js
+  - electron/package.json
+  - electron/local-sync/**/*.js
+  - "!electron/local-sync/**/*.test.js"
+  - electron/out/**/*
+  - "!electron/node_modules"
+  # Only keep the runtime deps the Electron main process actually needs.
+  # The static export in electron/out/ has all browser-side code baked in.
+  - "!node_modules/**/*"
+  - node_modules/chokidar/**/*
+  - node_modules/anymatch/**/*
+  - node_modules/binary-extensions/**/*
+  - node_modules/braces/**/*
+  - node_modules/fill-range/**/*
+  - node_modules/glob-parent/**/*
+  - node_modules/is-binary-path/**/*
+  - node_modules/is-extglob/**/*
+  - node_modules/is-glob/**/*
+  - node_modules/is-number/**/*
+  - node_modules/normalize-path/**/*
+  - node_modules/picomatch/**/*
+  - node_modules/readdirp/**/*
+  - node_modules/to-regex-range/**/*
+  - node_modules/fsevents/**/*
+asarUnpack:
+  - electron/preload.js
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+  darkModeSupport: true
+dmg:
+  title: PipesHub
+  artifactName: PipesHub-${version}-mac.${ext}
+win:
+  # Classic Windows (Intel/AMD). On ARM hosts without this, builder may default to arm64.
+  defaultArch: x64
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: PipesHub-${version}-win.${ext}
+linux:
+  target:
+    - AppImage
+    - deb

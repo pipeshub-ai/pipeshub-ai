@@ -2,11 +2,12 @@
 
 import React, { useState, useRef, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
+import { isElectron } from '@/lib/utils/api-base-url';
 import { ValidationRuleType } from '../types';
 import type { SchemaField, ValidationRule } from '../types';
 
@@ -95,6 +96,7 @@ export function SchemaFormField({
   if (!visible) return null;
 
   const fieldType = field.fieldType || 'TEXT';
+  const _label = `${field.displayName}${'required' in field && field.required ? ' *' : ''}`;
   const isOptional = 'required' in field && !field.required;
   const isRequired = !isOptional;
   const invalid = Boolean(error);
@@ -211,6 +213,8 @@ export function SchemaFormField({
                   hasError={invalid}
                 />
               );
+            case 'FOLDER':
+              return <FolderPickerInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             default:
               // TEXT, EMAIL, URL, and fallback
               return (
@@ -889,6 +893,83 @@ function SelectInput({
   );
 }
 
+function FolderPickerInput({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: SchemaField;
+  value: unknown;
+  onChange: (name: string, value: unknown) => void;
+  disabled: boolean;
+}) {
+  const [isFocused, setIsFocused] = useState(false);
+  const pathValue = String(value ?? '');
+  const addToast = useToastStore((s) => s.addToast);
+
+  const handleChooseFolder = async () => {
+    if (disabled) return;
+    if (!isElectron()) return;
+    const api = (window as Window & { electronAPI?: { selectFolder?: () => Promise<string | null> } }).electronAPI;
+    if (!api?.selectFolder) {
+      addToast({
+        title: 'Folder picker unavailable',
+        description: 'Restart the desktop app or update to the latest build.',
+        variant: 'error',
+      });
+      return;
+    }
+    const selectedPath = await api.selectFolder();
+    if (selectedPath) {
+      onChange(field.name, selectedPath);
+    }
+  };
+
+  return (
+    <>
+      <Flex gap="2" align="center" wrap="wrap">
+        <input
+          type="text"
+          value={pathValue}
+          placeholder={'placeholder' in field ? (field.placeholder ?? '/path/to/folder') : '/path/to/folder'}
+          disabled={disabled}
+          onChange={(e) => onChange(field.name, e.target.value)}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          style={{
+            ...inputStyle,
+            ...(isFocused ? focusStyle : {}),
+            flex: '1 1 160px',
+            minWidth: 120,
+            opacity: disabled ? 0.6 : 1,
+          }}
+        />
+        {isElectron() && (
+          <Button
+            type="button"
+            variant="soft"
+            size="2"
+            disabled={disabled}
+            onClick={handleChooseFolder}
+            style={{ cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="folder_open" size={18} color="var(--accent-11)" />
+              <span style={{ fontSize: 14, fontFamily: 'var(--default-font-family)' }}>Choose folder</span>
+            </Flex>
+          </Button>
+        )}
+      </Flex>
+      {field.description && (
+        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+          {field.description}
+        </Text>
+      )}
+    </>
+  );
+}
+
 function CheckboxField({
   field,
   value,
@@ -928,15 +1009,41 @@ function BooleanField({
   disabled: boolean;
   hasError?: boolean;
 }) {
+  const isIncludeSubfolders = field.name.toLowerCase() === 'include_subfolders';
+  const isUnsetValue = value === undefined || value === null || value === '';
+
   // Normalize string "true" / "false" to boolean
   const boolVal =
-    typeof value === 'boolean'
+    isIncludeSubfolders && isUnsetValue
+      ? true
+      : typeof value === 'boolean'
       ? value
       : value === 'true'
       ? true
       : value === 'false'
       ? false
       : Boolean(value);
+
+  if (isIncludeSubfolders) {
+    return (
+      <Flex direction="column" gap="1">
+        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+          {field.displayName}
+        </Text>
+        <Select.Root
+          value={boolVal ? 'yes' : 'no'}
+          onValueChange={(v) => onChange(field.name, v === 'yes')}
+          disabled={disabled}
+        >
+          <Select.Trigger style={{ width: '100%', height: 32 }} />
+          <Select.Content>
+            <Select.Item value="yes">Yes</Select.Item>
+            <Select.Item value="no">No</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </Flex>
+    );
+  }
 
   return (
     <Flex align="center" justify="between" style={{ minHeight: 32 }}>

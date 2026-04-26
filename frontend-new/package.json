@@ -1,7 +1,10 @@
 {
   "name": "pipeshub",
   "version": "0.1.0",
+  "description": "PipesHub Desktop App",
+  "author": "PipesHub",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
@@ -18,7 +21,13 @@
     "test:e2e:report": "npx playwright show-report",
     "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed",
     "test:e2e:coverage": "COVERAGE=true npx playwright test",
-    "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html"
+    "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html",
+    "build:electron": "node scripts/next-build-electron.mjs",
+    "electron:prepare": "node scripts/electron-prepare.mjs",
+    "electron:build:mac": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --config electron-builder.yml --publish never",
+    "electron:build:win": "npm run build:electron && npm run electron:prepare && npx electron-builder --win --config electron-builder.yml --publish never",
+    "electron:build:mac-win": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --win --config electron-builder.yml --publish never",
+    "electron:dmg": "npm run build && npm run electron:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.yml --mac dmg --publish never"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
@@ -33,6 +42,7 @@
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
     "axios": "^1.15.0",
+    "chokidar": "^3.6.0",
     "docx-preview": "^0.3.7",
     "dompurify": "^3.4.0",
     "i18next": "^25.8.0",
@@ -63,9 +73,12 @@
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
     "dotenv": "^17.4.2",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
     "monocart-reporter": "^2.10.1",
+    "sharp": "^0.34.5",
     "typescript": "^5.9.2"
   }
 }

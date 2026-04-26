@@ -28,14 +28,100 @@
  */
 
 import { useAuthStore } from '@/lib/store/auth-store';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
-// Default to '' (same origin) rather than `undefined`, because template-string
-// concatenation like `${API_BASE_URL}${url}` would otherwise stringify
-// `undefined` and produce URLs like `/chat/undefined/api/v1/...`. In our
-// standard deployment the Next.js static export is served by the Node.js
-// backend, so the API is always same-origin and an empty prefix is correct.
-// Override with `NEXT_PUBLIC_API_BASE_URL` at build time for split deployments.
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+/**
+ * In Electron, the renderer runs under the app:// origin and Chromium's
+ * CORS + streaming behavior is unreliable for long-lived SSE responses to
+ * a cross-origin backend. The preload exposes a callback-based
+ * `streamFetch` that proxies the request through the main process (no
+ * CORS). We reconstruct a Response here on the renderer side so callers
+ * can use `response.body.getReader()` as with native fetch.
+ *
+ * (Returning a Response/ReadableStream directly from the preload doesn't
+ * work — contextBridge strips instance methods from cloned objects.)
+ */
+type ElectronStreamCallbacks = {
+  onHeaders: (h: { ok: boolean; status: number; statusText: string; headers: Record<string, string> }) => void;
+  onChunk: (chunk: Uint8Array) => void;
+  onEnd: () => void;
+  onError: (err: { name: string; message: string }) => void;
+};
+
+type ElectronStreamFetch = (
+  url: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string },
+  callbacks: ElectronStreamCallbacks
+) => () => void;
+
+function streamingFetch(url: string, init: RequestInit): Promise<Response> {
+  const electronStreamFetch = (globalThis as unknown as {
+    electronAPI?: { streamFetch?: ElectronStreamFetch };
+  }).electronAPI?.streamFetch;
+
+  if (!electronStreamFetch) {
+    return fetch(url, init);
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let headersReceived = false;
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+      cancel() {
+        abort();
+      },
+    });
+
+    const abort = electronStreamFetch(
+      url,
+      {
+        method: init.method,
+        headers: init.headers as Record<string, string> | undefined,
+        body: init.body as string | undefined,
+      },
+      {
+        onHeaders: (h) => {
+          if (headersReceived) return;
+          headersReceived = true;
+          resolve(
+            new Response(body, {
+              status: h.status,
+              statusText: h.statusText,
+              headers: h.headers,
+            })
+          );
+        },
+        onChunk: (chunk) => {
+          streamController?.enqueue(chunk);
+        },
+        onEnd: () => {
+          streamController?.close();
+        },
+        onError: (err) => {
+          const e = new Error(err.message);
+          e.name = err.name;
+          if (!headersReceived) {
+            reject(e);
+          } else {
+            try { streamController?.error(e); } catch { /* already closed */ }
+          }
+        },
+      }
+    );
+
+    if (init.signal) {
+      if (init.signal.aborted) {
+        abort();
+      } else {
+        init.signal.addEventListener('abort', abort, { once: true });
+      }
+    }
+  });
+}
 
 export interface StreamingOptions {
   onChunk: (chunk: string) => void;
@@ -61,7 +147,7 @@ export async function streamRequest(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const response = await streamingFetch(`${getApiBaseUrl()}${url}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -225,7 +311,7 @@ export async function streamSSERequest<T = unknown>(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const response = await streamingFetch(`${getApiBaseUrl()}${url}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

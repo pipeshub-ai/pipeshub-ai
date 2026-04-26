@@ -4068,6 +4068,70 @@ components:
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
 
+    LocalFsFileEvent:
+      type: object
+      description: Single filesystem change event for Local FS replay
+      required:
+        - type
+        - path
+        - timestamp
+        - isDirectory
+      properties:
+        type:
+          type: string
+          description: Event type (e.g. CREATED, MODIFIED, DELETED, RENAMED, MOVED)
+        path:
+          type: string
+          description: Path relative to the configured sync root
+        oldPath:
+          type: string
+          nullable: true
+          description: Previous path for rename or move events
+        timestamp:
+          type: integer
+          format: int64
+          description: Event time in epoch milliseconds
+        size:
+          type: integer
+          format: int64
+          nullable: true
+        isDirectory:
+          type: boolean
+          description: Must be false when sent from the CLI (directories are expanded client-side)
+
+    LocalFsFileEventBatchRequest:
+      type: object
+      description: Batch of Local FS file events (also accepts a bare JSON array of events, which the server wraps)
+      required:
+        - batchId
+        - events
+        - timestamp
+      properties:
+        batchId:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/LocalFsFileEvent'
+        timestamp:
+          type: integer
+          format: int64
+          description: Batch timestamp in epoch milliseconds
+        resetBeforeApply:
+          type: boolean
+          description: When true, clear existing Local FS records before applying this batch
+
+    LocalFsFileEventStats:
+      type: object
+      description: Counts returned after applying a Local FS file event batch
+      properties:
+        processed:
+          type: integer
+          description: Files upserted or updated from the batch
+        deleted:
+          type: integer
+          description: Deletions or path removals applied
+
     FilterOptions:
       type: object
       description: Available filter options for a connector
@@ -17336,6 +17400,67 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
+
+  /connectors/{connectorId}/file-events:
+    post:
+      tags:
+        - Connector Control
+      summary: Submit Local FS file events
+      description: |
+        Replays a batch of filesystem change events for a **Local FS** connector instance.
+        Used by the local CLI to apply incremental changes without a full directory rescan.
+        Only Local FS connector instances accept this endpoint; other connector types receive 400.
+      operationId: submitConnectorFileEvents
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:sync]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: |
+          JSON body: either a `LocalFsFileEventBatchRequest` object, or a bare JSON array of
+          `LocalFsFileEvent` objects (the server wraps arrays with a generated batch id).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalFsFileEventBatchRequest'
+      responses:
+        '200':
+          description: File event batch applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - connectorId
+                  - batchId
+                  - stats
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  connectorId:
+                    type: string
+                  batchId:
+                    type: string
+                  stats:
+                    $ref: '#/components/schemas/LocalFsFileEventStats'
+        '400':
+          description: Not a Local FS connector, or invalid path or event payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Permission denied
+        '404':
+          description: Connector not found
+        '422':
+          description: Invalid or missing request body
 
   # -------------------- Connector OAuth --------------------
   /connectors/{connectorId}/oauth/authorize:
