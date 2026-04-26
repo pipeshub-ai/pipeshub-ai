@@ -8,9 +8,15 @@ import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
 import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
+import {
+  isRequestCancelledError,
+  isSearchNoAccessibleDocumentsNotFound,
+} from '@/lib/api';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
+/** Increments on each submit so superseded requests never clear loading for a newer search. */
+let searchSubmitGeneration = 0;
 
 /**
  * Wrapper component that connects ChatInput to assistant-ui runtime.
@@ -43,15 +49,6 @@ export function ChatInputWrapper() {
     });
   }, [effectiveAgentId]);
 
-  useEffect(() => {
-    return () => {
-      if (currentSearchAbort) {
-        currentSearchAbort.abort();
-        currentSearchAbort = null;
-      }
-    };
-  }, []);
-
   const handleSearchSubmit = async (query: string) => {
     const store = useChatStore.getState();
 
@@ -59,7 +56,9 @@ export function ChatInputWrapper() {
     if (currentSearchAbort) {
       currentSearchAbort.abort();
     }
-    currentSearchAbort = new AbortController();
+    const myGeneration = ++searchSubmitGeneration;
+    const searchController = new AbortController();
+    currentSearchAbort = searchController;
 
     store.setIsSearching(true);
     store.setSearchError(null);
@@ -78,18 +77,26 @@ export function ChatInputWrapper() {
     };
 
     try {
-      const response = await ChatApi.search(request, currentSearchAbort.signal);
+      const response = await ChatApi.search(request, searchController.signal);
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
         query
       );
     } catch (error: unknown) {
-      if ((error as { name?: string })?.name === 'AbortError' || (error as { name?: string })?.name === 'CanceledError') return;
+      if (isRequestCancelledError(error)) return;
+      if (isSearchNoAccessibleDocumentsNotFound(error)) {
+        store.setSearchResults([], null, query);
+        return;
+      }
       store.setSearchError((error as Error)?.message || 'Search failed');
     } finally {
-      store.setIsSearching(false);
-      currentSearchAbort = null;
+      if (currentSearchAbort === searchController) {
+        currentSearchAbort = null;
+      }
+      if (myGeneration === searchSubmitGeneration) {
+        store.setIsSearching(false);
+      }
     }
   };
 

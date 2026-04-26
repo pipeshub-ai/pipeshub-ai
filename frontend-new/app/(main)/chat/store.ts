@@ -336,7 +336,7 @@ interface ChatState {
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
 
   // ── Search actions ──
-  setSearchResults: (results: SearchResultItem[], searchId: string, query: string) => void;
+  setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
   setIsSearching: (loading: boolean) => void;
   setSearchError: (error: string | null) => void;
   clearSearchResults: () => void;

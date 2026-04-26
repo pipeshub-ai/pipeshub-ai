@@ -10,6 +10,7 @@ const activeErrorToasts = new Map<ErrorType, string>();
 
 const ERROR_TOAST_MAP: Record<ErrorType, ErrorToastConfig | null> = {
   [ErrorType.AUTHENTICATION_ERROR]: null, // Handled by redirect
+  [ErrorType.REQUEST_CANCELLED]: null, // Abort/superseded request — not user-actionable
   [ErrorType.AUTHORIZATION_ERROR]: {
     title: 'Access Denied',
     description: 'You don\'t have permission to perform this action.',
