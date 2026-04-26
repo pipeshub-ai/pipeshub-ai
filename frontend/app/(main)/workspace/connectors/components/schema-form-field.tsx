@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
@@ -222,7 +222,7 @@ export function SchemaFormField({
                   hasError={invalid}
                 />
               );
-            case 'FOLDER_PICKER':
+            case 'FOLDER':
               return <FolderPickerInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             default:
               // TEXT, EMAIL, URL, and fallback
@@ -945,12 +945,20 @@ function FolderPickerInput({
 }) {
   const [isFocused, setIsFocused] = useState(false);
   const pathValue = String(value ?? '');
+  const addToast = useToastStore((s) => s.addToast);
 
   const handleChooseFolder = async () => {
     if (disabled) return;
     if (!isElectron()) return;
-    const api = (window as any).electronAPI;
-    if (!api?.selectFolder) return;
+    const api = (window as Window & { electronAPI?: { selectFolder?: () => Promise<string | null> } }).electronAPI;
+    if (!api?.selectFolder) {
+      addToast({
+        title: 'Folder picker unavailable',
+        description: 'Restart the desktop app or update to the latest build.',
+        variant: 'error',
+      });
+      return;
+    }
     const selectedPath = await api.selectFolder();
     if (selectedPath) {
       onChange(field.name, selectedPath);
@@ -959,7 +967,7 @@ function FolderPickerInput({
 
   return (
     <>
-      <Flex gap="2" align="center">
+      <Flex gap="2" align="center" wrap="wrap">
         <input
           type="text"
           value={pathValue}
@@ -971,12 +979,13 @@ function FolderPickerInput({
           style={{
             ...inputStyle,
             ...(isFocused ? focusStyle : {}),
-            flex: 1,
+            flex: '1 1 160px',
+            minWidth: 120,
             opacity: disabled ? 0.6 : 1,
           }}
         />
         {isElectron() && (
-          <IconButton
+          <Button
             type="button"
             variant="soft"
             size="2"
@@ -984,8 +993,11 @@ function FolderPickerInput({
             onClick={handleChooseFolder}
             style={{ cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0 }}
           >
-            <MaterialIcon name="folder_open" size={18} color="var(--accent-11)" />
-          </IconButton>
+            <Flex align="center" gap="1">
+              <MaterialIcon name="folder_open" size={18} color="var(--accent-11)" />
+              <span style={{ fontSize: 14, fontFamily: 'var(--default-font-family)' }}>Choose folder</span>
+            </Flex>
+          </Button>
         )}
       </Flex>
       {field.description && (
