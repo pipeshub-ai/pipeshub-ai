@@ -1751,11 +1751,17 @@ class BookStackConnector(BaseConnector):
                 parent_external_id = f"chapter/{page.get('chapter_id')}"
 
             # 2. Convert timestamp
-            timestamp_ms = None
+            updated_at_timestamp_ms = None
+            created_at_timestamp_ms = None
             updated_at_str = page.get("updated_at")
+            created_at_str = page.get("created_at")
             if updated_at_str:
                 dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
-                timestamp_ms = int(dt_obj.timestamp() * 1000)
+                updated_at_timestamp_ms = int(dt_obj.timestamp() * 1000)
+            if created_at_str:
+                dt_obj = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                created_at_timestamp_ms = int(dt_obj.timestamp() * 1000)
+
 
             # 3. Create the FileRecord object
             file_record = FileRecord(
@@ -1768,8 +1774,10 @@ class BookStackConnector(BaseConnector):
                 external_record_group_id=parent_external_id,
                 origin=OriginTypes.CONNECTOR.value,
                 org_id=self.data_entities_processor.org_id,
-                source_updated_at=timestamp_ms,
-                updated_at=timestamp_ms,
+                source_updated_at=updated_at_timestamp_ms,
+                updated_at=updated_at_timestamp_ms,
+                source_created_at=created_at_timestamp_ms,
+                created_at=created_at_timestamp_ms,
                 version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
                 weburl=f"{self.bookstack_base_url.rstrip('/')}/books/{page.get('book_slug')}/page/{page.get('slug')}",
