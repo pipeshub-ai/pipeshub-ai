@@ -276,7 +276,7 @@ export class Application {
         // send the root page which hydrates as `/` and redirects the popup
         // to /chat, so OAuth never completes.
         const oauthCallbackMatch = _req.path.match(
-          /^\/(toolsets|connectors)\/oauth\/callback\/[^/]+\/?$/,
+          /^\/(toolsets|connectors|mcp-servers)\/oauth\/callback\/[^/]+\/?$/,
         );
         if (oauthCallbackMatch && oauthCallbackMatch[1]) {
           res.sendFile(

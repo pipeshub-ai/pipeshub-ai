@@ -1,7 +1,8 @@
 """
 Capability Summary Builder - Shared across all agent modes.
 
-Lists configured knowledge sources and user-configured service tools.
+Lists configured knowledge sources, user-configured service tools, and
+connected MCP servers (external Model Context Protocol tools).
 Internal utility tools (calculator, date_calculator, etc.) are excluded
 automatically — only tools from the agent's configured toolsets are shown.
 Adding new internal tools requires no changes here.
@@ -14,6 +15,7 @@ into KB stores vs indexed app connectors without code duplication.
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from typing import Any
 
 from app.modules.agents.tool_domain import derive_tool_domain
@@ -107,6 +109,100 @@ def format_connector_filter_lines(filters: dict[str, Any] | None) -> list[str]:
             lines.append("Content indexed: " + ", ".join(enabled))
 
     return lines
+
+
+# ---------------------------------------------------------------------------
+# MCP servers (namespaced tools — must match tool_system._load_mcp_tools)
+# ---------------------------------------------------------------------------
+
+
+def namespaced_mcp_tool_name(server: dict[str, Any], tool_data: dict[str, Any]) -> str:
+    """
+    Resolve the LangChain / agent tool name for an MCP tool.
+
+    Must stay aligned with ``app.modules.agents.qna.tool_system._load_mcp_tools``.
+    """
+    from app.agents.constants.mcp_server_constants import normalize_mcp_server_name
+
+    tool_name = tool_data.get("name") or ""
+    server_name = server.get("name") or ""
+    server_type = server.get("type") or server_name
+    return (
+        tool_data.get("namespacedName")
+        or tool_data.get("namespaced_name")
+        or f"mcp_{normalize_mcp_server_name(server_type)}_{tool_name}"
+    )
+
+
+def iter_mcp_tools_from_servers(
+    agent_mcp_servers: list[dict[str, Any]] | None,
+) -> list[tuple[str, str, str]]:
+    """
+    Flatten MCP server metadata into (server_display, namespaced_name, description).
+
+    Does not read ``mcp_server_configs`` — no credentials in prompts.
+    """
+    out: list[tuple[str, str, str]] = []
+    for server in agent_mcp_servers or []:
+        if not isinstance(server, dict):
+            continue
+        display = (server.get("displayName") or server.get("name") or "MCP server").strip()
+        tools_list = server.get("tools") or []
+        for tool_data in tools_list:
+            if not isinstance(tool_data, dict):
+                continue
+            raw_name = tool_data.get("name") or ""
+            if not raw_name:
+                continue
+            ns = namespaced_mcp_tool_name(server, tool_data)
+            desc = (tool_data.get("description") or "").strip()
+            out.append((display, ns, desc))
+    return out
+
+
+def extend_tools_data_with_mcp_servers(
+    tools_data: list[dict[str, Any]],
+    mcp_servers: list[dict[str, Any]] | None,
+) -> None:
+    """Append MCP tools to router ``tools_data`` (same shape as toolset tools)."""
+    for _srv, ns_name, desc in iter_mcp_tools_from_servers(mcp_servers):
+        tools_data.append({"full_name": ns_name, "desc": desc})
+
+
+def _merge_mcp_tool_domains(state: dict[str, Any], domains: dict[str, list[str]]) -> None:
+    """Group MCP namespaced tools under domain key ``mcp`` for Available Actions."""
+    seen: set[str] = set()
+    for _srv, ns_name, _desc in iter_mcp_tools_from_servers(state.get("agent_mcp_servers")):
+        if ns_name in seen:
+            continue
+        seen.add(ns_name)
+        domains.setdefault("mcp", []).append(ns_name)
+
+
+def _build_mcp_servers_section(state: dict[str, Any], parts: list[str]) -> None:
+    """Human-readable MCP inventory (complements per-domain Available Actions)."""
+    entries = iter_mcp_tools_from_servers(state.get("agent_mcp_servers"))
+    if not entries:
+        return
+
+    parts.append("### MCP servers (Model Context Protocol)")
+    parts.append("")
+    parts.append(
+        "External MCP integrations add tools alongside native toolsets. "
+        "Use the tool names below when planning or calling tools — they match "
+        "the identifiers in the detailed tool list."
+    )
+    by_server: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for srv, ns, desc in entries:
+        by_server[srv].append((ns, desc))
+    for srv in sorted(by_server.keys()):
+        parts.append(f"\n🔌 **{srv}**")
+        for ns, desc in by_server[srv]:
+            line = f"  - `{ns}`"
+            if desc:
+                line += f" — {desc[:200]}{'…' if len(desc) > 200 else ''}"
+            parts.append(line)
+    parts.append("")
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +699,7 @@ def build_capability_summary(state: dict[str, Any]) -> str:
 
     Shows:
     - Configured knowledge sources (from agent_knowledge)
+    - Connected MCP servers and their tools (from agent_mcp_servers)
     - All tools the runtime loads, grouped by domain — service connectors AND
       built-ins (calculator, date_calculator, coding_sandbox, etc.), deduped.
     """
@@ -611,6 +708,7 @@ def build_capability_summary(state: dict[str, Any]) -> str:
     has_knowledge = state.get("has_knowledge", False)
 
     _build_knowledge_section(state=state, has_knowledge=has_knowledge, parts=parts)
+    _build_mcp_servers_section(state, parts)
     _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
 
     parts.append(
@@ -730,10 +828,10 @@ def _build_actions_section(
 ) -> None:
     """Append available actions section to parts.
 
-    Shows all tools the runtime loads — service connectors AND built-ins
-    (calculator, coding_sandbox, etc.), deduped by name.
-    Notes for non-obvious built-in tools are derived from tool.description —
-    no hardcoding required.
+    Shows all tools the runtime loads — service connectors, MCP tools (grouped
+    under ``mcp``), and built-ins (calculator, coding_sandbox, etc.), deduped
+    by name. Notes for non-obvious built-in tools are derived from
+    tool.description — no hardcoding required.
     """
     domains, domain_notes = _get_all_tool_domains(state)
 
@@ -748,7 +846,7 @@ def _build_actions_section(
     parts.append("### Available Actions")
 
     if not domains:
-        parts.append("- No tools configured")
+        parts.append("- No tools configured (no toolsets or MCP servers)")
         parts.append("")
         return
 
@@ -887,4 +985,5 @@ def _get_all_tool_domains(
                     if act_d and act_d not in domains.get(ts_name, []):
                         domains.setdefault(ts_name, []).append(act_d)
 
+    _merge_mcp_tool_domains(state, domains)
     return domains, {}

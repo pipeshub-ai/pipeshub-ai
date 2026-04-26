@@ -136,6 +136,31 @@ async def _fetch_user_auth(
         return None
 
 
+async def _resolve_effective_user_auth(
+    instance: dict[str, Any],
+    user_id: str,
+    config_service: ConfigurationService,
+) -> dict[str, Any] | None:
+    """Return the effective auth record for a user against an MCP server instance.
+
+    For instances with useAdminAuth=True (api_token/headers modes) the admin's
+    credential record is the single source of truth and is returned directly,
+    so no per-user copy is required.  For all other cases the user's own record
+    is returned as before.
+    """
+    instance_id = instance.get("_id", "")
+    use_admin_auth = instance.get("useAdminAuth", False)
+    auth_mode = instance.get("authMode", "none")
+
+    if use_admin_auth and auth_mode in ("api_token", "headers"):
+        created_by = instance.get("createdBy", "")
+        if created_by:
+            return await _fetch_user_auth(instance_id, created_by, config_service)
+        return None
+
+    return await _fetch_user_auth(instance_id, user_id, config_service)
+
+
 async def _load_oauth_client_config(
     instance_id: str,
     config_service: ConfigurationService,
@@ -820,7 +845,25 @@ async def remove_credentials(
 ) -> dict[str, Any]:
     """Remove credentials for an MCP server instance."""
     user_context = _get_user_context(request)
+    org_id = user_context["org_id"]
     user_id = user_context["user_id"]
+
+    instances = await _load_instances(config_service, org_id)
+    instance = next((i for i in instances if i.get("_id") == instance_id), None)
+    if instance:
+        use_admin_auth = instance.get("useAdminAuth", False)
+        auth_mode = instance.get("authMode", "none")
+        if use_admin_auth and auth_mode in ("api_token", "headers"):
+            is_admin = await _check_user_is_admin(user_id, request, config_service)
+            if not is_admin:
+                raise HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail=(
+                        "This instance uses admin-managed credentials. "
+                        "Only an admin can remove the shared service token."
+                    ),
+                )
+
     auth_path = get_mcp_server_config_path(instance_id, user_id)
     try:
         await config_service.delete_config(auth_path)
@@ -853,17 +896,18 @@ async def auto_authenticate_instance(
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
 ) -> dict[str, Any]:
     """
-    Automatically authenticate a non-admin user against an API-token MCP server
-    by copying the admin's stored API token to the current user's credential path.
+    No-op endpoint kept for backward compatibility.
 
-    This is only valid for instances where authMode is 'api_token'. The admin who
-    created the instance must have previously authenticated themselves (storing their
-    token at their own user credential path). That token is then shared to the
-    requesting user's credential path.
+    With useAdminAuth instances, users are implicitly authenticated — the platform
+    resolves credentials from the admin's record at read-time and no per-user copy
+    is stored in etcd.  Any client that still calls this endpoint for a useAdminAuth
+    instance will receive a success response immediately.
+
+    For non-useAdminAuth instances the endpoint returns a 400 directing the caller
+    to use the standard authenticate endpoint instead.
     """
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
-    user_id = user_context["user_id"]
 
     instances = await _load_instances(config_service, org_id)
     instance = next((i for i in instances if i.get("_id") == instance_id), None)
@@ -873,20 +917,9 @@ async def auto_authenticate_instance(
             detail=f"MCP server instance '{instance_id}' not found.",
         )
 
-    auth_mode = instance.get("authMode", "none")
-    if auth_mode == "oauth":
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="OAuth MCP servers require manual sign-in. Use /instances/{instance_id}/oauth/authorize.",
-        )
-    if auth_mode == "none":
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="This MCP server requires no authentication.",
-        )
-
-    # auto-authenticate is only valid when the admin has opted in to shared credentials.
     use_admin_auth = instance.get("useAdminAuth", False)
+    auth_mode = instance.get("authMode", "none")
+
     if not use_admin_auth:
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -896,52 +929,28 @@ async def auto_authenticate_instance(
             ),
         )
 
-    # Retrieve the admin's stored credentials (from the user who created the instance)
-    created_by = instance.get("createdBy", "")
-    if not created_by:
+    if auth_mode not in ("api_token", "headers"):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Cannot determine the instance creator. Please contact an administrator.",
+            detail="Auto-authenticate is only supported for api_token and headers auth modes.",
         )
 
-    admin_auth = await _fetch_user_auth(instance_id, created_by, config_service)
-    if not admin_auth or not admin_auth.get("isAuthenticated"):
-        raise HTTPException(
-            status_code=HttpStatusCode.CONFLICT.value,
-            detail=(
-                "The administrator has not yet authenticated this MCP server. "
-                "Please ask an admin to authenticate the instance before you can auto-authenticate."
-            ),
-        )
+    # Verify the admin has actually set up the token so the caller gets a meaningful
+    # error if they call this before the admin has authenticated.
+    created_by = instance.get("createdBy", "")
+    if created_by:
+        admin_auth = await _fetch_user_auth(instance_id, created_by, config_service)
+        if not admin_auth or not admin_auth.get("isAuthenticated"):
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=(
+                    "The administrator has not yet authenticated this MCP server. "
+                    "Please ask an admin to set up the credentials first."
+                ),
+            )
 
-    # Copy admin credentials to the current user's path
-    now = get_epoch_timestamp_in_ms()
-    user_auth: dict[str, Any] = {
-        "isAuthenticated": True,
-        "authMode": auth_mode,
-        "instanceId": instance_id,
-        "serverType": instance.get("serverType"),
-        "transport": instance.get("transport", "stdio"),
-        "command": instance.get("command", ""),
-        "args": instance.get("args", []),
-        "url": instance.get("url", ""),
-        "requiredEnv": instance.get("requiredEnv", []),
-        "auth": admin_auth.get("auth", {}),
-        "credentials": admin_auth.get("credentials", {}),
-        "updatedAt": now,
-        "updatedBy": user_id,
-    }
-
-    auth_path = get_mcp_server_config_path(instance_id, user_id)
-    try:
-        await config_service.set_config(auth_path, user_auth)
-    except Exception as e:
-        logger.error("Failed to auto-authenticate user %s for MCP instance %s: %s", user_id, instance_id, e)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to save credentials.",
-        ) from e
-
+    # Credentials are resolved from the admin's record at read-time; no per-user
+    # etcd write is needed.
     return {
         "status": "success",
         "message": "MCP server authenticated successfully using shared credentials.",
@@ -1910,7 +1919,7 @@ async def get_my_mcp_servers(
             continue
 
         instance_id = inst.get("_id", "")
-        user_auth = await _fetch_user_auth(instance_id, user_id, config_service)
+        user_auth = await _resolve_effective_user_auth(inst, user_id, config_service)
         is_authenticated = bool(user_auth and user_auth.get("isAuthenticated"))
 
         item: dict[str, Any] = {
@@ -2042,7 +2051,7 @@ async def discover_instance_tools(
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"MCP server instance '{instance_id}' not found.")
 
-    user_auth = await _fetch_user_auth(instance_id, user_id, config_service)
+    user_auth = await _resolve_effective_user_auth(instance, user_id, config_service)
     if not user_auth or not user_auth.get("isAuthenticated"):
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
@@ -2154,7 +2163,7 @@ async def get_agent_mcp_servers(
             continue
 
         instance_id = inst.get("_id", "")
-        agent_auth = await _fetch_user_auth(instance_id, agent_key, config_service)
+        agent_auth = await _resolve_effective_user_auth(inst, agent_key, config_service)
         is_authenticated = bool(agent_auth and agent_auth.get("isAuthenticated"))
 
         item: dict[str, Any] = {

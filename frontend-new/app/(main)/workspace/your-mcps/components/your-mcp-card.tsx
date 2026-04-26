@@ -68,18 +68,9 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
   const useAdminAuth = server.useAdminAuth ?? false;
   const toolCount = server.toolCount ?? server.tools?.length ?? 0;
 
-  const handleAutoAuthenticate = async () => {
-    setIsAuthenticating(true);
-    try {
-      await McpServersApi.autoAuthenticate(server.instanceId);
-      onNotify(`${server.displayName || server.instanceName} authenticated successfully.`, 'success');
-      onRefresh();
-    } catch {
-      onNotify(`Failed to authenticate ${server.displayName || server.instanceName}. The administrator may need to set up credentials first.`, 'error');
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
+  // When useAdminAuth is true the platform resolves credentials from the admin's
+  // record at read-time — no per-user copy or explicit authenticate step needed.
+  const isAdminManaged = useAdminAuth && (authMode === 'api_token' || authMode === 'headers');
 
   const handlePersonalTokenAuthenticate = async () => {
     if (!personalToken.trim()) return;
@@ -181,11 +172,16 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
         {isAuthenticated ? (
           <Badge color="green" variant="soft" size="1" style={{ flexShrink: 0 }}>
             <MaterialIcon name="check_circle" size={12} color="var(--green-10)" />
-            Authenticated
+            {isAdminManaged ? 'Admin managed' : 'Authenticated'}
           </Badge>
         ) : authMode === 'none' ? (
           <Badge color="gray" variant="soft" size="1" style={{ flexShrink: 0 }}>
             Ready
+          </Badge>
+        ) : isAdminManaged ? (
+          <Badge color="amber" variant="soft" size="1" style={{ flexShrink: 0 }}>
+            <MaterialIcon name="schedule" size={12} color="var(--amber-10)" />
+            Pending admin setup
           </Badge>
         ) : (
           <Badge color="amber" variant="soft" size="1" style={{ flexShrink: 0 }}>
@@ -292,8 +288,43 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
               Sign in with OAuth
             </Button>
           )
+        ) : isAdminManaged ? (
+          /* Admin-managed token (useAdminAuth) — resolved from admin record, no user action needed */
+          isAuthenticated ? (
+            <Flex
+              align="center"
+              justify="center"
+              gap="1"
+              style={{
+                height: 32,
+                borderRadius: 'var(--radius-2)',
+                backgroundColor: 'var(--green-a3)',
+              }}
+            >
+              <MaterialIcon name="shield" size={14} color="var(--green-10)" />
+              <Text size="2" style={{ color: 'var(--green-11)', fontWeight: 500 }}>
+                Managed by admin
+              </Text>
+            </Flex>
+          ) : (
+            <Flex
+              align="center"
+              justify="center"
+              gap="1"
+              style={{
+                height: 32,
+                borderRadius: 'var(--radius-2)',
+                backgroundColor: 'var(--amber-a3)',
+              }}
+            >
+              <MaterialIcon name="hourglass_empty" size={14} color="var(--amber-10)" />
+              <Text size="2" style={{ color: 'var(--amber-11)', fontWeight: 500 }}>
+                Awaiting admin configuration
+              </Text>
+            </Flex>
+          )
         ) : (
-          /* api_token / headers */
+          /* api_token / headers — personal token */
           isAuthenticated ? (
             <Flex gap="2">
               <Button
@@ -307,20 +338,6 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
                 <MaterialIcon name="check_circle" size={14} color="var(--green-10)" />
                 Authenticated
               </Button>
-              {useAdminAuth ? (
-                <Button
-                  type="button"
-                  size="1"
-                  variant="outline"
-                  color="gray"
-                  onClick={() => void handleAutoAuthenticate()}
-                  disabled={isAuthenticating}
-                  style={{ flex: 1 }}
-                >
-                  {isAuthenticating ? <Spinner size="1" /> : <MaterialIcon name="refresh" size={14} color="var(--gray-10)" />}
-                  Refresh
-                </Button>
-              ) : null}
               <Button
                 type="button"
                 size="1"
@@ -332,24 +349,6 @@ export function YourMcpCard({ server, onRefresh, onOAuthSignIn, onNotify }: Your
                 {isRemoving ? <Spinner size="1" /> : <MaterialIcon name="delete" size={14} color="var(--red-10)" />}
               </Button>
             </Flex>
-          ) : useAdminAuth ? (
-            /* Admin-managed token — one-click authenticate */
-            <Button
-              type="button"
-              size="2"
-              variant="soft"
-              color="indigo"
-              style={{ width: '100%' }}
-              onClick={() => void handleAutoAuthenticate()}
-              disabled={isAuthenticating}
-            >
-              {isAuthenticating ? (
-                <Spinner size="2" />
-              ) : (
-                <MaterialIcon name="key" size={16} color="var(--indigo-10)" />
-              )}
-              {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
-            </Button>
           ) : (
             /* Personal token — user must provide their own */
             <Flex direction="column" gap="2">

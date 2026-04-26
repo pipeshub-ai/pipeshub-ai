@@ -425,6 +425,7 @@ def _build_agent_capability_context(
     """
     from app.modules.agents.capability_summary import (  # noqa: PLC0415 – lazy import kept for historical reasons
         classify_knowledge_sources,
+        extend_tools_data_with_mcp_servers,
         format_connector_filter_lines,
     )
 
@@ -491,6 +492,8 @@ def _build_agent_capability_context(
         for t in raw_tools:
             if isinstance(t, str) and t:
                 tools_data.append({"full_name": t, "desc": ""})
+
+    extend_tools_data_with_mcp_servers(tools_data, query_info.get("mcpServers"))
 
     if tools_data:
         lines.append(f"Action tools ({len(tools_data)} total):")
@@ -3494,16 +3497,46 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         if named_mcp_servers:
             import asyncio as _mcp_asyncio
-            from app.agents.constants.mcp_server_constants import get_mcp_server_config_path
+            from app.agents.constants.mcp_server_constants import (
+                get_mcp_server_config_path,
+                get_mcp_server_instances_path,
+            )
 
             mcp_credential_lookup_id = agent_id if is_service_account else executing_user_id
+
+            # Load all instance metadata once so we can check useAdminAuth/createdBy
+            # per-instance without an extra etcd round-trip inside each fetch.
+            _mcp_instance_lookup: dict[str, dict] = {}
+            try:
+                _instances_path = get_mcp_server_instances_path()
+                _all_instances = await services["config_service"].get_config(_instances_path, default=[])
+                if isinstance(_all_instances, list):
+                    for _inst in _all_instances:
+                        if _inst.get("orgId") == org_key and _inst.get("_id"):
+                            _mcp_instance_lookup[_inst["_id"]] = _inst
+            except Exception as _inst_exc:
+                logger.warning("Failed to load MCP instance metadata for admin-auth resolution: %s", _inst_exc)
 
             async def _fetch_mcp_config(server: dict) -> tuple[dict, Any]:
                 instance_id = server.get("instanceId")
                 if not instance_id:
                     return server, None
                 try:
-                    etcd_path = get_mcp_server_config_path(instance_id, mcp_credential_lookup_id)
+                    inst_meta = _mcp_instance_lookup.get(instance_id, {})
+                    use_admin_auth = inst_meta.get("useAdminAuth", False)
+                    auth_mode = inst_meta.get("authMode", "none")
+
+                    if use_admin_auth and auth_mode in ("api_token", "headers") and not is_service_account:
+                        # Resolve credentials from the admin's (creator's) etcd record so
+                        # individual users don't need their own per-user copy.
+                        created_by = inst_meta.get("createdBy", "")
+                        if created_by:
+                            etcd_path = get_mcp_server_config_path(instance_id, created_by)
+                        else:
+                            etcd_path = get_mcp_server_config_path(instance_id, mcp_credential_lookup_id)
+                    else:
+                        etcd_path = get_mcp_server_config_path(instance_id, mcp_credential_lookup_id)
+
                     config = await services["config_service"].get_config(etcd_path)
                     return server, config
                 except Exception as exc:
