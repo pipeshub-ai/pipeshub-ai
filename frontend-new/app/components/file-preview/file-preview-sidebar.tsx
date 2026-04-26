@@ -13,7 +13,12 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { getTabsForSource, shouldShowPagination } from './utils';
+import {
+  PDF_ZOOM_MAX,
+  PDF_ZOOM_MIN,
+} from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import {
   PANEL_MAX_PX,
@@ -53,6 +58,11 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
   const tabs = useMemo(
     () => getTabsForSource(source, { hideFileDetails }),
     [source, hideFileDetails],
@@ -161,6 +171,8 @@ export function FilePreviewSidebar({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
+    scale: pdfScale,
+    onScaleChange: setPdfScale,
   };
 
   // Mobile: render full-screen mobile preview instead of Dialog sidebar
@@ -393,8 +405,68 @@ export function FilePreviewSidebar({
                     border: '1px solid var(--slate-3)',
                     borderRadius: 'var(--radius-1)',
                     boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
+                    // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
+                    zIndex: 20,
+                    isolation: 'isolate',
+                    pointerEvents: 'auto',
                   }}
                 >
+                  <IconButton
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    onClick={handlePdfZoomOut}
+                    disabled={pdfScale <= PDF_ZOOM_MIN}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      padding: 0,
+                    }}
+                    aria-label="Zoom out"
+                  >
+                    <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
+                  </IconButton>
+                  <Box
+                    style={{
+                      minWidth: '40px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <Text
+                      as="span"
+                      size="2"
+                      weight="medium"
+                      style={{ color: 'var(--slate-11)' }}
+                    >
+                      {Math.round(pdfScale * 100)}%
+                    </Text>
+                  </Box>
+                  <IconButton
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    onClick={handlePdfZoomIn}
+                    disabled={pdfScale >= PDF_ZOOM_MAX}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      padding: 0,
+                    }}
+                    aria-label="Zoom in"
+                  >
+                    <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+                  </IconButton>
+
+                  <Box
+                    style={{
+                      width: '1px',
+                      height: '16px',
+                      backgroundColor: 'var(--slate-4)',
+                      flexShrink: 0,
+                    }}
+                    aria-hidden
+                  />
+
                   <IconButton
                     variant="ghost"
                     color="gray"

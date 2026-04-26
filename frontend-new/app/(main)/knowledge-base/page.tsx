@@ -1477,8 +1477,21 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, isSelectedKbPrivate, handleAccessRevoked, shareAdapter]);
 
+  const getPreviewErrorMessage = useCallback((err: unknown): string => {
+    if (err instanceof Error && err.message) return err.message;
+
+    const maybeMessage = (err as { message?: unknown })?.message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
+
+    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
+    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
+
+    return 'Failed to load file';
+  }, []);
+
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
+
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
@@ -1547,10 +1560,11 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
-        console.error('Failed to load file preview:', error);
+        const errorMessage = getPreviewErrorMessage(error);
+        console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
           ...prev,
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          error: errorMessage,
           isLoading: false,
         } : null);
       }
@@ -1615,15 +1629,16 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
-        console.error('Failed to load file preview:', error);
+        const errorMessage = getPreviewErrorMessage(error);
+        console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
           ...prev,
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          error: errorMessage,
           isLoading: false,
         } : null);
       }
     }
-  }, []);
+  }, [getPreviewErrorMessage]);
 
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(

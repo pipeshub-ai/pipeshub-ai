@@ -78,7 +78,7 @@ export const ChatSections = React.memo(function ChatSections({
   // across loads, so "your" chats' hasNext must not show "More" on empty Shared.
   const hasMoreShared =
     sharedConversations.length > MAX_VISIBLE_CHATS ||
-    (sharedConversations.length > 0 && (pagination?.hasNextPage ?? false));
+    (sharedConversations.length > 0 && (sharedPagination?.hasNextPage ?? false));
   const hasMoreYour =
     conversations.length > MAX_VISIBLE_CHATS ||
     (conversations.length > 0 && (pagination?.hasNextPage ?? false));

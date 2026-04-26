@@ -157,7 +157,19 @@ export interface PaginationControls {
   totalPages: number | null; // null during detection
   onPageChange: (page: number) => void;
   onTotalPagesDetected?: (totalPages: number) => void;
+  /**
+   * PDF-only: zoom level (0.5–2), matching the legacy viewer step behavior.
+   * When omitted, the PDF uses scale 1.
+   */
+  scale?: number;
+  onScaleChange?: (scale: number) => void;
 }
+
+export const PDF_ZOOM_MIN = 0.5;
+export const PDF_ZOOM_MAX = 2.0;
+export const PDF_ZOOM_STEP = 0.1;
+export const PDF_ZOOM_PRECISION_FACTOR = 10;
+export const PDF_ZOOM_DEFAULT = 1;
 
 /**
  * Pagination visibility state

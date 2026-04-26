@@ -11,7 +11,12 @@ import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { shouldShowPagination } from './utils';
+import {
+  PDF_ZOOM_MAX,
+  PDF_ZOOM_MIN,
+} from './types';
 import type { FilePreviewProps, PaginationControls, PreviewCitation } from './types';
 
 export function FilePreviewMobile({
@@ -32,6 +37,11 @@ export function FilePreviewMobile({
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
 
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -104,6 +114,8 @@ export function FilePreviewMobile({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
+    scale: pdfScale,
+    onScaleChange: setPdfScale,
   };
 
   const handleClose = () => {
@@ -298,9 +310,60 @@ export function FilePreviewMobile({
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
                   backdropFilter: 'blur(25px)',
-                  zIndex: 1,
+                  // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
+                  zIndex: 20,
+                  isolation: 'isolate',
+                  pointerEvents: 'auto',
                 }}
               >
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={handlePdfZoomOut}
+                  disabled={pdfScale <= PDF_ZOOM_MIN}
+                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  aria-label="Zoom out"
+                >
+                  <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+                <Box
+                  style={{
+                    minWidth: '36px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <Text
+                    as="span"
+                    size="2"
+                    weight="medium"
+                    style={{ color: 'var(--slate-11)' }}
+                  >
+                    {Math.round(pdfScale * 100)}%
+                  </Text>
+                </Box>
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={handlePdfZoomIn}
+                  disabled={pdfScale >= PDF_ZOOM_MAX}
+                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  aria-label="Zoom in"
+                >
+                  <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+
+                <Box
+                  style={{
+                    width: '1px',
+                    height: '16px',
+                    backgroundColor: 'var(--slate-4)',
+                    flexShrink: 0,
+                  }}
+                  aria-hidden
+                />
+
                 <IconButton
                   variant="ghost"
                   color="gray"
@@ -356,7 +419,8 @@ export function FilePreviewMobile({
                   padding: 'var(--space-1) var(--space-2)',
                   gap: 'var(--space-2)',
                   cursor: 'pointer',
-                  zIndex: 1,
+                  zIndex: 20,
+                  isolation: 'isolate',
                 }}
                 onClick={() => setShowCitationsSheet(true)}
               >
