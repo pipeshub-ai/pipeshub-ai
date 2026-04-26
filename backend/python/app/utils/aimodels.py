@@ -244,7 +244,21 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         _set_embedding_dimensions_kwarg(
             gemini_kwargs, dimensions, key="output_dimensionality"
         )
-        return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
+        embeddings = GoogleGenerativeAIEmbeddings(**gemini_kwargs)
+
+        # ``gemini-embedding-2*`` does not honour ``task_type``; Google's docs
+        # require task instructions to be prepended to the input text instead.
+        # Wrap the LangChain client so both ingestion (aembed_documents) and
+        # retrieval (aembed_query) carry the prescribed prefixes. Older
+        # Gemini-1 / -001 models keep the plain client because they still
+        # rely on ``task_type`` and have no documented prefix contract.
+        bare_model = model_name.removeprefix("models/").lower()
+        if bare_model.startswith("gemini-embedding-2"):
+            from app.utils.custom_embeddings import Gemini2PromptedEmbeddings
+
+            return Gemini2PromptedEmbeddings(embeddings)
+
+        return embeddings
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
         from langchain_community.embeddings import HuggingFaceEmbeddings

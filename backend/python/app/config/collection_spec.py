@@ -12,6 +12,12 @@ Layout in the KV store:
         "embedding_model":     str,   # normalized
         "embedding_dimension": int,
         "is_multimodal":       bool,  # optional
+        "prompt_format":       str,   # optional; e.g. "gemini2_v1" when the
+                                      # ingestion path prepends the Gemini-2
+                                      # prompt prefixes. Absent on collections
+                                      # built without any input rewriting,
+                                      # which is what older Gemini-2
+                                      # collections look like.
         "signature_version":   int,
     }
 """
@@ -24,7 +30,15 @@ from app.services.vector_db.const.const import normalize_identity
 
 # Bump when the on-disk payload shape changes. Readers that don't understand the
 # version should fall back to "unknown" rather than silently misinterpreting it.
-SIGNATURE_VERSION = 1
+#
+# v2: added optional ``prompt_format`` field. Writers stamp it for collections
+#     whose ingestion path rewrites text inputs (currently only the Gemini-2
+#     family, which requires Google's prompt-prefix protocol since the
+#     ``task_type`` field is ignored by that model). Older v1 specs simply
+#     don't carry the field, and ``_signatures_match`` treats the difference
+#     between "absent" and ``"gemini2_v1"`` as a hard mismatch so legacy
+#     collections get re-built before being mixed with prefixed vectors.
+SIGNATURE_VERSION = 2
 
 # Identity used to describe the built-in default embedding model when no spec
 # is persisted yet. Mirrors `get_default_embedding_model()` in app.utils.aimodels
@@ -67,12 +81,15 @@ async def set_collection_spec(
     model: Optional[str],
     dimension: int,
     is_multimodal: Optional[bool] = None,
+    prompt_format: Optional[str] = None,
 ) -> bool:
     """Persist the spec for ``collection_name``.
 
     Provider/model are normalized so later identity comparisons don't trip on
-    casing / ``models/`` prefix differences. ``is_multimodal`` is only written
-    when explicitly known, matching the pre-existing sentinel semantics.
+    casing / ``models/`` prefix differences. ``is_multimodal`` and
+    ``prompt_format`` are only written when explicitly known, matching the
+    pre-existing sentinel semantics — readers can distinguish "unknown"
+    (legacy spec) from a deliberate text-only / no-rewrite value.
     """
     if not collection_name:
         return False
@@ -85,6 +102,8 @@ async def set_collection_spec(
     }
     if is_multimodal is not None:
         payload["is_multimodal"] = bool(is_multimodal)
+    if prompt_format:
+        payload["prompt_format"] = str(prompt_format)
 
     return await config_service.set_config(
         collection_spec_key(collection_name), payload

@@ -125,6 +125,52 @@ def is_base64_image(s: str) -> bool:
     return False
 
 
+def llm_likely_accepts_vision_content(llm: Any) -> bool:
+    """Best-effort: whether the chat model can take images in the message (image_url, etc.).
+
+    Assistant /chat uses the explicit ``isMultimodal`` flag from ``AI_MODELS``. Agent
+    graphs historically hard-coded ``is_multimodal_llm=False`` in :class:`ChatState`
+    and the retrieval tool only recognised a few model-name substrings, so
+    :func:`get_flattened_results` **dropped** image blocks for e.g. ``gemini-2.0-flash``
+    or ``gemini-2.5-pro`` even though the model is vision-capable — making image
+    KB hits appear to work in Assistant but not in Agent mode.
+
+    This heuristic intentionally errs on the side of including image URI text for
+    any modern vendor multimodal id; it excludes embedding model ids.
+    """
+    if llm is None:
+        return False
+    parts: list[str] = []
+    for attr in ("model_name", "model", "model_id"):
+        raw = getattr(llm, attr, None)
+        if raw:
+            parts.append(str(raw).lower())
+    n = " ".join(parts)
+    if not n.strip():
+        return False
+    if "embedding" in n and "gemini" in n:
+        return False
+    if "gemini" in n and "embed" not in n:
+        return True
+    if "gpt-4o" in n or "gpt-5" in n or "chatgpt-4" in n:
+        return True
+    if "gpt-4" in n and ("vision" in n or "turbo" in n or "4o" in n):
+        return True
+    if "o1" in n or "o3" in n or "o4" in n:
+        if "embedding" in n:
+            return False
+        return True
+    if "claude" in n:
+        if "claude-2" in n or "claude-instant" in n:
+            return False
+        return True
+    if "qwen" in n and "vl" in n:
+        return True
+    if "llava" in n or ("vision" in n and "llama" in n):
+        return True
+    return False
+
+
 class CitationRefMapper:
     """Builds a bidirectional mapping between tiny citation refs (ref1, ref2, ...) and full block web URLs.
 

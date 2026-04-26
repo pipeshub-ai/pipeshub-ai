@@ -6,6 +6,7 @@ import warnings
 from typing import (
     Any,
     Callable,
+    ClassVar,
     Dict,
     List,
     Literal,
@@ -487,3 +488,63 @@ class TogetherEmbeddings(BaseModel, Embeddings):
         if not isinstance(response, dict):
             response = response.model_dump()
         return response["data"][0]["embedding"]
+
+
+class Gemini2PromptedEmbeddings(Embeddings):
+    """Wrapper around ``GoogleGenerativeAIEmbeddings`` for ``gemini-embedding-2*``.
+
+    The ``gemini-embedding-2`` family (``gemini-embedding-2-preview``,
+    ``gemini-embedding-2``, ...) does not honour the ``task_type`` field;
+    Google's docs explicitly state it is ignored. Instead, the recommended
+    way to get asymmetric retrieval behaviour is to prepend a task instruction
+    to the input text:
+
+    * documents: ``"title: {title} | text: {content}"``
+    * queries:   ``"task: search result | query: {query}"``
+
+    Without these prefixes the document and query vectors drift apart in the
+    unified embedding space. The most visible failure mode is multimodal: PNG
+    points indexed via the ``embedContent`` REST endpoint become unreachable
+    from text queries (the "Gemini-2 image retrieval 0-hit" bug).
+
+    This wrapper is the single injection point that ensures both ingestion
+    (``QdrantVectorStore.aadd_documents`` -> ``aembed_documents``) and
+    retrieval (``aembed_query``) use the prefixed form. ``gemini-embedding-001``
+    is unaffected because the factory only wraps Gemini-2 models.
+    """
+
+    DOCUMENT_PREFIX: ClassVar[str] = "title: none | text: "
+    QUERY_PREFIX: ClassVar[str] = "task: search result | query: "
+
+    def __init__(self, inner: Embeddings) -> None:
+        self._inner = inner
+
+    def __getattr__(self, item: str) -> Any:
+        # Delegate any attribute the wrapper itself doesn't define to the
+        # underlying client. Keeps callers that introspect ``.model`` or
+        # ``.output_dimensionality`` working transparently.
+        return getattr(self._inner, item)
+
+    @classmethod
+    def _wrap_document(cls, text: str) -> str:
+        return f"{cls.DOCUMENT_PREFIX}{text or ''}"
+
+    @classmethod
+    def _wrap_query(cls, text: str) -> str:
+        return f"{cls.QUERY_PREFIX}{text or ''}"
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._inner.embed_documents(
+            [self._wrap_document(t) for t in texts]
+        )
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._inner.embed_query(self._wrap_query(text))
+
+    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+        return await self._inner.aembed_documents(
+            [self._wrap_document(t) for t in texts]
+        )
+
+    async def aembed_query(self, text: str) -> List[float]:
+        return await self._inner.aembed_query(self._wrap_query(text))

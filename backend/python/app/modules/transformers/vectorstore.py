@@ -157,14 +157,16 @@ def _build_embedding_signature(
     model_name: str,
     dimension: int,
     is_multimodal: Optional[bool] = None,
+    prompt_format: Optional[str] = None,
 ) -> dict:
     """Build the canonical signature payload stored on a collection.
 
-    ``is_multimodal`` is included only when explicitly known. Leaving it
-    off on legacy call-sites keeps on-disk signatures compatible — a
-    missing field is interpreted by :func:`_signatures_match` as
-    "unknown" rather than "False", which preserves the existing trust
-    semantics for pre-signature collections.
+    ``is_multimodal`` and ``prompt_format`` are included only when
+    explicitly known. Leaving them off on legacy call-sites keeps
+    on-disk signatures compatible — a missing field is interpreted by
+    :func:`_signatures_match` as "unknown" rather than "False"/empty,
+    which preserves the existing trust semantics for pre-signature
+    collections.
     """
     payload: dict = {
         "embedding_provider": _normalize_identity(provider),
@@ -173,6 +175,8 @@ def _build_embedding_signature(
     }
     if is_multimodal is not None:
         payload["is_multimodal"] = bool(is_multimodal)
+    if prompt_format:
+        payload["prompt_format"] = str(prompt_format)
     return payload
 
 
@@ -181,15 +185,26 @@ def _signatures_match(
     new_provider: Optional[str],
     new_model: Optional[str],
     new_is_multimodal: Optional[bool] = None,
+    new_prompt_format: Optional[str] = None,
 ) -> bool:
     """Return True iff the stored signature matches (provider, model,
-    optional is_multimodal) after normalization.
+    optional is_multimodal, optional prompt_format) after normalization.
 
     ``is_multimodal`` participates in the comparison only when both the
     stored and the new value are known (not None). This preserves
     backward compatibility with signatures written before the flag was
     tracked: an absent ``is_multimodal`` on either side is treated as
     "unknown" and therefore does not contribute to a mismatch.
+
+    ``prompt_format`` is a directional check: a stored "unknown" (the
+    legacy v1 layout that doesn't carry the field) is treated as
+    "no-rewrite". So an existing collection that was indexed before
+    we added the Gemini-2 prompt prefixes will mismatch the current
+    ``"gemini2_v1"`` signature and trigger a re-build, which is exactly
+    what we want — the old vectors and the new queries live in
+    different sub-spaces. When ``new_prompt_format`` is None (e.g. all
+    non-Gemini-2 providers, or the legacy default-embedding path) the
+    field is ignored entirely.
     """
     if not stored:
         return False
@@ -210,7 +225,43 @@ def _signatures_match(
     if stored_multimodal is not None and new_is_multimodal is not None:
         if bool(stored_multimodal) != bool(new_is_multimodal):
             return False
+
+    if new_prompt_format:
+        stored_prompt_format = stored.get("prompt_format") or ""
+        if stored_prompt_format != new_prompt_format:
+            return False
     return True
+
+
+# Marker stored on the collection spec when the ingestion path rewrites
+# text inputs with Google's Gemini-2 prompt-prefix protocol. The token is
+# opaque on disk; only :func:`_prompt_format_for_model` knows how to
+# produce it. Bumping the suffix would invalidate every prefixed
+# collection, so the version is held stable until the prefix shape
+# itself changes.
+_GEMINI2_PROMPT_FORMAT = "gemini2_v1"
+
+
+def _prompt_format_for_model(
+    provider: Optional[str],
+    model_name: Optional[str],
+) -> Optional[str]:
+    """Return the prompt-format marker for ``(provider, model)``, or None.
+
+    Mirrors the gating in :func:`app.utils.aimodels.get_embedding_model`:
+    only ``gemini-embedding-2*`` models go through the prefix-injecting
+    wrapper and so only those collections need the marker. Any change
+    to that gating must be reflected here, otherwise the collection
+    signature drifts from the actual ingestion behaviour.
+    """
+    if (provider or "").lower() != "gemini":
+        return None
+    if not model_name:
+        return None
+    bare = model_name.lower().removeprefix("models/")
+    if bare.startswith("gemini-embedding-2"):
+        return _GEMINI2_PROMPT_FORMAT
+    return None
 
 class VectorStore(Transformer):
 
@@ -515,6 +566,7 @@ class VectorStore(Transformer):
         embedding_provider: Optional[str] = None,
         embedding_model_name: Optional[str] = None,
         is_multimodal: Optional[bool] = None,
+        prompt_format: Optional[str] = None,
     ) -> None:
         """Create the collection, install payload indexes, and (if provider+model
         are known) write a collection signature so later health checks can tell
@@ -549,6 +601,7 @@ class VectorStore(Transformer):
                         model=embedding_model_name,
                         dimension=embedding_size,
                         is_multimodal=is_multimodal,
+                        prompt_format=prompt_format,
                     )
                 except Exception as sig_err:
                     # Spec write is best-effort. Failing here would force us
@@ -574,6 +627,7 @@ class VectorStore(Transformer):
         embedding_provider: Optional[str] = None,
         embedding_model_name: Optional[str] = None,
         is_multimodal: Optional[bool] = None,
+        prompt_format: Optional[str] = None,
     ) -> None:
         """Initialize Qdrant collection with proper configuration.
 
@@ -610,6 +664,7 @@ class VectorStore(Transformer):
                 embedding_provider=embedding_provider,
                 embedding_model_name=embedding_model_name,
                 is_multimodal=is_multimodal,
+                prompt_format=prompt_format,
             )
             return
 
@@ -679,6 +734,7 @@ class VectorStore(Transformer):
                 new_provider=embedding_provider,
                 new_model=embedding_model_name,
                 new_is_multimodal=is_multimodal,
+                new_prompt_format=prompt_format,
             )
 
             if signature_matches:
@@ -699,6 +755,7 @@ class VectorStore(Transformer):
                             model=embedding_model_name,
                             dimension=embedding_size,
                             is_multimodal=is_multimodal,
+                            prompt_format=prompt_format,
                         )
                     except Exception as sig_err:
                         self.logger.warning(
@@ -769,6 +826,7 @@ class VectorStore(Transformer):
                 embedding_provider=embedding_provider,
                 embedding_model_name=embedding_model_name,
                 is_multimodal=is_multimodal,
+                prompt_format=prompt_format,
             )
             return
 
@@ -817,6 +875,7 @@ class VectorStore(Transformer):
             embedding_provider=embedding_provider,
             embedding_model_name=embedding_model_name,
             is_multimodal=is_multimodal,
+            prompt_format=prompt_format,
         )
 
 
@@ -947,11 +1006,20 @@ class VectorStore(Transformer):
             # out of AI_MODELS. Also forward ``is_multimodal`` so toggling
             # the flag on the same provider/model is treated as an
             # identity change rather than silently mixing vector spaces.
+            #
+            # ``prompt_format`` records the *input-rewrite contract* the
+            # ingestion path applied (currently only the Gemini-2 prompt
+            # prefixes — see ``Gemini2PromptedEmbeddings``). Stamping it on
+            # the collection lets us detect old, unprefixed Gemini-2
+            # collections as a signature mismatch and force a re-index
+            # rather than silently mixing vector sub-spaces.
+            prompt_format = _prompt_format_for_model(provider, model_name)
             await self._initialize_collection(
                 embedding_size=embedding_size,
                 embedding_provider=provider,
                 embedding_model_name=model_name,
                 is_multimodal=bool(is_multimodal),
+                prompt_format=prompt_format,
             )
 
             # Initialize vector store with same configuration
@@ -1434,6 +1502,23 @@ class VectorStore(Transformer):
         # captioning quickly.
         unsupported = asyncio.Event()
 
+        # ``task_type`` semantics differ across Gemini embedding generations:
+        #   * ``gemini-embedding-001`` (text-only) honours ``task_type`` and
+        #     pairs ``RETRIEVAL_DOCUMENT`` ↔ ``RETRIEVAL_QUERY`` vectors. It
+        #     never accepts ``inline_data`` (returns HTTP 400) but we keep
+        #     the field so the early-400 detection remains stable.
+        #   * ``gemini-embedding-2`` (the multimodal family — ``-2-preview``,
+        #     ``-2``, etc.) explicitly does NOT use ``task_type``; per
+        #     Google's docs the recommended asymmetric-retrieval signal is a
+        #     prompt-prefix on text inputs (handled by the wrapper around
+        #     ``GoogleGenerativeAIEmbeddings``), and images don't get a
+        #     prefix at all because they're encoded into the unified
+        #     embedding space directly. Sending ``taskType`` here was
+        #     observed to push image vectors into a sub-space unreachable
+        #     from text queries (the "PNG retrieval 0-hit" bug).
+        model_lower = model.lower()
+        uses_task_type = model_lower.startswith("gemini-embedding-001")
+
         async def embed_single_image(
             client: httpx.AsyncClient, i: int, image_uri: str
         ) -> Optional[PointStruct]:
@@ -1457,19 +1542,9 @@ class VectorStore(Transformer):
                         }
                     ]
                 },
-                # CRITICAL: text chunks go through LangChain's
-                # ``GoogleGenerativeAIEmbeddings.embed_documents`` which
-                # sets ``task_type="RETRIEVAL_DOCUMENT"``, and query-time
-                # encoding uses ``RETRIEVAL_QUERY``. Gemini's embedding
-                # models are trained so that DOC and QUERY vectors align
-                # across that asymmetric pairing; without a task type,
-                # the API defaults to ``RETRIEVAL_QUERY`` which would
-                # leave image vectors in *query* subspace and make them
-                # unreachable from a text search (the multimodal
-                # retrieval 0-hit bug). Keeping this explicit so the
-                # image path stays in sync with the text path.
-                "taskType": "RETRIEVAL_DOCUMENT",
             }
+            if uses_task_type:
+                body["taskType"] = "RETRIEVAL_DOCUMENT"
             if self.output_dimensions:
                 # Per ``ai.google.dev/gemini-api/docs/embeddings``; keep
                 # it consistent with the text probe so all vectors in
