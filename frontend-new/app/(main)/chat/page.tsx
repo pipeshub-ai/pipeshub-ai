@@ -410,6 +410,10 @@ function ChatContent() {
     }
 
     if (!conversationId) {
+      // Clear any filters left over from the previous conversation so that
+      // the SelectedCollections pills don't bleed into the new-chat landing.
+      store.setFilters({ apps: [], kb: [] });
+
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
         if (store.activeSlotId) {
@@ -441,6 +445,39 @@ function ChatContent() {
         if (store.activeSlotId !== existing.slotId) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: existing.slotId, convId: conversationId });
           store.setActiveSlot(existing.slotId);
+        }
+
+        // For already-initialized slots loadHistory won't run again, so restore
+        // filters directly from the messages cached in the slot. Walk backwards
+        // to find the last user message that carried appliedFilters.
+        const cachedSlot = store.slots[existing.slotId];
+        if (cachedSlot?.isInitialized) {
+          const lastWithFilters = [...cachedSlot.messages]
+            .reverse()
+            .find(
+              (msg) =>
+                msg.role === 'user' &&
+                (msg.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
+                  ?.custom?.appliedFilters != null
+            );
+          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
+            ?.custom?.appliedFilters;
+          if (af) {
+            store.setFilters({
+              apps: af.apps.map((n) => n.id),
+              kb: af.kb.map((n) => n.id),
+            });
+            const namesCache: Record<string, string> = {};
+            const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
+            for (const node of [...af.apps, ...af.kb]) {
+              namesCache[node.id] = node.name;
+              metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
+            }
+            store.setCollectionNamesCache(namesCache);
+            store.setCollectionMetaCache(metaCache);
+          } else {
+            store.setFilters({ apps: [], kb: [] });
+          }
         }
       } else {
         const newSlotId = store.createSlot(conversationId);
@@ -530,6 +567,40 @@ function ChatContent() {
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
         });
+
+        // Always reset filters so pills from a previously viewed conversation
+        // don't persist if this conversation carries no filter history.
+        useChatStore.getState().setFilters({ apps: [], kb: [] });
+
+        // Restore filter state from the most recent user message that carried filters.
+        // This brings back the selected connectors/collections after a hard refresh.
+        const lastFiltered = [...messages]
+          .reverse()
+          .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
+
+        if (lastFiltered?.appliedFilters) {
+          const af = lastFiltered.appliedFilters;
+          const store = useChatStore.getState();
+
+          store.setFilters({
+            apps: af.apps.map((n) => n.id),
+            kb: af.kb.map((n) => n.id),
+          });
+
+          const namesCache: Record<string, string> = {};
+          const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
+          for (const node of [...af.apps, ...af.kb]) {
+            namesCache[node.id] = node.name;
+            metaCache[node.id] = {
+              name: node.name,
+              nodeType: node.nodeType,
+              connector: node.connector,
+            };
+          }
+          store.setCollectionNamesCache(namesCache);
+          store.setCollectionMetaCache(metaCache);
+        }
+
         const formattedMessages = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,

@@ -387,7 +387,7 @@ export const streamChat =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -799,7 +799,7 @@ export const createConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -1117,7 +1117,7 @@ export const addMessage =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -1397,7 +1397,7 @@ export const addMessageStream =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -5013,7 +5013,7 @@ export const unshareAgent =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5351,7 +5351,7 @@ export const createAgentConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5621,7 +5621,7 @@ export const createAgentConversation =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -5933,7 +5933,7 @@ export const addMessageStreamToAgentConversation =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 

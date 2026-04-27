@@ -71,6 +71,13 @@ export interface IReferenceDataItem {
   accountId?: string;  // Jira user accountId - needed for assignee/reporter JQL filters
 }
 
+export interface IAppliedFilterNode {
+  id: string;
+  name: string;
+  nodeType: string;
+  connector: string;
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system';
   content: string;
@@ -83,6 +90,10 @@ export interface IMessage {
   createdAt?: Date;
   updatedAt?: Date;
   modelInfo?: IAIModel;
+  appliedFilters?: {
+    apps?: IAppliedFilterNode[];
+    kb?: IAppliedFilterNode[];
+  };
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
 }
@@ -106,12 +117,12 @@ export interface IConversation {
   lastActivityAt?: Number;
   tags?: Types.ObjectId[];
   conversationSource:
-    | 'enterprise_search'
-    | 'records'
-    | 'connectors'
-    | 'internet_search'
-    | 'personal_kb_search'
-    | 'agent';
+  | 'enterprise_search'
+  | 'records'
+  | 'connectors'
+  | 'internet_search'
+  | 'personal_kb_search'
+  | 'agent';
   conversationSourceRecordId?: Types.ObjectId;
   conversationSourceConnectorIds?: Types.ObjectId[];
   conversationSourceRecordType?: string;
