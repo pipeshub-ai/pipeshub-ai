@@ -142,6 +142,7 @@ venv.bak/
 integration-tests/.env
 integration-tests/.env.local
 integration-tests/.env.prod
+integration-tests/.env.refresh_tokens
 integration-tests/reports/
 integration-tests/.integration-test-cache/
 .integration-test-cache/

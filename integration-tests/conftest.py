@@ -57,6 +57,10 @@ def _load_env() -> None:
         if prod_env.exists():
             load_dotenv(dotenv_path=prod_env, override=True)
 
+    refresh_tokens_env = _THIS_DIR / ".env.refresh_tokens"
+    if refresh_tokens_env.exists():
+        load_dotenv(dotenv_path=refresh_tokens_env, override=True)
+
 
 def _init_global_test_env() -> None:
     """Load integration-tests/.env then .env.local or .env.prod. Map TEST_NEO4J_* and TEST_ARANGO_* to backend vars."""
