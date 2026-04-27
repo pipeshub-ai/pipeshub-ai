@@ -325,29 +325,14 @@ export const atlassianCredentialsSchema = z.object({
   }),
 });
 
-/** Shared body rule: admin-consent checkbox must be explicitly true (ZodObject-safe for ValidationMiddleware). */
-function refineHasAdminConsentMustBeTrue(
-  data: { hasAdminConsent?: boolean },
-  ctx: z.RefinementCtx,
-): void {
-  if (data.hasAdminConsent !== true) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Has Admin Consent must be true',
-      path: ['hasAdminConsent'],
-    });
-  }
-}
 
 export const microsoftConnectorCredentialsSchema = z.object({
-  body: z
-    .object({
-      clientId: z.string().min(1, { message: 'Client ID is required' }),
-      clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
-      tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-      hasAdminConsent: z.boolean().optional(),
-    })
-    .superRefine(refineHasAdminConsentMustBeTrue),
+  body: z.object({
+    clientId: z.string().min(1, { message: 'Client ID is required' }),
+    clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
+    tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
+    hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' })
+  })
 });
 
 export const sharepointCredentialsSchema = z.object({
@@ -357,9 +342,8 @@ export const sharepointCredentialsSchema = z.object({
       clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
       tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
       sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
-      hasAdminConsent: z.boolean().optional(),
+      hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' })
     })
-    .superRefine(refineHasAdminConsentMustBeTrue),
 });
 
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
