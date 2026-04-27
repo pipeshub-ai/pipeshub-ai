@@ -787,10 +787,6 @@ async def _resolve_web_search_tool_config(
     )
 
     if not selected_provider:
-        logger.warning(
-            "No runtime config found for web search provider '%s'; using provider-only fallback",
-            provider,
-        )
         return {"provider": provider, "configuration": {}}
 
     configuration = selected_provider.get("configuration", {})

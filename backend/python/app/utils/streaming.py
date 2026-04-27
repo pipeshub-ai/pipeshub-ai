@@ -670,8 +670,7 @@ async def execute_tool_calls(
                     user_id=user_id,
                     limit=vector_db_limit,
                     filter_groups=filter_groups if is_service_account else None,
-                    virtual_record_ids_from_tool=virtual_record_ids,
-                    is_service_account=is_service_account,
+                    virtual_record_ids_from_tool=virtual_record_ids
                 )
 
                 search_results = result.get("searchResults", [])

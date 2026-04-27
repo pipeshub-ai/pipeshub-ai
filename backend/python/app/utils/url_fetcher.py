@@ -341,7 +341,7 @@ def fetch_url(
             print(f"  ✗ {name} exhausted")
 
     raise FetchError(
-        errors[0] if errors else "No error details"
+        errors[0] if errors else "No error details."
     )
 
 

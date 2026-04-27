@@ -486,7 +486,6 @@ async def _deep_respond_impl(
             mode="json",
             conversation_id=state.get("conversation_id"),
             ref_mapper=state.get("citation_ref_mapper"),
-            max_hops=1,
             initial_web_records=_prior_web_records,
         ):
             event_type = stream_event.get("event")

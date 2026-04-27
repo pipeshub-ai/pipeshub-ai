@@ -115,32 +115,40 @@ def create_fetch_url_tool(
         This tool Fetches and extracts main content from a URL for detailed analysis.
 
         Use this tool when you need the full content from a specific webpage to answer the query accurately. If multiple URLs are available, select the ones most likely to contain the required information and invoke the tool separately for each selected URL.
-
+        
+        - **If tool fails for a URL**: check whether the context gathered so far is sufficient. If not, try other relevant URLs from the context before answering.
         Args:
             url: The URL to fetch content from (must be HTTP/HTTPS)
 
         Example:
             fetch_url(url="https://docs.python.org/3/tutorial/classes.html")
         """
+        _URL_FALLBACK_HINT = (
+            " If other relevant URLs are available and the current context is not "
+            "sufficient to answer the query, fetch those URLs next."
+        )
         try:
             url = _resolve_tiny_ref_url(url, ref_mapper)
             if "ref" in url and "xyz" in url:
                 logger.warning(f"failed to resolve tiny ref url: {url}")
                 return json.dumps({
                     "ok": False,
-                    "error": "Failed to get content from that url, please try again with the correct URL, or use a different one."
+                    "error": "Failed to get content from that url, please try again with the correct URL, or" + _URL_FALLBACK_HINT
                 })
             parsed = urlparse(url)
             if parsed.scheme not in ('http', 'https'):
                 return json.dumps({
                     "ok": False,
-                    "error": f"Invalid URL scheme: {parsed.scheme}. Only HTTP/HTTPS supported."
+                    "error": (
+                        f"Invalid URL scheme: {parsed.scheme}. Only HTTP/HTTPS supported."
+                        + _URL_FALLBACK_HINT
+                    ),
                 })
 
             if not parsed.netloc:
                 return json.dumps({
                     "ok": False,
-                    "error": "Invalid URL: no domain specified"
+                    "error": "Invalid URL: no domain specified." + _URL_FALLBACK_HINT,
                 })
 
             response = fetch_url(url, verbose=True)
@@ -148,7 +156,10 @@ def create_fetch_url_tool(
             if response.status_code != HTTP_STATUS_OK:
                 return json.dumps({
                     "ok": False,
-                    "error": f"{response.text}, status: {response.status_code}"
+                    "error": (
+                        f"HTTP {response.status_code} error fetching {url}: {response.text}."
+                        + _URL_FALLBACK_HINT
+                    ),
                 })
 
             html_content = response.text
@@ -162,7 +173,10 @@ def create_fetch_url_tool(
             if not blocks:
                 return json.dumps({
                     "ok": False,
-                    "error": "No content available from the url"
+                    "error": (
+                        f"No readable content could be extracted from {url}."
+                        + _URL_FALLBACK_HINT
+                    ),
                 })
 
             logger.info(f"Fetched URL {url}: {len(blocks)} blocks extracted")
@@ -177,7 +191,7 @@ def create_fetch_url_tool(
             logger.exception("Unexpected error fetching URL %s: %s", url, str(e))
             return json.dumps({
                 "ok": False,
-                "error": str(e)
+                "error": str(e) + _URL_FALLBACK_HINT,
             })
 
     return fetch_url_tool

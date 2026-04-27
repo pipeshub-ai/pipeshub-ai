@@ -1554,7 +1554,11 @@ def _build_sub_agent_tool_guidance(
             "news, prices, weather, software versions, docs, regulations, current events.\n"
             "- Also when the task asks for \"latest\"/\"current\"/\"up-to-date\" info.\n"
             "- Use training data only for timeless knowledge. When in doubt, prefer `web_search`.\n"
-            "- Use `fetch_url` to get full content from a `web_search` result URL when snippets are insufficient."
+            "- Use `fetch_url` to get full content from a `web_search` result URL.\n"
+            "- **URL fetch failure recovery**: if `fetch_url` returns `ok: false` for a URL, "
+            "assess whether the context collected so far is sufficient to complete the task. "
+            "If it is not, identify other relevant URLs from previous search results and fetch "
+            "them until sufficient context is available or all candidates are exhausted."
         )
 
     # Generic link extraction guidance (for non-retrieval tasks)

@@ -21,21 +21,72 @@ class WebSearchArgs(BaseModel):
     )
 
 
-def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Search using DuckDuckGo (default, no API key needed)."""
-    from ddgs import DDGS
+def _extract_ddg_url(href: str) -> str:
+    """Extract actual URL from DuckDuckGo redirect wrapper."""
+    from urllib.parse import parse_qs, unquote, urlparse
 
-    with DDGS() as ddgs:
-        raw_results = ddgs.text(
-            query,
-            max_results=10,
-            backend="duckduckgo",
-            region="wt-wt",
-        )
-    return [
-        {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
-        for r in (raw_results or [])
-    ]
+    if not href:
+        return ""
+
+    # DuckDuckGo wraps URLs: //duckduckgo.com/l/?uddg=ENCODED_URL&rut=...
+    if "uddg=" in href:
+        full = href if href.startswith("http") else f"https:{href}"
+        params = parse_qs(urlparse(full).query)
+        uddg = params.get("uddg", [None])[0]
+        if uddg:
+            return unquote(uddg)
+
+    if href.startswith("http"):
+        return href
+    if href.startswith("//"):
+        return f"https:{href}"
+
+    return href
+
+
+def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search using DuckDuckGo HTML endpoint with robust anti-bot evasion."""
+    from urllib.parse import urlencode
+
+    from bs4 import BeautifulSoup
+
+    from app.utils.url_fetcher import FetchError, fetch_url
+
+    search_url = f"https://html.duckduckgo.com/html/?{urlencode({'q': query, 'kl': 'wt-wt'})}"
+
+    try:
+        response = fetch_url(search_url, timeout=15)
+    except FetchError as e:
+        logger.error(f"DuckDuckGo fetch failed: {e}")
+        return []
+   
+    status_code = response.status_code
+    if status_code != 200:
+        logger.error(f"DuckDuckGo fetch failed: {status_code}")
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    results = []
+
+    for item in soup.select(".web-result"):
+        title_tag = item.select_one("a.result__a")
+        snippet_tag = item.select_one(".result__snippet")
+
+        if not title_tag:
+            continue
+
+        title = title_tag.get_text(strip=True)
+        snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
+        href = title_tag.get("href", "")
+        link = _extract_ddg_url(href)
+
+        if title and link:
+            results.append({"title": title, "link": link, "snippet": snippet})
+
+        if len(results) >= 10:
+            break
+
+    return results
 
 
 def _search_with_serper(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -134,7 +185,7 @@ def create_web_search_tool(
         This tool searches the web for information.
 
         RESULT FORMAT:
-        Returns search results with titles, URLs, snippets and citation_ids from web pages. The content is returned as array of blocks.
+        Returns search results with titles, URLs/citation_ids and snippets from web pages.
         Treat these as external sources requiring attribution.
 
         Args:

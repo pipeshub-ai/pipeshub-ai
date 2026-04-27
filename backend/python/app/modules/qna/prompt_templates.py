@@ -24,7 +24,6 @@ web_search_system_prompt = """You are a helpful web research assistant."""
 web_search_user_prompt = """Query: {{ query }}
 
 CRITICAL: You MUST use tools to find information. Do NOT answer from your own training knowledge — only use information retrieved from the web_search and fetch_url tools.
-Use fetch_url tool only if the existing context/snippets, if any, are insufficient to answer the query.
 
 Answer the query clearly and comprehensively using relevant context.
 
@@ -32,6 +31,11 @@ Answer the query clearly and comprehensively using relevant context.
 - Provide a detailed, well-structured answer
 - Ensure high accuracy — only use relevant information
 - Avoid unnecessary verbosity or repetition
+
+### URL Fetching Strategy
+- When `fetch_url` fails for a URL (returns `ok: false`), do NOT stop — check whether the context gathered so far is sufficient to answer the query.
+- If the context is **not sufficient**, identify other relevant URLs from the web_search results and fetch them until you have enough information to answer.
+- Only stop fetching when you either have sufficient context OR all relevant URLs have been tried.
 
 ### Citations
 - Cite key facts

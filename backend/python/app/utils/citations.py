@@ -39,6 +39,15 @@ _TRAILING_PAREN_URL_RE = re.compile(
     r'\((https?://[^\s)]+|ref\d+)\)'              # Grp 3: trailing URL/ref
 )
 
+# Matches two consecutive markdown links that may share the same URL target, e.g.:
+#   [Bellandur Restaurants](https://ref6.xyz) [source](https://ref6.xyz)
+#   [Title](ref3)[source](ref3)
+_CONSECUTIVE_MD_LINKS_RE = re.compile(
+    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: first md link; Grp 2: first target
+    r'(\s*)'                                       # Grp 3: optional whitespace between links
+    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 4: second md link; Grp 5: second target
+)
+
 
 def extract_tiny_ref(target: str) -> str | None:
     """Return the inner refN from a tiny web-ref URL like https://ref1.xyz, else None."""
@@ -71,13 +80,16 @@ def _clean_duplicate_citation_links(
     text: str,
     ref_to_url: dict[str, str] | None = None,
 ) -> str:
-    """Remove trailing parenthesized URLs/refs that duplicate a preceding markdown link.
+    """Remove duplicate citation links that refer to the same URL.
 
-    LLMs sometimes emit both the full URL and tiny-ref alias for the same citation:
-        [source](https://example.com/page) (https://ref123.xyz)
-    This strips the redundant trailing reference.
+    Handles two LLM emission patterns:
+    1. A markdown link followed by a parenthesized duplicate URL/ref:
+           [source](https://example.com/page) (https://ref123.xyz)
+    2. Two consecutive markdown links with different labels but the same URL:
+           [Bellandur Restaurants](https://ref6.xyz) [source](https://ref6.xyz)
+    In both cases the second (redundant) reference is removed.
     """
-    def _replacer(m: re.Match) -> str:
+    def _trailing_paren_replacer(m: re.Match) -> str:
         md_link = m.group(1)
         link_target = m.group(2)
         trailing = m.group(3)
@@ -95,10 +107,40 @@ def _clean_duplicate_citation_links(
 
         return m.group(0)
 
-    return _TRAILING_PAREN_URL_RE.sub(_replacer, text)
+    def _consecutive_links_replacer(m: re.Match) -> str:
+        first_link = m.group(1)
+        first_target = m.group(2)
+        second_target = m.group(5)
+
+        resolved_first = _resolve_ref(first_target, ref_to_url)
+        resolved_second = _resolve_ref(second_target, ref_to_url)
+        if resolved_first == resolved_second:
+            return first_link
+
+        return m.group(0)
+
+    text = _TRAILING_PAREN_URL_RE.sub(_trailing_paren_replacer, text)
+    text = _CONSECUTIVE_MD_LINKS_RE.sub(_consecutive_links_replacer, text)
+    return text
 
 
 CITATION_WORD_LIMIT = 4
+
+_CITATION_LABEL_RE = re.compile(
+    r'^(?:source|src|ref|reference|link|cite|citation)\s*\.?\s*\d*$',
+    re.IGNORECASE,
+)
+
+
+def _is_citation_label(text: str) -> bool:
+    """Return True if the link text is a generic citation label (e.g. 'source', '3'),
+    not descriptive content like a title or name."""
+    text = text.strip()
+    if not text:
+        return True
+    if re.match(r'^\d+$', text):
+        return True
+    return bool(_CITATION_LABEL_RE.match(text))
 
 
 @dataclass
@@ -177,13 +219,22 @@ def _renumber_citation_links(
     Replace citation numbers in markdown links with their new sequential numbers.
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
     Processes matches in reverse order to preserve string positions.
+
+    Links whose text is a generic citation label ("source", a bare number, etc.)
+    are renumbered as ``[N](url)``.  Links with descriptive text (e.g. a title
+    or name) keep their display text and only have the URL resolved, so the
+    frontend renders them as normal hyperlinks rather than citation badges.
     """
     for match in reversed(md_matches):
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
         if new_num is not None:
-            replacement = f"[{new_num}]({full_url})"
+            link_text = match.group(1)
+            if _is_citation_label(link_text):
+                replacement = f"[{new_num}]({full_url})"
+            else:
+                replacement = f"[{link_text}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
     return text
 

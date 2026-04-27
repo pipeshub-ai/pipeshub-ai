@@ -6745,7 +6745,6 @@ async def respond_node(
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
             ref_mapper=state.get("citation_ref_mapper"),
-            max_hops=1,
             initial_web_records=_prior_web_records,
         ):
             event_type = stream_event.get("event")
@@ -7372,8 +7371,7 @@ async def _build_tool_results_context(
                 parts.append(
                     "\n**⚠️ IMPORTANT — fetch_url tool available:**\n"
                     "The web results above are **search snippets only**. "
-                    "If these snippets do NOT contain enough detail to fully answer the query, "
-                    "you MUST call the `fetch_url` tool on the most relevant URL(s) to retrieve "
+                    "You MUST call the `fetch_url` tool on the most relevant URL(s) to retrieve "
                     "the full page content before answering.\n\n"
                 )
 
