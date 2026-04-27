@@ -3363,6 +3363,28 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
+        orchestrationMode:
+          type: string
+          description: Execution mode for the agent. `single` runs one agent, `linear` runs a saved sequential flow, and `conditional` routes through saved condition blocks.
+          enum: [single, linear, conditional]
+        flowSchemaVersion:
+          type: integer
+          description: Version of the persisted orchestration flow schema.
+        flow:
+          type: object
+          nullable: true
+          description: Saved orchestration canvas definition used for linear and conditional multi-agent execution.
+          properties:
+            nodes:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            edges:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
 
     AgentTemplate:
       type: object
@@ -15354,6 +15376,30 @@ paths:
                           - type: object
                             additionalProperties: true
                           - type: string
+                orchestrationMode:
+                  type: string
+                  description: Execution mode for the agent. `single` runs one agent, `linear` runs a saved sequential flow, and `conditional` routes through saved condition blocks.
+                  enum: [single, linear, conditional]
+                  default: single
+                flowSchemaVersion:
+                  type: integer
+                  description: Version of the persisted orchestration flow schema.
+                  default: 1
+                flow:
+                  type: object
+                  nullable: true
+                  description: Saved orchestration canvas definition used for linear and conditional multi-agent execution.
+                  properties:
+                    nodes:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: true
+                    edges:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: true
                 isPublic:
                   type: boolean
                   default: false
@@ -15527,6 +15573,28 @@ paths:
                           - type: object
                             additionalProperties: true
                           - type: string
+                orchestrationMode:
+                  type: string
+                  description: Execution mode for the agent. `single` runs one agent, `linear` runs a saved sequential flow, and `conditional` routes through saved condition blocks.
+                  enum: [single, linear, conditional]
+                flowSchemaVersion:
+                  type: integer
+                  description: Version of the persisted orchestration flow schema.
+                flow:
+                  type: object
+                  nullable: true
+                  description: Saved orchestration canvas definition used for linear and conditional multi-agent execution.
+                  properties:
+                    nodes:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: true
+                    edges:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: true
                 isPublic:
                   type: boolean
                 shareWithOrg:
@@ -15775,7 +15843,9 @@ paths:
         Start a new conversation with an agent.<br><br>
         <b>Overview:</b><br>
         Creates a conversation using the agent's configuration including
-        its system prompt, tools, and knowledge base access.
+        its system prompt, tools, and knowledge base access. If the agent has a
+        saved orchestration flow, the conversation executes that multi-agent flow
+        instead of a single-agent prompt.
       operationId: createAgentConversation
       security:
         - bearerAuth: []
@@ -15816,6 +15886,8 @@ paths:
         Start a new agent conversation with SSE streaming response.<br><br>
         <b>Overview:</b><br>
         Same as POST /agents/{agentKey}/conversations but with real-time streaming.
+        When the agent is configured with a saved orchestration flow, the stream
+        reflects the multi-agent execution path for that flow.
       operationId: streamAgentConversation
       security:
         - bearerAuth: []

@@ -16,6 +16,7 @@ import { Icon } from '@iconify/react';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import warningIcon from '@iconify-icons/eva/alert-triangle-outline';
 import type { AgentBuilderDialogManagerProps } from '../../types/agent';
+import NodeConfigDialog from './node-config-dialog';
 
 const AgentBuilderDialogManager: React.FC<AgentBuilderDialogManagerProps> = ({
   selectedNode,
@@ -368,6 +369,16 @@ const AgentBuilderDialogManager: React.FC<AgentBuilderDialogManagerProps> = ({
 
   return (
     <>
+      {/* Node Configuration Dialog */}
+      {selectedNode && (
+        <NodeConfigDialog
+          node={selectedNode}
+          open={configDialogOpen}
+          onClose={onConfigDialogClose}
+          onSave={onNodeConfig}
+          onDelete={onDeleteNode}
+        />
+      )}
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmDialog

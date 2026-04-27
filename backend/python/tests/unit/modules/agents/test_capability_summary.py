@@ -20,8 +20,13 @@ Empty                        |   ✓      |   ✓
 import pytest
 
 from app.modules.agents.capability_summary import (
+    _deduplicate_task_ids,
+    _label_slug,
+    _unique_connector_slug,
     build_connector_routing_rules,
     classify_knowledge_sources,
+    fetch_connector_configs,
+    format_connector_filter_lines,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +54,93 @@ _C_UNK   = {"label": "MyApp",        "type_key": "myapp",      "connector_id": "
 # Pre-classified KB source dicts
 _KB_NO_IDS   = {"label": "Company Wiki",        "collection_ids": []}
 _KB_WITH_IDS = {"label": "Vishwjeet's Private", "collection_ids": ["rg-id-aaa", "rg-id-bbb"]}
+
+
+class TestFetchConnectorConfigs:
+    @pytest.mark.asyncio
+    async def test_returns_sync_and_indexing_values_and_skips_kb_ids(self):
+        config_service = pytest.importorskip("unittest.mock").AsyncMock()
+        config_service.get_config.side_effect = [
+            {
+                "filters": {
+                    "sync": {"values": {"team_ids": {"type": "list", "value": ["eng"]}}},
+                    "indexing": {"values": {"messages": {"type": "boolean", "value": True}}},
+                }
+            }
+        ]
+
+        result = await fetch_connector_configs(
+            config_service,
+            ["slack-1", "knowledgeBase_1", ""],
+        )
+
+        assert result == {
+            "slack-1": {
+                "sync": {"team_ids": {"type": "list", "value": ["eng"]}},
+                "indexing": {"messages": {"type": "boolean", "value": True}},
+            }
+        }
+        config_service.get_config.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_dict_when_config_lookup_fails(self):
+        config_service = pytest.importorskip("unittest.mock").AsyncMock()
+        config_service.get_config.side_effect = RuntimeError("boom")
+
+        result = await fetch_connector_configs(config_service, ["jira-1"])
+
+        assert result == {"jira-1": {}}
+
+
+class TestFormatConnectorFilterLines:
+    def test_formats_scope_and_indexing_lines(self):
+        filters = {
+            "sync": {
+                "team_ids": {
+                    "type": "list",
+                    "value": [{"label": "Engineering"}, {"id": "ops"}],
+                },
+                "ignored": {"type": "text", "value": "x"},
+            },
+            "indexing": {
+                "messages": {"type": "boolean", "value": True},
+                "files": {"type": "boolean", "value": False},
+                "enable_auto_sync": {"type": "boolean", "value": True},
+            },
+        }
+
+        result = format_connector_filter_lines(filters)
+
+        assert result == [
+            "Scoped to: Engineering, ops (team ids)",
+            "Content indexed: messages",
+        ]
+
+    def test_returns_empty_for_missing_or_unusable_filters(self):
+        assert format_connector_filter_lines(None) == []
+        assert format_connector_filter_lines({"sync": {"team_ids": {"type": "list", "value": []}}}) == []
+
+
+class TestConnectorSlugHelpers:
+    def test_label_slug_normalizes_text(self):
+        assert _label_slug("Confluence Engineering") == "confluence_engineering"
+
+    def test_unique_connector_slug_falls_back_to_type_or_index(self):
+        assert _unique_connector_slug({"type_key": "slack"}, 2) == "slack"
+        assert _unique_connector_slug({}, 3) == "connector_3"
+
+    def test_deduplicate_task_ids_appends_suffix_for_collisions(self):
+        connectors = [
+            {"label": "Confluence", "type_key": "confluence"},
+            {"label": "Confluence", "type_key": "confluence"},
+            {"label": "Slack", "type_key": "slack"},
+        ]
+
+        assert _deduplicate_task_ids(connectors) == [
+            "confluence_1",
+            "confluence_2",
+            "slack",
+        ]
 
 
 # ===========================================================================

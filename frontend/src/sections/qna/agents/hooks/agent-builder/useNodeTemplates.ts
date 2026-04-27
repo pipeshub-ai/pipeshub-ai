@@ -7,6 +7,7 @@ import emailIcon from '@iconify-icons/mdi/email';
 import apiIcon from '@iconify-icons/mdi/api';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
+import sourceBranchIcon from '@iconify-icons/mdi/source-branch';
 import type { Connector } from 'src/sections/accountdetails/connectors/types/types';
 import {
   groupToolsByApp,
@@ -86,6 +87,25 @@ export const useAgentBuilderNodeTemplates = (
         },
         inputs: ['input', 'actions', 'knowledge', 'llms'],
         outputs: ['response'],
+        category: 'agent',
+      },
+      {
+        type: 'conditional-check',
+        label: normalizeDisplayName('Condition Check'),
+        description: 'Evaluate the previous result and route to pass or fail path',
+        icon: sourceBranchIcon,
+        defaultConfig: {
+          mode: 'contains',
+          expectedValue: 'done',
+          caseSensitive: false,
+          regexPattern: '',
+          jsonPath: '',
+          minLength: 0,
+          maxLength: 0,
+          passOnEmpty: false,
+        },
+        inputs: ['input'],
+        outputs: ['pass', 'fail'],
         category: 'agent',
       },
       // Input Nodes
