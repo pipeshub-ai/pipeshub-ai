@@ -52,6 +52,7 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
+          padding: "var(--space-1)"
         }}
       >
         {item.name}
@@ -65,12 +66,12 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
             width: '16px',
             height: '16px',
             minWidth: '16px',
-            padding: 0,
+            padding: "var(--space-1)",
             cursor: 'pointer',
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name="close" size={14} color="var(--slate-9)" />
+          <MaterialIcon name="close" size={20} color="var(--slate-9)" />
         </IconButton>
       )}
     </Flex>

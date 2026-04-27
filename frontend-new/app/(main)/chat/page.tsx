@@ -416,6 +416,7 @@ function ChatContent() {
 
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
+        store.setAgentKnowledgeScope(null);
         if (store.activeSlotId) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'agent-new-chat-url' });
           store.clearActiveSlot();
@@ -463,10 +464,17 @@ function ChatContent() {
           const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
-            store.setFilters({
-              apps: af.apps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
+            if (urlAgentId) {
+              store.setAgentKnowledgeScope({
+                apps: af.apps.map((n) => n.id),
+                kb: af.kb.map((n) => n.id),
+              });
+            } else {
+              store.setFilters({
+                apps: af.apps.map((n) => n.id),
+                kb: af.kb.map((n) => n.id),
+              });
+            }
             const namesCache: Record<string, string> = {};
             const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
             for (const node of [...af.apps, ...af.kb]) {
@@ -476,7 +484,11 @@ function ChatContent() {
             store.setCollectionNamesCache(namesCache);
             store.setCollectionMetaCache(metaCache);
           } else {
-            store.setFilters({ apps: [], kb: [] });
+            if (urlAgentId) {
+              store.setAgentKnowledgeScope(null);
+            } else {
+              store.setFilters({ apps: [], kb: [] });
+            }
           }
         }
       } else {
@@ -582,10 +594,17 @@ function ChatContent() {
           const af = lastFiltered.appliedFilters;
           const store = useChatStore.getState();
 
-          store.setFilters({
-            apps: af.apps.map((n) => n.id),
-            kb: af.kb.map((n) => n.id),
-          });
+          if (historyAndShareAgentId) {
+            store.setAgentKnowledgeScope({
+              apps: af.apps.map((n) => n.id),
+              kb: af.kb.map((n) => n.id),
+            });
+          } else {
+            store.setFilters({
+              apps: af.apps.map((n) => n.id),
+              kb: af.kb.map((n) => n.id),
+            });
+          }
 
           const namesCache: Record<string, string> = {};
           const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};

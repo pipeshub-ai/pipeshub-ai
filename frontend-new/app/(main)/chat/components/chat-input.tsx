@@ -157,6 +157,8 @@ export function ChatInput({
   const collectionNamesCache = useChatStore((s) => s.collectionNamesCache);
   const collectionMetaCache = useChatStore((s) => s.collectionMetaCache);
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
+  const agentKnowledgeDefaults = useChatStore((s) => s.agentKnowledgeDefaults);
+  const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
   const agentChatToolGroups = useChatStore((s) => s.agentChatToolGroups);
@@ -249,9 +251,13 @@ export function ChatInput({
 
   // Build selected collections from store (roots → apps API; record groups → kb API).
   // Includes connector metadata so pills show the right icon per source type.
+  // In agent mode, read from the effective agent knowledge scope instead of settings.filters.
   const selectedCollections = useMemo(() => {
-    const hubApps = settings.filters?.apps ?? [];
-    const groups = settings.filters?.kb ?? [];
+    const source = isAgentChat
+      ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
+      : settings.filters;
+    const hubApps = source?.apps ?? [];
+    const groups = source?.kb ?? [];
     return [
       ...hubApps.map((id) => {
         const meta = collectionMetaCache[id];
@@ -273,25 +279,39 @@ export function ChatInput({
         };
       }),
     ];
-  }, [settings.filters, collectionNamesCache, collectionMetaCache]);
+  }, [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
-      const hubApps = settings.filters?.apps ?? [];
-      const groups = settings.filters?.kb ?? [];
-      if (hubApps.includes(id)) {
-        setFilters({
-          ...settings.filters,
-          apps: hubApps.filter((aid) => aid !== id),
-        });
+      if (isAgentChat) {
+        const eff = agentKnowledgeScope ?? agentKnowledgeDefaults;
+        const nextApps = eff.apps.filter((aid) => aid !== id);
+        const nextKb = eff.kb.filter((gid) => gid !== id);
+        // Normalize to null when result matches defaults (no customization applied)
+        const appsMatch =
+          new Set(nextApps).size === new Set(agentKnowledgeDefaults.apps).size &&
+          nextApps.every((x) => agentKnowledgeDefaults.apps.includes(x));
+        const kbMatch =
+          new Set(nextKb).size === new Set(agentKnowledgeDefaults.kb).size &&
+          nextKb.every((x) => agentKnowledgeDefaults.kb.includes(x));
+        setAgentKnowledgeScope(appsMatch && kbMatch ? null : { apps: nextApps, kb: nextKb });
       } else {
-        setFilters({
-          ...settings.filters,
-          kb: groups.filter((gid) => gid !== id),
-        });
+        const hubApps = settings.filters?.apps ?? [];
+        const groups = settings.filters?.kb ?? [];
+        if (hubApps.includes(id)) {
+          setFilters({
+            ...settings.filters,
+            apps: hubApps.filter((aid) => aid !== id),
+          });
+        } else {
+          setFilters({
+            ...settings.filters,
+            kb: groups.filter((gid) => gid !== id),
+          });
+        }
       }
     },
-    [settings.filters, setFilters]
+    [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, setAgentKnowledgeScope, settings.filters, setFilters]
   );
 
   // Toolbar icon color follows the active query mode so it stays consistent with ModeSwitcher.
@@ -719,7 +739,7 @@ export function ChatInput({
     >
       {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
       {selectedCollections.length > 0 &&
-        !isAgentChat &&
+        // !isAgentChat &&
         !isCollectionsPanelOpen &&
         !modeChromeOpen && (
         <Flex
