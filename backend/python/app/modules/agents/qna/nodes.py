@@ -30,12 +30,13 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
-from app.modules.agents.capability_summary import (
-    build_capability_summary,
-    build_connector_routing_rules,
-    classify_knowledge_sources,
-)
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
+from app.modules.agents.qna.reference_data import (
+    format_reference_data,
+    generate_field_instructions,
+    normalize_reference_data_items,
+)
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
@@ -3925,9 +3926,14 @@ Use find_notebook → list_notebook_pages → get_notebook_page_content instead.
 When two search_files calls exist in the same plan, results are stored as `sharepoint_search_files` and `sharepoint_search_files_2`. Use different placeholders for source and destination.
 
 **OneNote — find_notebook handling**
-- If `resolved: true` → use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` immediately for list_notebook_pages
-- If `ambiguous: true` → stop, show candidates list to user, wait for their choice. Do NOT call list_notebook_pages or get_notebook_page_content in the same turn.
-- After user chooses a notebook: extract site_id and notebook_id from the chosen candidate (from conversation or use `{{sharepoint_find_notebook.candidates.N.site_id}}` where N=0,1,2...), then call list_notebook_pages → get_notebook_page_content to complete the task.
+- If `resolved: true` → use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` for list_notebook_pages
+- If `ambiguous: true` → stop, show candidates list (include site_id and notebook_id for each), wait for user choice. Do NOT call list_notebook_pages or get_notebook_page_content.
+- **After user chooses** (next turn): 
+  1. DO NOT re-run search_files or find_notebook — the IDs are already available.
+  2. Look at the **Reference Data** section in conversation history — it contains `siteId` (under `metadata.siteId` in stored JSON) and `id` (notebook_id) for each notebook.
+  3. Match the user's choice to the notebook name, then extract `metadata.siteId` and `id` from that entry.
+  4. Call `list_notebook_pages(site_id=<metadata.siteId>, notebook_id=<id>)` directly with these literal values.
+  5. Then call `get_notebook_page_content` with the page_ids from the result.
 """
 
 PLANNER_USER_TEMPLATE = """Query: {query}
@@ -4373,7 +4379,11 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
 
     # ALWAYS add ALL reference data (from entire history, not just window)
     if all_reference_data:
-        ref_data_text = _format_reference_data(all_reference_data, log)
+        ref_data_text = format_reference_data(
+            all_reference_data,
+            header="## Reference Data (use these IDs/keys directly - do NOT fetch them again):",
+            log=log,
+        )
         # Append reference data to the last AI message if exists, otherwise create a new message
         if messages and isinstance(messages[-1], AIMessage):
             # Append to existing AI message
@@ -4384,83 +4394,6 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
         log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
 
     return messages
-
-
-def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
-    """
-    Format reference data for inclusion in planner messages.
-
-    Surfaces IDs, keys and timestamps that the planner should use directly
-    instead of fetching them again.  Every supported type is shown so the
-    planner has full context for tool argument construction.
-    """
-    if not all_reference_data:
-        return ""
-
-    # Group by type
-    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
-    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
-    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
-    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
-    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
-    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
-
-    max_items = 10
-    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
-
-    if spaces:
-        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
-        parts = []
-        for item in spaces[:max_items]:
-            space_id  = item.get("id", "")
-            space_key = item.get("key", "")
-            name      = item.get("name", "?")
-            # Build a compact representation with all available identifiers
-            id_str    = f"id={space_id}" if space_id else ""
-            key_str   = f"key={space_key}" if space_key else ""
-            identifiers = ", ".join(filter(None, [id_str, key_str]))
-            parts.append(f"{name} ({identifiers})")
-        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
-
-    if pages:
-        parts = [
-            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
-            for item in pages[:max_items]
-        ]
-        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
-
-    if projects:
-        parts = [
-            f"{item.get('name', '?')} (key={item.get('key', '?')})"
-            for item in projects[:max_items]
-        ]
-        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
-
-    if issues:
-        parts = [item.get("key", "?") for item in issues[:max_items]]
-        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
-
-    if channels:
-        parts = [
-            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
-            for item in channels[:max_items]
-        ]
-        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
-
-    if msg_timestamps:
-        parts = [
-            f"{item.get('name', 'ts')}={item.get('id', '?')}"
-            for item in msg_timestamps[:max_items]
-        ]
-        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
-
-    log.debug(
-        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
-        f"{len(projects)} jira projects, {len(issues)} jira issues, "
-        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
-    )
-
-    return "\n".join(lines)
 
 
 def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
@@ -6871,6 +6804,12 @@ async def respond_node(
                     event_data = {**event_data, "citations": _enriched}
             # ────────────────────────────────────────────────────────────────────
 
+            if event_type == "complete" and event_data.get("referenceData"):
+                event_data = {
+                    **event_data,
+                    "referenceData": normalize_reference_data_items(event_data["referenceData"]),
+                }
+
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -6878,7 +6817,7 @@ async def respond_node(
                 citations = event_data.get("citations", [])
                 reason = event_data.get("reason")
                 confidence = event_data.get("confidence")
-                reference_data = event_data.get("referenceData", [])
+                reference_data = event_data.get("referenceData", []) or []
 
         if not answer_text or len(answer_text.strip()) == 0:
             log.warning("⚠️ Empty response, using fallback")
@@ -7305,9 +7244,9 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
         for key, value in content.items():
             if isinstance(value, str) and value.startswith(("http://", "https://")):
                 # Found a URL — add to reference data if not already present
-                if not any(rd.get("url") == value for rd in reference_data):
+                if not any(rd.get("webUrl") == value for rd in reference_data):
                     name = content.get("subject") or content.get("title") or content.get("name") or content.get("key") or key
-                    reference_data.append({"name": str(name), "url": value, "type": key})
+                    reference_data.append({"name": str(name), "webUrl": value, "type": key})
             elif isinstance(value, (dict, list)):
                 _extract_urls_for_reference_data(value, reference_data)
     elif isinstance(content, list):
@@ -7496,11 +7435,13 @@ async def _build_tool_results_context(
         "For EVERY item from ANY external service, you MUST include a clickable markdown link.\n"
         "**How to find links**: Scan ALL fields in the raw JSON for values starting with `http://` or `https://`. "
         "Common URL field names: `url`, `webLink`, `webViewLink`, `self`, `htmlUrl`, `permalink`, "
-        "`link`, `href`, `joinUrl`, `joinWebUrl` — but ANY field containing a URL should be used.\n"
+        "`link`, `href`, `joinUrl`, `joinWebUrl`, `webUrl` — but ANY field containing a URL should be used.\n"
         "**Format**: `[Item Title or Name](url_value)` — always use the item's title/name/subject/key as the link text.\n"
-        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n"
-        "**referenceData**: Include ALL discovered links in the referenceData array: "
-        "`{\"name\": \"<item title>\", \"url\": \"<url value>\", \"type\": \"<service_type>\"}`.\n\n"
+        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n\n"
+        "## referenceData (MANDATORY for ALL items)\n\n"
+        "For EVERY entity (site, file, notebook, page, issue, project, channel, etc.), include an entry in `referenceData` "
+        "with all applicable fields below (top-level vs nested in `metadata`):\n\n"
+        f"{generate_field_instructions()}\n\n"
     )
 
     # The JSON schema returned depends on what sources are present
@@ -7510,7 +7451,9 @@ async def _build_tool_results_context(
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"blockNumbers\": [\"R1-0\", \"R2-3\"], "
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
     elif has_retrieval:
         parts.append(
@@ -7524,7 +7467,8 @@ async def _build_tool_results_context(
             "Return ONLY JSON:\n"
             "{\"answer\": \"...\", \"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Tool Execution\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
 
     return "".join(parts)
