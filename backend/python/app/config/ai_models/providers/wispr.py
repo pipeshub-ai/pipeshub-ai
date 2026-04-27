@@ -89,7 +89,7 @@ WISPR_ENDPOINT = AIModelField(
     .with_description("Hosted STT from Wispr Flow with auto-edits and 100+ languages.") \
     .with_notice("Requires a Wispr Flow API key (enterprise@wisprflow.ai) and ffmpeg installed on the backend host for audio transcoding.") \
     .with_capabilities([ModelCapability.STT]) \
-    .with_icon("/assets/icons/ai-models/wispr.svg") \
+    .with_icon("/icons/ai-models/wispr.svg") \
     .with_color("#6E56CF") \
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(WISPR_MODEL, ModelCapability.STT) \

@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -383,12 +384,13 @@ class UpdateChecklistItemInput(BaseModel):
                 CommonFields.client_id("ClickUp OAuth App"),
                 CommonFields.client_secret("ClickUp OAuth App"),
             ],
-            icon_path="/assets/icons/connectors/clickup.svg",
+            icon_path=IconPaths.connector_icon("clickup"),
             app_group="Project Management",
             app_description="ClickUp OAuth application for agent integration",
         )
     ]) \
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/clickup.svg")
+    .configure(lambda builder: builder
+        .with_icon(IconPaths.connector_icon("clickup"))
         .add_documentation_link(DocumentationLink(
             "ClickUp API Setup",
             "https://developer.clickup.com/docs/authentication",

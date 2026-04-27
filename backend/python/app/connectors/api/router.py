@@ -2804,7 +2804,7 @@ async def get_connector_instance_config(
             "supportsRealtime": instance.get("supportsRealtime", False),
             "supportsSync": instance.get("supportsSync", False),
             "supportsAgent": instance.get("supportsAgent", False),
-            "iconPath": instance.get("iconPath", "/assets/icons/connectors/default.svg"),
+            "iconPath": instance.get("iconPath", "/icons/connectors/default.svg"),
             "config": config,
             "isActive": instance.get("isActive", False),
             "isConfigured": instance.get("isConfigured", False),
@@ -6367,7 +6367,7 @@ def _extract_essential_oauth_fields(oauth_config: dict[str, Any], connector_type
     return {
         "_id": oauth_config.get("_id"),
         OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase for frontend
-        "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+        "iconPath": oauth_config.get("iconPath", "/icons/connectors/default.svg"),
         "appGroup": oauth_config.get("appGroup", ""),
         "appDescription": oauth_config.get("appDescription", ""),
         "appCategories": oauth_config.get("appCategories", []),
@@ -6616,7 +6616,7 @@ async def create_oauth_config(
 
         # Get metadata
         metadata = oauth_registry.get_metadata(connector_type)
-        icon_path = metadata.get("iconPath", "/assets/icons/connectors/default.svg")
+        icon_path = metadata.get("iconPath", "/icons/connectors/default.svg")
         app_group = metadata.get("appGroup", "")
         app_description = metadata.get("appDescription", "")
         app_categories = metadata.get("appCategories", [])
@@ -6819,7 +6819,7 @@ async def get_oauth_config_by_id(
                 "oauthConfig": {
                     "_id": oauth_config.get("_id"),
                     OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase
-                    "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+                    "iconPath": oauth_config.get("iconPath", "/icons/connectors/default.svg"),
                     "appGroup": oauth_config.get("appGroup", ""),
                     "appDescription": oauth_config.get("appDescription", ""),
                     "appCategories": oauth_config.get("appCategories", []),

@@ -223,7 +223,7 @@ class OAuthCredentialsMigrationService:
                 oauth_fields["additionalParams"] = oauth_config.additional_params
 
             # Get metadata fields
-            oauth_fields["iconPath"] = oauth_config.icon_path or "/assets/icons/connectors/default.svg"
+            oauth_fields["iconPath"] = oauth_config.icon_path or "/icons/connectors/default.svg"
             oauth_fields["appGroup"] = oauth_config.app_group or ""
             oauth_fields["appDescription"] = oauth_config.app_description or ""
             oauth_fields["appCategories"] = oauth_config.app_categories or []
@@ -483,7 +483,7 @@ class OAuthCredentialsMigrationService:
                 "scopes": scopes,  # Should be dict with personal_sync, team_sync, agent keys
 
                 # Metadata from registry
-                "iconPath": registry_fields.get("iconPath", "/assets/icons/connectors/default.svg"),
+                "iconPath": registry_fields.get("iconPath", "/icons/connectors/default.svg"),
                 "appGroup": registry_fields.get("appGroup", ""),
                 "appDescription": registry_fields.get("appDescription", ""),
                 "appCategories": registry_fields.get("appCategories", []),

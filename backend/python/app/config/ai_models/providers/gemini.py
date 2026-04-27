@@ -65,7 +65,7 @@ GEMINI_TTS_FORMAT = AIModelField(
         ModelCapability.TTS,
         ModelCapability.STT,
     ]) \
-    .with_icon("/assets/icons/ai-models/gemini-color.svg") \
+    .with_icon("/icons/ai-models/gemini-color.svg") \
     .with_color("#4285F4") \
     .popular() \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \

@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -354,12 +355,12 @@ class UploadFileToChannelInput(BaseModel):
                 CommonFields.client_id("Slack App Console"),
                 CommonFields.client_secret("Slack App Console")
             ],
-            icon_path="/assets/icons/connectors/slack.svg",
+            icon_path=IconPaths.connector_icon("slack"),
             app_group="Communication",
             app_description="Slack OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("slack"))
         .add_documentation_link(DocumentationLink(
             title="Slack Bot Token Setup",
             url="https://docs.slack.dev/authentication/tokens#bot",

@@ -56,7 +56,7 @@ OPENAI_TTS_FORMAT = AIModelField(
         ModelCapability.TTS,
         ModelCapability.STT,
     ]) \
-    .with_icon("/assets/icons/ai-models/openai.svg") \
+    .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#10A37F") \
     .popular() \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \

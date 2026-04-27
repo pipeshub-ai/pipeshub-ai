@@ -11,6 +11,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -119,7 +120,7 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Zendesk OAuth App"),
                 CommonFields.client_secret("Zendesk OAuth App")
             ],
-            icon_path="/assets/icons/connectors/zendesk.svg",
+            icon_path=IconPaths.connector_icon("zendesk"),
             app_group="Customer Support",
             app_description="Zendesk OAuth application for agent integration"
         ),
@@ -129,7 +130,7 @@ tools: List[ToolDefinition] = [
         ])
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/zendesk.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("zendesk")))\
     .build_decorator()
 class Zendesk:
     """Zendesk tool exposed to the agents"""

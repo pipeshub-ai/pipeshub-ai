@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -113,7 +114,7 @@ class GetDatabaseInput(BaseModel):
                 CommonFields.client_id("Notion Integration Settings"),
                 CommonFields.client_secret("Notion Integration Settings")
             ],
-            icon_path="/assets/icons/connectors/notion.svg",
+            icon_path=IconPaths.connector_icon("notion"),
             app_group="Productivity",
             app_description="Notion OAuth application for agent integration"
         ),
@@ -121,7 +122,7 @@ class GetDatabaseInput(BaseModel):
             CommonFields.api_token("Notion Integration Token", "secret_your-token-here")
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/notion.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("notion")))\
     .build_decorator()
 class Notion:
     """Notion tool exposed to the agents using NotionDataSource"""

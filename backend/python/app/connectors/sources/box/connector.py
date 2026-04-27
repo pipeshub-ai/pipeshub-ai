@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -147,7 +148,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/box.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.BOX.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Box App Setup",

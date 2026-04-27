@@ -58,7 +58,7 @@ class IconPaths:
     @staticmethod
     def connector_icon(connector_name: str) -> str:
         """Generate icon path for a connector."""
-        return f"/assets/icons/connectors/{connector_name.lower().replace(' ', '')}.svg"
+        return f"/icons/connectors/{connector_name.lower().replace(' ', '')}.svg"
 
 
 class OAuthRedirectPaths:

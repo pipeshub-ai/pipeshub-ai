@@ -33,11 +33,13 @@ from msgraph.generated.sites.item.pages.pages_request_builder import PagesReques
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -362,7 +364,7 @@ class CountryToRegionMapper:
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/sharepoint.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.SHAREPOINT_ONLINE.value))
         .add_documentation_link(DocumentationLink(
             "SharePoint Online API Setup",
             "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",

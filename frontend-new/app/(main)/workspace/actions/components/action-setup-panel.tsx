@@ -538,7 +538,7 @@ export function ActionSetupPanel({
           {docLinks.length > 0 ? (
             <DocumentationSection
               links={docLinks}
-              connectorIconPath={registryRow?.iconPath ?? '/assets/icons/toolsets/default.svg'}
+              connectorIconPath={registryRow?.iconPath ?? '/icons/connectors/default.svg'}
             />
           ) : null}
 
