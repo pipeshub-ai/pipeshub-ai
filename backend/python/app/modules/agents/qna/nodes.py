@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
 from typing import Any, Literal, Union
 from uuid import UUID
 
@@ -34,7 +33,7 @@ from app.modules.agents.capability_summary import (
     build_connector_routing_rules,
     classify_knowledge_sources,
 )
-from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
@@ -4051,6 +4050,10 @@ async def planner_node(
     if knowledge_context:
         system_prompt = system_prompt + knowledge_context
 
+    persona = state.get("system_prompt")
+    if is_custom_agent_system_prompt(persona):
+        system_prompt = f"{persona.strip()}\n\n{system_prompt}"
+
     # Prepend agent instructions if provided
     instructions = state.get("instructions")
     if instructions and instructions.strip():
@@ -5161,7 +5164,9 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
                     )
 
         if indexed_apps:
-            from app.modules.agents.capability_summary import format_connector_filter_lines
+            from app.modules.agents.capability_summary import (
+                format_connector_filter_lines,
+            )
             lines.append(
                 "\n**Indexed App Connectors** (search with `connector_ids`):"
             )
@@ -6746,7 +6751,7 @@ async def _generate_direct_response(
 
     base_system_prompt = state.get("system_prompt", "")
     role_prefix = ""
-    if base_system_prompt and base_system_prompt.strip() and base_system_prompt != "You are an enterprise questions answering expert":
+    if is_custom_agent_system_prompt(base_system_prompt):
         role_prefix = f"{base_system_prompt.strip()}\n\n"
 
     # If the agent has no knowledge and no tools, use a specialized system prompt that
@@ -6914,7 +6919,7 @@ async def _generate_fast_api_response(
 
     base_system_prompt = state.get("system_prompt", "")
     role_prefix = ""
-    if base_system_prompt and base_system_prompt.strip() and base_system_prompt != "You are an enterprise questions answering expert":
+    if is_custom_agent_system_prompt(base_system_prompt):
         role_prefix = f"{base_system_prompt.strip()}\n\n"
 
     system_prompt = (
@@ -7849,7 +7854,12 @@ def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
     if agent_instructions and agent_instructions.strip():
         instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
 
-    base_prompt = instructions_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
+    persona = state.get("system_prompt")
+    role_prefix = ""
+    if is_custom_agent_system_prompt(persona):
+        role_prefix = f"{persona.strip()}\n\n"
+
+    base_prompt = instructions_prefix + role_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
 
 ## Reasoning Protocol (MANDATORY)
 

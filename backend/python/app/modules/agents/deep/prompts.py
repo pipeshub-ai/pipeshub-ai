@@ -27,6 +27,7 @@ If the user's underlying intent is to get real information, find something, or u
 - **Dependencies**: If task B needs output from task A, set `depends_on: ["task_a_id"]`. Independent tasks run in parallel.
 - **Topic Discovery (hybrid search)**: When a query contains a topic/keyword and asks to discover related items, create tasks for ALL available search dimensions: `knowledgehub` (metadata search), `retrieval` (content search), and the matching service API domain (live search). This applies regardless of what word the user uses ("files", "pages", "docs"). Only skip a dimension if unavailable. Exceptions: exact ID lookup, write actions, filtered stateful queries → service API only.
 - **Task descriptions must be specific**: Include exact names, dates, IDs, filters, and constraints. State the goal, not just the service to query.
+- **Per-task `scoped_instructions` (REQUIRED for every task object, same JSON response as `description`)**: Sub-agents do **not** see the full **Agent Role** or **Agent Instructions** blocks above—only this field plus the task `description`. In the **same** planning pass, for each task write 2–6 sentences that **refactor** (never copy-paste verbatim) how the workspace rules apply **only** to that task: tone, priorities, compliance/safety, and scope limits. **If** **Agent Role** and/or **Agent Instructions** appear above, ground `scoped_instructions` in those. **If** neither appears (default agent), still give a short, task-specific execution brief. Never omit or leave blank.
 
 {knowledge_context}
 
@@ -51,7 +52,8 @@ For queries requiring tools or knowledge:
             "task_id": "task_1",
             "description": "Specific goal with filters and constraints",
             "domains": ["<domain>"],
-            "depends_on": []
+            "depends_on": [],
+            "scoped_instructions": "How agent role + global instructions apply only to this task (tone, priorities, constraints)."
         }}
     ]
 }}
@@ -66,7 +68,8 @@ For summaries, reports, or aggregations over time periods, mark data-fetching ta
     "domains": ["<domain>"],
     "depends_on": [],
     "complexity": "complex",
-    "batch_strategy": {{"page_size": 50, "max_pages": 4, "scope_query": "<time/status filter>"}}
+    "batch_strategy": {{"page_size": 50, "max_pages": 4, "scope_query": "<time/status filter>"}},
+    "scoped_instructions": "For this reporting task: preserve the agent's required tone; prioritize action items and dates; align summaries with any compliance or style rules from the agent instructions."
 }}
 ```
 Create one complex task per relevant domain. Simple tasks (single lookups, quick actions) use `"complexity": "simple"` or omit the field.
@@ -83,7 +86,8 @@ When a single domain task requires sequential steps where later steps depend on 
     "sub_steps": [
         "Search for open Jira tickets assigned to the current user",
         "For each ticket found, update the priority to High"
-    ]
+    ],
+    "scoped_instructions": "For this Jira workflow: follow the agent's communication and safety rules; confirm identity scope for 'my' tickets; do not exceed what the user asked (priority update only)."
 }}
 ```
 Use multi-step ONLY when a task has 2+ sequential actions within the SAME domain (e.g., search → update, fetch → create). Do NOT use multi-step for simple queries or read-only tasks.
@@ -98,6 +102,8 @@ SUB_AGENT_SYSTEM_PROMPT = """{agent_instructions}You are a focused task executor
 
 ## Your Task
 {task_description}
+
+{task_scope_block}
 
 ## Context
 {task_context}
@@ -157,6 +163,8 @@ MINI_ORCHESTRATOR_PROMPT = """{agent_instructions}You are executing a multi-step
 
 ## Task
 {task_description}
+
+{task_scope_block}
 
 ## Planned Steps
 {sub_steps}
