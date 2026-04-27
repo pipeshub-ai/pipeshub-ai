@@ -730,7 +730,8 @@ function ChatContent() {
     Boolean(
       conversationId &&
         chatShareAdapter &&
-        activeSlotIsOwner === true
+        activeSlotIsOwner === true &&
+        !historyAndShareAgentId
     );
 
   useEffect(() => {

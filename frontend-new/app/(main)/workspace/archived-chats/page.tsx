@@ -107,31 +107,31 @@ function ArchivedChatsPageContent() {
   );
 
   const handleRestored = useCallback(
-    (restoredId: string) => {
-      removeConversation(restoredId, agentKey ?? null);
-      if (agentKey) {
-        router.push(`/chat?conversationId=${restoredId}&agentId=${agentKey}`);
+    (restoredId: string, restoredAgentKey: string | null) => {
+      removeConversation(restoredId, restoredAgentKey);
+      if (restoredAgentKey) {
+        router.push(`/chat?conversationId=${restoredId}&agentId=${restoredAgentKey}`);
       } else {
         router.push(`/chat?conversationId=${restoredId}`);
       }
     },
-    [router, removeConversation, agentKey]
+    [router, removeConversation]
   );
 
   const handleDeleted = useCallback(
-    (deletedId: string) => {
-      removeConversation(deletedId, agentKey ?? null);
+    (deletedId: string, deletedAgentKey: string | null) => {
+      removeConversation(deletedId, deletedAgentKey);
 
       // Find the next conversation to show — prefer same section
-      if (agentKey) {
-        const group = agentGroups.find((g) => g.agentKey === agentKey);
+      if (deletedAgentKey) {
+        const group = agentGroups.find((g) => g.agentKey === deletedAgentKey);
         const remaining = (group?.conversations ?? []).filter((c) => c.id !== deletedId);
         if (remaining.length > 0) {
           const deletedIdx = (group?.conversations ?? []).findIndex((c) => c.id === deletedId);
           const nextIdx = Math.min(deletedIdx, remaining.length - 1);
           const params = new URLSearchParams();
           params.set('conversationId', remaining[nextIdx].id);
-          params.set('agentKey', agentKey);
+          params.set('agentKey', deletedAgentKey);
           router.push(`/workspace/archived-chats?${params.toString()}`);
           return;
         }
@@ -149,7 +149,7 @@ function ArchivedChatsPageContent() {
         router.push('/workspace/archived-chats');
       }
     },
-    [router, conversations, agentGroups, removeConversation, agentKey]
+    [router, conversations, agentGroups, removeConversation]
   );
 
   // Flatten all conversations for the search modal
@@ -192,6 +192,8 @@ function ArchivedChatsPageContent() {
         agentGroupsHasMore={agentGroupsPagination.hasMore}
         isLoadingMoreAgentGroups={agentGroupsPagination.isLoadingMore}
         onLoadMoreAgentGroups={loadMoreAgentGroups}
+        onRestored={handleRestored}
+        onDeleted={handleDeleted}
       />
 
       {/* Right: conversation preview or empty state */}
@@ -205,9 +207,6 @@ function ArchivedChatsPageContent() {
             messages={selected?.messages ?? []}
             isLoading={isLoadingConversation || selected?.id !== conversationId}
             error={conversationError}
-            agentKey={agentKey}
-            onRestored={handleRestored}
-            onDeleted={handleDeleted}
           />
         )}
       </Box>

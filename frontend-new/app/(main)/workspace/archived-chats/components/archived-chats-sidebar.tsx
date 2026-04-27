@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { Flex, Box, Text, DropdownMenu } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SidebarItem } from '@/chat/sidebar/sidebar-item';
@@ -14,7 +14,11 @@ import {
   KBD_BADGE_PADDING,
 } from '@/app/components/sidebar';
 import { getModifierSymbol } from '@/lib/utils/platform';
+import { useToastStore } from '@/lib/store/toast-store';
+import { Spinner } from '@/app/components/ui/spinner';
 import type { Conversation, AgentArchivedGroup } from '../types';
+import { ArchivedChatsApi } from '../api';
+import { DeleteConfirmDialog } from './delete-confirm-dialog';
 
 interface ArchivedChatsSidebarProps {
   conversations: Conversation[];
@@ -36,7 +40,111 @@ interface ArchivedChatsSidebarProps {
   agentGroupsHasMore: boolean;
   isLoadingMoreAgentGroups: boolean;
   onLoadMoreAgentGroups: () => void;
+  // Post-action callbacks (called after successful API response)
+  onRestored: (conversationId: string, agentKey: string | null) => void;
+  onDeleted: (conversationId: string, agentKey: string | null) => void;
 }
+
+// ── Inline item menu ─────────────────────────────────────────────────────────
+
+interface ArchivedChatItemMenuProps {
+  isParentHovered: boolean;
+  isRestoring: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onRestore: () => void;
+  onDelete: () => void;
+}
+
+function ArchivedChatItemMenu({
+  isParentHovered,
+  isRestoring,
+  onOpenChange,
+  onRestore,
+  onDelete,
+}: ArchivedChatItemMenuProps) {
+  const { t } = useTranslation();
+  const [isOpen, setIsOpen] = useState(false);
+  const [isMeatballHovered, setIsMeatballHovered] = useState(false);
+  const visible = isParentHovered || isOpen;
+
+  const handleOpenChange = (open: boolean) => {
+    setIsOpen(open);
+    onOpenChange?.(open);
+  };
+
+  if (!visible) return null;
+
+  return (
+    <DropdownMenu.Root open={isOpen} onOpenChange={handleOpenChange} modal={false}>
+      <DropdownMenu.Trigger>
+        <button
+          type="button"
+          onMouseEnter={() => setIsMeatballHovered(true)}
+          onMouseLeave={() => setIsMeatballHovered(false)}
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+          style={{
+            appearance: 'none',
+            border: 'none',
+            background: isMeatballHovered || isOpen ? 'var(--olive-5)' : 'transparent',
+            borderRadius: 'var(--radius-1)',
+            padding: 2,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <MaterialIcon name="more_horiz" size={18} color="var(--slate-11)" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content
+        side="bottom"
+        align="start"
+        sideOffset={4}
+        style={{ minWidth: 160 }}
+      >
+        <DropdownMenu.Item
+          disabled={isRestoring}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRestore();
+          }}
+        >
+          <Flex align="center" gap="2">
+            {isRestoring ? (
+              <Spinner size={16} color="var(--slate-11)" />
+            ) : (
+              <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
+            )}
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              {isRestoring ? t('action.loading') : t('workspace.archivedChats.restore')}
+            </Text>
+          </Flex>
+        </DropdownMenu.Item>
+        <DropdownMenu.Item
+          color="red"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Flex align="center" gap="2">
+            <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+            <Text size="2" style={{ color: 'var(--red-11)' }}>
+              {t('workspace.archivedChats.permanentlyDelete')}
+            </Text>
+          </Flex>
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const KbdBadge = ({ children }: { children: React.ReactNode }) => (
   <span
@@ -120,6 +228,13 @@ interface AgentGroupSectionProps {
   selectedAgentKey: string | null;
   onSelect: (conversation: Conversation, agentKey: string) => void;
   onLoadMore: (agentKey: string, page: number) => void;
+  hoveredId: string | null;
+  openMenuId: string | null;
+  restoringId: string | null;
+  onHoverChange: (id: string | null) => void;
+  onMenuOpenChange: (id: string | null) => void;
+  onRestore: (convId: string, agentKey: string) => void;
+  onDeleteRequest: (convId: string, agentKey: string) => void;
 }
 
 function AgentGroupSection({
@@ -128,6 +243,13 @@ function AgentGroupSection({
   selectedAgentKey,
   onSelect,
   onLoadMore,
+  hoveredId,
+  openMenuId,
+  restoringId,
+  onHoverChange,
+  onMenuOpenChange,
+  onRestore,
+  onDeleteRequest,
 }: AgentGroupSectionProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(true);
@@ -188,6 +310,8 @@ function AgentGroupSection({
                 key={conv.id}
                 isActive={isActive}
                 onClick={() => onSelect(conv, group.agentKey)}
+                forceHighlight={openMenuId === conv.id}
+                onHoverChange={(isHovered) => onHoverChange(isHovered ? conv.id : null)}
                 label={
                   <Text
                     size="2"
@@ -203,6 +327,15 @@ function AgentGroupSection({
                   >
                     {conv.title}
                   </Text>
+                }
+                rightSlot={
+                  <ArchivedChatItemMenu
+                    isParentHovered={hoveredId === conv.id || openMenuId === conv.id}
+                    isRestoring={restoringId === conv.id}
+                    onOpenChange={(open) => onMenuOpenChange(open ? conv.id : null)}
+                    onRestore={() => onRestore(conv.id, group.agentKey)}
+                    onDelete={() => onDeleteRequest(conv.id, group.agentKey)}
+                  />
                 }
               />
             );
@@ -241,12 +374,74 @@ export function ArchivedChatsSidebar({
   agentGroupsHasMore,
   isLoadingMoreAgentGroups,
   onLoadMoreAgentGroups,
+  onRestored,
+  onDeleted,
 }: ArchivedChatsSidebarProps) {
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
+  const addToast = useToastStore((s) => s.addToast);
 
   const hasNormal = conversations.length > 0;
   const hasAgents = agentGroups.length > 0;
+
+  // Per-item hover / menu-open tracking
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // Restore / delete state
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    conversationId: string;
+    agentKey: string | null;
+  } | null>(null);
+  const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
+
+  const handleRestore = async (convId: string, convAgentKey: string | null) => {
+    if (restoringId) return;
+    setRestoringId(convId);
+    try {
+      if (convAgentKey) {
+        await ArchivedChatsApi.restoreAgentConversation(convAgentKey, convId);
+      } else {
+        await ArchivedChatsApi.restoreConversation(convId);
+      }
+      addToast({
+        variant: 'success',
+        title: t('workspace.archivedChats.restoreSuccess'),
+        icon: 'restore',
+      });
+      onRestored(convId, convAgentKey);
+    } catch {
+      addToast({ variant: 'error', title: t('workspace.archivedChats.restoreError') });
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!pendingDelete || isDeletingId) return;
+    const { conversationId, agentKey } = pendingDelete;
+    setIsDeletingId(conversationId);
+    try {
+      if (agentKey) {
+        await ArchivedChatsApi.deleteAgentConversation(agentKey, conversationId);
+      } else {
+        await ArchivedChatsApi.deleteConversation(conversationId);
+      }
+      setPendingDelete(null);
+      addToast({
+        variant: 'success',
+        title: t('workspace.archivedChats.deleteSuccess'),
+        description: t('workspace.archivedChats.deleteSuccessDescription'),
+        icon: 'check',
+      });
+      onDeleted(conversationId, agentKey);
+    } catch {
+      addToast({ variant: 'error', title: t('workspace.archivedChats.deleteError') });
+    } finally {
+      setIsDeletingId(null);
+    }
+  };
 
   return (
     <Flex
@@ -307,40 +502,56 @@ export function ArchivedChatsSidebar({
               </Flex>
             ) : (
               <>
-                {conversations.map((conversation) => (
-                  <SidebarItem
-                    key={conversation.id}
-                    isActive={
-                      selectedConversationId === conversation.id &&
-                      !selectedAgentKey
-                    }
-                    onClick={() => onSelect(conversation, null)}
-                    label={
-                      <Text
-                        size="2"
-                        style={{
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          display: 'block',
-                          lineHeight: `${CHAT_ITEM_HEIGHT}px`,
-                          color:
-                            selectedConversationId === conversation.id &&
-                            !selectedAgentKey
-                              ? 'var(--slate-12)'
-                              : 'var(--slate-11)',
-                          fontWeight:
-                            selectedConversationId === conversation.id &&
-                            !selectedAgentKey
-                              ? 500
-                              : 400,
-                        }}
-                      >
-                        {conversation.title}
-                      </Text>
-                    }
-                  />
-                ))}
+                {conversations.map((conversation) => {
+                  const isActive =
+                    selectedConversationId === conversation.id && !selectedAgentKey;
+                  return (
+                    <SidebarItem
+                      key={conversation.id}
+                      isActive={isActive}
+                      onClick={() => onSelect(conversation, null)}
+                      forceHighlight={openMenuId === conversation.id}
+                      onHoverChange={(isHovered) =>
+                        setHoveredId(isHovered ? conversation.id : null)
+                      }
+                      label={
+                        <Text
+                          size="2"
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            display: 'block',
+                            lineHeight: `${CHAT_ITEM_HEIGHT}px`,
+                            color: isActive ? 'var(--slate-12)' : 'var(--slate-11)',
+                            fontWeight: isActive ? 500 : 400,
+                          }}
+                        >
+                          {conversation.title}
+                        </Text>
+                      }
+                      rightSlot={
+                        <ArchivedChatItemMenu
+                          isParentHovered={
+                            hoveredId === conversation.id ||
+                            openMenuId === conversation.id
+                          }
+                          isRestoring={restoringId === conversation.id}
+                          onOpenChange={(open) =>
+                            setOpenMenuId(open ? conversation.id : null)
+                          }
+                          onRestore={() => void handleRestore(conversation.id, null)}
+                          onDelete={() =>
+                            setPendingDelete({
+                              conversationId: conversation.id,
+                              agentKey: null,
+                            })
+                          }
+                        />
+                      }
+                    />
+                  );
+                })}
                 {assistantChatsHasMore && (
                   <LoadMoreButton
                     isLoading={isLoadingMoreAssistantChats}
@@ -376,6 +587,15 @@ export function ArchivedChatsSidebar({
                     selectedAgentKey={selectedAgentKey}
                     onSelect={onSelect}
                     onLoadMore={onLoadMoreForAgent}
+                    hoveredId={hoveredId}
+                    openMenuId={openMenuId}
+                    restoringId={restoringId}
+                    onHoverChange={setHoveredId}
+                    onMenuOpenChange={(id) => setOpenMenuId(id)}
+                    onRestore={(convId, agentKey) => void handleRestore(convId, agentKey)}
+                    onDeleteRequest={(convId, agentKey) =>
+                      setPendingDelete({ conversationId: convId, agentKey })
+                    }
                   />
                 ))}
                 {agentGroupsHasMore && (
@@ -399,6 +619,16 @@ export function ArchivedChatsSidebar({
           </Flex>
         )}
       </Box>
+
+      {/* Permanent delete confirmation */}
+      <DeleteConfirmDialog
+        open={pendingDelete !== null}
+        isLoading={isDeletingId !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        onConfirm={() => void handleDeleteConfirm()}
+      />
     </Flex>
   );
 }
