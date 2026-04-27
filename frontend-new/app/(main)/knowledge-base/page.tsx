@@ -1809,12 +1809,9 @@ function KnowledgeBasePageContent() {
         await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
       }
 
-      const typeLabel =
-        nodeType === 'recordGroup' ? 'collection' : nodeType === 'folder' ? 'folder' : 'file';
-
       toast.update(toastId, {
         variant: 'success',
-        title: `Reindexing of "${item.name}" ${typeLabel} has started`,
+        title: 'Reindexing started successfully',
       });
 
       await refreshData();
@@ -2207,10 +2204,10 @@ function KnowledgeBasePageContent() {
         />
 
         {/* Selection Action Bar - shows when items are selected.
-            Hidden in the All Records "All" view because rows there are top-level
-            app/collection aggregates (e.g. "jira", "Collections") that aren't
-            individually reindexable; drilling into them shows actionable items. */}
-        {!(isAllRecordsMode && allRecordsSidebarSelection.type === 'all') && (
+            Hidden in All Records "All" and connector views (mirrors the checkbox guard
+            above). Rows in those views are top-level aggregates that aren't individually
+            reindexable, and stale selections from a prior view shouldn't surface here. */}
+        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
           <SelectionActionBar
             selectedCount={selectedCount}
             onDeselectAll={handleDeselectAll}
