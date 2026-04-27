@@ -2,7 +2,8 @@ import type { Edge, Node } from '@xyflow/react';
 import type { TFunction } from 'i18next';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { FlowNodeData, NodeTemplate } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import { normalizeDisplayName, normalizePaletteLabel } from '../display-utils';
+import { collectActiveToolsetTypeKeysFromNodes, normalizeToolsetTypeKey } from '../sidebar-toolset-utils';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -211,6 +212,19 @@ export function handleFlowCanvasDrop(
       return;
     }
 
+    const droppedTypeKey = normalizeToolsetTypeKey(toolsetName);
+    if (
+      droppedTypeKey &&
+      new Set(collectActiveToolsetTypeKeysFromNodes(nodes)).has(droppedTypeKey)
+    ) {
+      onError?.(
+        t('agentBuilder.toolsetDuplicateNotify', {
+          name: normalizePaletteLabel(toolsetName || toolsetDisplayName || ''),
+        })
+      );
+      return;
+    }
+
     const resolvedSelectedNames =
       selectedTools.length > 0
         ? selectedTools.map((sel) => {
@@ -335,6 +349,19 @@ export function handleFlowCanvasDrop(
           )
         );
       }
+      return;
+    }
+
+    const droppedTypeKeyTool = normalizeToolsetTypeKey(toolsetName);
+    if (
+      droppedTypeKeyTool &&
+      new Set(collectActiveToolsetTypeKeysFromNodes(nodes)).has(droppedTypeKeyTool)
+    ) {
+      onError?.(
+        t('agentBuilder.toolsetDuplicateNotify', {
+          name: normalizePaletteLabel(toolsetName || toolsetDisplayName || ''),
+        })
+      );
       return;
     }
 

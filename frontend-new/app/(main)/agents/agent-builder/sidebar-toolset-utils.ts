@@ -10,9 +10,34 @@ export function normalizeToolsetTypeKey(value: string): string {
   return (value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[_-]+/g, '');
 }
 
+/** Minimal node shape for agent-builder canvas + drop handler (avoids circular imports). */
+export type ToolsetTypeKeyFlowNode = {
+  data?: { type?: string; config?: Record<string, unknown> };
+};
+
+/**
+ * Normalized logical toolset types already present on the flow (legacy parity: one type per canvas).
+ * Same resolution order as old `activeToolsetTypes`: toolsetType → toolsetName → `toolset-` prefix stripped from node type.
+ */
+export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowNode[]): string[] {
+  const keys = new Set<string>();
+  for (const node of nodes) {
+    const nodeType = String(node.data?.type ?? '');
+    if (!nodeType.startsWith('toolset-')) continue;
+    const config = (node.data?.config || {}) as Record<string, unknown>;
+    const raw =
+      (config.toolsetType as string) ||
+      (config.toolsetName as string) ||
+      nodeType.replace(/^toolset-/, '');
+    const k = normalizeToolsetTypeKey(String(raw));
+    if (k) keys.add(k);
+  }
+  return Array.from(keys);
+}
+
 export function buildToolsetDragPayload(ts: BuilderSidebarToolset): Record<string, string> {
   const toolsetName = ts.toolsetType || ts.name;
-  /** Logical type only — multiple configured instances share the same prefix; canvas merge + create use `instanceId`. */
+  /** Node `type` prefix is the logical toolset name; `instanceId` in payload distinguishes instances for merge-on-drop. */
   const reactFlowType = `toolset-${toolsetName}`.toLowerCase().replace(/\s+/g, '');
   return {
     'application/reactflow': reactFlowType,

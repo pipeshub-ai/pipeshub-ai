@@ -42,8 +42,7 @@ function getToolsetPaletteRowState(
     configureIconColor: string;
     configureTooltip: string;
   },
-  activeInstanceIdSet: Set<string>,
-  activeTypeKeysNoInstanceSet: Set<string>,
+  activeToolsetTypeKeysSet: Set<string>,
   structureLocked: boolean,
   orgCredentialUiLocked: boolean,
   isServiceAccount: boolean,
@@ -53,10 +52,7 @@ function getToolsetPaletteRowState(
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
   const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const instanceId = ts.instanceId?.trim();
-  const dup = instanceId
-    ? activeInstanceIdSet.has(instanceId)
-    : activeTypeKeysNoInstanceSet.has(normalizedType);
+  const dup = activeToolsetTypeKeysSet.has(normalizedType);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -154,8 +150,7 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  activeToolsetInstanceIds: string[];
-  activeToolsetTypeKeysWithoutInstance: string[];
+  activeToolsetTypeKeys: string[];
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
@@ -171,8 +166,7 @@ export function AgentBuilderToolsetsSection(props: {
     toolsets,
     loading,
     refreshToolsets,
-    activeToolsetInstanceIds,
-    activeToolsetTypeKeysWithoutInstance,
+    activeToolsetTypeKeys,
     isServiceAccount,
     agentKey,
     onManageAgentToolsetCredentials,
@@ -188,13 +182,9 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeInstanceIdSet = useMemo(
-    () => new Set(activeToolsetInstanceIds.filter(Boolean)),
-    [activeToolsetInstanceIds]
-  );
-  const activeTypeKeysNoInstanceSet = useMemo(
-    () => new Set(activeToolsetTypeKeysWithoutInstance.map(normalizeToolsetTypeKey).filter(Boolean)),
-    [activeToolsetTypeKeysWithoutInstance]
+  const activeToolsetTypeKeysSet = useMemo(
+    () => new Set(activeToolsetTypeKeys.map(normalizeToolsetTypeKey).filter(Boolean)),
+    [activeToolsetTypeKeys]
   );
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
@@ -409,8 +399,7 @@ export function AgentBuilderToolsetsSection(props: {
                     } = getToolsetPaletteRowState(
                       ts,
                       ui,
-                      activeInstanceIdSet,
-                      activeTypeKeysNoInstanceSet,
+                      activeToolsetTypeKeysSet,
                       structureLocked,
                       orgCredentialUiLocked,
                       isServiceAccount,

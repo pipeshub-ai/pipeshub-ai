@@ -100,8 +100,7 @@ export function AgentBuilderSidebar(props: {
   nodeTemplates: NodeTemplate[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
-  activeToolsetInstanceIds: string[];
-  activeToolsetTypeKeysWithoutInstance: string[];
+  activeToolsetTypeKeys: string[];
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,
@@ -125,8 +124,7 @@ export function AgentBuilderSidebar(props: {
     nodeTemplates,
     configuredConnectors,
     toolsets,
-    activeToolsetInstanceIds,
-    activeToolsetTypeKeysWithoutInstance,
+    activeToolsetTypeKeys,
     refreshToolsets,
     onNotify,
     agentKey = null,
@@ -438,8 +436,7 @@ export function AgentBuilderSidebar(props: {
                 toolsets={toolsets}
                 loading={loading}
                 refreshToolsets={refreshToolsets}
-                activeToolsetInstanceIds={activeToolsetInstanceIds}
-                activeToolsetTypeKeysWithoutInstance={activeToolsetTypeKeysWithoutInstance}
+                activeToolsetTypeKeys={activeToolsetTypeKeys}
                 isServiceAccount={isServiceAccount}
                 agentKey={agentKey}
                 onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
