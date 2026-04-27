@@ -228,9 +228,10 @@ export function MessageList() {
           isStreaming && isLastAssistant && question === streamingQuestion;
 
         // appliedFilters from the preceding user message metadata
-        const userMsgCustom = prevMsg
-          ? (prevMsg as { metadata?: { custom?: { collections?: Array<{ id: string; name: string }>; appliedFilters?: AppliedFilters } } }).metadata?.custom
-          : undefined;
+        const userMsgCustom = prevMsg?.metadata?.custom as {
+          collections?: Array<{ id: string; name: string }>;
+          appliedFilters?: AppliedFilters;
+        } | undefined;
         const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
         const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
 
