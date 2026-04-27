@@ -100,7 +100,7 @@ export function AgentBuilderSidebar(props: {
   nodeTemplates: NodeTemplate[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
-  activeToolsetTypeKeys: string[];
+  activeToolsetTypeKeys: Set<string>;
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,

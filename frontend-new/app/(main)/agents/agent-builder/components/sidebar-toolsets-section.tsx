@@ -42,7 +42,7 @@ function getToolsetPaletteRowState(
     configureIconColor: string;
     configureTooltip: string;
   },
-  activeToolsetTypeKeysSet: Set<string>,
+  activeToolsetTypeKeys: Set<string>,
   structureLocked: boolean,
   orgCredentialUiLocked: boolean,
   isServiceAccount: boolean,
@@ -52,7 +52,7 @@ function getToolsetPaletteRowState(
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
   const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const dup = activeToolsetTypeKeysSet.has(normalizedType);
+  const dup = activeToolsetTypeKeys.has(normalizedType);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -150,7 +150,7 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  activeToolsetTypeKeys: string[];
+  activeToolsetTypeKeys: Set<string>;
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
@@ -182,10 +182,6 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeToolsetTypeKeysSet = useMemo(
-    () => new Set(activeToolsetTypeKeys.map(normalizeToolsetTypeKey).filter(Boolean)),
-    [activeToolsetTypeKeys]
-  );
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
     setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
@@ -399,7 +395,7 @@ export function AgentBuilderToolsetsSection(props: {
                     } = getToolsetPaletteRowState(
                       ts,
                       ui,
-                      activeToolsetTypeKeysSet,
+                      activeToolsetTypeKeys,
                       structureLocked,
                       orgCredentialUiLocked,
                       isServiceAccount,

@@ -213,10 +213,7 @@ export function handleFlowCanvasDrop(
     }
 
     const droppedTypeKey = normalizeToolsetTypeKey(toolsetName);
-    if (
-      droppedTypeKey &&
-      new Set(collectActiveToolsetTypeKeysFromNodes(nodes)).has(droppedTypeKey)
-    ) {
+    if (droppedTypeKey && collectActiveToolsetTypeKeysFromNodes(nodes).has(droppedTypeKey)) {
       onError?.(
         t('agentBuilder.toolsetDuplicateNotify', {
           name: normalizePaletteLabel(toolsetName || toolsetDisplayName || ''),
@@ -353,10 +350,7 @@ export function handleFlowCanvasDrop(
     }
 
     const droppedTypeKeyTool = normalizeToolsetTypeKey(toolsetName);
-    if (
-      droppedTypeKeyTool &&
-      new Set(collectActiveToolsetTypeKeysFromNodes(nodes)).has(droppedTypeKeyTool)
-    ) {
+    if (droppedTypeKeyTool && collectActiveToolsetTypeKeysFromNodes(nodes).has(droppedTypeKeyTool)) {
       onError?.(
         t('agentBuilder.toolsetDuplicateNotify', {
           name: normalizePaletteLabel(toolsetName || toolsetDisplayName || ''),

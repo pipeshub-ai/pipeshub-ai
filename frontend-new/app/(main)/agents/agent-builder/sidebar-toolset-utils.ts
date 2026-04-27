@@ -19,7 +19,7 @@ export type ToolsetTypeKeyFlowNode = {
  * Normalized logical toolset types already present on the flow (legacy parity: one type per canvas).
  * Same resolution order as old `activeToolsetTypes`: toolsetType → toolsetName → `toolset-` prefix stripped from node type.
  */
-export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowNode[]): string[] {
+export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowNode[]): Set<string> {
   const keys = new Set<string>();
   for (const node of nodes) {
     const nodeType = String(node.data?.type ?? '');
@@ -29,10 +29,10 @@ export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowN
       (config.toolsetType as string) ||
       (config.toolsetName as string) ||
       nodeType.replace(/^toolset-/, '');
-    const k = normalizeToolsetTypeKey(String(raw));
+    const k = normalizeToolsetTypeKey(raw);
     if (k) keys.add(k);
   }
-  return Array.from(keys);
+  return keys;
 }
 
 export function buildToolsetDragPayload(ts: BuilderSidebarToolset): Record<string, string> {
