@@ -168,12 +168,22 @@ const OLIVE_ROW: React.CSSProperties = {
 
 // ── Component ──
 
+/**
+ * Control which subset of hub roots the tab displays.
+ * - `'all'` (default): show everything.
+ * - `'connectors'`: show only connector-app roots (not KB / COLLECTION-origin rows).
+ * - `'collections'`: show only KB connector rows and COLLECTION-origin rows.
+ */
+export type CollectionsTabFilterMode = 'all' | 'connectors' | 'collections';
+
 interface CollectionsTabProps {
   apps: string[];
   kb: string[];
   onSelectionChange: (next: CollectionScopeSelection) => void;
   /** When set, only these root ids are listed (e.g. agent-scoped collections). */
   restrictToKbIds?: string[] | null;
+  /** Narrows which hub roots are shown — defaults to 'all'. */
+  filterMode?: CollectionsTabFilterMode;
 }
 
 /**
@@ -185,6 +195,7 @@ export function CollectionsTab({
   kb,
   onSelectionChange,
   restrictToKbIds = null,
+  filterMode = 'all',
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
@@ -366,6 +377,16 @@ export function CollectionsTab({
     }
   }, [setCollectionNamesCache, t]);
 
+  // When in 'collections' mode, auto-fetch KB children immediately on root list change
+  useEffect(() => {
+    if (filterMode !== 'collections') return;
+    for (const row of collections) {
+      if (isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)) {
+        void loadChildren(row);
+      }
+    }
+  }, [collections, filterMode, loadChildren]);
+
   const loadMoreChildren = useCallback(
     async (row: CollectionSelectItem) => {
       const meta = childrenMetaByRootId[row.id];
@@ -455,15 +476,72 @@ export function CollectionsTab({
     [apps, onSelectionChange, kb]
   );
 
+  // In 'collections' mode: flat list of KB items.
+  // Strategy A: children of KB container rows (the classic expand-to-show pattern).
+  // Strategy B: root items with nodeType === 'kb' shown directly (if hub returns them at root).
+  // Both are de-duped and search-filtered.
+  const flatKbItems = useMemo(() => {
+    if (filterMode !== 'collections') return [];
+    const query = searchQuery.toLowerCase();
+    const seen = new Set<string>();
+    const all: { id: string; name: string }[] = [];
+
+    // A: children of recognised KB container rows
+    for (const row of collections) {
+      if (!isKbCollectionsConnectorRow(row) && !isCollectionScopeExpandableRow(row)) continue;
+      for (const kid of childrenByRootId[row.id] ?? []) {
+        if (seen.has(kid.id)) continue;
+        seen.add(kid.id);
+        if (!query || kid.name.toLowerCase().includes(query)) {
+          all.push(kid);
+        }
+      }
+    }
+
+    // B: root-level kb nodes (in case the hub returns them without a container wrapper)
+    for (const row of collections) {
+      if (row.nodeType !== 'kb') continue;
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (!query || row.name.toLowerCase().includes(query)) {
+        all.push({ id: row.id, name: row.name });
+      }
+    }
+
+    return all;
+  }, [filterMode, collections, childrenByRootId, searchQuery]);
+
+  // True while KB container children are still being fetched — prevents premature empty state.
+  // Uses childrenByRootId (state) so re-renders fire when it changes.
+  const isLoadingKbChildren = useMemo(() => {
+    if (filterMode !== 'collections' || isLoading) return false;
+    return collections.some(
+      (row) =>
+        (isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)) &&
+        childrenByRootId[row.id] === undefined
+    );
+  }, [filterMode, isLoading, collections, childrenByRootId]);
+
   const groupedCollections = useMemo(() => {
-    const filtered = searchQuery
+    // In 'collections' mode we render flatKbItems instead of this grouped list
+    if (filterMode === 'collections') return [];
+
+    let filtered = searchQuery
       ? collections.filter((c) =>
           c.name.toLowerCase().includes(searchQuery.toLowerCase())
         )
       : collections;
+
+    // 'connectors' mode: show only non-KB connector app roots
+    if (filterMode === 'connectors') {
+      filtered = filtered.filter(
+        (c) => !isKbCollectionsConnectorRow(c) && !isCollectionScopeExpandableRow(c)
+      );
+    }
+
     const groups = groupByTime(filtered, (c) => c.updatedAt);
     return getNonEmptyGroups(groups, (c) => c.updatedAt);
-  }, [collections, searchQuery]);
+  }, [collections, searchQuery, filterMode]);
 
   return (
     <Flex
@@ -523,7 +601,7 @@ export function CollectionsTab({
           overflowY: 'auto',
         }}
       >
-        {isLoading && (
+        {(isLoading || isLoadingKbChildren) && (
           <Flex align="center" justify="center" style={{ flex: 1, minHeight: 0 }}>
             <LottieLoader variant="loader" size={48} />
           </Flex>
@@ -537,7 +615,31 @@ export function CollectionsTab({
           </Flex>
         )}
 
-        {!isLoading && !hasError && collections.length === 0 && (
+        {/* ── Collections mode: flat KB items, no parent container row ── */}
+        {filterMode === 'collections' && !isLoading && !isLoadingKbChildren && !hasError && (
+          flatKbItems.length === 0 ? (
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
+              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
+              </Text>
+            </Flex>
+          ) : (
+            <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
+              {flatKbItems.map((kbItem) => (
+                <CollectionRow
+                  key={kbItem.id}
+                  id={kbItem.id}
+                  name={kbItem.name}
+                  isSelected={kb.includes(kbItem.id)}
+                  onToggle={() => toggleRecordGroup(kbItem.id)}
+                />
+              ))}
+            </Flex>
+          )
+        )}
+
+        {/* ── Normal mode (connectors / all): time-grouped root rows ── */}
+        {filterMode !== 'collections' && !isLoading && !hasError && collections.length === 0 && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
             <Text size="2" style={{ color: 'var(--slate-9)' }}>
               {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
@@ -545,7 +647,8 @@ export function CollectionsTab({
           </Flex>
         )}
 
-        {!isLoading &&
+        {filterMode !== 'collections' &&
+          !isLoading &&
           !hasError &&
           groupedCollections.map(([label, items]) => (
             <Flex key={label} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
