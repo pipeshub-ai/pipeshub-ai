@@ -192,7 +192,20 @@ export async function streamMessageForSlot(
       : {}),
     messages: [
       ...slot.messages,
-      { role: 'user', content: [{ type: 'text', text: query }] },
+      {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: query }],
+        ...(request.filters && (request.filters.apps.length > 0 || request.filters.kb.length > 0)
+          ? {
+              metadata: {
+                custom: {
+                  filters: request.filters,
+                  ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                },
+              },
+            }
+          : {}),
+      },
       {
         role: 'assistant' as const,
         id: pendingAssistantId,

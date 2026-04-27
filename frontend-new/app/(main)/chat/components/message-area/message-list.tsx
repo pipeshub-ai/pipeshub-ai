@@ -10,7 +10,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ChatArtifact } from '../../types';
+import type { AppliedFilters, ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -53,6 +53,7 @@ interface MessagePair {
   feedbackInfo?: FeedbackInfo;
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
+  appliedFilters?: AppliedFilters;
 }
 
 export function MessageList() {
@@ -226,10 +227,13 @@ export function MessageList() {
         const isCurrentlyStreaming =
           isStreaming && isLastAssistant && question === streamingQuestion;
 
-        // Extract collections from the preceding user message metadata
-        const userMessageCollections = prevMsg
-          ? ((prevMsg as { metadata?: { custom?: { collections?: Array<{ id: string; name: string }> } } }).metadata?.custom?.collections as Array<{ id: string; name: string }> | undefined)
-          : undefined;
+        // appliedFilters from the preceding user message metadata
+        const userMsgCustom = prevMsg?.metadata?.custom as {
+          collections?: Array<{ id: string; name: string }>;
+          appliedFilters?: AppliedFilters;
+        } | undefined;
+        const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
+        const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
 
         pairs.push({
           key: msg.id ?? `asst-${i}`,
@@ -249,6 +253,7 @@ export function MessageList() {
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
+          appliedFilters: userMessageAppliedFilters,
         });
       }
     }
@@ -894,6 +899,7 @@ export function MessageList() {
                   modelInfo={pair.modelInfo}
                   feedbackInfo={pair.feedbackInfo}
                   collections={pair.collections}
+                  appliedFilters={pair.appliedFilters}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}

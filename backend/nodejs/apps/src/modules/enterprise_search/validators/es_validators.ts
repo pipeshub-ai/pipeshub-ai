@@ -12,6 +12,21 @@ const appOrKbIdSchema = z.string().refine(
   { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
 );
 
+// Rich filter node (appliedFilters) — optional, used for display/persistence only
+const appliedFilterNodeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  nodeType: z.string(),
+  connector: z.string(),
+});
+
+const appliedFiltersSchema = z
+  .object({
+    apps: z.array(appliedFilterNodeSchema).optional(),
+    kb: z.array(appliedFilterNodeSchema).optional(),
+  })
+  .optional();
+
 export const enterpriseSearchCreateSchema = z.object({
   body: z.object({
     query: z
@@ -40,6 +55,7 @@ export const enterpriseSearchCreateSchema = z.object({
         kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
+    appliedFilters: appliedFiltersSchema,
     modelKey: z
       .string()
       .min(1, { message: 'Model key is required' })
@@ -143,6 +159,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
       .string()
       .min(1, { message: 'Model friendly name is required' })
       .optional(),
+    appliedFilters: appliedFiltersSchema,
     timezone: z
       .string()
       .min(1, { message: 'Timezone must be a non-empty string' })

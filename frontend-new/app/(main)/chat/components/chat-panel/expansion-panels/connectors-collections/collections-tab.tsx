@@ -218,6 +218,7 @@ export function CollectionsTab({
   const loadingChildRootRef = useRef<Set<string>>(new Set());
 
   const setCollectionNamesCache = useChatStore((s) => s.setCollectionNamesCache);
+  const setCollectionMetaCache = useChatStore((s) => s.setCollectionMetaCache);
   const { t } = useTranslation();
 
   const fetchCollections = useCallback(async () => {
@@ -266,20 +267,26 @@ export function CollectionsTab({
         setCollections(items);
         setRootsListMeta(null);
         const nameMap: Record<string, string> = {};
+        const metaMap: Record<string, { name: string; nodeType: string; connector: string }> = {};
         items.forEach((item) => {
           nameMap[item.id] = item.name;
+          metaMap[item.id] = { name: item.name, nodeType: item.nodeType, connector: item.connector ?? '' };
         });
         setCollectionNamesCache(nameMap);
+        setCollectionMetaCache(metaMap);
       } else {
         const res = await ChatApi.listCollectionsForChat({ page: 1, limit: ROOT_APPS_PAGE_LIMIT });
         const items = transformToCollectionItems(res.knowledgeBases);
         setCollections(items);
         setRootsListMeta(mergeRootsListMeta(res, res.knowledgeBases.length, null));
         const nameMap: Record<string, string> = {};
+        const metaMap: Record<string, { name: string; nodeType: string; connector: string }> = {};
         items.forEach((item) => {
           nameMap[item.id] = item.name;
+          metaMap[item.id] = { name: item.name, nodeType: item.nodeType, connector: item.connector ?? '' };
         });
         setCollectionNamesCache(nameMap);
+        setCollectionMetaCache(metaMap);
       }
     } catch (err) {
       setHasError(true);
@@ -287,7 +294,7 @@ export function CollectionsTab({
     } finally {
       setIsLoading(false);
     }
-  }, [restrictToKbIds, setCollectionNamesCache]);
+  }, [restrictToKbIds, setCollectionNamesCache, setCollectionMetaCache]);
 
   const loadMoreApps = useCallback(async () => {
     if (!rootsListMeta?.hasMore || loadingMoreApps) return;
@@ -312,10 +319,13 @@ export function CollectionsTab({
       setRootsListMeta((prev) => mergeRootsListMeta(res, res.knowledgeBases.length, prev));
       if (newItems.length > 0) {
         const nameMap: Record<string, string> = {};
+        const metaMap: Record<string, { name: string; nodeType: string; connector: string }> = {};
         newItems.forEach((item) => {
           nameMap[item.id] = item.name;
+          metaMap[item.id] = { name: item.name, nodeType: item.nodeType, connector: item.connector ?? '' };
         });
         setCollectionNamesCache(nameMap);
+        setCollectionMetaCache(metaMap);
       }
     } catch (err) {
       setHasError(true);
@@ -323,7 +333,7 @@ export function CollectionsTab({
     } finally {
       setLoadingMoreApps(false);
     }
-  }, [rootsListMeta, loadingMoreApps, setCollectionNamesCache]);
+  }, [rootsListMeta, loadingMoreApps, setCollectionNamesCache, setCollectionMetaCache]);
 
   useEffect(() => {
     fetchCollections();
@@ -366,8 +376,13 @@ export function CollectionsTab({
       loadedChildrenRef.current.add(row.id);
       if (kids.length > 0) {
         const kidNames: Record<string, string> = {};
-        for (const k of kids) kidNames[k.id] = k.name;
+        const kidMeta: Record<string, { name: string; nodeType: string; connector: string }> = {};
+        for (const k of kids) {
+          kidNames[k.id] = k.name;
+          kidMeta[k.id] = { name: k.name, nodeType: 'recordGroup', connector: row.connector ?? 'KB' };
+        }
         setCollectionNamesCache(kidNames);
+        setCollectionMetaCache(kidMeta);
       }
     } catch {
       setChildrenErrorByRootId((prev) => ({
@@ -382,7 +397,7 @@ export function CollectionsTab({
         return next;
       });
     }
-  }, [setCollectionNamesCache, t]);
+  }, [setCollectionNamesCache, setCollectionMetaCache, t]);
 
   // When in 'collections' mode, auto-fetch KB children sequentially on root list change.
   // Sequential processing avoids bursting N parallel API calls for workspaces with many roots.
@@ -440,8 +455,13 @@ export function CollectionsTab({
         }));
         if (newKids.length > 0) {
           const kidNames: Record<string, string> = {};
-          for (const k of newKids) kidNames[k.id] = k.name;
+          const kidMeta: Record<string, { name: string; nodeType: string; connector: string }> = {};
+          for (const k of newKids) {
+            kidNames[k.id] = k.name;
+            kidMeta[k.id] = { name: k.name, nodeType: 'recordGroup', connector: row.connector ?? 'KB' };
+          }
           setCollectionNamesCache(kidNames);
+          setCollectionMetaCache(kidMeta);
         }
       } catch {
         setChildrenErrorByRootId((prev) => ({
@@ -452,7 +472,7 @@ export function CollectionsTab({
         setLoadingMoreRootId(null);
       }
     },
-    [childrenMetaByRootId, loadingChildrenRootIds, loadingMoreRootId, setCollectionNamesCache, t]
+    [childrenMetaByRootId, loadingChildrenRootId, loadingMoreRootId, setCollectionNamesCache, setCollectionMetaCache, t]
   );
 
   const toggleExpanded = useCallback(

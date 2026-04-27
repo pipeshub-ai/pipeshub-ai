@@ -208,6 +208,18 @@ export interface ChatKnowledgeFilters {
   kb: string[];
 }
 
+export interface AppliedFilterNode {
+  id: string;
+  name: string;
+  nodeType: string;
+  connector: string;
+}
+
+export interface AppliedFilters {
+  apps: AppliedFilterNode[];
+  kb: AppliedFilterNode[];
+}
+
 /** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
 export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): {
   apps: string[];
@@ -419,6 +431,7 @@ export interface ConversationMessage {
   createdAt: string;
   updatedAt: string;
   feedback: Record<string, unknown>[];
+  appliedFilters?: AppliedFilters;
 }
 
 export interface ConversationCompleteData {
@@ -480,6 +493,7 @@ export interface StreamChatRequest {
     apps: string[];
     kb: string[];
   };
+  appliedFilters?: AppliedFilters;
   conversationId?: string;
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
