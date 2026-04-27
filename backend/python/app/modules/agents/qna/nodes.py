@@ -6449,7 +6449,11 @@ async def respond_node(
         from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
         _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
         qna_content, _ref_mapper = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper, has_sql_connector=state.get("has_sql_connector", False) and state.get("has_sql_knowledge", False)
+            final_results, virtual_record_map, user_data, query, "json",
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            ref_mapper=_ref_mapper,
+            from_tool=False,
+            has_sql_connector=state.get("has_sql_connector", False) and state.get("has_sql_knowledge", False),
         )
         state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content

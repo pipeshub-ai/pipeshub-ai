@@ -18,6 +18,7 @@ class config_node_constants(Enum):
     STORAGE = "/services/storage"
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
+    VECTOR_COLLECTIONS = "/services/vectorCollections"
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"

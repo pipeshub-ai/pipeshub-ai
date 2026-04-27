@@ -101,3 +101,13 @@ class IVectorDBService(ABC):
     ) -> None:
         """Upsert points"""
         raise NotImplementedError("upsert() is not implemented")
+
+    @abstractmethod
+    async def delete_points(
+        self,
+        collection_name: str,
+        filter: Filter,
+    ) -> None:
+        """Delete points matching ``filter``."""
+        raise NotImplementedError("delete_points() is not implemented")
+

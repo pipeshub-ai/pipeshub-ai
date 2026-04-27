@@ -10,6 +10,7 @@ from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.aimodels import llm_likely_accepts_vision_content
 from app.utils.chat_helpers import CitationRefMapper
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
@@ -527,7 +528,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": None,
-        "is_multimodal_llm": False,
+        "is_multimodal_llm": llm_likely_accepts_vision_content(llm),
         "citation_ref_mapper": None,
 
         # Reflection and retry fields (for intelligent error recovery)

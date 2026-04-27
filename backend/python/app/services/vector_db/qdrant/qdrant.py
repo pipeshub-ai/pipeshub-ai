@@ -1,3 +1,4 @@
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple, Union
@@ -23,7 +24,9 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.const.const import (
+    VECTOR_DB_COLLECTION_NAME,
+)
 from app.services.vector_db.interface.vector_db import FilterValue, IVectorDBService
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
@@ -453,18 +456,28 @@ class QdrantService(IVectorDBService):
             f"(throughput: {throughput:.1f} points/s, avg: {elapsed_time/total_points*1000:.2f}ms per point)"
         )
 
-    def delete_points(
+    async def delete_points(
         self,
         collection_name: str,
         filter: Filter,
     ) -> None:
-        """Delete points"""
+        """Delete points matching ``filter``.
+
+        ``AsyncQdrantClient.delete`` is async; calling it without ``await``
+        schedules nothing and silently skips deletion.
+        """
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        self.client.delete(
-            collection_name=collection_name,
-            points_selector=FilterSelector(
-                filter=filter
-            ),
-        )
+        selector = FilterSelector(filter=filter)
+        if self.is_async:
+            await self.client.delete(  # type: ignore[misc]
+                collection_name=collection_name,
+                points_selector=selector,
+            )
+        else:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=selector,
+            )
         logger.info(f"✅ Deleted points from collection '{collection_name}'")
+

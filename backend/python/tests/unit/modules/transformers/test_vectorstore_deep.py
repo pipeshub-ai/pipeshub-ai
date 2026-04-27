@@ -875,10 +875,10 @@ class TestDeleteEmbeddings:
     async def test_success(self):
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(return_value={"filter": {}})
-        vs.vector_db_service.delete_points = MagicMock()
+        vs.vector_db_service.delete_points = AsyncMock()
         await vs.delete_embeddings("vr-1")
         vs.vector_db_service.filter_collection.assert_awaited_once()
-        vs.vector_db_service.delete_points.assert_called_once()
+        vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
@@ -953,6 +953,16 @@ class TestProcessImageEmbeddings:
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
         await vs._process_image_embeddings([], [])
         vs._process_image_embeddings_bedrock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_azure_ai_provider_routing(self):
+        """azureAI routes to the Azure AI Inference handler, not Cohere SDK."""
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.AZURE_AI.value
+        vs._process_image_embeddings_azure_ai = AsyncMock(return_value=[MagicMock()])
+        result = await vs._process_image_embeddings([{"metadata": {}}], ["data:image/png;base64,abc"])
+        vs._process_image_embeddings_azure_ai.assert_awaited_once()
 
 
 # ===================================================================
@@ -1556,7 +1566,9 @@ class TestIndexDocumentsExceptions:
             "app.modules.transformers.vectorstore.get_llm",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            # Inner try/except wraps _create_embeddings errors as
+            # EmbeddingError (subclass of IndexingError).
+            with pytest.raises(IndexingError, match="Failed to create or store embeddings"):
                 await vs.index_documents(
                     BlocksContainer(blocks=[text_block], block_groups=[]),
                     "org-1", "rec-1", "vr-1", "text/plain",

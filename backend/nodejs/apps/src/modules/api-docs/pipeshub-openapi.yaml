@@ -4799,6 +4799,100 @@ components:
         data:
           $ref: '#/components/schemas/AIModelProviderConfig'
 
+    EmbeddingHealthCheckErrorDetails:
+      type: object
+      description: |
+        Structured diagnostics returned when an embedding-configuration change is
+        rejected because the target model is incompatible with the vector
+        collection that already exists. At least one of <code>identity_source</code>
+        is always present; the other keys depend on what the backend could
+        resolve at rejection time.
+      properties:
+        identity_source:
+          type: string
+          enum: [collection, config, unknown]
+          description: |
+            How the "currently indexed" embedding identity was determined.
+            <ul>
+              <li><code>collection</code> — read from a signature stored on the vector collection itself (authoritative).</li>
+              <li><code>config</code> — derived from the previously-saved AI_MODELS config (best-effort fallback for pre-signature collections).</li>
+              <li><code>unknown</code> — neither source was available; the change is refused because compatibility cannot be proven.</li>
+            </ul>
+        existing_provider:
+          type: string
+          nullable: true
+          description: Provider of the embedding model that built the existing collection, if known.
+          example: "openai"
+        existing_model:
+          type: string
+          nullable: true
+          description: Model identifier (normalized, lowercase, no "models/" prefix) of the embedding model that built the existing collection, if known.
+          example: "text-embedding-3-small"
+        existing_vector_size:
+          type: integer
+          description: Vector dimension of the existing collection. Present on dimension-mismatch rejections.
+          example: 1536
+        existing_is_multimodal:
+          type: boolean
+          description: Present only when the existing collection signature records the multimodal flag and the new config flips it.
+        new_provider:
+          type: string
+          nullable: true
+          description: Provider the caller is trying to switch to.
+          example: "ollama"
+        new_model:
+          type: string
+          nullable: true
+          description: Model identifier the caller is trying to switch to (normalized).
+          example: "nomic-embed-text"
+        new_embedding_size:
+          type: integer
+          description: Vector dimension produced by the new model. Present on dimension-mismatch rejections.
+          example: 768
+        new_is_multimodal:
+          type: boolean
+          description: Multimodal flag on the new configuration. Present when the signature-aware branch detects a multimodal toggle flip.
+        points_count:
+          type: integer
+          description: Number of user-indexed chunks currently in the collection (excluding the signature sentinel).
+          example: 1243
+
+    EmbeddingHealthCheckError:
+      type: object
+      description: |
+        Error payload returned by the Python embedding health check when the
+        proposed embedding configuration is incompatible with the existing
+        vector collection. Surfaced through the Configuration Manager AI-model
+        provider endpoints (<code>POST /configurationManager/ai-models/providers</code>,
+        <code>PUT /configurationManager/ai-models/providers/{modelType}/{modelKey}</code>)
+        when the upstream health check rejects the change.<br><br>
+        Typical rejection reasons:<br>
+        <ul>
+          <li>Vector dimension mismatch between the new model and the existing collection.</li>
+          <li>Same dimension but a different embedding provider/model — different models produce incompatible vector spaces.</li>
+          <li>The <code>isMultimodal</code> flag was toggled on a model that previously indexed in the other mode.</li>
+          <li>The existing collection has indexed data but neither a stored signature nor a prior config can prove which model built it.</li>
+        </ul>
+      properties:
+        status:
+          type: string
+          enum: [error, "not healthy"]
+          description: Error indicator. <code>"not healthy"</code> is emitted by the policy-rejection branch for backward compatibility.
+        message:
+          type: string
+          description: Human-readable explanation, including remediation guidance (re-index vs. revert to the original model).
+          example: |
+            1243 chunk(s) are already indexed using provider='openai', model='text-embedding-3-small' (vector dimension 1536). The selected model 'nomic-embed-text' (provider: 'ollama') produces vectors of dimension 768, which is incompatible. Please either switch back to the exact embedding model that was originally used to build this index, or re-index your documents with the new model.
+        error:
+          type: string
+          description: Alternate error field used by the policy-rejection branch in place of <code>message</code>.
+        details:
+          $ref: '#/components/schemas/EmbeddingHealthCheckErrorDetails'
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch timestamp in milliseconds when the rejection was produced.
+
     # ==================== CRAWLING MANAGER SCHEMAS ====================
     CrawlingScheduleType:
       type: string
@@ -19906,7 +20000,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
-          description: Invalid configuration or health check failed
+          description: |
+            Invalid configuration or health check failed. When the failure
+            comes from the embedding health check (e.g. the proposed model is
+            incompatible with the existing vector collection), the response
+            body conforms to <code>EmbeddingHealthCheckError</code>.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingHealthCheckError'
         '401':
           description: Unauthorized
         '403':
@@ -19945,7 +20047,15 @@ paths:
         '200':
           description: AI model provider updated
         '400':
-          description: Invalid configuration
+          description: |
+            Invalid configuration or health check failed. When the failure
+            comes from the embedding health check (e.g. the proposed model is
+            incompatible with the existing vector collection), the response
+            body conforms to <code>EmbeddingHealthCheckError</code>.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingHealthCheckError'
         '401':
           description: Unauthorized
         '403':
