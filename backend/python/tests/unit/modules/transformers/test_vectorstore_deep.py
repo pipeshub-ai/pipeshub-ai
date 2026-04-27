@@ -794,7 +794,33 @@ class TestCreateEmbeddingsDeeper:
 
     @pytest.mark.asyncio
     async def test_image_points_always_stored(self):
-        """Image points are always passed to store, even if empty."""
+        """_store_image_points is still called when embedding returns points;
+        when it returns empty *and* no caption recovery runs, EmbeddingError is raised."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from unittest.mock import MagicMock
+
+        vs = _make_vectorstore()
+        vs.delete_embeddings = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+        fake_point = MagicMock()  # represents a Qdrant PointStruct
+        vs._process_image_embeddings = AsyncMock(return_value=[fake_point])
+        vs._store_image_points = AsyncMock()
+
+        chunks = [
+            {"image_uri": "data:image/png;base64,abc", "metadata": {"virtualRecordId": "vr-1"}},
+        ]
+
+        await vs._create_embeddings(chunks, "rec-1", "vr-1")
+
+        vs._store_image_points.assert_awaited_once_with([fake_point])
+
+    @pytest.mark.asyncio
+    async def test_image_points_zero_raises_embedding_error(self):
+        """When all image chunks produce 0 Qdrant points and no VLM recovery
+        adds text, _create_embeddings must raise EmbeddingError so the job
+        does not record a false success."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
@@ -805,9 +831,10 @@ class TestCreateEmbeddingsDeeper:
             {"image_uri": "data:image/png;base64,abc", "metadata": {"virtualRecordId": "vr-1"}},
         ]
 
-        await vs._create_embeddings(chunks, "rec-1", "vr-1")
+        with pytest.raises(EmbeddingError, match="Azure deployment name"):
+            await vs._create_embeddings(chunks, "rec-1", "vr-1")
 
-        # Store is always called for image chunks, even with empty points
+        # _store_image_points is still called even when empty
         vs._store_image_points.assert_awaited_once_with([])
 
 

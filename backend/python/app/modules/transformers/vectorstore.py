@@ -2043,14 +2043,15 @@ class VectorStore(Transformer):
             if not chunks:
                 raise EmbeddingError("No chunks provided for embedding creation")
 
-            # Separate chunks by type
+            # Separate chunks by type: image chunks are plain dicts,
+            # text/table chunks are LangChain Document objects.
             langchain_document_chunks = []
             image_chunks = []
             for chunk in chunks:
-                if isinstance(chunk, Document):
-                    langchain_document_chunks.append(chunk)
-                else:
+                if isinstance(chunk, dict):
                     image_chunks.append(chunk)
+                else:
+                    langchain_document_chunks.append(chunk)
 
             await self.delete_embeddings(virtual_record_id)
 
@@ -2646,8 +2647,8 @@ class VectorStore(Transformer):
                     # ``gemini-embedding-001``) would lose the image blocks
                     # on every reconciliation until they either fix the
                     # config or re-index. Wire the same fallback in.
-                    langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
-                    image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
+                    langchain_docs = [d for d in documents_to_embed if not isinstance(d, dict)]
+                    image_chunks = [d for d in documents_to_embed if isinstance(d, dict)]
 
                     if image_chunks:
                         image_base64s = [c.get("image_uri") for c in image_chunks]

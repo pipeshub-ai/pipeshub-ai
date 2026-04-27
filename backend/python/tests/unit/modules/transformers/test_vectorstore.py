@@ -1583,11 +1583,13 @@ class TestCreateEmbeddings:
     @pytest.mark.asyncio
     async def test_mixed_document_and_image_chunks(self):
         """Should process both document and image chunks."""
+        from unittest.mock import MagicMock
         from langchain_core.documents import Document
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
+        fake_point = MagicMock()  # represents a Qdrant PointStruct
+        vs._process_image_embeddings = AsyncMock(return_value=[fake_point])
         vs._store_image_points = AsyncMock()
 
         doc = Document(page_content="text", metadata={})

@@ -401,29 +401,21 @@ class TestNativePathsEmitCleanPoints:
 # ===================================================================
 
 class TestSignatureIsMultimodal:
-    def test_build_signature_includes_flag_when_known(self):
-        from app.modules.transformers.vectorstore import _build_embedding_signature
+    """Tests for ``_signatures_match`` around the ``is_multimodal`` flag.
 
-        sig = _build_embedding_signature(
-            "cohere", "embed-v4.0", 1024, is_multimodal=True
-        )
-        assert sig["is_multimodal"] is True
-
-    def test_build_signature_omits_flag_when_unknown(self):
-        from app.modules.transformers.vectorstore import _build_embedding_signature
-
-        sig = _build_embedding_signature("cohere", "embed-v3", 1024)
-        assert "is_multimodal" not in sig
+    ``_build_embedding_signature`` was removed; signatures are now written
+    directly via ``set_collection_spec``.  These tests construct the stored
+    dict inline, mirroring the shape that ``set_collection_spec`` produces.
+    """
 
     def test_signatures_match_when_flags_agree(self):
-        from app.modules.transformers.vectorstore import (
-            _build_embedding_signature,
-            _signatures_match,
-        )
+        from app.modules.transformers.vectorstore import _signatures_match
 
-        stored = _build_embedding_signature(
-            "gemini", "gemini-embedding-2-preview", 3072, is_multimodal=True
-        )
+        stored = {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "is_multimodal": True,
+        }
 
         assert _signatures_match(
             stored=stored,
@@ -433,18 +425,16 @@ class TestSignatureIsMultimodal:
         )
 
     def test_signatures_mismatch_on_multimodal_flip(self):
-        """Same provider/model/dim, but the ``isMultimodal`` flag toggled
-        from True to False must be caught as a mismatch — the text-only
-        and multimodal modes of the same model produce vectors that
-        aren't interchangeable."""
-        from app.modules.transformers.vectorstore import (
-            _build_embedding_signature,
-            _signatures_match,
-        )
+        """Same provider/model, but the ``isMultimodal`` flag toggled from
+        True → False must be detected as a mismatch — the two modes produce
+        vectors that are not interchangeable."""
+        from app.modules.transformers.vectorstore import _signatures_match
 
-        stored = _build_embedding_signature(
-            "cohere", "embed-v4.0", 1024, is_multimodal=True
-        )
+        stored = {
+            "embedding_provider": "cohere",
+            "embedding_model": "embed-v4.0",
+            "is_multimodal": True,
+        }
 
         assert not _signatures_match(
             stored=stored,
@@ -456,12 +446,13 @@ class TestSignatureIsMultimodal:
     def test_missing_flag_treated_as_unknown(self):
         """Legacy signatures written before the flag existed must not
         look like a mismatch when the new side does know the flag."""
-        from app.modules.transformers.vectorstore import (
-            _build_embedding_signature,
-            _signatures_match,
-        )
+        from app.modules.transformers.vectorstore import _signatures_match
 
-        stored = _build_embedding_signature("cohere", "embed-v3", 1024)  # no flag
+        # Signature written without the is_multimodal field (legacy)
+        stored = {
+            "embedding_provider": "cohere",
+            "embedding_model": "embed-v3",
+        }
 
         assert _signatures_match(
             stored=stored,
@@ -531,7 +522,7 @@ class TestProcessImageEmbeddingsAzureAi:
 
     @pytest.mark.asyncio
     async def test_raises_when_endpoint_missing(self):
-        from app.modules.indexing.errors import EmbeddingError
+        from app.exceptions.indexing_exceptions import EmbeddingError
 
         vs = _make_vectorstore()
         vs.endpoint = None
