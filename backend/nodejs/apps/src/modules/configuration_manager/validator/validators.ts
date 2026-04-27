@@ -325,14 +325,13 @@ export const atlassianCredentialsSchema = z.object({
   }),
 });
 
-
 export const microsoftConnectorCredentialsSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Client ID is required' }),
     clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
     tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' })
-  })
+    hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
+  }),
 });
 
 export const sharepointCredentialsSchema = z.object({
@@ -342,8 +341,8 @@ export const sharepointCredentialsSchema = z.object({
       clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
       tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
       sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
-      hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' })
-    })
+      hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
+    }),
 });
 
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;

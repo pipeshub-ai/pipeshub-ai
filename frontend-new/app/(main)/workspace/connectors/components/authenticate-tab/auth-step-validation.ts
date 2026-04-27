@@ -19,23 +19,19 @@ export function visibleAuthSchemaFields(
   });
 }
 
-function valueMissingForField(
-  value: unknown,
-  field: AuthSchemaField & { fieldType?: string }
-): boolean {
-  const ft = (field as { fieldType?: string }).fieldType;
-  if (ft === 'CHECKBOX') {
+/** Minimal shape for `valueMissingForField`; `fieldType` is optional on some wire schemas (e.g. filters). */
+type FieldTypeHint = { fieldType?: string };
+
+function valueMissingForField(value: unknown, field: FieldTypeHint): boolean {
+  const ft = field.fieldType;
+  // Auth uses CHECKBOX for booleans; sync/filter schemas use BOOLEAN — neither is "empty" like ''.
+  if (ft === 'CHECKBOX' || ft === 'BOOLEAN') {
     return false;
   }
   if (value === undefined || value === null) return true;
   if (typeof value === 'string' && value.trim() === '') return true;
   if (Array.isArray(value) && value.length === 0) return true;
   return false;
-}
-
-function fieldTypeIsCheckboxAuthField(field: AuthSchemaField): boolean {
-  // Auth schema uses CHECKBOX for booleans; AuthSchemaField has no 'BOOLEAN' (see types.ts).
-  return field.fieldType === 'CHECKBOX';
 }
 
 /**
@@ -46,23 +42,22 @@ export function collectRequiredAuthFieldErrors(
   fields: AuthSchemaField[],
   formDataAuth: Record<string, unknown>,
   messageFor: (field: AuthSchemaField) => string,
-  messageWhenRequiredCheckboxMustBeTrue?: (field: AuthSchemaField) => string
+  mustBeTrueMessage?: (field: AuthSchemaField) => string
 ): Record<string, string> {
   const out: Record<string, string> = {};
   const mustBeTrue =
-    messageWhenRequiredCheckboxMustBeTrue ??
-    ((f: AuthSchemaField) => `${f.displayName} must be true`);
+    mustBeTrueMessage ?? ((f: AuthSchemaField) => `${f.displayName} must be true`);
 
   for (const field of fields) {
     if (!field.required) continue;
-    if (fieldTypeIsCheckboxAuthField(field)) {
+    if (field.fieldType === 'CHECKBOX') {
       if (formDataAuth[field.name] !== true) {
         out[field.name] = mustBeTrue(field);
       }
       continue;
     }
     const v = formDataAuth[field.name];
-    if (!valueMissingForField(v, field as AuthSchemaField & { fieldType?: string })) continue;
+    if (!valueMissingForField(v, field)) continue;
     out[field.name] = messageFor(field);
   }
   return out;

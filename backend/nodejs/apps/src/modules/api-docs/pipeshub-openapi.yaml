@@ -4584,8 +4584,10 @@ components:
           description: Microsoft/Azure tenant ID
         hasAdminConsent:
           type: boolean
-          enum: [true]
-          description: Must be true; Microsoft admin consent is required before saving credentials
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     SharePointConfig:
       type: object
@@ -4611,8 +4613,10 @@ components:
           description: SharePoint domain (e.g., 'mycompany.sharepoint.com')
         hasAdminConsent:
           type: boolean
-          enum: [true]
-          description: Must be true; Microsoft admin consent is required before saving credentials
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     # URL Configuration Schemas
     URLConfig:

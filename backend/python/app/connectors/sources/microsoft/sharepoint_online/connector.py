@@ -546,14 +546,12 @@ class SharePointConnector(BaseConnector):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
             raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
-        has_admin_consent = credentials_config.get("hasAdminConsent", False)
-
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
             sharepoint_domain=normalized_sharepoint_domain,
-            has_admin_consent=has_admin_consent,
+            has_admin_consent=True,
         )
 
         # Store class attributes
