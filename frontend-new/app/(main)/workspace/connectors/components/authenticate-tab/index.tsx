@@ -9,6 +9,7 @@ import {
   isNoneAuthType,
   isOAuthType,
   shouldRenderOAuthAuthSchemaField,
+  resolveOAuthFieldVisibility,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
 import { OAuthAppSelector, OAuthAppInUseReadonly } from './oauth-app-selector';
@@ -51,14 +52,10 @@ export function AuthenticateTab() {
     () => resolveAuthFields(connectorSchema?.auth, selectedAuthType),
     [connectorSchema, selectedAuthType]
   );
-  const linkedOAuthAppId = useMemo(() => {
-    const fromForm = (formData.auth.oauthConfigId as string | undefined)?.trim();
-    if (fromForm) return fromForm;
-    const auth = connectorConfig?.config?.auth as { oauthConfigId?: string } | undefined;
-    return typeof auth?.oauthConfigId === 'string' ? auth.oauthConfigId.trim() : '';
-  }, [formData.auth.oauthConfigId, connectorConfig?.config?.auth]);
-
-  const hasLinkedOAuthApp = Boolean(linkedOAuthAppId);
+  const { linkedOAuthAppId, oauthFieldVisibility } = useMemo(
+    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin),
+    [formData.auth, connectorConfig, isCreateMode, isAdmin]
+  );
 
   const authFieldsForForm = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return currentSchemaFields;
@@ -68,13 +65,7 @@ export function AuthenticateTab() {
   const visibleAuthFields = useMemo(() => {
     return authFieldsForForm.filter((field) => {
       if (selectedAuthType === 'OAUTH') {
-        if (
-          !shouldRenderOAuthAuthSchemaField(field.name, {
-            isCreateMode,
-            isAdmin,
-            hasLinkedOAuthApp,
-          })
-        ) {
+        if (!shouldRenderOAuthAuthSchemaField(field.name, oauthFieldVisibility)) {
           return false;
         }
       }
@@ -83,14 +74,7 @@ export function AuthenticateTab() {
       }
       return true;
     });
-  }, [
-    authFieldsForForm,
-    selectedAuthType,
-    isCreateMode,
-    isAdmin,
-    hasLinkedOAuthApp,
-    conditionalDisplay,
-  ]);
+  }, [authFieldsForForm, selectedAuthType, oauthFieldVisibility, conditionalDisplay]);
 
   const oauthCredentialFieldNames = useMemo(() => {
     const auth = connectorSchema?.auth;

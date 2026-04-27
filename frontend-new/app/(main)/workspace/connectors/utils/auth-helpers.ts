@@ -2,6 +2,8 @@
 // Auth type helper utilities
 // ========================================
 
+import type { ConnectorConfig } from '../types';
+
 function normalizeAuthTypeKey(authType: string): string {
   return (authType || '').toUpperCase();
 }
@@ -32,6 +34,25 @@ export function resolveConnectorInstanceAuthType(
   if (fromConfig) return fromConfig;
   const fromInstance = typeof instance?.authType === 'string' ? instance.authType.trim() : '';
   return fromInstance;
+}
+
+/**
+ * Resolves the linked OAuth app registration id: prefer the in-memory auth form, else
+ * `config.auth` from GET `/config` (e.g. before the form is hydrated or when they diverge).
+ * Must stay aligned with the Authenticate tab and with save-time validation
+ * (`ConnectorPanel.resolveAuthenticateOrReturn`).
+ */
+export function resolveLinkedOAuthAppId(
+  formAuth: { oauthConfigId?: unknown } | undefined,
+  connectorConfig: ConnectorConfig | null | undefined
+): string {
+  if (typeof formAuth?.oauthConfigId === 'string' && formAuth.oauthConfigId.trim() !== '') {
+    return formAuth.oauthConfigId.trim();
+  }
+  // Flat OAuth registration id on `config.auth` (not on ConnectorAuthConfig typings)
+  const auth = connectorConfig?.config?.auth as { oauthConfigId?: string } | undefined;
+  const id = auth?.oauthConfigId;
+  return typeof id === 'string' ? id.trim() : '';
 }
 
 /** Check if auth type uses credential fields (show form fields) */
@@ -180,6 +201,28 @@ export interface OAuthAuthFieldVisibilityContext {
   isCreateMode: boolean;
   isAdmin: boolean | null;
   hasLinkedOAuthApp: boolean;
+}
+
+/**
+ * Single source for {@link OAuthAuthFieldVisibilityContext} and the linked registration id
+ * (Authenticate tab rendering, `visibleAuthSchemaFields` on save, `oauthAppSelectionError`).
+ * Uses one {@link resolveLinkedOAuthAppId} pass so render and validation cannot drift.
+ */
+export function resolveOAuthFieldVisibility(
+  formAuth: { oauthConfigId?: unknown } | undefined,
+  connectorConfig: ConnectorConfig | null | undefined,
+  isCreateMode: boolean,
+  isAdmin: boolean | null
+): { linkedOAuthAppId: string; oauthFieldVisibility: OAuthAuthFieldVisibilityContext } {
+  const linkedOAuthAppId = resolveLinkedOAuthAppId(formAuth, connectorConfig);
+  return {
+    linkedOAuthAppId,
+    oauthFieldVisibility: {
+      isCreateMode,
+      isAdmin,
+      hasLinkedOAuthApp: Boolean(linkedOAuthAppId),
+    },
+  };
 }
 
 /**

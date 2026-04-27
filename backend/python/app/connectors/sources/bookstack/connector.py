@@ -835,7 +835,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info("No app roles were processed.")
 
 
-    def _parse_timestamp(self, timestamp_str: str) -> Optional[int]:
+    def _parse_timestamp(self, timestamp_str: Optional[str]) -> Optional[int]:
         """Helper to parse timestamp string to epoch milliseconds."""
         if not timestamp_str:
             return None
@@ -1753,7 +1753,6 @@ class BookStackConnector(BaseConnector):
             # 2. Convert timestamp
             updated_at_timestamp_ms = self._parse_timestamp(page.get("updated_at"))
             created_at_timestamp_ms = self._parse_timestamp(page.get("created_at"))
-
 
             # 3. Create the FileRecord object
             file_record = FileRecord(

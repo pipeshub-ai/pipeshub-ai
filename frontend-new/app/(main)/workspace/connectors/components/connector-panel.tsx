@@ -24,6 +24,7 @@ import {
   isOAuthType,
   isConnectorConfigAuthenticated,
   isConnectorInstanceAuthenticatedForUi,
+  resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
 import { trimConnectorConfig } from '../utils/trim-config';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
@@ -327,23 +328,18 @@ export function ConnectorPanel() {
       setSaveError(t('workspace.connectors.loadingConfig'));
       return false;
     }
-    const oauthConfigIdStr =
-      typeof formData.auth.oauthConfigId === 'string'
-        ? formData.auth.oauthConfigId.trim()
-        : '';
-    const hasLinkedOAuthApp = Boolean(oauthConfigIdStr);
+    const { linkedOAuthAppId: oauthConfigIdStr, oauthFieldVisibility } = resolveOAuthFieldVisibility(
+      formData.auth,
+      connectorConfig,
+      isCreateMode,
+      isAdmin
+    );
 
     const vFields = visibleAuthSchemaFields(
       connectorSchema.auth,
       selectedAuthType,
       conditionalDisplay,
-      selectedAuthType === 'OAUTH'
-        ? {
-            isCreateMode,
-            isAdmin,
-            hasLinkedOAuthApp,
-          }
-        : null
+      selectedAuthType === 'OAUTH' ? oauthFieldVisibility : null
     );
     const clearPatch: Record<string, null> = { oauthConfigId: null };
     for (const f of vFields) {
@@ -355,7 +351,7 @@ export function ConnectorPanel() {
 
     const oauthErrEarly = oauthAppSelectionError(
       selectedAuthType,
-      formData.auth.oauthConfigId,
+      oauthConfigIdStr,
       isProfileInitialized,
       isAdmin
     );
@@ -401,6 +397,7 @@ export function ConnectorPanel() {
     selectedAuthType,
     conditionalDisplay,
     formData.auth,
+    connectorConfig,
     isProfileInitialized,
     isAdmin,
     isCreateMode,
