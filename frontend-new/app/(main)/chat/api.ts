@@ -206,8 +206,8 @@ export const ChatApi = {
         timezone,
         currentTime: new Date().toISOString(),
         tools: [...(request.agentStreamTools ?? [])],
-        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
         filters: { apps, kb },
+        ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
       };
     } else {
       endpoint = request.conversationId

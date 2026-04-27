@@ -2,6 +2,7 @@ import {
   AIServiceResponse,
   IAgentConversation,
   IAIModel,
+  IAppliedFilterNode,
   IConversation,
   IConversationDocument,
   IMessage,
@@ -57,10 +58,14 @@ export const extractModelInfo = (
   };
 };
 
-export const buildUserQueryMessage = (query: string): IMessage => ({
+export const buildUserQueryMessage = (
+  query: string,
+  appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
+  ...(appliedFilters ? { appliedFilters } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });

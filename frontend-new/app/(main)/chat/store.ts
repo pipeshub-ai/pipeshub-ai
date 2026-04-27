@@ -209,6 +209,7 @@ interface ChatState {
 
   // ── Cache ──
   collectionNamesCache: Record<string, string>;
+  collectionMetaCache: Record<string, { name: string; nodeType: string; connector: string }>;
 
   // ── Search state ──
   searchResults: SearchResultItem[];
@@ -343,6 +344,7 @@ interface ChatState {
 
   // ── Cache actions ──
   setCollectionNamesCache: (cache: Record<string, string>) => void;
+  setCollectionMetaCache: (cache: Record<string, { name: string; nodeType: string; connector: string }>) => void;
 
   // ── Global reset ──
   reset: () => void;
@@ -411,6 +413,7 @@ const initialState = {
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
   expansionViewMode: 'inline' as 'inline' | 'overlay',
   collectionNamesCache: {} as Record<string, string>,
+  collectionMetaCache: {} as Record<string, { name: string; nodeType: string; connector: string }>,
 
   searchResults: [] as SearchResultItem[],
   searchQuery: '' as string,
@@ -717,6 +720,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               return { ...state.collectionNamesCache, ...patch };
             })(),
+            collectionMetaCache: (() => {
+              const patch: Record<string, { name: string; nodeType: string; connector: string }> = {};
+              for (const c of payload.connectors) {
+                patch[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+              }
+              for (const r of payload.knowledgeCollectionRows) {
+                patch[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+              }
+              return { ...state.collectionMetaCache, ...patch };
+            })(),
           }
         : {
             agentToolCatalogFullNames: [],
@@ -936,6 +949,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       collectionNamesCache: { ...state.collectionNamesCache, ...cache },
     })),
 
+  setCollectionMetaCache: (cache) =>
+    set((state) => ({
+      collectionMetaCache: { ...state.collectionMetaCache, ...cache },
+    })),
+
   // ── Reset ────────────────────────────────────────────────────────
 
   reset: () => {
@@ -991,7 +1009,7 @@ if (typeof window !== 'undefined') {
     'agentContextDisplayName',
     'agentContextAccess',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
-    'collectionNamesCache', 'conversationsVersion',
+    'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
   ] as const;
 
