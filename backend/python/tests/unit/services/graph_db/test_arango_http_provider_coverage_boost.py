@@ -5,9 +5,9 @@ Focus areas (previously uncovered):
 - ensure_all_team_with_users
 - add_user_to_all_team
 - ensure_team_app_edge
-- get_all_virtual_record_ids_for_knowledge
-- _get_all_virtual_ids_for_connector
-- _get_all_kb_virtual_ids
+- get_accessible_virtual_record_ids
+- _get_virtual_ids_for_connector
+- _get_kb_virtual_ids
 - get_record_by_issue_key (success path)
 """
 import logging
@@ -273,41 +273,42 @@ class TestEnsureTeamAppEdge:
 
 
 # ---------------------------------------------------------------------------
-# get_all_virtual_record_ids_for_knowledge
+# get_accessible_virtual_record_ids
 # ---------------------------------------------------------------------------
 
 
-class TestGetAllVirtualRecordIdsForKnowledge:
+class TestGetAccessibleVirtualRecordIds:
     @pytest.mark.asyncio
     async def test_no_inputs_returns_empty(self, provider):
-        result = await provider.get_all_virtual_record_ids_for_knowledge("org1")
+        provider._get_user_app_ids = AsyncMock(return_value=[])
+        result = await provider.get_accessible_virtual_record_ids("u1", "org1")
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_knowledge_base_prefix_connector_skipped(self, provider):
         """connector_id starting with 'knowledgeBase_' is filtered out, leaving no tasks."""
-        result = await provider.get_all_virtual_record_ids_for_knowledge(
-            "org1", connector_ids=["knowledgeBase_abc"]
+        provider._get_user_app_ids = AsyncMock(return_value=["knowledgeBase_abc"])
+        result = await provider.get_accessible_virtual_record_ids(
+            "u1", "org1", filters={"apps": ["knowledgeBase_abc"]}
         )
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_merges_results_across_tasks(self, provider):
         """Results from connector + kb paths are merged; first wins on duplicates."""
-        async def fake_connector(org, cid):
+        async def fake_connector(user, org, cid, metadata):
             return {"v1": "r1", "v2": "r2"}
 
-        async def fake_kb(org, kb_ids):
+        async def fake_kb(user, org, kb_ids, metadata):
             # v2 is a duplicate with a different recordId; existing mapping wins
             return {"v2": "OVERRIDE", "v3": "r3"}
 
-        provider._get_all_virtual_ids_for_connector = fake_connector
-        provider._get_all_kb_virtual_ids = fake_kb
+        provider._get_user_app_ids = AsyncMock(return_value=["c1"])
+        provider._get_virtual_ids_for_connector = fake_connector
+        provider._get_kb_virtual_ids = fake_kb
 
-        result = await provider.get_all_virtual_record_ids_for_knowledge(
-            "org1",
-            connector_ids=["c1"],
-            kb_ids=["kb1"],
+        result = await provider.get_accessible_virtual_record_ids(
+            "u1", "org1", filters={"apps": ["c1"], "kb": ["kb1"]}
         )
         assert result["v1"] == "r1"
         assert result["v2"] == "r2"  # first-wins
@@ -315,37 +316,31 @@ class TestGetAllVirtualRecordIdsForKnowledge:
 
     @pytest.mark.asyncio
     async def test_task_exceptions_are_tolerated(self, provider):
-        async def failing(org, cid):
+        async def failing(user, org, cid, metadata):
             raise RuntimeError("boom")
 
-        async def ok(org, kb_ids):
+        async def ok(user, org, kb_ids, metadata):
             return {"v1": "r1"}
 
-        provider._get_all_virtual_ids_for_connector = failing
-        provider._get_all_kb_virtual_ids = ok
+        provider._get_user_app_ids = AsyncMock(return_value=["c1"])
+        provider._get_virtual_ids_for_connector = failing
+        provider._get_kb_virtual_ids = ok
 
-        result = await provider.get_all_virtual_record_ids_for_knowledge(
-            "org1", connector_ids=["c1"], kb_ids=["kb1"]
+        result = await provider.get_accessible_virtual_record_ids(
+            "u1", "org1", filters={"apps": ["c1"], "kb": ["kb1"]}
         )
         assert result == {"v1": "r1"}
 
     @pytest.mark.asyncio
     async def test_top_level_exception_returns_empty(self, provider):
         """If an error occurs inside the try block, the method returns {}."""
-
-        # A non-string connector_id causes .startswith() to raise AttributeError
-        # inside the try block, which is caught and returns {}.
-        class NotAString:
-            pass
-
-        result = await provider.get_all_virtual_record_ids_for_knowledge(
-            "org1", connector_ids=[NotAString()], kb_ids=None
-        )
+        provider._get_user_app_ids = AsyncMock(side_effect=Exception("boom"))
+        result = await provider.get_accessible_virtual_record_ids("u1", "org1")
         assert result == {}
 
 
 # ---------------------------------------------------------------------------
-# _get_all_virtual_ids_for_connector
+# _get_virtual_ids_for_connector
 # ---------------------------------------------------------------------------
 
 
@@ -360,30 +355,30 @@ class TestGetAllVirtualIdsForConnector:
             {"virtualRecordId": "v3", "recordId": None},
             None,
         ])
-        result = await provider._get_all_virtual_ids_for_connector("org1", "c1")
+        result = await provider._get_virtual_ids_for_connector("u1", "org1", "c1")
         assert result == {"v1": "r1", "v2": "r2"}
 
     @pytest.mark.asyncio
     async def test_empty_results(self, provider):
         provider.execute_query = AsyncMock(return_value=[])
-        result = await provider._get_all_virtual_ids_for_connector("org1", "c1")
+        result = await provider._get_virtual_ids_for_connector("u1", "org1", "c1")
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_none_results(self, provider):
         provider.execute_query = AsyncMock(return_value=None)
-        result = await provider._get_all_virtual_ids_for_connector("org1", "c1")
+        result = await provider._get_virtual_ids_for_connector("u1", "org1", "c1")
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, provider):
         provider.execute_query = AsyncMock(side_effect=Exception("db error"))
-        result = await provider._get_all_virtual_ids_for_connector("org1", "c1")
+        result = await provider._get_virtual_ids_for_connector("u1", "org1", "c1")
         assert result == {}
 
 
 # ---------------------------------------------------------------------------
-# _get_all_kb_virtual_ids
+# _get_kb_virtual_ids
 # ---------------------------------------------------------------------------
 
 
@@ -394,19 +389,19 @@ class TestGetAllKbVirtualIds:
             {"virtualRecordId": "v1", "recordId": "r1"},
             {"virtualRecordId": "", "recordId": "rX"},  # filtered
         ])
-        result = await provider._get_all_kb_virtual_ids("org1", ["kb1", "kb2"])
+        result = await provider._get_kb_virtual_ids("u1", "org1", ["kb1", "kb2"])
         assert result == {"v1": "r1"}
 
     @pytest.mark.asyncio
     async def test_empty_results(self, provider):
         provider.execute_query = AsyncMock(return_value=[])
-        result = await provider._get_all_kb_virtual_ids("org1", ["kb1"])
+        result = await provider._get_kb_virtual_ids("u1", "org1", ["kb1"])
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, provider):
         provider.execute_query = AsyncMock(side_effect=Exception("db error"))
-        result = await provider._get_all_kb_virtual_ids("org1", ["kb1"])
+        result = await provider._get_kb_virtual_ids("u1", "org1", ["kb1"])
         assert result == {}
 
 

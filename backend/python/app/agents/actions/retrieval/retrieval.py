@@ -240,6 +240,7 @@ class Retrieval:
 
             logger_instance.debug(f"filter_groups: {filter_groups}")
 
+            logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
             results = await retrieval_service.search_with_filters(
                 queries=[search_query],
                 org_id=org_id,
@@ -247,7 +248,6 @@ class Retrieval:
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
                 graph_provider=graph_provider,
-                is_service_account=is_service_account,
             )
 
             if results is None:
