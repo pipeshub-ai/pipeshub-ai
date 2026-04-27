@@ -11,6 +11,7 @@ import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-pa
 import { QueryModePanel } from '@/chat/components/chat-panel/expansion-panels/query-mode-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
+import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
@@ -156,6 +157,8 @@ export function ChatInput({
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
+  const universalAgentStreamTools = useChatStore((s) => s.universalAgentStreamTools);
+  const universalAgentToolsLoading = useChatStore((s) => s.universalAgentToolsLoading);
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -209,6 +212,14 @@ export function ChatInput({
       (agentStreamToolsSel !== null &&
         agentToolCatalogLen > 0 &&
         (agentStreamToolsSel.length === 0 || agentStreamToolsSel.length < agentToolCatalogLen)));
+
+  /** Universal agent mode has an explicit tool selection (not null = "all tools"). */
+  const universalAgentResourcesCustomized =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentStreamTools !== null;
+
+  /** True when universal agent tool data is loading (disable send while loading). */
+  const isUniversalAgentLoading =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
@@ -458,7 +469,7 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = hasContent || activeMessageAction !== null;
+  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -501,6 +512,18 @@ export function ChatInput({
       setIsAgentResourcesPanelOpen(false);
     }
   }, [isAgentChat]);
+
+  // Close the collections panel when switching away from agent queryMode so
+  // the user doesn't see a stale universal-agent panel under a different mode.
+  const prevQueryModeRef = useRef(settings.queryMode);
+  useEffect(() => {
+    const prev = prevQueryModeRef.current;
+    prevQueryModeRef.current = settings.queryMode;
+    if (prev === 'agent' && settings.queryMode !== 'agent' && isCollectionsPanelOpen) {
+      setIsCollectionsPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+  }, [settings.queryMode, isCollectionsPanelOpen, setExpansionViewMode]);
 
   if (!showFullUI) {
     return (
@@ -869,7 +892,17 @@ export function ChatInput({
         >
           <AgentScopedResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : !isAgentChat && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+        <ChatInputExpansionPanel
+          open={isCollectionsPanelOpen}
+          onClose={() => {
+            setIsCollectionsPanelOpen(false);
+            setExpansionViewMode('inline');
+          }}
+        >
+          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+        </ChatInputExpansionPanel>
+      ) : !isAgentChat && settings.queryMode !== 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1072,9 +1105,23 @@ export function ChatInput({
               <Flex align="center" gap="1">
                 {/* Apps — assistant: collections; agent: connectors / collections / actions */}
                 {!isAgentChat ? (
-                  <Tooltip content={t('chat.connectorsTooltip')} side="top">
+                  <Tooltip
+                    content={
+                      settings.queryMode === 'agent'
+                        ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                        : t('chat.connectorsTooltip')
+                    }
+                    side="top"
+                  >
                     <IconButton
-                      variant={isCollectionsPanelOpen || selectedKbCount > 0 ? 'soft' : 'ghost'}
+                      variant={
+                        isCollectionsPanelOpen ||
+                        (settings.queryMode === 'agent'
+                          ? universalAgentResourcesCustomized
+                          : selectedKbCount > 0)
+                          ? 'soft'
+                          : 'ghost'
+                      }
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
@@ -1289,6 +1336,8 @@ export function ChatInput({
     >
       {isAgentChat ? (
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+      ) : settings.queryMode === 'agent' ? (
+        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : (
         <ConnectorsCollectionsPanel
           apps={settings.filters?.apps ?? []}

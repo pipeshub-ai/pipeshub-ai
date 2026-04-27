@@ -197,6 +197,30 @@ interface ChatState {
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
 
+  // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
+  /**
+   * Selected tool `fullName`s for universal agent streams. `null` = all tools; `[]` = none; explicit
+   * list = subset. Persists across turns in ASSISTANT_CTX and survives queryMode switches.
+   */
+  universalAgentStreamTools: string[] | null;
+  /** Every tool fullName from my-toolsets — drives "select all" and null expansion. */
+  universalAgentToolCatalogFullNames: string[];
+  /**
+   * Toolset groups for universal agent Actions tab (from GET /api/v1/toolsets/my-toolsets).
+   * Keyed by `instanceId` where present; `isAuthenticated` drives credential status display.
+   */
+  universalAgentToolGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>;
+  universalAgentToolsLoading: boolean;
+  universalAgentToolsError: string | null;
+
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
 
@@ -308,6 +332,24 @@ interface ChatState {
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
+  // ── Universal agent actions ──
+  setUniversalAgentStreamTools: (tools: string[] | null) => void;
+  /** Populate universal agent tool groups from my-toolsets. Pass null to clear. */
+  hydrateUniversalAgentResources: (payload: {
+    toolGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId: string;
+      iconPath?: string;
+      isAuthenticated: boolean;
+    }>;
+    toolCatalogFullNames: string[];
+  } | null) => void;
+  setUniversalAgentToolsLoading: (loading: boolean) => void;
+  setUniversalAgentToolsError: (error: string | null) => void;
+
   addPendingConversation: (slotId: string) => void;
   clearNewlyResolvedId: (conversationId: string) => void;
   resolvePendingConversation: (
@@ -393,6 +435,20 @@ const initialState = {
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
+
+  universalAgentStreamTools: null as string[] | null,
+  universalAgentToolCatalogFullNames: [] as string[],
+  universalAgentToolGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>,
+  universalAgentToolsLoading: false,
+  universalAgentToolsError: null as string | null,
 
   settings: {
     mode: 'chat' as ChatMode,
@@ -736,6 +792,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
+  setUniversalAgentStreamTools: (tools) => set({ universalAgentStreamTools: tools }),
+
+  hydrateUniversalAgentResources: (payload) =>
+    set(
+      payload
+        ? {
+            universalAgentToolGroups: payload.toolGroups,
+            universalAgentToolCatalogFullNames: payload.toolCatalogFullNames,
+            universalAgentToolsLoading: false,
+            universalAgentToolsError: null,
+          }
+        : {
+            universalAgentToolGroups: [],
+            universalAgentToolCatalogFullNames: [],
+            universalAgentStreamTools: null,
+            universalAgentToolsLoading: false,
+            universalAgentToolsError: null,
+          }
+    ),
+
+  setUniversalAgentToolsLoading: (loading) => set({ universalAgentToolsLoading: loading }),
+
+  setUniversalAgentToolsError: (error) => set({ universalAgentToolsError: error }),
+
   moveConversationToTop: (conversationId) =>
     set((state) => {
       let next = state.conversations;
@@ -990,6 +1070,11 @@ if (typeof window !== 'undefined') {
     'agentKnowledgeScope',
     'agentContextDisplayName',
     'agentContextAccess',
+    'universalAgentStreamTools',
+    'universalAgentToolCatalogFullNames',
+    'universalAgentToolGroups',
+    'universalAgentToolsLoading',
+    'universalAgentToolsError',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'collectionNamesCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',

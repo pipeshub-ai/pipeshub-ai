@@ -436,7 +436,7 @@ export const streamChat =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
@@ -450,6 +450,11 @@ export const streamChat =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      // For agent mode, forward the user-selected tool list so the backend
+      // can scope toolset loading to the selected instances.
+      if (agentMode) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -1468,7 +1473,7 @@ export const addMessageStream =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -1481,6 +1486,9 @@ export const addMessageStream =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      if (agentMode) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -2696,8 +2704,13 @@ async function regenerateAnswersInternal(
       existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
     );
 
+    // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
+    // so the regenerate request is routed to the correct backend endpoint and carries tools.
+    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
+    const isUniversalAgentRegen = regenIsAgentMode && !agentKey;
+
     // Prepare AI payload
-    const aiPayload = {
+    const aiPayload: Record<string, unknown> = {
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
@@ -2705,12 +2718,21 @@ async function regenerateAnswersInternal(
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
-      chatMode: req.body.chatMode || 'quick',
+      chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
+      timezone: req.body.timezone || null,
+      currentTime: req.body.currentTime || null,
     };
+    if (regenIsAgentMode) {
+      aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+    }
+
+    const regenEndpoint = isUniversalAgentRegen
+      ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
+      : config.buildAIEndpoint(appConfig, agentKey);
 
     const aiCommandOptions: AICommandOptions = {
-      uri: config.buildAIEndpoint(appConfig, agentKey),
+      uri: regenEndpoint,
       method: HttpMethod.POST,
       headers: {
         ...(req.headers as Record<string, string>),

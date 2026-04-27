@@ -708,9 +708,22 @@ export async function streamRegenerateForSlot(
     if (threadAgentId && slotAgentId !== threadAgentId) {
       useChatStore.getState().updateSlot(slotId, { threadAgentId });
     }
+    /** Strip `instanceId:` prefix added for UI multi-instance isolation. */
+    const stripInstancePrefix = (key: string) => {
+      const colon = key.indexOf(':');
+      return colon >= 0 ? key.slice(colon + 1) : key;
+    };
+
     if (threadAgentId) {
       const { chatMode } = buildStreamRequestModeFields(store.settings);
       const agentApiChatMode = streamChatModeToAgentApiChatMode(chatMode);
+      // Read agent tools from the store at regen time so the correct tool set
+      // is used even when the user changed the selection between turns.
+      const agentToolsSel = useChatStore.getState().agentStreamTools;
+      const agentToolCatalog = useChatStore.getState().agentToolCatalogFullNames;
+      const regenTools = [...new Set(
+        (agentToolsSel === null ? [...agentToolCatalog] : [...agentToolsSel]).map(stripInstancePrefix)
+      )];
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -721,16 +734,29 @@ export async function streamRegenerateForSlot(
           modelName: resolvedModel.modelName || resolvedModel.modelKey,
           modelProvider: resolvedModel.modelProvider ?? 'openAI',
           chatMode: agentApiChatMode,
+          tools: regenTools,
         }
       );
     } else {
       const { chatMode } = buildStreamRequestModeFields(store.settings);
+      // Universal agent mode: read current tool selection at regen time
+      const isUniversalAgent = store.settings.queryMode === 'agent';
+      const universalToolsSel = useChatStore.getState().universalAgentStreamTools;
+      const universalToolCatalog = useChatStore.getState().universalAgentToolCatalogFullNames;
+      // null → "all tools" (send full catalog), array → explicit subset, undefined → not an agent turn
+      // Strip instanceId prefix from internal keys before putting on the wire.
+      const regenStreamTools = isUniversalAgent
+        ? [...new Set(
+            (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
+          )]
+        : undefined;
       await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
         modelKey: resolvedModel.modelKey,
         modelName: resolvedModel.modelName,
         modelFriendlyName: resolvedModel.modelFriendlyName,
         chatMode,
         filters: buildAssistantApiFilters(store.settings.filters),
+        ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
       });
     }
   } catch (error) {
