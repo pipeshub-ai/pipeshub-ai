@@ -1,20 +1,33 @@
 import type { AuthSchemaField, ConnectorAuthConfig } from '../../types';
+import {
+  shouldRenderOAuthAuthSchemaField,
+  type OAuthAuthFieldVisibilityContext,
+} from '../../utils/auth-helpers';
 import { resolveAuthFields } from './helpers';
 
 /**
  * Auth fields shown in the Authenticate tab, aligned with
- * `AuthenticateTab` (excludes `oauthConfigId` for OAUTH) and `conditionalDisplay`.
+ * `AuthenticateTab` (excludes `oauthConfigId` for OAUTH), `conditionalDisplay`,
+ * and {@link shouldRenderOAuthAuthSchemaField} when `oauthVisibility` is passed for OAUTH.
  */
 export function visibleAuthSchemaFields(
   authConfig: ConnectorAuthConfig | undefined,
   selectedAuthType: string,
-  conditionalDisplay: Record<string, boolean>
+  conditionalDisplay: Record<string, boolean>,
+  oauthVisibility?: OAuthAuthFieldVisibilityContext | null
 ): AuthSchemaField[] {
   const fields = resolveAuthFields(authConfig, selectedAuthType);
   const withoutOauthId =
     selectedAuthType === 'OAUTH' ? fields.filter((f) => f.name !== 'oauthConfigId') : fields;
   return withoutOauthId.filter((f) => {
     if (conditionalDisplay[f.name] === false) return false;
+    if (
+      selectedAuthType === 'OAUTH' &&
+      oauthVisibility &&
+      !shouldRenderOAuthAuthSchemaField(f.name, oauthVisibility)
+    ) {
+      return false;
+    }
     return true;
   });
 }
