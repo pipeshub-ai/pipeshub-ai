@@ -1,7 +1,6 @@
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel
 
@@ -25,11 +24,11 @@ class ToolParameter:
     description: str
     required: bool = True
     default: Any = None
-    enum: list[Any] | None = None
-    items: dict | None = None  # For array types
-    properties: dict | None = None  # For object types
+    enum: Optional[List[Any]] = None
+    items: Optional[Dict] = None  # For array types
+    properties: Optional[Dict] = None  # For object types
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for ArangoDB storage"""
         return {
             "name": self.name,
@@ -42,7 +41,7 @@ class ToolParameter:
             "properties": self.properties
         }
 
-    def to_json_serializable_dict(self) -> dict[str, Any]:
+    def to_json_serializable_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dictionary for storage and transmission"""
         return {
             "name": self.name,
@@ -56,17 +55,17 @@ class ToolParameter:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'ToolParameter':
+    def from_dict(cls, data: Dict[str, Any]) -> 'ToolParameter':
         """Create ToolParameter from dictionary"""
         return cls(
             name=data.get("name", ""),
             type=data.get("type", ""),
             description=data.get("description", ""),
             required=data.get("required", True),
-            default=data.get("default"),
-            enum=data.get("enum"),
-            items=data.get("items"),
-            properties=data.get("properties")
+            default=data.get("default", None),
+            enum=data.get("enum", None),
+            items=data.get("items", None),
+            properties=data.get("properties", None)
         )
 
 @dataclass
@@ -76,18 +75,18 @@ class Tool:
     tool_name: str
     description: str  # User-friendly description for frontend (default)
     function: Callable[[Any], Any]
-    parameters: list[ToolParameter] = field(default_factory=list)
-    args_schema: type[BaseModel] | None = None  # NEW: Pydantic schema for validation
-    returns: str | None = None
-    examples: list[dict] = field(default_factory=list)
-    tags: list[str] = field(default_factory=list)
-    llm_description: str | None = None  # NEW: Detailed description for LLM planner
+    parameters: List[ToolParameter] = field(default_factory=list)
+    args_schema: Optional[Type[BaseModel]] = None  # NEW: Pydantic schema for validation
+    returns: Optional[str] = None
+    examples: List[Dict] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    llm_description: Optional[str] = None  # NEW: Detailed description for LLM planner
 
     # Enhanced metadata for intelligent tool selection
-    when_to_use: list[str] = field(default_factory=list)  # Explicit scenarios when to use
-    when_not_to_use: list[str] = field(default_factory=list)  # Anti-patterns
+    when_to_use: List[str] = field(default_factory=list)  # Explicit scenarios when to use
+    when_not_to_use: List[str] = field(default_factory=list)  # Anti-patterns
     primary_intent: ToolIntent = ToolIntent.ACTION  # Main use case
-    typical_queries: list[str] = field(default_factory=list)  # Example queries for few-shot
+    typical_queries: List[str] = field(default_factory=list)  # Example queries for few-shot
 
     @property
     def name(self) -> str:

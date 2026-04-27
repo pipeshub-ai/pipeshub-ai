@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 # Constants
 _TUPLE_SUCCESS_RESULT_LENGTH = 2
@@ -45,7 +45,7 @@ SIMILARITY_THRESHOLD = 0.9  # 90% similar queries can share cache
 class CacheEntry:
     """A single cache entry with metadata."""
 
-    def __init__(self, key: str, value: Any, ttl: int) -> None:
+    def __init__(self, key: str, value: Any, ttl: int) -> None:  # noqa: ANN401
         self.key = key
         self.value = value
         self.created_at = time.time()
@@ -57,7 +57,7 @@ class CacheEntry:
         """Check if entry is expired."""
         return (time.time() - self.created_at) > self.ttl
 
-    def access(self) -> Any:
+    def access(self) -> Any:  # noqa: ANN401
         """Access the entry (updates stats)."""
         self.hits += 1
         self.last_accessed = time.time()
@@ -88,7 +88,7 @@ class LRUCacheWithTTL:
         self.total_misses = 0
         self.logger = logging.getLogger(__name__)
 
-    def get(self, key: str) -> Any | None:
+    def get(self, key: str) -> Optional[Any]:  # noqa: ANN401
         """Get value from cache."""
         if key not in self.cache:
             self.total_misses += 1
@@ -108,7 +108,7 @@ class LRUCacheWithTTL:
         self.total_hits += 1
         return entry.access()
 
-    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:  # noqa: ANN401
         """Set value in cache."""
         if ttl is None:
             ttl = self.default_ttl
@@ -134,7 +134,7 @@ class LRUCacheWithTTL:
             del self.cache[key]
         return len(expired_keys)
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
         total_requests = self.total_hits + self.total_misses
         hit_rate = (self.total_hits / total_requests * 100) if total_requests > 0 else 0
@@ -184,7 +184,7 @@ class CacheManager:
         """Normalize query for comparison."""
         return query.lower().strip()
 
-    def _compute_query_hash(self, query: str, context: dict | None = None) -> str:
+    def _compute_query_hash(self, query: str, context: Optional[Dict] = None) -> str:
         """Compute hash of query + context for caching."""
         normalized = self._normalize_query(query)
 
@@ -200,7 +200,7 @@ class CacheManager:
         combined = f"{normalized}|{context_str}"
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-    def get_llm_response(self, query: str, context: dict | None = None) -> str | None:
+    def get_llm_response(self, query: str, context: Optional[Dict] = None) -> Optional[str]:
         """Get cached LLM response if available."""
         cache_key = self._compute_query_hash(query, context)
         cached = self.llm_cache.get(cache_key)
@@ -211,7 +211,7 @@ class CacheManager:
 
         return None
 
-    def set_llm_response(self, query: str, response: str, context: dict | None = None) -> None:
+    def set_llm_response(self, query: str, response: str, context: Optional[Dict] = None) -> None:
         """Cache LLM response."""
         cache_key = self._compute_query_hash(query, context)
         self.llm_cache.set(cache_key, response)
@@ -221,14 +221,14 @@ class CacheManager:
     # TOOL RESULT CACHING
     # ========================================================================
 
-    def _compute_tool_hash(self, tool_name: str, args: dict) -> str:
+    def _compute_tool_hash(self, tool_name: str, args: Dict) -> str:
         """Compute hash of tool call for caching."""
         # Sort args for consistent hashing
         args_str = json.dumps(args, sort_keys=True)
         combined = f"{tool_name}|{args_str}"
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-    def get_tool_result(self, tool_name: str, args: dict) -> Any | None:
+    def get_tool_result(self, tool_name: str, args: Dict) -> Optional[Any]:  # noqa: ANN401
         """Get cached tool result if available."""
         # Only cache idempotent tools
         idempotent_tools = [
@@ -248,7 +248,7 @@ class CacheManager:
 
         return None
 
-    def set_tool_result(self, tool_name: str, args: dict, result: Any) -> None:
+    def set_tool_result(self, tool_name: str, args: Dict, result: Any) -> None:  # noqa: ANN401
         """Cache tool result."""
         # Only cache successful results
         if isinstance(result, tuple) and len(result) == _TUPLE_SUCCESS_RESULT_LENGTH:
@@ -264,7 +264,7 @@ class CacheManager:
     # RETRIEVAL CACHING
     # ========================================================================
 
-    def _compute_retrieval_hash(self, query: str, filters: dict | None, limit: int) -> str:
+    def _compute_retrieval_hash(self, query: str, filters: Optional[Dict], limit: int) -> str:
         """Compute hash of retrieval request."""
         filters_str = json.dumps(filters, sort_keys=True) if filters else ""
         combined = f"{query}|{filters_str}|{limit}"
@@ -273,9 +273,9 @@ class CacheManager:
     def get_retrieval_results(
         self,
         query: str,
-        filters: dict | None,
+        filters: Optional[Dict],
         limit: int
-    ) -> list | None:
+    ) -> Optional[List]:
         """Get cached retrieval results."""
         cache_key = self._compute_retrieval_hash(query, filters, limit)
         cached = self.retrieval_cache.get(cache_key)
@@ -289,9 +289,9 @@ class CacheManager:
     def set_retrieval_results(
         self,
         query: str,
-        filters: dict | None,
+        filters: Optional[Dict],
         limit: int,
-        results: list
+        results: List
     ) -> None:
         """Cache retrieval results."""
         cache_key = self._compute_retrieval_hash(query, filters, limit)
@@ -302,7 +302,7 @@ class CacheManager:
     # CACHE MANAGEMENT
     # ========================================================================
 
-    def clear_expired(self) -> dict[str, int]:
+    def clear_expired(self) -> Dict[str, int]:
         """Clear expired entries from all caches."""
         return {
             "llm": self.llm_cache.clear_expired(),
@@ -310,7 +310,7 @@ class CacheManager:
             "retrieval": self.retrieval_cache.clear_expired()
         }
 
-    def get_all_stats(self) -> dict[str, Any]:
+    def get_all_stats(self) -> Dict[str, Any]:
         """Get statistics from all caches."""
         return {
             "llm_cache": self.llm_cache.get_stats(),

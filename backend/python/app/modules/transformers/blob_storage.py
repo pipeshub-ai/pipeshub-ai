@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, Dict
 
 import aiohttp
 import jwt
@@ -345,7 +345,7 @@ class BlobStorage(Transformer):
 
         return file_bytes
 
-    def _clean_top_level_empty_values(self, obj: dict[str, Any]) -> dict[str, Any]:
+    def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
         """
         Remove top-level keys with None, empty strings, empty lists, and empty dicts.
         Only processes the first level of the given object.
@@ -356,7 +356,7 @@ class BlobStorage(Transformer):
             if v is not None and v != "" and v != [] and v != {}
         }
 
-    def _clean_empty_values(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Clean empty values at the top level of:
         1. The main record object
@@ -1536,7 +1536,7 @@ class BlobStorage(Transformer):
                         "downloadUrl": download_url_external,
                         "fileName": file_name,
                     }
-        except Exception:
+        except Exception as e:
             self.logger.exception(
                 "❌ Error saving conversation file: %s",
                 conversation_id,

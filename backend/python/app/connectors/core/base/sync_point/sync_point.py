@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.sync_point.isync_point import ISyncPoint
@@ -24,7 +24,7 @@ class SyncPoint(ISyncPoint):
     org_id: str
     data_store_provider: DataStoreProvider
     sync_data_point_type: SyncDataPointType
-    encryption_service: EncryptionService | None
+    encryption_service: Optional[EncryptionService]
 
     def _get_full_sync_point_key(self, sync_point_key: str) -> str:
         return f"{self.org_id}/{self.connector_id}/{self.sync_data_point_type.value}/{sync_point_key}"
@@ -46,7 +46,7 @@ class SyncPoint(ISyncPoint):
             "aes-256-gcm", hex_key, logging.getLogger("sync_point")
         )
 
-    def _encrypt_sensitive_fields(self, data: dict[str, Any], fields_to_encrypt: list[str]) -> dict[str, Any]:
+    def _encrypt_sensitive_fields(self, data: Dict[str, Any], fields_to_encrypt: List[str]) -> Dict[str, Any]:
         """Encrypt specified fields before storage."""
         if not fields_to_encrypt:
             return data
@@ -54,7 +54,7 @@ class SyncPoint(ISyncPoint):
         encrypted_data = data.copy()
 
         for field in fields_to_encrypt:
-            if encrypted_data.get(field):
+            if field in encrypted_data and encrypted_data[field]:
                 try:
                     encrypted_value = self.encryption_service.encrypt(encrypted_data[field])
                     encrypted_data[field] = encrypted_value
@@ -64,7 +64,7 @@ class SyncPoint(ISyncPoint):
 
         return encrypted_data
 
-    def _decrypt_sensitive_fields(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _decrypt_sensitive_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Decrypt fields marked as encrypted when reading from storage."""
         if not data:
             return data
@@ -86,7 +86,7 @@ class SyncPoint(ISyncPoint):
 
         return decrypted_data
 
-    async def create_sync_point(self, sync_point_key: str, sync_point_data: dict[str, Any], encrypt_fields: list[str] | None = None) -> dict[str, Any]:
+    async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any], encrypt_fields: Optional[List[str]] = None) -> Dict[str, Any]:
         full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
 
         # Encrypt specified fields before storage
@@ -105,7 +105,7 @@ class SyncPoint(ISyncPoint):
 
         return document_data
 
-    async def read_sync_point(self, sync_point_key: str) -> dict[str, Any]:
+    async def read_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         async with self.data_store_provider.transaction() as tx_store:
             full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
             sync_point = await tx_store.get_sync_point(full_sync_point_key)
@@ -122,10 +122,10 @@ class SyncPoint(ISyncPoint):
 
             return decrypted_data
 
-    async def update_sync_point(self, sync_point_key: str, sync_point_data: dict[str, Any], encrypt_fields: list[str] | None = None) -> dict[str, Any]:
+    async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any], encrypt_fields: Optional[List[str]] = None) -> Dict[str, Any]:
         return await self.create_sync_point(sync_point_key, sync_point_data, encrypt_fields)
 
-    async def delete_sync_point(self, sync_point_key: str) -> dict[str, Any]:
+    async def delete_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
 
         async with self.data_store_provider.transaction() as tx_store:
