@@ -66,6 +66,7 @@ import {
 import { getIsAllRecordsMode } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
@@ -1811,7 +1812,10 @@ function KnowledgeBasePageContent() {
 
       toast.update(toastId, {
         variant: 'success',
-        title: 'Reindexing started successfully',
+        title: getReindexSuccessTitle({
+          nodeType,
+          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
+        }),
       });
 
       await refreshData();

@@ -24,6 +24,7 @@ import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
 } from '../utils/kb-table-item-actions';
+import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -570,11 +571,17 @@ function TableRow({
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
             !isFolder && onDownload && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
             onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
-            onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
-              icon: isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'redo' : 'refresh',
-              label: isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'Force Reindex' : 'Reindex',
-              onClick: () => onReindex(item),
-            },
+            onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
+              const node = isKnowledgeHubNode(item)
+                ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
+                : { nodeType: undefined, indexingStatus: undefined };
+              return {
+                icon: getReindexIcon(node),
+                label: getReindexLabel(node),
+                onClick: () => onReindex(item),
+                disabled: isReindexDisabled(node),
+              };
+            })(),
             !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
             onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
             onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },

@@ -12,6 +12,7 @@ import {
   shouldHideIndexingStatusForHubRecord,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
 
 import type { 
   KnowledgeBaseItem, 
@@ -487,12 +488,20 @@ function GridCard({
                       Rename
                     </DropdownMenu.Item>
                   )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
-                    <DropdownMenu.Item onClick={() => onReindex(item)}>
-                      <MaterialIcon name={isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'redo' : 'refresh'} size={16} />
-                      {isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'Force Reindex' : 'Reindex'}
-                    </DropdownMenu.Item>
-                  )}
+                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
+                    const node = isKnowledgeHubNode(item)
+                      ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
+                      : { nodeType: undefined, indexingStatus: undefined };
+                    return (
+                      <DropdownMenu.Item
+                        onClick={() => onReindex(item)}
+                        disabled={isReindexDisabled(node)}
+                      >
+                        <MaterialIcon name={getReindexIcon(node)} size={16} />
+                        {getReindexLabel(node)}
+                      </DropdownMenu.Item>
+                    );
+                  })()}
                   {!isFolder && onReplace && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />
