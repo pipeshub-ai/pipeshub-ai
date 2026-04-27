@@ -10,6 +10,7 @@ import {
   ChatSlot,
   MAX_SLOTS,
   SearchResultItem,
+  type ModelInfo,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
@@ -46,6 +47,11 @@ export interface ChatPreviewFile {
    * not the first citation on the target page.
    */
   initialCitationId?: string;
+  /**
+   * External URL for the record (e.g. Jira ticket, Confluence page).
+   * Used by UnknownPreview to open the source in a new browser tab.
+   */
+  webUrl?: string;
   /**
    * Hide the "File Details" tab in the preview shell. Set for previews that
    * don't correspond to a KB record (e.g. chat-generated artifacts).
@@ -106,6 +112,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
+    isOwner: isNew ? true : null,
   };
 }
 
@@ -133,6 +140,7 @@ interface ChatState {
   isConversationsLoading: boolean;
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
+  sharedPagination: ConversationsListResponse['pagination'] | null;
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
@@ -218,8 +226,17 @@ interface ChatState {
   setActiveSlot: (slotId: string) => void;
   /** Remove a slot from the dictionary entirely. */
   evictSlot: (slotId: string) => void;
-  /** Assign a real convId to a temp slot (after server responds). */
-  resolveSlotConvId: (slotId: string, realConvId: string) => void;
+  /**
+   * Assign a real convId to a temp slot. After SSE `complete`, prefer calling
+   * without `keepTemp` so `isTemp` becomes false. When the server sends
+   * `conversationId` early in the `connected` event, use `keepTemp: true` so
+   * URL "new chat" handling (`isTemp`) stays correct until the stream finishes.
+   */
+  resolveSlotConvId: (
+    slotId: string,
+    realConvId: string,
+    options?: { keepTemp?: boolean }
+  ) => void;
   /** Find a slot by its convId. O(n) scan but n ≤ MAX_SLOTS. */
   getSlotByConvId: (
     convId: string,
@@ -237,6 +254,7 @@ interface ChatState {
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
   setPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
+  setSharedPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
   closeMoreChatsPanel: () => void;
   toggleAgentsSidebar: () => void;
@@ -245,6 +263,15 @@ interface ChatState {
   appendConversations: (convs: Conversation[]) => void;
   appendSharedConversations: (convs: Conversation[]) => void;
   moveConversationToTop: (conversationId: string) => void;
+  /**
+   * After a follow-up stream completes, merge the latest `modelInfo` into
+   * sidebar list rows. `moveConversationToTop` only reorders and would leave
+   * a stale `modelInfo` on the row otherwise.
+   */
+  updateConversationModelInfoInLists: (
+    conversationId: string,
+    modelInfo: ModelInfo | undefined
+  ) => void;
   removeConversation: (conversationId: string) => void;
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
@@ -302,14 +329,14 @@ interface ChatState {
   setMode: (mode: ChatMode) => void;
   setQueryMode: (queryMode: QueryMode) => void;
   setAgentStrategy: (agentStrategy: AgentStrategy) => void;
-  setFilters: (filters: { apps: string[]; kb: string[] }) => void;
+  setFilters: (filters: import('./types').ChatKnowledgeFilters) => void;
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
 
   // ── Search actions ──
-  setSearchResults: (results: SearchResultItem[], searchId: string, query: string) => void;
+  setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
   setIsSearching: (loading: boolean) => void;
   setSearchError: (error: string | null) => void;
   clearSearchResults: () => void;
@@ -333,6 +360,7 @@ const initialState = {
   isConversationsLoading: false,
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
+  sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
@@ -483,14 +511,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  resolveSlotConvId: (slotId, realConvId) => {
+  resolveSlotConvId: (slotId, realConvId, options) => {
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
+      const keepTemp = options?.keepTemp === true;
       return {
         slots: {
           ...state.slots,
-          [slotId]: { ...existing, convId: realConvId, isTemp: false },
+          [slotId]: {
+            ...existing,
+            convId: realConvId,
+            isTemp: keepTemp ? true : false,
+          },
         },
       };
     });
@@ -526,6 +559,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setConversationsError: (error) => set({ conversationsError: error }),
 
   setPagination: (pagination) => set({ pagination }),
+
+  setSharedPagination: (sharedPagination) => set({ sharedPagination }),
 
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
@@ -718,6 +753,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (next === state.conversations && nextAgent === state.agentConversations) return state;
       return { conversations: next, agentConversations: nextAgent };
     }),
+
+  updateConversationModelInfoInLists: (conversationId, modelInfo) => {
+    if (!modelInfo) return;
+    set((state) => {
+      const patch = (list: Conversation[]) => {
+        if (!list.some((c) => c.id === conversationId)) return list;
+        return list.map((c) =>
+          c.id === conversationId ? { ...c, modelInfo } : c
+        );
+      };
+      const nextC = patch(state.conversations);
+      const nextS = patch(state.sharedConversations);
+      const nextA = patch(state.agentConversations);
+      if (
+        nextC === state.conversations &&
+        nextS === state.sharedConversations &&
+        nextA === state.agentConversations
+      ) {
+        return state;
+      }
+      return {
+        conversations: nextC,
+        sharedConversations: nextS,
+        agentConversations: nextA,
+      };
+    });
+  },
 
   removeConversation: (conversationId) =>
     set((state) => ({

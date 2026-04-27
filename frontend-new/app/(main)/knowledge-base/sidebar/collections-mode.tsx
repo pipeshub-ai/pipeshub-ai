@@ -12,7 +12,8 @@ import type {
   EnhancedFolderTreeNode,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SidebarListShimmerRows } from './sidebar-list-shimmer';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 
 // ========================================
 // Types
@@ -34,6 +35,10 @@ interface CollectionsModeProps {
   onReindex?: (nodeId: string) => void;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
+  /** KB hub root: more direct children exist (same pagination as All Records app sections). */
+  collectionsRootLoadMoreHasNext?: boolean;
+  onCollectionsRootLoadMore?: () => void;
+  collectionsRootLoadMoreLoading?: boolean;
 }
 
 // ========================================
@@ -202,6 +207,9 @@ export function CollectionsMode({
   onReindex,
   onRename,
   onDelete,
+  collectionsRootLoadMoreHasNext = false,
+  onCollectionsRootLoadMore,
+  collectionsRootLoadMoreLoading = false,
 }: CollectionsModeProps) {
   const { t } = useTranslation();
 
@@ -218,11 +226,7 @@ export function CollectionsMode({
   // should not blank out the sidebar.
   const hasAnyData = filteredSharedTree.length > 0 || filteredPrivateTree.length > 0;
   if (isLoading && !hasAnyData) {
-    return (
-      <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-        <LottieLoader variant="loader" size={24} />
-      </Flex>
-    );
+    return <SidebarListShimmerRows count={6} />;
   }
 
   // Shared tree props passed to both sections
@@ -260,6 +264,19 @@ export function CollectionsMode({
         actionButton={onAddPrivate ? <AddButton onClick={onAddPrivate} /> : undefined}
         {...treeProps}
       />
+
+      {collectionsRootLoadMoreHasNext && onCollectionsRootLoadMore ? (
+        <SidebarLoadMoreButton
+          onClick={onCollectionsRootLoadMore}
+          disabled={collectionsRootLoadMoreLoading}
+          loading={collectionsRootLoadMoreLoading}
+          flexStyle={{
+            marginBottom: `${SECTION_PADDING_BOTTOM}px`,
+            paddingLeft: 'var(--space-2)',
+            paddingTop: 'var(--space-1)',
+          }}
+        />
+      ) : null}
     </>
   );
 }

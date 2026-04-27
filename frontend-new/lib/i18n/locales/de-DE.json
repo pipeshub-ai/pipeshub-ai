@@ -24,7 +24,8 @@
   },
   "chatStream": {
     "thinkingFallback": "Denken…",
-    "refiningResponse": "Antwort wird verfeinert…"
+    "refiningResponse": "Antwort wird verfeinert…",
+    "errorFallback": "Es ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
@@ -221,7 +222,8 @@
     "searchPlaceholder": "Suchen...",
     "required": "Dieses Feld ist erforderlich",
     "invalidEmail": "Ungültige E-Mail-Adresse",
-    "invalidUrl": "Ungültige URL"
+    "invalidUrl": "Ungültige URL",
+    "name": "Name"
   },
   "dialog": {
     "newFolder": "Neuer Sammlungsordner",
@@ -336,6 +338,7 @@
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
+    "loadMore": "Mehr laden",
     "moreCollections": "Weitere Sammlungen",
     "searchCollections": "Suchen"
   },
@@ -383,7 +386,8 @@
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
-    "connectorsTooltip": "Konnektoren & Sammlungen",
+    "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
+    "connectorsTooltip": "Konnektoren und Sammlungen",
     "agentResourcesTooltip": "Konnektoren, Sammlungen & Aktionen",
     "agentResources": {
       "sheetTitle": "Konnektoren, Sammlungen & Aktionen",
@@ -412,7 +416,7 @@
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
     "noChatsYet": "Noch keine Chats",
-    "searchCollections": "Sammlungen suchen",
+    "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
@@ -1265,7 +1269,16 @@
       },
       "errors": {
         "instanceNameRequired": "Geben Sie einen Instanznamen ein."
+      },
+      "validation": {
+        "fieldRequired": "{{field}} ist erforderlich",
+        "fieldMustBeTrue": "{{field}} muss wahr sein",
+        "fixErrorsAbove": "Korrigieren Sie die hervorgehobenen Felder oben, um fortzufahren."
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",
+      "primaryLoadingHint": "Bitte warten…"
     },
     "archivedChats": {
       "title": "Archivierte Chats",
@@ -1426,6 +1439,11 @@
       "noInstances": "Noch keine Instanzen konfiguriert",
       "addInstance": "Weitere Instanz hinzufügen",
       "saveConfig": "Konfiguration speichern",
+      "continueToConfiguration": "Weiter zur Konfiguration →",
+      "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
+      "authRequiredBeforeConfig": "Schließen Sie die OAuth-Autorisierung ab, bevor Sie Synchronisierung und Filter konfigurieren",
+      "backToCredentials": "← Zurück zu den Anmeldedaten",
+      "backFromConfigure": "← Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
       "toasts": {
@@ -1470,6 +1488,13 @@
         "methodLabel": "Authentifizierungsmethode",
         "methodPlaceholder": "Authentifizierungstyp wählen...",
         "credentialsHeading": "{{name}}-Anmeldedaten",
+        "credentialsSubtext": "Geben Sie Ihre {{name}}-Anmeldedaten ein",
+        "oauthCreateHelperAdmin": "Wenn gespeicherte OAuth-Apps vorhanden sind, wählen Sie oben eine, oder wählen Sie „Neue OAuth-App“ und tragen Sie die Client-Anmeldedaten unten ein. Tragen Sie diese Weiterleitungs-URL zuerst in Ihrem IdP ein.",
+        "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Weiterleitungs-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
+        "oauthCredentialsSubtextAdmin": "Client-Anmeldedaten eingeben oder prüfen (für eine neue Registrierung oder eine oben ausgewählte gespeicherte App).",
+        "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
+        "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
+        "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
       },
       "docSection": {
@@ -1545,6 +1570,10 @@
         "authBannerTitle": "Persönliches Konto authentifizieren",
         "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
+        "removeTagAriaLabel": "{{tag}} entfernen"
+      },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",
         "preparing": "Synchronisierung wird vorbereitet...",
@@ -1612,6 +1641,7 @@
       "deleting": "Wird gelöscht...",
       "saving": "Wird gespeichert...",
       "deleteConfirm": "Löschen bestätigen",
+      "deleteBot": "Bot löschen",
       "typeLabels": {
         "slack": "Slack-Bot",
         "discord": "Discord-Bot",
@@ -1946,6 +1976,7 @@
     "toolsetDuplicateNotify": "Es kann jeweils nur ein {{name}}-Toolset auf der Arbeitsfläche sein.",
     "toolsetAuthUpdated": "Toolset-Authentifizierung aktualisiert.",
     "loadMore": "Mehr laden",
+    "loadMoreConnectors": "Weitere Konnektoren laden",
     "loadingMore": "Wird geladen…",
     "notConfiguredReason": "nicht konfiguriert",
     "notAuthenticatedReason": "nicht authentifiziert",

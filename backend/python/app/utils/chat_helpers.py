@@ -1755,7 +1755,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1835,6 +1835,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     query=query,
                     rephrased_queries=[],
                     mode=mode,
+                    has_sql_connector=has_sql_connector,
                     )
 
         content.append({
@@ -1920,24 +1921,24 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
                     })
             elif block_type == GroupType.TABLE.value:
-                table_summary,child_results = result.get("content")
+                table_summary, child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
                 fk_info = build_fk_info(result)
-                if child_results:
-                    for child in child_results:
-                        child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
-                        child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
-                    template = Template(table_prompt)
-                    rendered_form = template.render(
-                        block_group_index=block_group_index,
-                        block_group_web_url="",
-                        table_summary=table_summary,
-                        table_rows=child_results,
-                    )
-                    content.append({
-                        "type": "text",
-                        "text": f"{rendered_form}{fk_info}\n\n"
-                    })
+                child_results = child_results or []
+                for child in child_results:
+                    child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
+                    child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
+                template = Template(table_prompt)
+                rendered_form = template.render(
+                    block_group_index=block_group_index,
+                    block_group_web_url="",
+                    table_summary=table_summary,
+                    table_rows=child_results,
+                )
+                content.append({
+                    "type": "text",
+                    "text": f"{rendered_form}{fk_info}\n\n"
+                })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",

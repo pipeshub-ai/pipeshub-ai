@@ -25,16 +25,24 @@ export default function FormPanel({ children, splitLayout }: FormPanelProps) {
         flex: splitLayout ? '0 0 43%' : 1,
         position: 'relative',
         backgroundColor: 'var(--color-background)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: splitLayout ? '40px' : '24px 20px',
-        minHeight: '100dvh',
+        height: '100dvh',
+        maxHeight: '100dvh',
         overflowY: 'auto',
         width: splitLayout ? undefined : '100%',
       }}
     >
-      {children}
+      <Box
+        style={{
+          minHeight: '100%',
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: splitLayout ? '40px' : '24px 20px',
+        }}
+      >
+        {children}
+      </Box>
     </Box>
   );
 }

@@ -13,7 +13,8 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
-import { emptyCitationMaps, useCitationActions } from './response-tabs/citations';
+import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
+import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -179,6 +180,16 @@ export function MessageList() {
   const messagePairs = useMemo<MessagePair[]>(() => {
     const pairs: MessagePair[] = [];
     const messages = thread.messages;
+    // Only the *last* assistant in the thread can be the live SSE target for a
+    // new send. (Never use `!content` alone: agent threads can retain empty
+    // `content` on older rows after a bad load or edge case, which would paint
+    // the current stream + citations onto every such row.)
+    let lastAssistantIndex = -1;
+    for (let j = 0; j < messages.length; j += 1) {
+      if (messages[j].role === 'assistant') {
+        lastAssistantIndex = j;
+      }
+    }
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -208,10 +219,12 @@ export function MessageList() {
         // Check if this message is being regenerated
         const isBeingRegenerated = !!regenerateMessageId && metadata?.messageId === regenerateMessageId;
 
-        // Check if this is the message currently being streamed
-        const isCurrentlyStreaming = isStreaming && (
-          question === streamingQuestion || !content
-        );
+        // Live stream attaches only to the last assistant in the thread when
+        // its user message matches the query we sent (see placeholder assistant
+        // in `streamMessageForSlot`).
+        const isLastAssistant = i === lastAssistantIndex;
+        const isCurrentlyStreaming =
+          isStreaming && isLastAssistant && question === streamingQuestion;
 
         // Extract collections from the preceding user message metadata
         const userMessageCollections = prevMsg
@@ -219,7 +232,7 @@ export function MessageList() {
           : undefined;
 
         pairs.push({
-          key: msg.id,
+          key: msg.id ?? `asst-${i}`,
           messageId: metadata?.messageId,
           question,
           // Clear old answer immediately when regeneration starts so the
@@ -248,6 +261,17 @@ export function MessageList() {
   // effect #2 to re-run and cancel its rAF on every render during streaming).
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
+
+  // Clear orphaned inline-citation key when a message row is replaced (e.g. after stream complete)
+  const citationOpenKey = useInlineCitationPopoverStore((s) => s.activeKey);
+  const setCitationKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
+  useEffect(() => {
+    if (!citationOpenKey) return;
+    const rowKeys = messagePairsRef.current.map((p) => p.key);
+    if (!isCitationPopoverKeyStillValid(citationOpenKey, rowKeys)) {
+      setCitationKey(null);
+    }
+  }, [citationOpenKey, messagePairs, setCitationKey]);
 
   // Stale-closure-safe mirror of isMobile for use in useCallback/useMemo
   // functions that intentionally have empty (or non-isMobile) dep arrays.
@@ -538,6 +562,7 @@ export function MessageList() {
 
     // Reset scroll tracking for the incoming slot
     if (currentSlotId !== prevSlotId) {
+      useInlineCitationPopoverStore.getState().setActiveKey(null);
       hasPerformedInitialScrollRef.current = false;
       isScrolledUpRef.current = false;
       lockClearedAtMsRef.current = 0;
@@ -766,45 +791,22 @@ export function MessageList() {
   }, [messagePairs.length, executeScroll, recalcSpacerHeight]);
 
   // ── 5. Streaming completion ───────────────────────────────────────
-  // Per spec (“StreamingTracker 4c”): the atomic message replacement must
-  // preserve scroll position — don’t snap on completion.
-  //
-  // However, Ask More & Action Bar appear AFTER completion and extend
-  // the scrollHeight. If the user was tracking the bottom, they’ll be
-  // slightly above the new bottom edge. We do ONE smooth scroll to bring
-  // Ask More into view, but only if it’s actually below the fold.
+  // ChatGPT/Claude-style: after the last token, do **not** auto smooth-scroll
+  // to the bottom. Users who were reading up-thread or viewing a citation
+  // would be jumped away from that context. 3b+layout already preserve
+  // scroll through the final message replace; we just refresh spacer + reset
+  // the scroll-position ref used by 3b.
   useEffect(() => {
     if (wasStreamingRef.current && !isStreaming) {
-      // Reset scroll lock immediately. The streaming→final message swap can
-      // cause scrollHeight changes that trick handleScroll into setting
-      // isScrolledUpRef=true (distFromBottom >= 108 while isAutoScrolling=false).
-      // The user was tracking the stream, so we must clear this false lock.
-      isScrolledUpRef.current = false;
-
-      const scrollAfterAskMore = (delay: number) => setTimeout(() => {
-        streamingScrollTopRef.current = 0;
-
-        const container = scrollContainerRef.current;
-        if (!container) {
-          recalcSpacerHeight();
-          return;
-        }
-
+      const raf = requestAnimationFrame(() => {
         recalcSpacerHeight();
-
-        // Use chatBecameActive to force-clear isScrolledUpRef inside executeScroll.
-        // handleScroll keeps re-setting the lock between our initial clear and the
-        // timer firing, so we must bypass it at scroll-execution time too.
-        executeScroll({ target: 'bottom-of-container', behavior: 'smooth', chatBecameActive: true });
-      }, delay);
-
-      const t1 = scrollAfterAskMore(500);
-      const t2 = scrollAfterAskMore(800);
+        streamingScrollTopRef.current = 0;
+      });
       wasStreamingRef.current = isStreaming;
-      return () => { clearTimeout(t1); clearTimeout(t2); };
+      return () => cancelAnimationFrame(raf);
     }
     wasStreamingRef.current = isStreaming;
-  }, [isStreaming, recalcSpacerHeight, executeScroll]);
+  }, [isStreaming, recalcSpacerHeight]);
 
   // ── Ask More: randomly pick one question set per new message pair ──
   // TODO: Move this to the backend, also remove from il8n jsons since it's meant to be dynamic content
@@ -894,6 +896,7 @@ export function MessageList() {
                   collections={pair.collections}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
+                  citationMessageRowKey={pair.key}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}

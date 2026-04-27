@@ -7,12 +7,16 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { usePaginatedList } from '@/app/(main)/workspace/hooks/use-paginated-list';
 import { ShareCommonApi } from './api';
+import {
+  CreateTeamForm,
+  type CreateTeamFormHandle,
+  type CreateTeamFormState,
+} from '@/app/components/team';
 
 const USERS_PAGE_LIMIT = 25;
 const SCROLL_THRESHOLD_PX = 40;
 import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
-import { CreateTeamView } from './create-team-view';
 import type {
   ShareAdapter,
   SharedMember,
@@ -319,6 +323,13 @@ export function ShareSidebar({
     }
   }, [adapter.supportsTeams]);
 
+  // Create-team form state (when currentView === 'create-team')
+  const createFormRef = useRef<CreateTeamFormHandle>(null);
+  const [createFormState, setCreateFormState] = useState<CreateTeamFormState>({
+    isValid: false,
+    isSubmitting: false,
+  });
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
@@ -354,12 +365,100 @@ export function ShareSidebar({
         </VisuallyHidden>
 
         {currentView === 'create-team' && adapter.supportsTeams ? (
-          <CreateTeamView
-            allUsers={allUsers}
-            onTeamCreated={handleTeamCreated}
-            onBack={() => setCurrentView('share')}
-            onClose={() => onOpenChange(false)}
-          />
+          <Flex direction="column" style={{ height: '100%' }}>
+            {/* Header */}
+            <Flex
+              align="center"
+              justify="between"
+              style={{
+                padding: '12px 16px',
+                borderBottom: '1px solid var(--olive-3)',
+                background: 'var(--effects-translucent)',
+                backdropFilter: 'blur(8px)',
+                flexShrink: 0,
+              }}
+            >
+              <Flex align="center" gap="2">
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="2"
+                  onClick={() => setCurrentView('share')}
+                  aria-label="Back"
+                >
+                  <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
+                </IconButton>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: '50%',
+                    backgroundColor: 'var(--slate-3)',
+                  }}
+                >
+                  <MaterialIcon name="group" size={16} color="var(--slate-11)" />
+                </Flex>
+                <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  Create Team
+                </Text>
+              </Flex>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                onClick={() => onOpenChange(false)}
+                aria-label="Close"
+              >
+                <MaterialIcon name="close" size={18} color="var(--slate-11)" />
+              </IconButton>
+            </Flex>
+
+            {/* Scrollable body */}
+            <Box style={{ flex: 1, overflow: 'auto', padding: '16px', minHeight: 0 }}>
+              <CreateTeamForm
+                ref={createFormRef}
+                enabled
+                onCreated={handleTeamCreated}
+                onStateChange={setCreateFormState}
+              />
+            </Box>
+
+            {/* Footer */}
+            <Flex
+              align="center"
+              justify="end"
+              gap="2"
+              style={{
+                padding: '12px 16px',
+                borderTop: '1px solid var(--olive-3)',
+                background: 'var(--effects-translucent)',
+                backdropFilter: 'blur(8px)',
+                flexShrink: 0,
+              }}
+            >
+              <Button
+                variant="outline"
+                color="gray"
+                size="2"
+                onClick={() => setCurrentView('share')}
+                disabled={createFormState.isSubmitting}
+              >
+                Cancel
+              </Button>
+              <LoadingButton
+                variant="solid"
+                size="2"
+                onClick={() => createFormRef.current?.submit()}
+                disabled={!createFormState.isValid}
+                loading={createFormState.isSubmitting}
+                loadingLabel="Creating..."
+              >
+                Create Team
+              </LoadingButton>
+            </Flex>
+          </Flex>
         ) : (
           <Flex direction="column" style={{ height: '100%' }}>
             {/* Header */}

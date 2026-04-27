@@ -14,7 +14,14 @@ import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
-import { buildStreamRequestModeFields, type ConversationMessage, type StreamChatRequest } from './types';
+import {
+  buildAssistantApiFilters,
+  buildStreamRequestModeFields,
+  type ChatCollectionAttachment,
+  type ChatKnowledgeFilters,
+  type ConversationMessage,
+  type StreamChatRequest,
+} from './types';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -34,19 +41,33 @@ function extractTextContent(content: ThreadMessageLike['content']): string {
     .join('');
 }
 
+/** Plain text of a thread message (used by streaming + message list). */
+export function getThreadMessagePlainText(message: ThreadMessageLike): string {
+  return extractTextContent(message.content);
+}
+
 /** KB collections attached on send (see chat input metadata). */
 function readKbCollectionsFromMessage(
   message: ThreadMessageLike
-): Array<{ id: string; name: string }> | undefined {
+): ChatCollectionAttachment[] | undefined {
   const raw = message.metadata?.custom?.collections;
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const out: Array<{ id: string; name: string }> = [];
+  const out: ChatCollectionAttachment[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const id = (item as { id?: unknown }).id;
     if (typeof id !== 'string') continue;
     const name = (item as { name?: unknown }).name;
-    out.push({ id, name: typeof name === 'string' ? name : '' });
+    const kindRaw = (item as { kind?: unknown }).kind;
+    const kind =
+      kindRaw === 'recordGroup' || kindRaw === 'collectionRoot'
+        ? kindRaw
+        : undefined;
+    out.push({
+      id,
+      name: typeof name === 'string' ? name : '',
+      ...(kind ? { kind } : {}),
+    });
   }
   return out.length > 0 ? out : undefined;
 }
@@ -60,6 +81,9 @@ export function loadHistoricalMessages(
   messages: ConversationMessage[]
 ): ThreadMessageLike[] {
   return messages.map((msg) => ({
+    // Stable per-message id — keeps list keys and citation popovers from remounting
+    // on every `messages` ref replace (e.g. SSE complete or history refresh).
+    id: msg._id,
     role: msg.messageType === 'user_query' ? ('user' as const) : ('assistant' as const),
     content: [
       {
@@ -120,12 +144,27 @@ export function buildExternalStoreConfig(
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
 
-      // Extract KB filter from message metadata (collections attached at send-time)
+      // Extract KB / collection-root scope from message metadata (attached at send-time)
       const msgCollections = readKbCollectionsFromMessage(message);
-      const kbFilter =
-        msgCollections && msgCollections.length > 0
-          ? msgCollections.map((c) => c.id)
-          : currentState.settings.filters.kb;
+      const storeApps = currentState.settings.filters.apps ?? [];
+      const storeKb = currentState.settings.filters.kb ?? [];
+
+      /** Same merge as legacy `buildAssistantApiFilters(apps + collectionRootIds)` + message-time kb override. */
+      let assistantFilters: ChatKnowledgeFilters;
+      if (msgCollections && msgCollections.length > 0) {
+        const msgRootIds = msgCollections
+          .filter((c) => (c.kind ?? 'collectionRoot') !== 'recordGroup')
+          .map((c) => c.id);
+        const msgKbIds = msgCollections
+          .filter((c) => c.kind === 'recordGroup')
+          .map((c) => c.id);
+        assistantFilters = {
+          apps: [...new Set([...storeApps, ...msgRootIds])],
+          kb: [...msgKbIds],
+        };
+      } else {
+        assistantFilters = { apps: [...storeApps], kb: [...storeKb] };
+      }
 
       const urlParams =
         typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
@@ -172,13 +211,7 @@ export function buildExternalStoreConfig(
                 (id): id is string => typeof id === 'string' && id.trim().length > 0
               ),
             }
-          : {
-              // KB-origin nodes from knowledge-hub/nodes have nodeType "app" and
-              // must go in the apps[] filter, not kb[]. The store still uses the
-              // "kb" key internally (UI naming) but the API contract is apps[].
-              apps: [...currentState.settings.filters.apps, ...kbFilter],
-              kb: [],
-            },
+          : buildAssistantApiFilters(assistantFilters),
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {

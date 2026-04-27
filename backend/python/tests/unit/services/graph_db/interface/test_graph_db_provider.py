@@ -224,6 +224,7 @@ class TestAbstractMethodInventory:
         "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
+        "reset_indexing_status_to_queued_for_record_ids",
         "get_documents_by_status",
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
@@ -389,7 +390,6 @@ class TestAbstractMethodInventory:
         # Agent permission operations
         "get_agent",
         "check_agent_permission",
-        "get_all_virtual_record_ids_for_knowledge",
     ]
 
     def test_all_expected_methods_are_abstract(self):

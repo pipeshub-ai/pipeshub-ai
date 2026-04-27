@@ -194,6 +194,8 @@ function AppLayout({
           style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}
         >
           {/* Mobile hamburger — fixed top-left, only visible on mobile.
+              Anchors to a 40px-tall row so the button's vertical center lines
+              up with the 40px page header (and its right-side action buttons).
               Uses position:fixed (not absolute) so it sits in the root stacking
               context above the chat page content elements that also use zIndex:10. */}
           {isMobile && (
@@ -201,8 +203,12 @@ function AppLayout({
               key="app-mobile-menu-anchor"
               style={{
                 position: 'fixed',
-                top: 'var(--space-3)',
-                left: 'var(--space-3)',
+                top: 0,
+                left: 0,
+                height: '40px',
+                display: 'flex',
+                alignItems: 'center',
+                paddingLeft: 'var(--space-3)',
                 zIndex: 100,
               }}
             >

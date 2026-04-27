@@ -15,6 +15,7 @@ import { FiltersSection } from './filters-section';
 export function ConfigureTab() {
   const {
     connectorSchema,
+    connectorConfig,
     panelConnector,
     panelConnectorId,
     formData,
@@ -56,6 +57,7 @@ export function ConfigureTab() {
           values={formData.sync.customValues}
           errors={formErrors}
           onChange={setSyncFormValue}
+          connectorConfig={connectorConfig}
         />
       )}
 

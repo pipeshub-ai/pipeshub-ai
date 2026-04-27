@@ -24,7 +24,8 @@
   },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
-    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
+    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…",
+    "errorFallback": "कुछ गलत हुआ। कृपया पुनः प्रयास करें।"
   },
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
@@ -221,7 +222,8 @@
     "searchPlaceholder": "खोजें...",
     "required": "यह फ़ील्ड आवश्यक है",
     "invalidEmail": "अमान्य ईमेल पता",
-    "invalidUrl": "अमान्य URL"
+    "invalidUrl": "अमान्य URL",
+    "name": "नाम"
   },
   "dialog": {
     "newFolder": "नया कलेक्शन फ़ोल्डर",
@@ -336,6 +338,7 @@
     "suggestedInWorkspace": "वर्कस्पेस में सुझाया गया",
     "createSubFolder": "उप-फ़ोल्डर बनाएँ",
     "more": "और",
+    "loadMore": "और लोड करें",
     "moreCollections": "और कलेक्शन",
     "searchCollections": "खोजें"
   },
@@ -383,6 +386,7 @@
     "listening": "सुन रहे हैं...",
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
+    "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
     "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
     "agentResources": {
@@ -412,7 +416,7 @@
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
     "noChatsYet": "अभी तक कोई चैट नहीं",
-    "searchCollections": "कलेक्शन खोजें",
+    "searchCollections": "कनेक्टर्स और संग्रह खोजें",
     "loadingCollections": "कलेक्शन लोड हो रहे हैं…",
     "failedToLoadCollections": "कलेक्शन लोड करने में विफल",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",
@@ -1263,7 +1267,16 @@
       },
       "errors": {
         "instanceNameRequired": "इंस्टेंस नाम दर्ज करें।"
+      },
+      "validation": {
+        "fieldRequired": "{{field}} आवश्यक है",
+        "fieldMustBeTrue": "{{field}} सही होना चाहिए",
+        "fixErrorsAbove": "जारी रखने के लिए ऊपर हाइलाइट किए गए फ़ील्ड ठीक करें।"
       }
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "जारी रखने के लिए ऊपर स्क्रॉल करें और आवश्यक फ़ील्ड (* चिह्न वाले) पूरे करें।",
+      "primaryLoadingHint": "कृपया प्रतीक्षा करें…"
     },
     "archivedChats": {
       "title": "संग्रहीत चैट",
@@ -1424,6 +1437,11 @@
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
       "saveConfig": "Save Configuration",
+      "continueToConfiguration": "Continue to configuration →",
+      "oauthSigningIn": "Finish signing in with your provider…",
+      "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
+      "backToCredentials": "← Back to credentials",
+      "backFromConfigure": "← Back",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "toasts": {
@@ -1468,6 +1486,13 @@
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
+        "credentialsSubtext": "Enter your {{name}} authentication details",
+        "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect URL in your IdP first.",
+        "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
+        "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
+        "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
+        "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
+        "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector"
       },
       "docSection": {
@@ -1543,6 +1568,10 @@
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",
+        "removeTagAriaLabel": "{{tag}} हटाएँ"
+      },
       "syncStatus": {
         "paused": "Sync Paused",
         "preparing": "Preparing to Sync...",
@@ -1610,6 +1639,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "deleteBot": "बॉट हटाएं",
       "typeLabels": {
         "slack": "Slack Bot",
         "discord": "Discord Bot",
@@ -1944,6 +1974,7 @@
     "toolsetDuplicateNotify": "एक समय में केवल एक {{name}} टूलसेट कैनवास पर हो सकता है।",
     "toolsetAuthUpdated": "टूलसेट प्रमाणीकरण अपडेट किया गया।",
     "loadMore": "और लोड करें",
+    "loadMoreConnectors": "और कनेक्टर लोड करें",
     "loadingMore": "लोड हो रहा है…",
     "notConfiguredReason": "कॉन्फ़िगर नहीं",
     "notAuthenticatedReason": "प्रमाणित नहीं",

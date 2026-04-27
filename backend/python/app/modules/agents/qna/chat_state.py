@@ -5,16 +5,27 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import CitationRefMapper
 
+# Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
+DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
+
+
+def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
+    """True when the workspace supplied a persona distinct from the default placeholder."""
+    s = (system_prompt or "").strip()
+    return bool(s) and s != DEFAULT_AGENT_SYSTEM_PROMPT
+
 
 class Document(TypedDict):
     page_content: str
     metadata: dict[str, Any]
+
 
 class ChatState(TypedDict):
     logger: Logger
@@ -130,9 +141,13 @@ class ChatState(TypedDict):
     tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
-    # Service account flag: when True, knowledge retrieval bypasses per-user permissions
-    # and uses all records for the configured connectors/KBs
+    # True when the request uses a service identity JWT (e.g. Slack bot). Knowledge
+    # retrieval still applies normal graph permissions using the agent creator's userId
+    # (set in agent chat routes), not unscoped org-wide record access.
     is_service_account: bool
+
+    # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs
+    is_placeholder_agent: bool
 
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
@@ -154,6 +169,8 @@ class ChatState(TypedDict):
     iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
     is_continue: bool  # Whether this is a continue iteration (multi-step task)
     tool_validation_retry_count: int  # Retry count for tool validation in planner
+    has_sql_connector: bool  # True when org has at least one configured SQL connector
+    has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -252,11 +269,18 @@ def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[st
     if not knowledge:
         return []
 
-    connector_ids = []
+    connector_ids: list[str] = []
+    seen: set[str] = set()
     for k in knowledge:
         if isinstance(k, dict):
             connector_id = k.get("connectorId")
-            if connector_id:
+            if (
+                connector_id
+                and isinstance(connector_id, str)
+                and not connector_id.startswith("knowledgeBase_")
+                and connector_id not in seen
+            ):
+                seen.add(connector_id)
                 connector_ids.append(connector_id)
 
     return connector_ids
@@ -340,7 +364,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy") -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -350,10 +374,14 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     The tools list is extracted from toolsets for the planner.
     Knowledge connector IDs are used for retrieval filtering.
+
+    has_sql_connector is a required keyword arg: callers must resolve it (via
+    has_sql_connector_configured) before building state. This pairs with
+    has_sql_knowledge to gate the execute_sql_query tool in tool_system.
     """
 
     # Get user-defined system prompt or use default
-    system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
+    system_prompt = chat_query.get("systemPrompt", DEFAULT_AGENT_SYSTEM_PROMPT)
     instructions = chat_query.get("instructions")
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
@@ -385,6 +413,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
     has_knowledge = bool(real_kb or apps or agent_knowledge)
+    
+    has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -488,6 +518,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),
+        "is_placeholder_agent": bool(
+            chat_query.get("isPlaceholderAgent", False)
+        ),
 
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
@@ -510,4 +543,6 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "max_iterations": 3,
         "is_continue": False,
         "tool_validation_retry_count": 0,
+        "has_sql_connector": has_sql_connector,
+        "has_sql_knowledge": has_sql_knowledge,
     }

@@ -60,7 +60,6 @@ import {
   buildFilter,
   buildMessageFilter,
   buildPaginationMetadata,
-  buildSharedWithMeFilter,
   buildSortOptions,
   buildUserQueryMessage,
   extractModelInfo,
@@ -386,13 +385,8 @@ export const streamChat =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
       const userQueryMessage = buildUserQueryMessage(req.body.query);
 
       const userConversationData: Partial<IConversation> = {
@@ -423,11 +417,22 @@ export const streamChat =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
         userId,
       });
+
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
@@ -441,7 +446,7 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: chatMode,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
@@ -1381,6 +1386,7 @@ export const addMessageStream =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -1887,67 +1893,47 @@ export const getAllConversations = async (
       query: req.query,
     });
 
+    const source = req.query.source ?? 'owned';
+    if (source !== 'owned' && source !== 'shared') {
+      throw new BadRequestError(
+        "Query param 'source' must be 'owned' or 'shared'",
+      );
+    }
+
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildFilter(req, orgId, userId, conversationId as string);
     const sortOptions = buildSortOptions(req);
 
-    // Restrict "Your Chats" to conversations owned by this user.
-    // The default buildFilter includes shared conversations in its $or,
-    // but those are fetched separately via sharedWithMeFilter below.
-    delete filter.$or;
-    filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+    const isOwned = source === 'owned';
+    const filter = buildFilter(
+      req,
+      orgId,
+      userId,
+      conversationId as string,
+      isOwned,
+      !isOwned,
+    );
+    let selection = Conversation.find(filter)
+      .sort(sortOptions as any)
+      .skip(skip)
+      .limit(limit)
+      .select('-__v')
+      .select('-messages');
+    if (!isOwned) {
+      selection = selection.select('-sharedWith');
+    }
 
-    // sharedWith Me Conversation
-    const sharedWithMeFilter = buildSharedWithMeFilter(req);
+    const [conversations, totalCount] = await Promise.all([
+      selection.lean().exec(),
+      Conversation.countDocuments(filter),
+    ]);
 
-    // Execute query
-    const [conversations, totalCount, sharedWithMeConversations] =
-      await Promise.all([
-        Conversation.find(filter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .lean()
-          .exec(),
-        Conversation.countDocuments(filter),
-        Conversation.find(sharedWithMeFilter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .select('-sharedWith')
-          .lean()
-          .exec(),
-      ]);
-
-    const processedConversations = conversations.map((conversation: any) => {
-      const conversationWithComputedFields = addComputedFields(
-        conversation as IConversation,
-        userId,
-      );
-      return {
-        ...conversationWithComputedFields,
-      };
-    });
-    const processedSharedWithMeConversations = sharedWithMeConversations.map(
-      (sharedWithMeConversation: any) => {
-        const conversationWithComputedFields = addComputedFields(
-          sharedWithMeConversation as IConversation,
-          userId,
-        );
-        return {
-          ...conversationWithComputedFields,
-        };
-      },
+    const processedConversations = conversations.map((conversation: any) =>
+      addComputedFields(conversation as IConversation, userId),
     );
 
-    // Build response metadata
     const response = {
       conversations: processedConversations,
-      sharedWithMeConversations: processedSharedWithMeConversations,
+      source,
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
       meta: {
@@ -5025,13 +5011,8 @@ export const unshareAgent =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
       const userQueryMessage = buildUserQueryMessage(req.body.query);
 
       const userConversationData: Partial<IAgentConversation> = {
@@ -5065,12 +5046,23 @@ export const unshareAgent =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newAgentConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
         userId,
         agentKey,
       });
+
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newAgentConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
 
       // Prepare AI payload
       const aiPayload = {
@@ -5086,7 +5078,7 @@ export const unshareAgent =
         modelFriendlyName: req.body.modelFriendlyName || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newAgentConversationId || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -5639,6 +5631,7 @@ export const createAgentConversation =
           'modelName',
           'modelProvider',
           'chatMode',
+          'modelFriendlyName',
         ];
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
@@ -5929,6 +5922,7 @@ export const addMessageStreamToAgentConversation =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];

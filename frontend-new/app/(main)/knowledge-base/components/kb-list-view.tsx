@@ -5,6 +5,7 @@ import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ItemActionMenu } from './item-action-menu';
 import type {
   KnowledgeBaseItem,
@@ -19,7 +20,11 @@ import { FolderIcon } from '@/app/components/ui';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import {
+  runItemMenuOpenFromMenu,
+  shouldHideIndexingStatusForHubRecord,
+} from '../utils/kb-table-item-actions';
+import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -118,6 +123,8 @@ interface TableRowProps {
   item: TableItem;
   isSelected: boolean;
   showSourceColumn?: boolean;
+  showCheckbox?: boolean;
+  isMobile: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -133,6 +140,8 @@ function TableRow({
   item,
   isSelected,
   showSourceColumn,
+  showCheckbox = true,
+  isMobile,
   onSelect,
   onClick,
   onOpen,
@@ -228,35 +237,50 @@ function TableRow({
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return '';
+    }
+    const appendReason = (base: string, reason?: string | null, showReason = true): string =>
+      showReason && reason?.trim() ? `${base} - ${reason.trim()}` : base;
+
     if (isKnowledgeHubNode(item)) {
       // No status from API — do not imply "Queued"
       if (item.indexingStatus == null) {
         return '';
       }
+      let baseLabel: string;
+      let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': return 'Completed';
-        case 'IN_PROGRESS': return 'In Progress';
-        case 'FAILED': return 'Failed';
-        case 'FILE_TYPE_NOT_SUPPORTED': return 'File Type Not Supported';
-        case 'NOT_STARTED': return 'Not Started';
-        case 'QUEUED': return 'Queued';
-        case 'AUTO_INDEX_OFF': return 'Manual Indexing';
-        case 'EMPTY': return 'Empty';
-        default: return 'Queued';
+        case 'COMPLETED': baseLabel = 'Completed'; break;
+        case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
+        case 'FAILED': baseLabel = 'Failed'; break;
+        case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
+        case 'NOT_STARTED': baseLabel = 'Not Started'; break;
+        case 'QUEUED': baseLabel = 'Queued'; showReason = false; break;
+        case 'AUTO_INDEX_OFF': baseLabel = 'Manual Indexing'; break;
+        case 'EMPTY': baseLabel = 'Empty'; break;
+        default: baseLabel = 'Queued'; showReason = false;
       }
+      return appendReason(baseLabel, item.reason, showReason);
     }
+    let baseLabel: string;
+    let showReason = true;
     switch (item.status) {
-      case 'indexed': return 'Completed';
-      case 'processing': return 'In Progress';
-      case 'pending': return 'Pending';
-      case 'failed': return 'Failed';
-      default: return 'Queued';
+      case 'indexed': baseLabel = 'Completed'; break;
+      case 'processing': baseLabel = 'In Progress'; showReason = false; break;
+      case 'pending': baseLabel = 'Pending'; showReason = false; break;
+      case 'failed': baseLabel = 'Failed'; break;
+      default: baseLabel = 'Queued'; showReason = false;
     }
+    return appendReason(baseLabel, item.reason, showReason);
   };
 
   // Status indicator
   const getStatusIcon = () => {
     if (isFolder) return null;
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return null;
+    }
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
@@ -350,19 +374,21 @@ function TableRow({
       onKeyDown={handleKeyDown}
       onClick={onClick}
     >
-      {/* Checkbox */}
+      {/* Checkbox column — kept as a spacer when hidden so the file name doesn't shift left */}
       <Flex
         align="center"
         justify="center"
-        style={{ width: '38px', padding: '0 8px', cursor: 'pointer' }}
-        onClick={(e) => e.stopPropagation()}
+        style={{ width: '38px', padding: '0 8px', cursor: showCheckbox ? 'pointer' : 'default' }}
+        onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
-        <Checkbox
-          size="1"
-          checked={isSelected}
-          onCheckedChange={() => onSelect()}
-          style={{cursor: 'pointer'}}
-        />
+        {showCheckbox && (
+          <Checkbox
+            size="1"
+            checked={isSelected}
+            onCheckedChange={() => onSelect()}
+            style={{cursor: 'pointer'}}
+          />
+        )}
       </Flex>
 
       {/* File Name */}
@@ -375,6 +401,7 @@ function TableRow({
           isKnowledgeHub={isKnowledgeHubNode(item)}
           nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
           connector={isKnowledgeHubNode(item) ? item.connector : undefined}
+          subType={isKnowledgeHubNode(item) ? item.subType : undefined}
           extension={isKnowledgeHubNode(item) ? item.extension : undefined}
           mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
           legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}
@@ -464,6 +491,13 @@ function TableRow({
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
         {(() => {
+          if (shouldHideIndexingStatusForHubRecord(item)) {
+            return (
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                —
+              </Text>
+            );
+          }
           const statusIcon = getStatusIcon();
           const statusLabel = getStatusLabel();
           if (!statusIcon) {
@@ -492,35 +526,41 @@ function TableRow({
         </Flex>
       )}
 
-      {/* Size */}
-      <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatSize(item.sizeInBytes ?? undefined)
-            : formatSize(item.size)
-          }
-        </Text>
-      </Flex>
+      {/* Size — hidden on mobile to keep the row readable */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? formatSize(item.sizeInBytes ?? undefined)
+              : formatSize(item.size)
+            }
+          </Text>
+        </Flex>
+      )}
 
-      {/* Created */}
-      <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatDate(new Date(item.createdAt).toISOString())
-            : formatDate(item.createdAt)
-          }
-        </Text>
-      </Flex>
+      {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? (item.createdAt ? formatDate(new Date(item.createdAt).toISOString()) : '-')
+              : (item.createdAt ? formatDate(item.createdAt) : '-')
+            }
+          </Text>
+        </Flex>
+      )}
 
-      {/* Updated */}
-      <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
-          {isKnowledgeHubNode(item)
-            ? formatDate(new Date(item.updatedAt).toISOString())
-            : formatDate(item.updatedAt)
-          }
-        </Text>
-      </Flex>
+      {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
+      {!isMobile && (
+        <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {isKnowledgeHubNode(item)
+              ? (item.updatedAt ? formatDate(new Date(item.updatedAt).toISOString()) : '-')
+              : (item.updatedAt ? formatDate(item.updatedAt) : '-')
+            }
+          </Text>
+        </Flex>
+      )}
 
       {/* Actions */}
       <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
@@ -531,11 +571,17 @@ function TableRow({
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
             !isFolder && onDownload && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
             onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
-            onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
-              icon: isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'redo' : 'refresh',
-              label: isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'Force Reindex' : 'Reindex',
-              onClick: () => onReindex(item),
-            },
+            onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
+              const node = isKnowledgeHubNode(item)
+                ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
+                : { nodeType: undefined, indexingStatus: undefined };
+              return {
+                icon: getReindexIcon(node),
+                label: getReindexLabel(node),
+                onClick: () => onReindex(item),
+                disabled: isReindexDisabled(node),
+              };
+            })(),
             !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
             onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
             onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
@@ -551,6 +597,7 @@ interface KbListViewProps {
   selectedItems: Set<string>;
   allSelected: boolean;
   showSourceColumn?: boolean;
+  showCheckbox?: boolean;
   sort: SortConfig | AllRecordsSortConfig;
   pagination?: {
     page: number;
@@ -580,6 +627,7 @@ export function KbListView({
   selectedItems,
   allSelected,
   showSourceColumn,
+  showCheckbox = true,
   sort,
   pagination,
   onSelectAll,
@@ -596,8 +644,9 @@ export function KbListView({
   onDelete,
   onDownload,
 }: KbListViewProps) {
+  const isMobile = useIsMobile();
   console.log('pagination data', pagination);
-  
+
   return (
     <>
       {/* Table Header */}
@@ -611,19 +660,21 @@ export function KbListView({
           flexShrink: 0,
         }}
       >
-        {/* Checkbox */}
+        {/* Checkbox column — kept as a spacer when hidden so the File Name column doesn't shift left */}
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', padding: '0 var(--space-2)', cursor: 'pointer' }}
-          onClick={(e) => e.stopPropagation()}
+          style={{ width: '38px', padding: '0 var(--space-2)', cursor: showCheckbox ? 'pointer' : 'default' }}
+          onClick={(e: React.MouseEvent) => e.stopPropagation()}
         >
-          <Checkbox
-            size="1"
-            checked={allSelected}
-            onCheckedChange={onSelectAll}
-            style={{cursor: 'pointer'}}
-          />
+          {showCheckbox && (
+            <Checkbox
+              size="1"
+              checked={allSelected}
+              onCheckedChange={onSelectAll}
+              style={{cursor: 'pointer'}}
+            />
+          )}
         </Flex>
 
         {/* File Name */}
@@ -637,14 +688,20 @@ export function KbListView({
           <TableHeaderCell label="Source" width="70px" sort={sort} onSort={onSort} />
         )}
 
-        {/* Size */}
-        <TableHeaderCell label="Size" field="size" sortable width="89px" sort={sort} onSort={onSort} />
+        {/* Size — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Size" field="size" sortable width="89px" sort={sort} onSort={onSort} />
+        )}
 
-        {/* Created */}
-        <TableHeaderCell label="Created" field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+        {/* Created — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Created" field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+        )}
 
-        {/* Updated */}
-        <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+        {/* Updated — hidden on mobile */}
+        {!isMobile && (
+          <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+        )}
 
         {/* Actions */}
         <Box style={{ width: '80px' }} />
@@ -661,6 +718,8 @@ export function KbListView({
             item={item}
             isSelected={selectedItems.has(item.id)}
             showSourceColumn={showSourceColumn}
+            showCheckbox={showCheckbox}
+            isMobile={isMobile}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

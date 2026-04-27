@@ -42,6 +42,7 @@ interface KbDataTableProps {
   currentNodeName?: string;
   pageViewMode?: PageViewMode;
   showSourceColumn?: boolean;
+  showCheckbox?: boolean;
   hasActiveFilters?: boolean;
   hasSearchQuery?: boolean;
   onRefresh?: () => void;
@@ -71,6 +72,7 @@ export function KbDataTable({
   currentNodeName,
   pageViewMode = 'collections',
   showSourceColumn = false,
+  showCheckbox = true,
   hasActiveFilters = false,
   hasSearchQuery = false,
   onRefresh,
@@ -372,6 +374,7 @@ export function KbDataTable({
         <KbGridView
           items={items}
           selectedItems={activeSelectedItems}
+          showCheckbox={showCheckbox}
           pagination={pagination}
           onPageChange={onPageChange}
           onLimitChange={onLimitChange}
@@ -391,6 +394,7 @@ export function KbDataTable({
           selectedItems={activeSelectedItems}
           allSelected={allSelected}
           showSourceColumn={showSourceColumn}
+          showCheckbox={showCheckbox}
           sort={isAllRecords ? allRecordsSort : sort}
           pagination={pagination}
           onPageChange={onPageChange}

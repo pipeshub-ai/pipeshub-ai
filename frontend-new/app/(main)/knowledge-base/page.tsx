@@ -49,6 +49,7 @@ import {
   getSourceDisplay,
   buildKbLookup,
   applyClientSideFilters,
+  isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
 import { buildFilterParams, buildAllRecordsFilterParams } from './utils';
 import { ShareSidebar } from '@/app/components/share';
@@ -63,8 +64,11 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
-import { FOLDER_REINDEX_DEPTH } from './constants';
+import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { getReindexSuccessTitle } from './utils/reindex-label';
+import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import {
@@ -124,6 +128,8 @@ function KnowledgeBasePageContent() {
     setSearchQuery,
     setAllRecordsSearchQuery,
     setAppNodes,
+    setAppRootListPagination,
+    setAppChildPagination,
     cacheAppChildren,
     setConnectorAppTree,
     setAppLoading,
@@ -430,6 +436,7 @@ function KnowledgeBasePageContent() {
     isLoading?: boolean;
     error?: string;
     recordDetails?: RecordDetailsResponse;
+    webUrl?: string;
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
@@ -437,6 +444,7 @@ function KnowledgeBasePageContent() {
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
+  const accessToken = useAuthStore((s) => s.accessToken);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -449,20 +457,32 @@ function KnowledgeBasePageContent() {
   }, [folderId, isAllRecordsMode, setCurrentFolderId, searchParams]);
 
   useEffect(() => {
-    async function fetchAppNodes() {
+    async function fetchAppNodesAllRecords() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getRootNodes({
+        const response = await KnowledgeHubApi.getNavigationNodes({
           page: 1,
-          limit: 100,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+          include: 'counts',
+          sortBy: 'updatedAt',
+          sortOrder: 'desc',
         });
 
-        // Filter to app-type nodes only (getRootNodes can return kb/folder nodes too)
+        // Filter to app-type nodes only (root can return other node types)
         const appItems = response.items.filter((n) => n.nodeType === 'app');
-        // Sort so the KB (Collections) app always appears first
-        const kbApps = appItems.filter((n) => n.connector === 'KB');
-        const connectorApps = appItems.filter((n) => n.connector !== 'KB');
+        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
+        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
         setAppNodes([...kbApps, ...connectorApps]);
+
+        const p = response.pagination;
+        setAppRootListPagination(
+          p
+            ? {
+                hasNext: p.hasNext,
+                nextPage: p.hasNext ? p.page + 1 : p.page,
+              }
+            : null
+        );
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         toast.error('Failed to load sidebar', {
@@ -473,8 +493,43 @@ function KnowledgeBasePageContent() {
       }
     }
 
-    fetchAppNodes();
-  }, [setAppNodes, setLoadingFlatCollections]);
+    function bootstrapCollectionsHubFromToken() {
+      try {
+        setLoadingFlatCollections(true);
+        const boot = getCollectionsHubBootstrapFromToken(accessToken);
+        if (boot.ok === false) {
+          setAppNodes([]);
+          setAppRootListPagination(null);
+          if (boot.reason === 'missing_token') {
+            toast.error('Failed to load Collections', {
+              description: 'You are not signed in. Please log in again.',
+            });
+          } else {
+            toast.error('Failed to load Collections', {
+              description: 'Could not resolve your organization. Please refresh the page.',
+            });
+          }
+          return;
+        }
+        setAppNodes([boot.app]);
+        setAppRootListPagination(null);
+      } finally {
+        setLoadingFlatCollections(false);
+      }
+    }
+
+    if (isAllRecordsMode) {
+      void fetchAppNodesAllRecords();
+    } else {
+      bootstrapCollectionsHubFromToken();
+    }
+  }, [
+    isAllRecordsMode,
+    accessToken,
+    setAppNodes,
+    setAppRootListPagination,
+    setLoadingFlatCollections,
+  ]);
 
   // Fetch children for each app node (lazy loading); for the KB app, also
   // populate nodes + categorizedNodes so the Collections sidebar tree is driven
@@ -489,7 +544,7 @@ function KnowledgeBasePageContent() {
 
       // In Collections mode, only prefetch the KB app's children.
       // Non-KB connector apps are fetched lazily when the user enters All Records mode.
-      const isKbApp = app.connector === 'KB';
+      const isKbApp = isKbCollectionsHubApp(app);
       if (!isKbApp && !isAllRecordsMode) return;
 
       setAppLoading(app.id, true);
@@ -497,19 +552,28 @@ function KnowledgeBasePageContent() {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
           onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+          sortBy: 'name',
+          sortOrder: 'asc',
         });
         cacheAppChildren(app.id, response.items);
 
-        // For the KB (Collections) app: populate nodes + categorizedNodes
-        // so the Collections sidebar tree renders correctly
+        const pag = response.pagination;
+        setAppChildPagination(
+          app.id,
+          pag
+            ? {
+                hasNext: pag.hasNext,
+                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
+              }
+            : { hasNext: false, nextPage: 1 }
+        );
+
         if (isKbApp) {
           setNodes(response.items);
-          // KB children have parentId = "apps/<appId>" so pass it as rootParentId
           const categorized = categorizeNodes(response.items, `apps/${app.id}`);
           setCategorizedNodes(categorized);
         } else {
-          // Non-KB apps (All Records): same nested sidebar model as KB via connectorAppTrees
           addNodes(response.items);
           const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
           setConnectorAppTree(app.id, connectorTree);
@@ -526,6 +590,7 @@ function KnowledgeBasePageContent() {
     isAllRecordsMode,
     setAppLoading,
     cacheAppChildren,
+    setAppChildPagination,
     setNodes,
     setCategorizedNodes,
     addNodes,
@@ -998,16 +1063,31 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
-      // Immediate refetch when clearing search (bypasses debounce)
-      fetchAllRecordsTableData();
+      // Immediate refetch when clearing search (bypasses debounce).
+      // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
+      const nt = searchParams.get('nodeType');
+      const nid = searchParams.get('nodeId');
+      if (nt && nid) {
+        void fetchAllRecordsTableData(nt, nid);
+      } else {
+        void fetchAllRecordsTableData();
+      }
     } else {
       setSearchQuery('');
       // Immediate refetch when clearing search (bypasses debounce)
       if (selectedNode) {
-        fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
+        void fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
       }
     }
-  }, [isAllRecordsMode, selectedNode, setAllRecordsSearchQuery, setSearchQuery, fetchAllRecordsTableData, fetchTableData]);
+  }, [
+    isAllRecordsMode,
+    searchParams,
+    selectedNode,
+    setAllRecordsSearchQuery,
+    setSearchQuery,
+    fetchAllRecordsTableData,
+    fetchTableData,
+  ]);
 
   // Handle search change - updates search query in store
   const handleSearchChange = useCallback(
@@ -1093,7 +1173,7 @@ function KnowledgeBasePageContent() {
       // Inside a KB/folder - create folder within it
       const kbId = tableData.breadcrumbs[1].id;
       const currentNode = tableData.currentNode;
-      
+
       // Determine parent ID:
       // - If current node is a folder, use it as parent (nested folder)
       // - If current node is the KB itself, parentId should be null (root folder)
@@ -1136,7 +1216,7 @@ function KnowledgeBasePageContent() {
           );
 
           // Show success toast
-            toast.success('Folder created successfully', {
+          toast.success('Folder created successfully', {
             description: `"${name.trim()}" has been created`,
           });
 
@@ -1386,7 +1466,7 @@ function KnowledgeBasePageContent() {
     }
     shareAdapter.getSharedMembers().then((members) => {
       setSharedMembers(
-      members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
+        members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
       );
     }).catch(async (error) => {
       setSharedMembers([]);
@@ -1398,17 +1478,30 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, isSelectedKbPrivate, handleAccessRevoked, shareAdapter]);
 
+  const getPreviewErrorMessage = useCallback((err: unknown): string => {
+    if (err instanceof Error && err.message) return err.message;
+
+    const maybeMessage = (err as { message?: unknown })?.message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
+
+    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
+    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
+
+    return 'Failed to load file';
+  }, []);
+
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
+
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
-    
+
     if (isKnowledgeHubNode) {
       // Only preview record type nodes (files)
       if (item.nodeType !== 'record') {
         return;
       }
-      
+
       try {
         // 1. Show loading state immediately
         setPreviewFile({
@@ -1418,6 +1511,7 @@ function KnowledgeBasePageContent() {
           type: item.mimeType || item.extension || '',
           size: item.sizeInBytes || undefined,
           isLoading: true,
+          webUrl: item.webUrl,
         });
         setPreviewMode('sidebar');
 
@@ -1463,13 +1557,15 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          webUrl: recordDetails.record.webUrl || undefined,
         });
 
       } catch (error) {
-        console.error('Failed to load file preview:', error);
+        const errorMessage = getPreviewErrorMessage(error);
+        console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
           ...prev,
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          error: errorMessage,
           isLoading: false,
         } : null);
       }
@@ -1530,18 +1626,20 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          webUrl: recordDetails.record.webUrl || undefined,
         });
-        
+
       } catch (error) {
-        console.error('Failed to load file preview:', error);
+        const errorMessage = getPreviewErrorMessage(error);
+        console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
           ...prev,
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          error: errorMessage,
           isLoading: false,
         } : null);
       }
     }
-  }, []);
+  }, [getPreviewErrorMessage]);
 
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(
@@ -1695,7 +1793,6 @@ function KnowledgeBasePageContent() {
   const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
 
     const toastId = toast.loading('Re-indexing...', {
-      description: `Collection ${item.name} is getting re-indexed. This may take a few seconds`,
       icon: 'lap_timer',
     });
 
@@ -1715,17 +1812,17 @@ function KnowledgeBasePageContent() {
 
       toast.update(toastId, {
         variant: 'success',
-        title: 'Reindexed successfully',
-        description: `"${item.name}" has been reindexed`,
+        title: getReindexSuccessTitle({
+          nodeType,
+          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
+        }),
       });
 
       await refreshData();
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
+    } catch {
       toast.update(toastId, {
         variant: 'error',
-        title: 'Re-indexing failed',
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        title: 'Failed to start reindexing',
         action: {
           label: 'Try Again',
           icon: 'refresh',
@@ -1796,7 +1893,7 @@ function KnowledgeBasePageContent() {
   const handleReplaceConfirm = useCallback(
     async (item: KnowledgeHubNode, newFile: File) => {
       setIsReplacing(true);
-      
+
       try {
         // Call API to replace the file
         await KnowledgeBaseApi.replaceRecord(
@@ -1821,7 +1918,7 @@ function KnowledgeBasePageContent() {
         await refreshData();
       } catch (error: unknown) {
         console.error('Failed to replace file:', error);
-        
+
         // Show error toast
         const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
@@ -2074,6 +2171,7 @@ function KnowledgeBasePageContent() {
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
+          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           onRefresh={() => { void handleRefresh(); }}
@@ -2109,17 +2207,22 @@ function KnowledgeBasePageContent() {
           refreshData={refreshData}
         />
 
-        {/* Selection Action Bar - shows when items are selected */}
-        <SelectionActionBar
-          selectedCount={selectedCount}
-          onDeselectAll={handleDeselectAll}
-          onChat={handleBulkChat}
-          onReindex={handleBulkReindex}
-          onDelete={handleBulkDeleteClick}
-          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-        />
+        {/* Selection Action Bar - shows when items are selected.
+            Hidden in All Records "All" and connector views (mirrors the checkbox guard
+            above). Rows in those views are top-level aggregates that aren't individually
+            reindexable, and stale selections from a prior view shouldn't surface here. */}
+        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
+          <SelectionActionBar
+            selectedCount={selectedCount}
+            onDeselectAll={handleDeselectAll}
+            onChat={handleBulkChat}
+            onReindex={handleBulkReindex}
+            onDelete={handleBulkDeleteClick}
+            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          />
+        )}
 
-        {/* Chat Bar */}
+        {/* Chat Bar (temporarily disabled)
         {selectedCount === 0 &&
         <Box
           style={{ 
@@ -2136,7 +2239,7 @@ function KnowledgeBasePageContent() {
             isAllRecordsMode={isAllRecordsMode}
           />
         </Box>
-        }
+        } */}
       </Flex>
 
       {/* Collections mode only dialogs */}
@@ -2210,6 +2313,7 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -2238,6 +2342,7 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}

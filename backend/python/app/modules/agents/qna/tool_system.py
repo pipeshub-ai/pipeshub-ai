@@ -752,9 +752,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 if state_logger:
                     state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
 
-        # Add dynamic execute_sql_query tool for database queries
         config_service = state.get("config_service")
-        if config_service:
+        if config_service and state.get("has_sql_connector") and state.get("has_sql_knowledge"):
             try:
                 from app.utils.execute_query import create_execute_query_tool
                 graph_provider = state.get("graph_provider")
@@ -768,6 +767,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                     conversation_id=conversation_id,
                     blob_store=blob_store,
                 )
+
+                setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
                 structured_tools.append(execute_query_tool)
                 state_logger = state.get("logger")
                 if state_logger:

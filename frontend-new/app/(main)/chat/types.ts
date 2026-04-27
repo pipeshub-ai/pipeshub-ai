@@ -41,7 +41,12 @@ export interface ChatSource {
 export interface ModelInfo {
   modelKey: string;
   modelName: string;
+  /**
+   * Main assistant: often `quick`, or `agent:<segment>` when restoring agent-style modes.
+   * **Agent** conversations: API uses plain `auto` | `quick` | `verification` | `deep` (no `agent:` prefix).
+   */
   chatMode: string;
+  modelFriendlyName?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -72,9 +77,11 @@ export interface ConversationApiResponse {
   accessLevel: string;
 }
 
+export type ConversationSource = 'owned' | 'shared';
+
 export interface ConversationsListResponse {
   conversations: ConversationApiResponse[];
-  sharedWithMeConversations: ConversationApiResponse[];
+  source: ConversationSource;
   pagination: {
     page: number;
     limit: number;
@@ -108,7 +115,7 @@ export type ChatMode = 'chat' | 'search';
 
 /**
  * Query sub-modes selectable from the dropdown panel.
- * All requests use quick chatMode at the API; these control behavior/features.
+ * These map to API `chatMode` for assistant streams.
  */
 export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
 
@@ -120,8 +127,16 @@ export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
  */
 export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
 
-/** API `chatMode` for streams: always `quick`, or `agent:<segment>` when in agent query mode. */
-export type StreamChatModePayload = 'quick' | `agent:${AgentStrategyApiSegment}`;
+/**
+ * API `chatMode` for streams (assistant modes + agent strategy variant).
+ * `web-search`/`image` are UI mode tags persisted for restore; Python route
+ * model config currently treats unrecognized values as standard behavior.
+ */
+export type StreamChatModePayload =
+  | 'quick'
+  | 'web-search'
+  | 'image'
+  | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
@@ -174,15 +189,44 @@ export interface QueryModeConfig {
   enabled: boolean;
 }
 
+/**
+ * Assistant chat knowledge scope — **same shape as stream/search `filters`** (`apps` + `kb`).
+ *
+ * - **`apps`** — Ids sent as `filters.apps`: connector hub roots **and** collection/KB hub roots
+ *   (whole-subtree scope). Nested record groups do **not** go here.
+ * - **`kb`** — Record group ids sent as `filters.kb` (nested picks under an expanded hub root).
+ */
+export interface ChatKnowledgeFilters {
+  apps: string[];
+  kb: string[];
+}
+
+/** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
+export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): {
+  apps: string[];
+  kb: string[];
+} {
+  return {
+    apps: [...(filters.apps ?? [])],
+    kb: [...(filters.kb ?? [])],
+  };
+}
+
+/** Attached on send for replay + UI; `kind` defaults to `collectionRoot` when absent (legacy). */
+export type ChatCollectionAttachmentKind = 'collectionRoot' | 'recordGroup';
+
+export interface ChatCollectionAttachment {
+  id: string;
+  name: string;
+  kind?: ChatCollectionAttachmentKind;
+}
+
 export interface ChatSettings {
   mode: ChatMode;
   queryMode: QueryMode;
   /** Used when queryMode is 'agent'. */
   agentStrategy: AgentStrategy;
-  filters: {
-    apps: string[];
-    kb: string[];
-  };
+  filters: ChatKnowledgeFilters;
   /**
    * Per-context map of the model explicitly chosen by the user in the model
    * selector panel. The key is either ASSISTANT_CTX (for the non-agent chat) or
@@ -258,6 +302,8 @@ export interface ChatArtifact {
 
 export interface SSEConnectedEvent {
   message: string;
+  /** Set by Node when a new conversation row is created before streaming (main + agent). */
+  conversationId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -447,6 +493,16 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
       chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
     };
   }
+  if (settings.queryMode === 'web-search') {
+    return {
+      chatMode: 'web-search',
+    };
+  }
+  if (settings.queryMode === 'image') {
+    return {
+      chatMode: 'image',
+    };
+  }
   return {
     chatMode: 'quick',
   };
@@ -547,7 +603,7 @@ export interface ChatSlot {
    */
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
-  pendingCollections: Array<{ id: string; name: string }>;
+  pendingCollections: ChatCollectionAttachment[];
 
   /** Artifacts produced during the current streaming response. */
   artifacts: ChatArtifact[];
@@ -557,6 +613,17 @@ export interface ChatSlot {
 
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
+
+  /**
+   * From GET conversation detail `access.isOwner`.
+   * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
+   */
+  isOwner: boolean | null;
+  /**
+   * Last known API `modelInfo` for this thread (from list/detail/SSE), used
+   * to restore model + mode in the input when the user returns to this tab.
+   */
+  conversationModelInfo?: ModelInfo;
 }
 
 // ── Search types ──────────────────────────────────────────────────────

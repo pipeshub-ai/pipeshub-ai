@@ -2380,12 +2380,19 @@ components:
         recordType:
           type: string
           nullable: true
+          description: Record type (only when nodeType is record)
         recordGroupType:
           type: string
           nullable: true
+          description: Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)
         indexingStatus:
           type: string
           nullable: true
+          description: Indexing status (only when nodeType is record)
+        reason:
+          type: string
+          nullable: true
+          description: Reason for current indexing status (e.g. failure reason)
         isInternal:
           type: boolean
           description: True when the node is an internal/system record group or record (doesn't come from source)
@@ -2720,6 +2727,10 @@ components:
           type: string
           description: Display name of the AI model
           example: "GPT-4 Turbo"
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the selected model
+          example: "GPT-4 Turbo"
         chatMode:
           type: string
           description: |
@@ -2760,6 +2771,9 @@ components:
         modelName:
           type: string
           description: Display name of the model
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the model
         chatMode:
           type: string
           description: Chat mode for this message
@@ -3015,6 +3029,9 @@ components:
               type: string
             modelName:
               type: string
+            modelFriendlyName:
+              type: string
+              description: Friendly display name of the selected model
             modelProvider:
               type: string
             chatMode:
@@ -3119,6 +3136,9 @@ components:
         modelName:
           type: string
           description: Display name of the model
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the model
         chatMode:
           type: string
           description: Processing mode configuration
@@ -4573,6 +4593,7 @@ components:
         - clientId
         - clientSecret
         - tenantId
+        - hasAdminConsent
       properties:
         clientId:
           type: string
@@ -4585,8 +4606,10 @@ components:
           description: Microsoft/Azure tenant ID
         hasAdminConsent:
           type: boolean
-          description: Whether admin consent has been granted
-          default: false
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     SharePointConfig:
       type: object
@@ -4596,6 +4619,7 @@ components:
         - clientSecret
         - tenantId
         - sharepointDomain
+        - hasAdminConsent
       properties:
         clientId:
           type: string
@@ -4611,8 +4635,10 @@ components:
           description: SharePoint domain (e.g., 'mycompany.sharepoint.com')
         hasAdminConsent:
           type: boolean
-          description: Whether admin consent has been granted
-          default: false
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     # URL Configuration Schemas
     URLConfig:
@@ -13475,37 +13501,129 @@ paths:
         - Conversations
       summary: List all conversations
       description: |
-        Retrieve all conversations for the authenticated user.<br><br>
+        Retrieve paginated conversations for the authenticated user.<br><br>
         <b>Overview:</b><br>
-        Returns a list of all conversations owned by or shared with the current user.
-        Conversations are returned with their messages, status, and metadata.<br><br>
+        Use the optional <code>source</code> query parameter to choose which list to return:
+        <code>owned</code> — only conversations you own (<code>userId</code> matches the current user).
+        <code>shared</code> — conversations where you have recipient access
+        (<code>isShared</code> and your user appears in <code>sharedWith</code>), without the owner-only branch.
+        Defaults to <code>owned</code> when omitted. Each call returns one list; call twice if you need both.<br><br>
         <b>Filtering:</b><br>
         <ul>
         <li>Only non-archived conversations are returned by default</li>
         <li>Use <code>/conversations/show/archives</code> for archived conversations</li>
         </ul>
         <b>Sorting:</b><br>
-        Conversations are sorted by last activity timestamp (most recent first).
+        Conversations are sorted by last activity timestamp (most recent first) by default.
       operationId: getAllConversations
       security:
         - bearerAuth: []
         - oauth2: [conversation:read]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: |
+            <code>owned</code> — owner list (<code>userId</code> filter only).
+            <code>shared</code> — explicit share grant list (<code>isShared</code> + <code>sharedWith</code>).
+            Defaults to <code>owned</code> when omitted.
+          schema:
+            type: string
+            enum:
+              - owned
+              - shared
+            default: owned
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based). Defaults to 1.
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Defaults to 20; capped by the server (max 100).
+          schema:
+            type: integer
+            minimum: 1
+        - name: sortBy
+          in: query
+          required: false
+          description: Sort field. Invalid values fall back to <code>lastActivityAt</code>.
+          schema:
+            type: string
+            enum:
+              - createdAt
+              - lastActivityAt
+              - title
+        - name: sortOrder
+          in: query
+          required: false
+          description: Sort direction. Defaults to <code>desc</code> unless set to <code>asc</code>.
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+        - name: conversationId
+          in: query
+          required: false
+          description: When set, restricts results to that conversation ID (if visible under the chosen <code>source</code>).
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          description: Case-insensitive match on title and message content (max 1000 characters).
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          required: false
+          description: Filter by <code>createdAt</code> ≥ this ISO date.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: false
+          description: Filter by <code>createdAt</code> ≤ this ISO date.
+          schema:
+            type: string
+            format: date-time
+        - name: shared
+          in: query
+          required: false
+          description: |
+            When set, filters by <code>isShared</code>. Accepts case-insensitive
+            <code>true</code>/<code>false</code>, or <code>1</code>/<code>0</code>.
+          schema:
+            type: string
       responses:
         '200':
-          description: List of conversations
+          description: List of conversations for the requested source
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - conversations
+                  - source
+                  - pagination
+                  - filters
+                  - meta
                 properties:
                   conversations:
                     type: array
                     items:
                       $ref: '#/components/schemas/Conversation'
-                  sharedWithMeConversations:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Conversation'
+                  source:
+                    type: string
+                    enum:
+                      - owned
+                      - shared
+                    description: Echoes the requested <code>source</code> query value.
                   pagination:
                     type: object
                     properties:
@@ -13534,6 +13652,10 @@ paths:
                         format: date-time
                       duration:
                         type: integer
+        '400':
+          description: |
+            Bad request — for example, missing or invalid <code>source</code> (must be <code>owned</code> or <code>shared</code>),
+            invalid date query params, invalid <code>search</code> shape, or search text over the length limit.
         '401':
           description: Unauthorized - Valid bearer token required
 
@@ -14165,6 +14287,9 @@ paths:
                   description: Override model for regeneration
                 modelName:
                   type: string
+                modelFriendlyName:
+                  type: string
+                  description: Friendly display name of the selected model
                 chatMode:
                   type: string
       responses:
@@ -15978,6 +16103,10 @@ paths:
                 filters:
                   $ref: '#/components/schemas/Filters'
                 modelKey:
+                  type: string
+                modelName:
+                  type: string
+                modelFriendlyName:
                   type: string
                 chatMode:
                   type: string

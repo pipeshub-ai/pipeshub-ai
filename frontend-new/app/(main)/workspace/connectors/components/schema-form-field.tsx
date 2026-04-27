@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useContext } from 'react';
+import React, { useState, useRef, useContext, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
@@ -71,6 +72,11 @@ const focusStyle: React.CSSProperties = {
   paddingRight: 7,
 };
 
+const errorFieldChrome: React.CSSProperties = {
+  border: '1px solid var(--red-9)',
+  backgroundColor: 'var(--red-a2)',
+};
+
 // ========================================
 // Component
 // ========================================
@@ -89,20 +95,41 @@ export function SchemaFormField({
   if (!visible) return null;
 
   const fieldType = field.fieldType || 'TEXT';
-  const _label = `${field.displayName}${'required' in field && field.required ? ' *' : ''}`;
   const isOptional = 'required' in field && !field.required;
+  const isRequired = !isOptional;
+  const invalid = Boolean(error);
 
   // Render the appropriate input based on field type
   const renderField = () => {
     switch (fieldType) {
       case 'CHECKBOX':
         return (
-          <CheckboxField field={field} value={value} onChange={onChange} disabled={disabled} />
+          <Flex direction="column" gap="1">
+            <CheckboxField field={field} value={value} onChange={onChange} disabled={disabled} />
+            {error ? (
+              <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                {error}
+              </Text>
+            ) : null}
+          </Flex>
         );
 
       case 'BOOLEAN':
         return (
-          <BooleanField field={field} value={value} onChange={onChange} disabled={disabled} />
+          <Flex direction="column" gap="1">
+            <BooleanField
+              field={field}
+              value={value}
+              onChange={onChange}
+              disabled={disabled}
+              hasError={invalid}
+            />
+            {error ? (
+              <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                {error}
+              </Text>
+            ) : null}
+          </Flex>
         );
 
       case 'FILE':
@@ -119,6 +146,20 @@ export function SchemaFormField({
           />
         );
 
+      case 'TAGS':
+        return (
+          <Flex direction="column" gap="1">
+            <FormField
+              label={field.displayName}
+              required={isRequired}
+              optional={isOptional}
+              error={error}
+            >
+              <TagsInput field={field} value={value} onChange={onChange} disabled={disabled} hasError={invalid} />
+            </FormField>
+          </Flex>
+        );
+
       default: {
         // All other field types use the FormField label wrapper
         const renderInput = () => {
@@ -130,13 +171,22 @@ export function SchemaFormField({
                   value={value}
                   onChange={onChange}
                   disabled={disabled}
+                  hasError={invalid}
                   startAdornment={startAdornment}
                 />
               );
             case 'TEXTAREA':
-              return <TextareaInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return (
+                <TextareaInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  hasError={invalid}
+                />
+              );
             case 'JSON':
-              return <JsonInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return <JsonInput field={field} value={value} onChange={onChange} disabled={disabled} hasError={invalid} />;
             case 'SELECT':
               return (
                 <SelectInput
@@ -147,11 +197,19 @@ export function SchemaFormField({
                   options={options}
                   portalZIndex={selectPortalZIndex}
                   startAdornment={startAdornment}
+                  hasError={invalid}
                 />
               );
             case 'NUMBER':
               return (
-                <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} startAdornment={startAdornment} />
+                <NumberInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  startAdornment={startAdornment}
+                  hasError={invalid}
+                />
               );
             default:
               // TEXT, EMAIL, URL, and fallback
@@ -163,13 +221,19 @@ export function SchemaFormField({
                   disabled={disabled}
                   fieldType={fieldType}
                   startAdornment={startAdornment}
+                  hasError={invalid}
                 />
               );
           }
         };
 
         return (
-          <FormField label={field.displayName} optional={isOptional} error={error}>
+          <FormField
+            label={field.displayName}
+            required={isRequired}
+            optional={isOptional}
+            error={error}
+          >
             {renderInput()}
           </FormField>
         );
@@ -178,7 +242,7 @@ export function SchemaFormField({
   };
 
   return (
-    <Flex direction="column" gap="1">
+    <Flex direction="column" gap="1" data-ph-auth-field={field.name}>
       {renderField()}
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}
@@ -336,6 +400,7 @@ function TextInput({
   disabled,
   fieldType,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
@@ -343,6 +408,7 @@ function TextInput({
   disabled: boolean;
   fieldType: string;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -367,9 +433,13 @@ function TextInput({
           onChange={(e) => onChange(field.name, e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused ? (hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle) : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             opacity: disabled ? 0.6 : 1,
           }}
@@ -385,18 +455,152 @@ function TextInput({
   );
 }
 
+/** First occurrence wins casing; later entries that only differ by case are dropped. */
+function dedupeTagsCaseInsensitive(trimmed: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of trimmed) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+/** Tag list: type in the box and press Enter to add (same UX as legacy MUI TagsFieldRenderer). */
+function TagsInput({
+  field,
+  value,
+  onChange,
+  disabled,
+  hasError,
+}: {
+  field: SchemaField;
+  value: unknown;
+  onChange: (name: string, value: unknown) => void;
+  disabled: boolean;
+  hasError?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState('');
+  const [isFocused, setIsFocused] = useState(false);
+
+  const { rawTags, tags } = useMemo(() => {
+    const raw: string[] = Array.isArray(value)
+      ? (value as unknown[]).map((v) => String(v).trim()).filter((s) => s.length > 0)
+      : [];
+    return { rawTags: raw, tags: dedupeTagsCaseInsensitive(raw) };
+  }, [value]);
+
+  const addTag = () => {
+    const next = draft.trim();
+    if (!next || tags.some((x) => x.toLowerCase() === next.toLowerCase())) return;
+    onChange(field.name, [...tags, next]);
+    setDraft('');
+  };
+
+  const removeTag = (tag: string) => {
+    const k = tag.toLowerCase();
+    onChange(field.name, rawTags.filter((x) => x.toLowerCase() !== k));
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addTag();
+    }
+  };
+
+  const placeholder =
+    'placeholder' in field && field.placeholder
+      ? field.placeholder
+      : t('workspace.connectors.schemaForm.tagsPlaceholder');
+
+  return (
+    <>
+      <input
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={onKeyDown}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
+        style={{
+          ...inputStyle,
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle
+            : {}),
+          marginBottom: tags.length > 0 ? 8 : 0,
+          opacity: disabled ? 0.6 : 1,
+        }}
+      />
+      {tags.length > 0 ? (
+        <Flex wrap="wrap" gap="2" style={{ marginBottom: 4 }}>
+          {tags.map((tag) => (
+            <Flex
+              key={tag}
+              align="center"
+              gap="1"
+              style={{
+                paddingLeft: 8,
+                paddingRight: 2,
+                paddingTop: 2,
+                paddingBottom: 2,
+                borderRadius: 'var(--radius-2)',
+                border: '1px solid var(--accent-a6)',
+                backgroundColor: 'var(--accent-a2)',
+                maxWidth: '100%',
+              }}
+            >
+              <Text size="1" style={{ color: 'var(--gray-12)', wordBreak: 'break-word' }}>
+                {tag}
+              </Text>
+              <IconButton
+                type="button"
+                size="1"
+                variant="ghost"
+                color="gray"
+                disabled={disabled}
+                aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag })}
+                onClick={() => removeTag(tag)}
+                style={{ flexShrink: 0 }}
+              >
+                <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+              </IconButton>
+            </Flex>
+          ))}
+        </Flex>
+      ) : null}
+      {field.description ? (
+        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+          {field.description}
+        </Text>
+      ) : null}
+    </>
+  );
+}
+
 function PasswordInput({
   field,
   value,
   onChange,
   disabled,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [showPassword, setShowPassword] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -414,9 +618,15 @@ function PasswordInput({
           onChange={(e) => onChange(field.name, e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused
+              ? hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : focusStyle
+              : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             paddingRight: 36,
             opacity: disabled ? 0.6 : 1,
@@ -456,11 +666,13 @@ function TextareaInput({
   value,
   onChange,
   disabled,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -473,9 +685,15 @@ function TextareaInput({
         onChange={(e) => onChange(field.name, e.target.value)}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
         style={{
           ...textareaStyle,
-          ...(isFocused ? { ...focusStyle, height: 80 } : {}),
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
+            : {}),
           opacity: disabled ? 0.6 : 1,
         }}
       />
@@ -493,11 +711,13 @@ function JsonInput({
   value,
   onChange,
   disabled,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -513,10 +733,16 @@ function JsonInput({
         onChange={(e) => onChange(field.name, e.target.value)}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
+        aria-invalid={hasError || undefined}
         style={{
           ...textareaStyle,
-          ...(isFocused ? { ...focusStyle, height: 120 } : {}),
           height: 120,
+          ...(hasError && !isFocused ? errorFieldChrome : {}),
+          ...(isFocused
+            ? (hasError
+                ? { ...focusStyle, border: '2px solid var(--red-9)' }
+                : { ...focusStyle })
+            : {}),
           fontFamily: 'monospace',
           fontSize: 13,
           opacity: disabled ? 0.6 : 1,
@@ -537,12 +763,14 @@ function NumberInput({
   onChange,
   disabled,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -567,9 +795,13 @@ function NumberInput({
           }}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,
-            ...(isFocused ? focusStyle : {}),
+            ...(hasError && !isFocused ? errorFieldChrome : {}),
+            ...(isFocused ? (hasError
+              ? { ...focusStyle, border: '2px solid var(--red-9)' }
+              : focusStyle) : {}),
             paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             opacity: disabled ? 0.6 : 1,
           }}
@@ -592,6 +824,7 @@ function SelectInput({
   options,
   portalZIndex,
   startAdornment,
+  hasError,
 }: {
   field: SchemaField;
   value: unknown;
@@ -600,6 +833,7 @@ function SelectInput({
   options?: { label: string; value: string }[];
   portalZIndex?: number;
   startAdornment?: React.ReactNode;
+  hasError?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
@@ -624,6 +858,8 @@ function SelectInput({
           disabled={disabled}
         >
           <Select.Trigger
+            data-invalid={hasError || undefined}
+            color={hasError ? 'red' : undefined}
             style={{
               width: '100%',
               height: 32,
@@ -684,11 +920,13 @@ function BooleanField({
   value,
   onChange,
   disabled,
+  hasError = false,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  hasError?: boolean;
 }) {
   // Normalize string "true" / "false" to boolean
   const boolVal =
@@ -705,12 +943,14 @@ function BooleanField({
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
+          {'required' in field && field.required && ' *'}
         </Text>
       </Flex>
       <Switch
         checked={boolVal}
         onCheckedChange={(checked) => onChange(field.name, checked)}
         disabled={disabled}
+        color={hasError ? 'red' : undefined}
       />
     </Flex>
   );

@@ -24,7 +24,8 @@
   },
   "chatStream": {
     "thinkingFallback": "Thinking…",
-    "refiningResponse": "Refining response…"
+    "refiningResponse": "Refining response…",
+    "errorFallback": "An error occurred. Please try again."
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -221,7 +222,8 @@
     "searchPlaceholder": "Search...",
     "required": "This field is required",
     "invalidEmail": "Invalid email address",
-    "invalidUrl": "Invalid URL"
+    "invalidUrl": "Invalid URL",
+    "name": "Name"
   },
   "dialog": {
     "newFolder": "New Collection Folder",
@@ -336,6 +338,7 @@
     "suggestedInWorkspace": "Suggested in Workspace",
     "createSubFolder": "Create a Sub-Folder",
     "more": "More",
+    "loadMore": "Load more",
     "moreCollections": "More Collections",
     "searchCollections": "Search"
   },
@@ -383,7 +386,8 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
-    "connectorsTooltip": "Connectors & Collections",
+    "connectorsCollectionsTitle": "Connectors and Collections",
+    "connectorsTooltip": "Connectors and Collections",
     "agentResourcesTooltip": "Connectors, collections & actions",
     "agentResources": {
       "sheetTitle": "Connectors, collections & actions",
@@ -412,7 +416,7 @@
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",
     "noChatsYet": "No chats yet",
-    "searchCollections": "Search Collections",
+    "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
     "noCollectionsAvailable": "No collections available",
@@ -1469,6 +1473,13 @@
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
+        "credentialsSubtext": "Enter your {{name}} authentication details",
+        "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect URL in your IdP first.",
+        "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
+        "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
+        "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
+        "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
+        "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector"
       },
       "docSection": {
@@ -1544,6 +1555,10 @@
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
       },
+      "schemaForm": {
+        "tagsPlaceholder": "Type and press Enter to add tags",
+        "removeTagAriaLabel": "Remove {{tag}}"
+      },
       "syncStatus": {
         "paused": "Sync Paused",
         "preparing": "Preparing to Sync...",
@@ -1611,6 +1626,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "deleteBot": "Delete Bot",
       "typeLabels": {
         "slack": "Slack Bot",
         "discord": "Discord Bot",
@@ -1945,6 +1961,7 @@
     "toolsetDuplicateNotify": "Only one {{name}} toolset can be on the canvas at a time.",
     "toolsetAuthUpdated": "Toolset authentication updated.",
     "loadMore": "Load more",
+    "loadMoreConnectors": "Load more connectors",
     "loadingMore": "Loading…",
     "notConfiguredReason": "not configured",
     "notAuthenticatedReason": "not authenticated",

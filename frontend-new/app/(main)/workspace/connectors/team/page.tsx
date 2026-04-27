@@ -519,7 +519,7 @@ function NavigateButton({
         display: 'flex',
         alignItems: 'center',
         gap: 'var(--space-2)',
-        height: 'var(--space-8)',
+        height: 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
         cursor: 'pointer',

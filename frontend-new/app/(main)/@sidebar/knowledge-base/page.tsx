@@ -4,7 +4,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import KnowledgeBaseSidebar from '../../knowledge-base/sidebar';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
-import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/constants';
+import {
+  ADMIN_MORE_CONNECTORS,
+  PERSONAL_MORE_CONNECTORS,
+  SIDEBAR_PAGINATION_PAGE_SIZE,
+} from '../../knowledge-base/constants';
+import { sidebarNodeChildrenMetaFromResponse } from '../../knowledge-base/utils/sidebar-child-pagination-meta';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   categorizeNode,
@@ -17,6 +22,8 @@ import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import type { NodeType, EnhancedFolderTreeNode, KnowledgeHubNode } from '../../knowledge-base/types';
 
 function KnowledgeBaseSidebarSlotContent() {
@@ -25,6 +32,11 @@ function KnowledgeBaseSidebarSlotContent() {
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
 
   const isAdmin = useUserStore(selectIsAdmin);
+  const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const closeOnMobile = useCallback(() => {
+    if (isMobile) closeMobileSidebar();
+  }, [isMobile, closeMobileSidebar]);
 
   const {
     categorizedNodes,
@@ -63,8 +75,9 @@ function KnowledgeBaseSidebarSlotContent() {
       } else {
         router.push(isAllRecordsMode ? '/knowledge-base?view=all-records' : '/knowledge-base');
       }
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleNodeExpand = useCallback(
@@ -133,12 +146,27 @@ function KnowledgeBaseSidebarSlotContent() {
         const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
           onlyContainers: true,
           page: 1,
-          limit: 50,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
           include: 'counts',
+          sortBy: 'name',
+          sortOrder: 'asc',
         });
 
         cacheNodeChildren(nodeId, response.items);
         addNodes(response.items);
+
+        const { setNodeChildrenPagination } = useKnowledgeBaseStore.getState();
+        if (nodeType !== 'app') {
+          setNodeChildrenPagination(
+            nodeId,
+            sidebarNodeChildrenMetaFromResponse(
+              response.pagination,
+              response.items.length,
+              SIDEBAR_PAGINATION_PAGE_SIZE,
+              nodeType
+            )
+          );
+        }
 
         const foldersCount =
           response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
@@ -191,34 +219,39 @@ function KnowledgeBaseSidebarSlotContent() {
         setAllRecordsSidebarSelection({ type: 'explorer' });
       }
       router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection]
+    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection, closeOnMobile]
   );
 
   // --- All Records mode handlers ---
   const handleAllRecordsSelectAll = useCallback(() => {
     router.push('/knowledge-base?view=all-records');
-  }, [router]);
+    closeOnMobile();
+  }, [router, closeOnMobile]);
 
   const handleAllRecordsSelectCollection = useCallback(
     (id: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'recordGroup', nodeId: id }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectConnectorItem = useCallback(
     (nodeType: string, nodeId: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectApp = useCallback(
     (appId: string) => {
       router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: appId }));
+      closeOnMobile();
     },
-    [router, isAllRecordsMode]
+    [router, isAllRecordsMode, closeOnMobile]
   );
 
   const handleSidebarReindex = useCallback((nodeId: string) => {
@@ -291,11 +324,13 @@ function KnowledgeBaseSidebarSlotContent() {
   }, [setPendingSidebarAction]);
 
   const filteredAppNodes = useMemo(
-    () => appNodes.filter((app) => {
-      const children = appChildrenCache.get(app.id);
-      return children && children.length > 0;
-    }),
-    [appNodes, appChildrenCache]
+    () =>
+      appNodes.filter((app) => {
+        if (loadingAppIds.has(app.id)) return true;
+        const children = appChildrenCache.get(app.id);
+        return children != null && children.length > 0;
+      }),
+    [appNodes, appChildrenCache, loadingAppIds]
   );
 
   return (

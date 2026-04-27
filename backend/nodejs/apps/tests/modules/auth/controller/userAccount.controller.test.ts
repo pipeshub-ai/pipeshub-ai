@@ -246,9 +246,10 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('should throw BadRequestError when account is blocked', async () => {
+    it('should throw BadRequestError when account is blocked and cooldown is active', async () => {
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: true,
+        blockExpiresAt: new Date(Date.now() + 60_000),
         hashedOTP: 'somehash',
         otpValidity: Date.now() + 10000,
       } as any);
@@ -262,6 +263,26 @@ describe('UserAccountController', () => {
           'account has been disabled',
         );
       }
+    });
+
+    it('should auto-unblock blocked OTP account when cooldown is expired', async () => {
+      const otp = '123456';
+      const hashedOTP = await bcrypt.hash(otp, 10);
+      const saveStub = sinon.stub().resolves();
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: true,
+        blockExpiresAt: new Date(Date.now() - 60_000),
+        hashedOTP,
+        otpValidity: Date.now() + 10000,
+        wrongCredentialCount: 5,
+        save: saveStub,
+      } as any);
+
+      const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
+
+      expect(result.statusCode).to.equal(200);
+      expect(saveStub.called).to.be.true;
     });
 
     it('should throw UnauthorizedError when hashedOTP is missing', async () => {
@@ -1428,8 +1449,15 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP (additional)', () => {
-    it('should block account and send mail after 5 wrong OTPs', async () => {
+    it('should block account, set cooldown expiry and send mail after 5 wrong OTPs', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
+      const saveStub = sinon.stub().resolves();
+      const updatedCredential: any = {
+        wrongCredentialCount: 5,
+        isBlocked: false,
+        blockExpiresAt: null,
+        save: saveStub,
+      };
 
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: false,
@@ -1439,11 +1467,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
 
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
-        wrongCredentialCount: 5,
-        isBlocked: false,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
@@ -1456,6 +1480,9 @@ describe('UserAccountController', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as UnauthorizedError).message).to.include('Too many login attempts');
+        expect(saveStub.calledOnce).to.be.true;
+        expect(updatedCredential.isBlocked).to.equal(true);
+        expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
       }
     });
   });
@@ -1617,13 +1644,14 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('should throw BadRequestError when account is blocked', async () => {
+    it('should throw BadRequestError when account is blocked and cooldown is active', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
       sinon.stub(UserCredentials, 'findOne').resolves({
         hashedPassword: 'somehash',
         isBlocked: true,
+        blockExpiresAt: new Date(Date.now() + 60_000),
       } as any);
 
       try {
@@ -1633,6 +1661,28 @@ describe('UserAccountController', () => {
         expect(error).to.be.instanceOf(BadRequestError);
         expect((error as BadRequestError).message).to.include('account has been disabled');
       }
+    });
+
+    it('should auto-unblock when account cooldown is expired', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const password = 'CorrectPass1!';
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const saveStub = sinon.stub().resolves();
+
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: true,
+        wrongCredentialCount: 5,
+        blockExpiresAt: new Date(Date.now() - 60_000),
+        save: saveStub,
+      } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+
+      const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
+
+      expect(result.statusCode).to.equal(200);
+      expect(saveStub.called).to.be.true;
     });
 
     it('should throw BadRequestError when password is incorrect', async () => {
@@ -1681,9 +1731,16 @@ describe('UserAccountController', () => {
       expect(result.statusCode).to.equal(200);
     });
 
-    it('should block account after 5 wrong passwords and send mail', async () => {
+    it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
+      const saveStub = sinon.stub().resolves();
+      const updatedCredential: any = {
+        wrongCredentialCount: 5,
+        isBlocked: false,
+        blockExpiresAt: null,
+        save: saveStub,
+      };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
       sinon.stub(UserCredentials, 'findOne').resolves({
@@ -1692,11 +1749,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 4,
         save: sinon.stub().resolves(),
       } as any);
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
-        wrongCredentialCount: 5,
-        isBlocked: false,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
@@ -1705,6 +1758,9 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
+        expect(saveStub.calledOnce).to.be.true;
+        expect(updatedCredential.isBlocked).to.equal(true);
+        expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
         expect(mockMailService.sendMail.calledOnce).to.be.true;
       }
     });

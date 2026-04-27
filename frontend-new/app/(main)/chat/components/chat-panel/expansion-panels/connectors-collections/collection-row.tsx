@@ -28,7 +28,8 @@ const CHECKBOX_ALIGN: React.CSSProperties = {
   lineHeight: 0,
 };
 
-function CollectionLeadingIcon({ sourceType, size = 20 }: { sourceType?: string; size?: number }) {
+/** Leading icon for a collection / KB / connector row (also used on hub roots in collections-tab). */
+export function CollectionLeadingIcon({ sourceType, size = 20 }: { sourceType?: string; size?: number }) {
   if (!sourceType?.trim()) {
     return <KnowledgeItemIcon kind="collection" size={size} />;
   }
@@ -66,6 +67,8 @@ export function CollectionRow({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
+        width: '100%',
+        minWidth: 0,
         height: 'var(--space-7)',
         backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
@@ -74,7 +77,7 @@ export function CollectionRow({
         paddingRight: 'var(--space-2)',
         cursor: 'pointer',
         transition: 'background-color 0.15s',
-        flexShrink: 0,
+        boxSizing: 'border-box',
       }}
     >
       {/* Left: checkbox + icon + name */}
@@ -93,6 +96,8 @@ export function CollectionRow({
           size="2"
           weight="medium"
           style={{
+            flex: 1,
+            minWidth: 0,
             color: 'var(--slate-11)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',

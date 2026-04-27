@@ -8,6 +8,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SecondaryPanel, SidebarBackHeader } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
@@ -41,6 +43,8 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
   const currentConversationId = searchParams.get('conversationId');
 
   const moveConversationToTop = useChatStore((s) => s.moveConversationToTop);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const isMobile = useIsMobile();
 
   const { t } = useTranslation();
 
@@ -76,11 +80,11 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     (async () => {
       try {
         const result = await ChatApi.fetchConversations(1, MORE_CHATS_PAGE_SIZE, {
+          source: sectionType === 'your' ? 'owned' : 'shared',
           search: debouncedSearch.trim() || undefined,
         });
         if (cancelled) return;
-        const items = sectionType === 'your' ? result.conversations : result.sharedConversations;
-        setRows(items);
+        setRows(result.conversations);
         setPagination({
           page: result.pagination.page,
           hasNextPage: result.pagination.hasNextPage,
@@ -106,6 +110,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     }
     router.push(buildChatHref({ conversationId: id }));
     onBack();
+    if (isMobile) closeMobileSidebar();
   };
 
   const loadMore = useCallback(async () => {
@@ -117,13 +122,13 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     setIsLoadingMore(true);
     try {
       const result = await ChatApi.fetchConversations(nextPage, MORE_CHATS_PAGE_SIZE, {
+        source: sectionType === 'your' ? 'owned' : 'shared',
         search,
       });
-      const newItems = sectionType === 'your' ? result.conversations : result.sharedConversations;
       setRows((prev) => {
         const seen = new Set(prev.map((c) => c.id));
         const merged = [...prev];
-        for (const row of newItems) {
+        for (const row of result.conversations) {
           if (!seen.has(row.id)) {
             seen.add(row.id);
             merged.push(row);

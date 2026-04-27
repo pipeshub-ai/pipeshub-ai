@@ -42,6 +42,15 @@ export const CHAT_ITEM_HEIGHT = 36;
 /** Height of large header elements (logo, avatar) in header/footer slots */
 export const HEADER_ELEMENT_SIZE = 24;
 
+/**
+ * Horizontal space (px) the fixed mobile hamburger button occupies on the left
+ * edge of the viewport. Page headers should reserve this much left padding on
+ * mobile so their content does not sit under the hamburger.
+ *
+ * Value = `var(--space-3)` left offset (12px) + IconButton size-2 (~32px).
+ */
+export const MOBILE_HAMBURGER_GUTTER_PX = 44;
+
 // ============================================
 // SPACING & PADDING
 // ============================================

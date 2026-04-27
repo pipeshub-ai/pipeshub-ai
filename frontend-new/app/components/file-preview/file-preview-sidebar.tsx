@@ -13,7 +13,12 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
+import { usePdfZoom } from './use-pdf-zoom';
 import { getTabsForSource, shouldShowPagination } from './utils';
+import {
+  PDF_ZOOM_MAX,
+  PDF_ZOOM_MIN,
+} from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import {
   PANEL_MAX_PX,
@@ -53,11 +58,15 @@ export function FilePreviewSidebar({
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
+    file.id,
+    file.url,
+    initialPage,
+  );
   const tabs = useMemo(
     () => getTabsForSource(source, { hideFileDetails }),
     [source, hideFileDetails],
   );
-
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
     file.type,
@@ -162,6 +171,8 @@ export function FilePreviewSidebar({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
+    scale: pdfScale,
+    onScaleChange: setPdfScale,
   };
 
   // Mobile: render full-screen mobile preview instead of Dialog sidebar
@@ -229,54 +240,54 @@ export function FilePreviewSidebar({
             backdropFilter: 'blur(8px)',
           }}
         >
-        <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-          <FileIcon
-            filename={file.name}
-            mimeType={file.type}
-            size={ICON_SIZES.FILE_ICON_LARGE}
-            fallbackIcon="description"
-          />
-          <Text
-            size="2"
-            weight="medium"
-            style={{
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              color: 'var(--slate-12)',
-            }}
-          >
-            {file.name}
-          </Text>
-        </Flex>
+          <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+            <FileIcon
+              filename={file.name}
+              mimeType={file.type}
+              size={ICON_SIZES.FILE_ICON_LARGE}
+              fallbackIcon="description"
+            />
+            <Text
+              size="2"
+              weight="medium"
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                color: 'var(--slate-12)',
+              }}
+            >
+              {file.name}
+            </Text>
+          </Flex>
 
-        <Flex align="center" gap="1">
-          {onToggleFullscreen && (
+          <Flex align="center" gap="1">
+            {onToggleFullscreen && (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                onClick={onToggleFullscreen}
+                title="Open in fullscreen"
+              >
+                <MaterialIcon name="open_in_full" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
+              </IconButton>
+            )}
+
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
-              onClick={onToggleFullscreen}
-              title="Open in fullscreen"
+              onClick={() => onOpenChange?.(false)}
             >
-              <MaterialIcon name="open_in_full" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
+              <MaterialIcon name="close" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
             </IconButton>
-          )}
-
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size="2"
-            onClick={() => onOpenChange?.(false)}
-          >
-            <MaterialIcon name="close" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
-          </IconButton>
-        </Flex>
+          </Flex>
         </Flex>
 
         {/* Tabs - Full Width */}
-        <Box 
-          style={{ 
+        <Box
+          style={{
             flexShrink: 0,
             paddingTop: 'var(--space-4)',
             paddingLeft: 'var(--space-4)',
@@ -301,27 +312,27 @@ export function FilePreviewSidebar({
             flexDirection: 'column',
           }}
         >
-        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', alignItems: 'stretch' }}>
-          {/* Main preview / details content — flex column + minHeight:0 so the tab body can scroll in Y */}
-          <Box
-            className="no-scrollbar"
-            style={{
-              flex: 1,
-              minHeight: 0,
-              minWidth: 0,
-              position: 'relative',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              paddingLeft: 'var(--space-4)',
-              paddingRight: 'var(--space-4)',
-              paddingBottom: 'var(--space-2)',
-              paddingTop: 'var(--space-2)',
-            }}
-          >
+          <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', alignItems: 'stretch' }}>
+            {/* Main preview / details content — flex column + minHeight:0 so the tab body can scroll in Y */}
+            <Box
+              className="no-scrollbar"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                minWidth: 0,
+                position: 'relative',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                paddingLeft: 'var(--space-4)',
+                paddingRight: 'var(--space-4)',
+                paddingBottom: 'var(--space-2)',
+                paddingTop: 'var(--space-2)',
+              }}
+            >
               {/* Tab Content */}
-              <Box 
-                style={{ 
+              <Box
+                style={{
                   flex: 1,
                   minHeight: 0,
                   height: '100%',
@@ -330,13 +341,13 @@ export function FilePreviewSidebar({
                   minWidth: 0,
                   overflow: 'auto',
                   boxSizing: 'border-box',
-                }} 
+                }}
                 className="no-scrollbar"
               >
                 {isLoading ? (
-                  <Flex 
-                    align="center" 
-                    justify="center" 
+                  <Flex
+                    align="center"
+                    justify="center"
                     direction="column"
                     gap="3"
                     style={{ height: '100%' }}
@@ -362,6 +373,7 @@ export function FilePreviewSidebar({
                     fileName={file.name}
                     fileType={file.type}
                     fileBlob={file.blob}
+                    webUrl={file.webUrl}
                     pagination={paginationControls}
                     highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                     highlightPage={hasCitations ? syncHighlightPage : undefined}
@@ -393,8 +405,68 @@ export function FilePreviewSidebar({
                     border: '1px solid var(--slate-3)',
                     borderRadius: 'var(--radius-1)',
                     boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
+                    // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
+                    zIndex: 20,
+                    isolation: 'isolate',
+                    pointerEvents: 'auto',
                   }}
                 >
+                  <IconButton
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    onClick={handlePdfZoomOut}
+                    disabled={pdfScale <= PDF_ZOOM_MIN}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      padding: 0,
+                    }}
+                    aria-label="Zoom out"
+                  >
+                    <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
+                  </IconButton>
+                  <Box
+                    style={{
+                      minWidth: '40px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <Text
+                      as="span"
+                      size="2"
+                      weight="medium"
+                      style={{ color: 'var(--slate-11)' }}
+                    >
+                      {Math.round(pdfScale * 100)}%
+                    </Text>
+                  </Box>
+                  <IconButton
+                    variant="ghost"
+                    color="gray"
+                    size="1"
+                    onClick={handlePdfZoomIn}
+                    disabled={pdfScale >= PDF_ZOOM_MAX}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      padding: 0,
+                    }}
+                    aria-label="Zoom in"
+                  >
+                    <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+                  </IconButton>
+
+                  <Box
+                    style={{
+                      width: '1px',
+                      height: '16px',
+                      backgroundColor: 'var(--slate-4)',
+                      flexShrink: 0,
+                    }}
+                    aria-hidden
+                  />
+
                   <IconButton
                     variant="ghost"
                     color="gray"
@@ -439,76 +511,76 @@ export function FilePreviewSidebar({
                   </IconButton>
                 </Flex>
               )}
-          </Box>
+            </Box>
 
-          {/* Citations Panel — only shown on the Preview tab (File Details
+            {/* Citations Panel — only shown on the Preview tab (File Details
               has its own full-width body). */}
-          {hasCitations && activeTab === 'preview' && (
-            <>
-              <Box
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize citations panel"
-                onPointerDown={beginCitationsSplitResize}
-                style={{
-                  width: '6px',
-                  flexShrink: 0,
-                  alignSelf: 'stretch',
-                  cursor: 'col-resize',
-                  touchAction: 'none',
-                  borderLeft: '1px solid var(--olive-3)',
-                  backgroundColor: 'transparent',
-                }}
-                onPointerEnter={(ev) => {
-                  ev.currentTarget.style.backgroundColor = 'var(--olive-4)';
-                }}
-                onPointerLeave={(ev) => {
-                  ev.currentTarget.style.backgroundColor = 'transparent';
-                }}
-              />
-              <Box
-                style={{
-                  width: `${citationsWidthPx}px`,
-                  flexShrink: 0,
-                  minWidth: 0,
-                  height: '100%',
-                  minHeight: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                }}
-              >
-                <CitationsPanel
-                  citations={citations}
-                  activeCitationId={activeCitationId}
-                  onCitationClick={handleCitationClick}
+            {hasCitations && activeTab === 'preview' && (
+              <>
+                <Box
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize citations panel"
+                  onPointerDown={beginCitationsSplitResize}
+                  style={{
+                    width: '6px',
+                    flexShrink: 0,
+                    alignSelf: 'stretch',
+                    cursor: 'col-resize',
+                    touchAction: 'none',
+                    borderLeft: '1px solid var(--olive-3)',
+                    backgroundColor: 'transparent',
+                  }}
+                  onPointerEnter={(ev) => {
+                    ev.currentTarget.style.backgroundColor = 'var(--olive-4)';
+                  }}
+                  onPointerLeave={(ev) => {
+                    ev.currentTarget.style.backgroundColor = 'transparent';
+                  }}
                 />
-              </Box>
-            </>
-          )}
-        </Flex>
+                <Box
+                  style={{
+                    width: `${citationsWidthPx}px`,
+                    flexShrink: 0,
+                    minWidth: 0,
+                    height: '100%',
+                    minHeight: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                >
+                  <CitationsPanel
+                    citations={citations}
+                    activeCitationId={activeCitationId}
+                    onCitationClick={handleCitationClick}
+                  />
+                </Box>
+              </>
+            )}
+          </Flex>
 
-        <Box
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize file preview panel"
-          onPointerDown={beginPanelEdgeResize}
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: '6px',
-            zIndex: 20,
-            cursor: 'col-resize',
-            touchAction: 'none',
-          }}
-          onPointerEnter={(ev) => {
-            ev.currentTarget.style.backgroundColor = 'var(--olive-5)';
-          }}
-          onPointerLeave={(ev) => {
-            ev.currentTarget.style.backgroundColor = 'transparent';
-          }}
-        />
+          <Box
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize file preview panel"
+            onPointerDown={beginPanelEdgeResize}
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: '6px',
+              zIndex: 20,
+              cursor: 'col-resize',
+              touchAction: 'none',
+            }}
+            onPointerEnter={(ev) => {
+              ev.currentTarget.style.backgroundColor = 'var(--olive-5)';
+            }}
+            onPointerLeave={(ev) => {
+              ev.currentTarget.style.backgroundColor = 'transparent';
+            }}
+          />
         </Box>
       </Dialog.Content>
     </Dialog.Root>

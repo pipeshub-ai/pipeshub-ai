@@ -5,9 +5,12 @@ import Link from 'next/link';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
 import { AppSection } from './section';
+import { SidebarLoadMoreButton } from './sidebar-load-more-button';
+import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
 import type {
   Connector,
@@ -35,6 +38,9 @@ interface AllRecordsModeProps {
   appChildrenCache: Map<string, KnowledgeHubNode[]>;
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
+  /** Per-app hub child pagination (direct children under each app node) */
+  appChildrenPagination?: Map<string, { hasNext: boolean; nextPage: number }>;
+  onLoadMoreAppChildPage?: (appId: string) => void;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];
 
@@ -68,6 +74,11 @@ interface AllRecordsModeProps {
 
   // Overflow "More" panel
   onOpenMoreFolders?: (appId: string, appName: string, connector: string) => void;
+
+  /** Server-backed pagination: more root app nodes (connectors) available */
+  onLoadMoreRootApps?: () => void;
+  rootAppListHasNext?: boolean;
+  isLoadingRootAppListMore?: boolean;
 }
 
 // ========================================
@@ -89,6 +100,8 @@ export function AllRecordsMode({
   appChildrenCache,
   connectorAppTrees,
   loadingAppIds,
+  appChildrenPagination,
+  onLoadMoreAppChildPage,
   connectors,
   moreConnectors,
   expandedSections,
@@ -109,8 +122,12 @@ export function AllRecordsMode({
   onRename,
   onDelete,
   onOpenMoreFolders,
+  onLoadMoreRootApps,
+  rootAppListHasNext,
+  isLoadingRootAppListMore,
 }: AllRecordsModeProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   return (
     <>
@@ -141,8 +158,10 @@ export function AllRecordsMode({
 
       {/* App sections — KB app (Collections) appears first due to sorting in page.tsx */}
       {appNodes.map((app) => {
-        const isKbApp = app.connector === 'KB';
+        const isKbApp = isKbCollectionsHubApp(app);
         const appChildren = appChildrenCache.get(app.id) || [];
+        const childPageMeta = appChildrenPagination?.get(app.id);
+        const appChildListHasMore = childPageMeta?.hasNext === true;
         const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
         // For the KB app, pass the categorized tree (shared + private) so that
         // sub-folder children populated by handleNodeExpand are visible in the tree.
@@ -181,9 +200,30 @@ export function AllRecordsMode({
             onDelete={isKbApp ? onDelete : undefined}
             maxVisible={SIDEBAR_COLLECTION_LIMIT}
             onMore={() => onOpenMoreFolders?.(app.id, app.name, app.connector || app.name)}
+            appChildListHasMore={appChildListHasMore}
+            onLoadMoreAppChildren={
+              appChildListHasMore && onLoadMoreAppChildPage
+                ? () => onLoadMoreAppChildPage(app.id)
+                : undefined
+            }
+            appChildLoadMoreDisabled={loadingAppIds.has(app.id)}
           />
         );
       })}
+
+      {rootAppListHasNext && onLoadMoreRootApps ? (
+        <SidebarLoadMoreButton
+          onClick={onLoadMoreRootApps}
+          disabled={isLoadingRootAppListMore}
+          loading={isLoadingRootAppListMore}
+          idleLabel={t('agentBuilder.loadMoreConnectors', { defaultValue: 'Load more connectors' })}
+          flexStyle={{
+            marginBottom: `${SECTION_PADDING_BOTTOM}px`,
+            paddingLeft: 'var(--space-2)',
+            paddingTop: 'var(--space-1)',
+          }}
+        />
+      ) : null}
 
       {/* Legacy connector sections */}
       {connectors.map((connector) => (
@@ -216,8 +256,8 @@ export function AllRecordsMode({
         </Box>
       ))}
 
-      {/* More Connectors section */}
-      {moreConnectors.length > 0 && (
+      {/* More Connectors section — hidden on mobile to keep the drawer compact */}
+      {!isMobile && moreConnectors.length > 0 && (
         <Box style={{ marginTop: `${SECTION_PADDING_BOTTOM}px` }}>
           <Text
             size="2"

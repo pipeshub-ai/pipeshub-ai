@@ -10,16 +10,19 @@ from __future__ import annotations
 import logging
 import os
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from typing_extensions import TypedDict
 
-from app.config.configuration_service import ConfigurationService
 from app.modules.agents.qna.chat_state import ChatState, build_initial_state
-from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.config.configuration_service import ConfigurationService
+    from app.modules.reranker.reranker import RerankerService
+    from app.modules.retrieval.retrieval_service import RetrievalService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 _logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ if _opik_api_key and _opik_workspace:
         _logger.warning("Failed to initialize deep agent Opik tracer: %s", e)
 
 
-def get_opik_config() -> Dict[str, Any]:
+def get_opik_config() -> dict[str, Any]:
     """Return LLM invoke config with Opik callback, or empty dict if not configured."""
     if _opik_tracer:
         return {"callbacks": [_opik_tracer]}
@@ -49,26 +52,29 @@ class SubAgentTask(TypedDict, total=False):
     """A task assigned to a sub-agent."""
     task_id: str
     description: str
-    tools: List[str]
-    depends_on: List[str]
+    tools: list[str]
+    depends_on: list[str]
     status: str  # "pending" | "running" | "success" | "error" | "skipped"
-    result: Optional[Dict[str, Any]]
-    error: Optional[str]
-    duration_ms: Optional[float]
-    domains: List[str]
+    result: dict[str, Any] | None
+    error: str | None
+    duration_ms: float | None
+    domains: list[str]
 
     # Complexity-aware execution hints (set by orchestrator)
     complexity: str  # "simple" | "complex" — controls sub-agent execution mode
-    batch_strategy: Optional[Dict[str, Any]]
+    batch_strategy: dict[str, Any] | None
     # Example: {"page_size": 50, "max_pages": 4, "scope_query": "after:2026/03/02"}
 
     # Multi-step execution (3-level hierarchy)
     multi_step: bool  # If True, sub-agent acts as mini-orchestrator spawning sub-sub-agents
-    sub_steps: Optional[List[str]]  # Ordered list of step descriptions (set by orchestrator or LLM)
+    sub_steps: list[str] | None  # Ordered list of step descriptions (set by orchestrator or LLM)
+
+    # Per-task guidance: orchestrator tailors agent role + global instructions to this task only
+    scoped_instructions: str | None
 
     # Progressive summarization output (set by complex sub-agent)
-    domain_summary: Optional[str]  # Consolidated domain-level summary (markdown)
-    batch_summaries: Optional[List[str]]  # Intermediate batch summaries
+    domain_summary: str | None  # Consolidated domain-level summary (markdown)
+    batch_summaries: list[str] | None  # Intermediate batch summaries
 
 
 class DeepAgentState(ChatState, total=False):
@@ -79,46 +85,46 @@ class DeepAgentState(ChatState, total=False):
     The additional fields below support orchestrator logic.
     """
     # Orchestrator plan
-    task_plan: Optional[Dict[str, Any]]
-    sub_agent_tasks: List[SubAgentTask]
-    completed_tasks: List[SubAgentTask]
+    task_plan: dict[str, Any] | None
+    sub_agent_tasks: list[SubAgentTask]
+    completed_tasks: list[SubAgentTask]
 
     # Context management
-    conversation_summary: Optional[str]
+    conversation_summary: str | None
     context_budget_tokens: int
 
     # Evaluation / iteration
-    evaluation: Optional[Dict[str, Any]]
+    evaluation: dict[str, Any] | None
     deep_iteration_count: int
     deep_max_iterations: int
 
     # Tool caching (persists between graph nodes)
-    cached_structured_tools: Optional[List]
-    schema_tool_map: Optional[Dict[str, Any]]
+    cached_structured_tools: list | None
+    schema_tool_map: dict[str, Any] | None
 
     # Sub-agent analyses for respond_node
-    sub_agent_analyses: Optional[List[str]]
+    sub_agent_analyses: list[str] | None
 
     # Domain summaries from complex tasks (structured, concise)
-    domain_summaries: Optional[List[Dict[str, Any]]]
+    domain_summaries: list[dict[str, Any]] | None
 
     # Temporary buffer for full retrieval tool outputs (context-efficiency optimization).
     # Populated by _wrap_retrieval_tools_for_context_efficiency in sub_agent.py —
     # the wrapper stores the full result here and returns only a compact summary to
     # the react agent's message history to prevent context length explosions.
     # Consumed (and then popped) by _extract_tool_results in the same call frame.
-    _deep_retrieval_buffer: Optional[List]
+    _deep_retrieval_buffer: list | None
 
-    critic_approved: Optional[bool]
+    critic_approved: bool | None
     critic_feedback: str
-    critic_issues: Optional[List[Dict[str, str]]]
+    critic_issues: list[dict[str, str]] | None
     critic_done: bool
-    _critic_available_domains: Optional[List[str]]
+    _critic_available_domains: list[str] | None
 
 # ---------------------------------------------------------------------------
 # Defaults for deep-agent-specific fields
 # ---------------------------------------------------------------------------
-_DEEP_DEFAULTS: Dict[str, Any] = {
+_DEEP_DEFAULTS: dict[str, Any] = {
     "task_plan": None,
     "sub_agent_tasks": [],
     "completed_tasks": [],
@@ -139,17 +145,19 @@ _DEEP_DEFAULTS: Dict[str, Any] = {
 
 
 def build_deep_agent_state(
-    chat_query: Dict[str, Any],
-    user_info: Dict[str, Any],
+    chat_query: dict[str, Any],
+    user_info: dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
     graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
-    org_info: Dict[str, Any] | None = None,
+    org_info: dict[str, Any] | None = None,
     model_name: str = None,
     model_key: str = None,
+    *,
+    has_sql_connector: bool,
 ) -> DeepAgentState:
     """
     Build a DeepAgentState by extending the standard ChatState.
@@ -157,7 +165,7 @@ def build_deep_agent_state(
     Reuses build_initial_state() for all shared fields and then
     overlays the deep-agent-specific defaults.
     """
-    base: Dict[str, Any] = build_initial_state(
+    base: dict[str, Any] = build_initial_state(
         chat_query,
         user_info,
         llm,
@@ -170,6 +178,7 @@ def build_deep_agent_state(
         model_key,
         org_info,
         graph_type="deep",
+        has_sql_connector=has_sql_connector,
     )
 
     # Overlay deep-agent fields

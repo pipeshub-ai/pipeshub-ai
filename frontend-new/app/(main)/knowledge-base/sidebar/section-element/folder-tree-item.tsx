@@ -15,6 +15,8 @@ import { renderTreeLines } from './tree-lines';
 import { ItemActionMenu } from '../../components/item-action-menu';
 import type { MenuAction } from '../../components/item-action-menu';
 import { useKnowledgeBaseStore } from '../../store';
+import { loadMoreNodeChildrenPage } from '../../utils/sidebar-paginated-fetch';
+import { SidebarLoadMoreButton } from '../sidebar-load-more-button';
 import type {
   FolderTreeNode,
   NodeType,
@@ -78,6 +80,10 @@ export function FolderTreeItem({
   const isExpanded = !!expandedFolders[node.id];
   const enhancedNode = node as EnhancedFolderTreeNode;
   const { expandFolderExclusive } = useKnowledgeBaseStore();
+  const nestedChildrenPageMeta = useKnowledgeBaseStore((s) => s.nodeChildrenPagination.get(node.id));
+  const loadingNestedChildrenMore = useKnowledgeBaseStore((s) =>
+    s.loadingNodeChildrenMoreIds.has(node.id)
+  );
   const hasChildren = enhancedNode.hasChildren || node.children.length > 0;
   const isLoading = loadingNodeIds?.has(node.id);
   const indent = node.depth * TREE_INDENT_PER_LEVEL;
@@ -169,6 +175,11 @@ export function FolderTreeItem({
     },
   ];
   const hasMenuItems = menuActions.some(Boolean);
+
+  const showNestedChildrenLoadMore =
+    isExpanded &&
+    enhancedNode.nodeType !== 'app' &&
+    nestedChildrenPageMeta?.hasNext === true;
 
   return (
     <>
@@ -267,6 +278,7 @@ export function FolderTreeItem({
               isKnowledgeHub
               nodeType={enhancedNode.nodeType}
               connector={enhancedNode.connector}
+              subType={enhancedNode.subType}
               extension={enhancedNode.extension}
               mimeType={enhancedNode.mimeType}
               name={node.name}
@@ -362,6 +374,17 @@ export function FolderTreeItem({
             showRootLines={showRootLines}
           />
         ))}
+      {showNestedChildrenLoadMore ? (
+        <SidebarLoadMoreButton
+          onClick={() => void loadMoreNodeChildrenPage(node.id)}
+          disabled={loadingNestedChildrenMore}
+          loading={loadingNestedChildrenMore}
+          flexStyle={{
+            paddingLeft: `${TREE_BASE_PADDING + (node.depth + 1) * TREE_INDENT_PER_LEVEL}px`,
+            paddingTop: 'var(--space-1)',
+          }}
+        />
+      ) : null}
     </>
   );
 }

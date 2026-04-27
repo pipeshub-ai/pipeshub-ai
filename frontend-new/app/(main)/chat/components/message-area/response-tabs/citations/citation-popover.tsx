@@ -1,6 +1,7 @@
 'use client';
 
-import React from 'react';
+import React, { memo } from 'react';
+import Link from 'next/link';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { getConnectorConfig } from './utils';
@@ -16,7 +17,7 @@ interface CitationPopoverContentProps {
 /**
  * Expanded citation preview shown inside a HoverCard.
  */
-export function CitationPopoverContent({
+function CitationPopoverContentInner({
   citation,
   onPreview,
   onOpenInCollection,
@@ -63,26 +64,36 @@ export function CitationPopoverContent({
         </Flex>
 
         <Flex align="center" gap="2">
-          <Button
-            size="1"
-            variant="outline"
-            color="gray"
-            tabIndex={-1}
-            onClick={handleOpenInSource}
-            style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
-          >
-            {openInLabel}
-          </Button>
+          {!citation.hideWeburl && citation.webUrl && (
+            <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
+              <Link
+                href={citation.webUrl}
+                target={isCollectionSource ? undefined : '_blank'}
+                rel={isCollectionSource ? undefined : 'noopener noreferrer'}
+                onClick={(event) => {
+                  if (isCollectionSource) {
+                    event.preventDefault();
+                    handleOpenInSource();
+                  }
+                }}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {openInLabel}
+              </Link>
+            </Button>
+          )}
 
-          <Button
-            size="1"
-            variant="solid"
-            tabIndex={-1}
-            onClick={handlePreview}
-            style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
-          >
-            Preview
-          </Button>
+          {citation.previewRenderable && (
+            <Button
+              size="1"
+              variant="solid"
+              tabIndex={-1}
+              onClick={handlePreview}
+              style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
+            >
+              Preview
+            </Button>
+          )}
         </Flex>
       </Flex>
 
@@ -160,3 +171,5 @@ export function CitationPopoverContent({
     </Flex>
   );
 }
+
+export const CitationPopoverContent = memo(CitationPopoverContentInner);

@@ -67,7 +67,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
               position: 'relative',
             }}
           >
-            <Box style={{ paddingRight: onMobileClose ? '40px' : undefined }}>
+            <Box style={{ height: '100%', paddingRight: onMobileClose ? '40px' : undefined }}>
               {header}
             </Box>
             {onMobileClose && (

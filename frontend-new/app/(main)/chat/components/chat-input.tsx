@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { Flex, Box, Text, IconButton, Tooltip } from '@radix-ui/themes';
@@ -202,7 +202,7 @@ export function ChatInput({
   const resolvedWidgetPlaceholder = widgetPlaceholder || resolvedPlaceholder;
 
   const isSearchMode = settings.mode === 'search' && !isAgentChat;
-  const selectedKbCount = settings.filters?.kb?.length ?? 0;
+  const selectedKbCount = (settings.filters?.apps?.length ?? 0) + (settings.filters?.kb?.length ?? 0);
   const agentResourcesCustomized =
     isAgentChat &&
     (agentKnowledgeScope !== null ||
@@ -232,18 +232,40 @@ export function ChatInput({
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
 
-  // Build selected collections from store
-  const selectedCollections = settings.filters.kb.map((id) => ({
-    id,
-    name: collectionNamesCache[id] || 'Collection',
-  }));
+  // Build selected collections from store (roots → apps API; record groups → kb API)
+  const selectedCollections = useMemo(() => {
+    const hubApps = settings.filters?.apps ?? [];
+    const groups = settings.filters?.kb ?? [];
+    return [
+      ...hubApps.map((id) => ({
+        id,
+        name: collectionNamesCache[id] || 'Collection',
+      })),
+      ...groups.map((id) => ({
+        id,
+        name: collectionNamesCache[id] || 'Collection',
+      })),
+    ];
+  }, [settings.filters, collectionNamesCache]);
 
-  const handleRemoveCollection = useCallback((id: string) => {
-    setFilters({
-      ...settings.filters,
-      kb: settings.filters.kb.filter((kbId) => kbId !== id),
-    });
-  }, [settings.filters, setFilters]);
+  const handleRemoveCollection = useCallback(
+    (id: string) => {
+      const hubApps = settings.filters?.apps ?? [];
+      const groups = settings.filters?.kb ?? [];
+      if (hubApps.includes(id)) {
+        setFilters({
+          ...settings.filters,
+          apps: hubApps.filter((aid) => aid !== id),
+        });
+      } else {
+        setFilters({
+          ...settings.filters,
+          kb: groups.filter((gid) => gid !== id),
+        });
+      }
+    },
+    [settings.filters, setFilters]
+  );
 
   // Toolbar icon color follows the active query mode so it stays consistent with ModeSwitcher.
   const activeIconColor = isSearchMode
@@ -856,11 +878,13 @@ export function ChatInput({
           }}
         >
           <ConnectorsCollectionsPanel
-            selectedKbIds={settings.filters?.kb ?? []}
-            onSelectionChange={(kbIds) => {
+            apps={settings.filters?.apps ?? []}
+            kb={settings.filters?.kb ?? []}
+            onSelectionChange={(next) => {
               setFilters({
-                apps: settings.filters?.apps ?? [],
-                kb: kbIds,
+                ...settings.filters,
+                apps: next.apps,
+                kb: next.kb,
               });
             }}
             viewMode="inline"
@@ -1267,11 +1291,13 @@ export function ChatInput({
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : (
         <ConnectorsCollectionsPanel
-          selectedKbIds={settings.filters?.kb ?? []}
-          onSelectionChange={(kbIds) => {
+          apps={settings.filters?.apps ?? []}
+          kb={settings.filters?.kb ?? []}
+          onSelectionChange={(next) => {
             setFilters({
-              apps: settings.filters?.apps ?? [],
-              kb: kbIds,
+              ...settings.filters,
+              apps: next.apps,
+              kb: next.kb,
             });
           }}
           viewMode="overlay"

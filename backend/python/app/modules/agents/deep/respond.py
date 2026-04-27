@@ -29,6 +29,7 @@ from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
+from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import build_direct_answer_time_context
 
@@ -224,7 +225,7 @@ async def _deep_respond_impl(
         from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
         _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
         qna_content, _ref_mapper = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper,
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper, has_sql_connector=state.get("has_sql_connector", False) and state.get("has_sql_knowledge", False),
         )
         state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content
@@ -1017,7 +1018,15 @@ async def _handle_direct_answer(
     if agent_instructions and agent_instructions.strip():
         instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
 
-    system_content = f"{instructions_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
+    role_prefix = ""
+    persona = state.get("system_prompt")
+    if is_custom_agent_system_prompt(persona):
+        role_prefix = f"{persona.strip()}\n\n"
+
+    system_content = (
+        f"{instructions_prefix}{role_prefix}"
+        "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+    )
 
     user_info = state.get("user_info") or {}
     org_info = state.get("org_info") or {}

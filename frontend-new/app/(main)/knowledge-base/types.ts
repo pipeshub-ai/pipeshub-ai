@@ -34,6 +34,7 @@ export interface KnowledgeBaseItem {
   nodeType?: string;
   sourceType?: string;
   connector?: string;
+  reason?: string | null;
 }
 
 export interface FolderTreeNode {
@@ -190,11 +191,13 @@ export interface KnowledgeHubNode {
   webUrl?: string;
   recordType?: RecordType | null;
   indexingStatus?: IndexingStatus | null;
+  reason?: string | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
   subType?: string;
   sourceType?: string;
+  isInternal?: boolean;
 }
 
 /**
@@ -321,6 +324,7 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   permission?: NodePermission;
   origin?: NodeOrigin;
   connector?: string;
+  subType?: string;
   extension?: string | null;
   mimeType?: string | null;
 }

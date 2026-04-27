@@ -34,6 +34,7 @@ from app.modules.agents.deep.orchestrator_reflection import (
     OrchestratorReflectionError,
     run_orchestrator_with_reflection,
 )
+from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.utils.time_conversion import build_llm_time_context
 
@@ -245,6 +246,7 @@ async def orchestrator_node(
 
         tasks: list[SubAgentTask] = []
         for task_spec in normalized_tasks:
+            _scoped = str(task_spec.get("scoped_instructions") or "").strip()
             task: SubAgentTask = {
                 "task_id": task_spec.get("task_id", f"task_{len(tasks) + 1}"),
                 "description": task_spec.get("description", ""),
@@ -259,6 +261,7 @@ async def orchestrator_node(
                 "batch_strategy": task_spec.get("batch_strategy"),
                 "multi_step": bool(task_spec.get("multi_step", False)),
                 "sub_steps": task_spec.get("sub_steps"),
+                "scoped_instructions": _scoped or None,
             }
             tasks.append(task)
 
@@ -318,7 +321,11 @@ async def orchestrator_node(
 # ---------------------------------------------------------------------------
 
 def _create_retrieval_task(query: str) -> dict[str, Any]:
-    """Return a standard retrieval task definition for the given query."""
+    """Return a standard retrieval task when the plan omitted retrieval despite KB config.
+
+    ``scoped_instructions`` are not synthesized here: the model should include
+    retrieval in the plan with per-task ``scoped_instructions`` in the same JSON.
+    """
     return {
         "task_id": "retrieval_search",
         "description": (
@@ -390,6 +397,7 @@ def _normalize_tasks(
         for _i, domain in enumerate(domains):
             split_id = f"{original_id}_{domain}"
             split_ids.append(split_id)
+            _scoped = task_spec.get("scoped_instructions")
             normalized.append({
                 "task_id": split_id,
                 "description": f"[{domain} part] {description}",
@@ -397,6 +405,7 @@ def _normalize_tasks(
                 "depends_on": list(original_deps),
                 "complexity": task_spec.get("complexity", "simple"),
                 "batch_strategy": task_spec.get("batch_strategy"),
+                "scoped_instructions": _scoped,
             })
 
         # Update any later tasks that depend on the original task_id
@@ -545,7 +554,7 @@ def _build_agent_instructions(state: DeepAgentState) -> str:
 
     # Agent's custom system prompt (persona / role)
     base_prompt = state.get("system_prompt", "")
-    if base_prompt and base_prompt.strip() and base_prompt != "You are an enterprise questions answering expert":
+    if is_custom_agent_system_prompt(base_prompt):
         parts.append(f"## Agent Role\n{base_prompt.strip()}")
 
     # Agent instructions (workflow-specific behavior)

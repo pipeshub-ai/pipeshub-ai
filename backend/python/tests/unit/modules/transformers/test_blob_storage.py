@@ -363,6 +363,31 @@ class TestBlobStorageApply:
         with pytest.raises(Exception, match="upload failed"):
             await bs.apply(ctx)
 
+    @pytest.mark.asyncio
+    async def test_apply_non_versioned_existing_doc_falls_back_to_create(self):
+        """If legacy mapped doc is non-versioned, apply should create a replacement document."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "legacy-doc"}
+        )
+        bs.upload_next_version = AsyncMock(
+            side_effect=Exception("This document cannot be versioned")
+        )
+        bs.save_record_to_storage = AsyncMock(return_value=("new-doc", 2048))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        ctx = MagicMock()
+        ctx.record = record
+
+        await bs.apply(ctx)
+
+        bs.upload_next_version.assert_awaited_once()
+        bs.save_record_to_storage.assert_awaited_once()
+        bs.store_virtual_record_mapping.assert_awaited_once_with(
+            "vr-1", "new-doc", 2048
+        )
+
 
 # ===================================================================
 # _clean_top_level_empty_values and _clean_empty_values
@@ -973,6 +998,35 @@ class TestGetSignedUrl:
 
         with pytest.raises(aiohttp.ClientError):
             await bs._get_signed_url(mock_session, "http://api/url", {}, {})
+
+    @pytest.mark.asyncio
+    async def test_non_200_logs_non_versioned_warning(self):
+        import aiohttp
+
+        logger = MagicMock()
+        bs = _make_blob_storage(logger=logger)
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 400
+        mock_resp.json = AsyncMock(
+            return_value={
+                "error": {
+                    "message": "This document cannot be versioned",
+                }
+            }
+        )
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        with pytest.raises(aiohttp.ClientError, match="Failed with status 400"):
+            await bs._get_signed_url(mock_session, "http://api/url", {}, {})
+
+        logger.warning.assert_called_once_with(
+            "⚠️ Signed URL request indicates legacy non-versioned document"
+        )
 
 
 # ===================================================================

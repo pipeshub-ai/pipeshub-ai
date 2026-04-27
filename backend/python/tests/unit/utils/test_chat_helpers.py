@@ -1210,8 +1210,10 @@ class TestGetMessageContent:
         result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        # Tables with no row child_results are skipped in build_message_content_array
-        assert "Only summary" not in combined
+        # Tables render even with empty child_results so FK_ENRICHMENT blocks
+        # (which bake DDL/sample rows into the summary) aren't dropped.
+        assert "Only summary" in combined
+        assert "Block Group Type: table" in combined
 
     def test_json_mode_table_row_block(self):
         flattened = [
@@ -1299,6 +1301,30 @@ class TestGetMessageContent:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "custom content" not in combined
+
+    def test_json_mode_sql_tool_section_included_when_has_sql_connector_true(self):
+        """When has_sql_connector=True, the execute_sql_query tool block is rendered."""
+        flattened = [
+            _make_flattened_result(block_index=0, content="data"),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(
+            flattened, vr_map, "", "q", mode="json", has_sql_connector=True
+        )
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "execute_sql_query" in combined
+
+    def test_json_mode_sql_tool_section_excluded_when_has_sql_connector_false(self):
+        """Default has_sql_connector=False must suppress the execute_sql_query block."""
+        flattened = [
+            _make_flattened_result(block_index=0, content="data"),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "execute_sql_query" not in combined
 
 
 # ===================================================================
@@ -3641,7 +3667,9 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
-        """Lines 1302-1306: Standard mode table with empty child results."""
+        """Standard mode: table with empty child_results still renders the
+        summary so FK_ENRICHMENT blocks (DDL baked into summary, child_results=[])
+        aren't silently dropped."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3654,7 +3682,8 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
-        assert "Table Summary" not in combined
+        assert "Table Summary" in combined
+        assert "Block Group Type: table" in combined
 
     def test_standard_mode_table_row_type(self):
         """Lines 1312-1316: Standard mode with table_row block type."""
@@ -4946,6 +4975,44 @@ class TestGetMessageContentFKRelations:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
+        # Table summary must still render even when child_results is empty
+        # (FK_ENRICHMENT blocks bake DDL+sample rows into table_summary and
+        # always have empty child_results — they used to be silently dropped).
+        assert "Table summary" in combined
+        assert "Block Group Type: table" in combined
+
+    def test_empty_children_with_fk_relations_renders_summary_and_fk(self):
+        # FK_ENRICHMENT blocks: child_results is [] by construction; DDL and
+        # sample rows live inside table_summary. The table branch must render
+        # both the summary and the FK info even when child_results is empty.
+        flattened = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=GroupType.TABLE.value,
+                content=("DDL:\nCREATE TABLE users(...)", []),
+                block_group_index=0,
+                fk_parent_relations=[{
+                    "record_id": "rec-p",
+                    "parentTable": "departments",
+                    "sourceColumn": "dept_id",
+                    "targetColumn": "id",
+                }],
+                fk_child_relations=[{
+                    "record_id": "rec-c",
+                    "childTable": "orders",
+                    "sourceColumn": "user_id",
+                    "targetColumn": "id",
+                }],
+            ),
+        ]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "CREATE TABLE users" in combined
+        assert "FK Relations" in combined
+        assert "departments" in combined
+        assert "orders" in combined
 
 
 # ===================================================================

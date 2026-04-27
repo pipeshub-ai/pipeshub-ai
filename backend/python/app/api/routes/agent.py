@@ -24,6 +24,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
+from app.utils.execute_query import has_sql_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -565,6 +566,65 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
             enriched[field] = user_doc[field]
 
     return enriched
+
+
+async def _enrich_user_info_for_service_account_agent_chat(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """
+    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
+    permission checks must use the agent creator's real userId — the same identity whose
+    knowledge access configured the agent — not the service principal.
+    """
+    creator_key = agent.get("createdBy")
+    if not creator_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
+        )
+    creator_doc = await graph_provider.get_document(
+        str(creator_key), CollectionNames.USERS.value
+    )
+    if not creator_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+        )
+    creator_user_id = creator_doc.get("userId")
+    if not creator_user_id:
+        logger.error(
+            "Service account agent creator %s has no userId field",
+            creator_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+        )
+    synthetic = {
+        "userId": str(creator_user_id),
+        "orgId": str(creator_doc.get("orgId") or "").strip(),
+        "email": (creator_doc.get("email") or "").strip(),
+    }
+    return await _enrich_user_info(synthetic, creator_doc)
+
+
+async def _load_service_account_agent_for_chat(
+    agent_id: str,
+    org_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fetch service-account agent, validate, and build creator-based user info for chat/stream."""
+    agent = await graph_provider.get_agent(agent_id, org_key)
+    if not agent or not agent.get("isServiceAccount"):
+        raise AgentNotFoundError(agent_id)
+    enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+        agent, graph_provider, logger
+    )
+    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+    return agent, enriched_user_info, perm
 
 
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
@@ -2318,6 +2378,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # Build and execute graph
         selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info.model_dump(),
@@ -2331,6 +2394,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 query_info.modelName,
                 query_info.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2347,6 +2411,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 query_info.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         graph_to_use = selected_graph
@@ -2419,6 +2484,9 @@ async def stream_response(
     try:
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
@@ -2433,6 +2501,7 @@ async def stream_response(
                 org_info,
                 modelName,
                 modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2449,6 +2518,7 @@ async def stream_response(
                 modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         config = {"recursion_limit": 50}
@@ -3911,23 +3981,18 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        is_service_account = agent.get("isServiceAccount", False)
+
         if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
+            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                agent, graph_provider, logger
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -3935,9 +4000,6 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
             if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
                 raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -4035,9 +4097,13 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "conversationId": chat_query.conversationId,
+            "is_service_account": is_service_account,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info,
@@ -4051,6 +4117,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 chat_query.modelName,
                 chat_query.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -4067,6 +4134,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 chat_query.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         graph_to_use = selected_graph
@@ -4111,7 +4179,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
@@ -4124,31 +4191,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            is_service_account = False
 
         else:
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+            is_service_account = agent.get("isServiceAccount", False)
+
             if is_service_account:
-                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-                # Service account agents are always org-wide, so skip user-specific permission checks
-                # and the user document lookup which would fail.
-                enriched_user_info = {
-                    "userId": user_context["userId"],
-                    "orgId": user_context["orgId"],
-                    "userEmail": user_context.get("email", user_context["userId"]),
-                    "_key": None,
-                }
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent or not agent.get("isServiceAccount"):
-                    raise AgentNotFoundError(agent_id)
+                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                    agent, graph_provider, logger
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+                logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
-                    raise AgentNotFoundError(agent_id)
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent:
                     raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -4462,6 +4524,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
+            "isPlaceholderAgent": agent_id == "agentIdPlaceholder",
             "modelName": model_name,
             "modelKey": model_key,
         }
@@ -4538,7 +4601,49 @@ async def get_assistant_agent(
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}
+        # Same `user_id` the graph expects as in kb_service (User id / document key).
         user_key = user.get("id") or user.get("_key")
+
+        # One knowledge entry per accessible KB record group, matching normal agent shape.
+        try:
+            page_size = 500
+            skip = 0
+            while True:
+                kbs, total, _ = await graph_provider.list_user_knowledge_bases(
+                    user_id=user_key,
+                    org_id=org_id,
+                    skip=skip,
+                    limit=page_size,
+                )
+                for kb in kbs:
+                    kb_id = kb.get("id")
+                    if not kb_id:
+                        continue
+                    title = (kb.get("name") or "").strip() or "Untitled"
+                    one_group = {
+                        "recordGroups": [kb_id],
+                        "records": [],
+                    }
+                    kn: dict[str, Any] = {
+                        "connectorId": f"knowledgeBase_{org_id}",
+                        "name": title,
+                        "displayName": title,
+                        "type": Connectors.KNOWLEDGE_BASE.value,
+                        "filters": one_group,
+                        "filtersParsed": {
+                            "recordGroups": [kb_id],
+                            "records": [],
+                        },
+                    }
+                    knowledge_sources.append(kn)
+                if not kbs or skip + len(kbs) >= total:
+                    break
+                skip += page_size
+        except Exception as e:
+            logger.error(
+                f"Error listing org knowledge bases for assistant: {e}", exc_info=True
+            )
+
         connectors = await graph_provider.get_user_apps(
             user_id=user_key,
         )
@@ -4547,7 +4652,7 @@ async def get_assistant_agent(
             connector_name = connector.get("name", "")
             connector_type = connector.get("type", "")
 
-            if connector_type == Connectors.KNOWLEDGE_BASE:
+            if connector_type == Connectors.KNOWLEDGE_BASE.value:
                 continue
             # Build knowledge source entry
             knowledge_entry = {

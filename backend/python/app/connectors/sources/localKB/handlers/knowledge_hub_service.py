@@ -796,6 +796,7 @@ class KnowledgeHubService:
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
+            reason=doc.get('reason'),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),

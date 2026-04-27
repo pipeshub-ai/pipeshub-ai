@@ -1,6 +1,14 @@
 import { apiClient } from '@/lib/api';
 import { mapApiConversationToConversation } from '@/chat/api';
-import type { ConversationsListResponse, Conversation } from '@/chat/types';
+import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
+
+// The agent conversations endpoint returns both owned and shared lists in one
+// response, unlike `/api/v1/conversations` which now takes a `source` param.
+type AgentConversationsListApiResponse = {
+  conversations: ConversationApiResponse[];
+  sharedWithMeConversations: ConversationApiResponse[];
+  pagination: ConversationsListResponse['pagination'];
+};
 import type {
   AgentDetail,
   AgentsListApiResponse,
@@ -398,7 +406,7 @@ export const AgentsApi = {
     if (params?.limit != null) query.limit = params.limit;
     if (params?.search) query.search = params.search;
 
-    const { data } = await apiClient.get<ConversationsListResponse>(
+    const { data } = await apiClient.get<AgentConversationsListApiResponse>(
       `${AGENTS_BASE_URL}/${agentId}/conversations`,
       { params: query }
     );

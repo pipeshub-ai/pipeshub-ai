@@ -77,7 +77,7 @@ export class ErrorMiddleware {
 
     // Never expose stack traces to clients - security best practice
     const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
-    
+
     const errorResponse = {
       error: {
         code: error.code,

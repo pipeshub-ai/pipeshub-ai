@@ -87,6 +87,11 @@ export interface FilePreviewProps {
      * avoids an unnecessary re-`fetch` on a `URL.createObjectURL` blob URL.
      */
     blob?: Blob;
+    /**
+     * External URL for connector records (e.g. Jira ticket, Confluence page).
+     * Used by UnknownPreview to open the source in a new browser tab.
+     */
+    webUrl?: string;
   };
   
   /** Initially active tab */
@@ -152,7 +157,19 @@ export interface PaginationControls {
   totalPages: number | null; // null during detection
   onPageChange: (page: number) => void;
   onTotalPagesDetected?: (totalPages: number) => void;
+  /**
+   * PDF-only: zoom level (0.5–2), matching the legacy viewer step behavior.
+   * When omitted, the PDF uses scale 1.
+   */
+  scale?: number;
+  onScaleChange?: (scale: number) => void;
 }
+
+export const PDF_ZOOM_MIN = 0.5;
+export const PDF_ZOOM_MAX = 2.0;
+export const PDF_ZOOM_STEP = 0.1;
+export const PDF_ZOOM_PRECISION_FACTOR = 10;
+export const PDF_ZOOM_DEFAULT = 1;
 
 /**
  * Pagination visibility state
@@ -186,6 +203,12 @@ export interface FilePreviewRendererProps {
   activeCitationId?: string | null;
   /** Called when user clicks a highlight span in the rendered content */
   onHighlightClick?: (citationId: string) => void;
+  /**
+   * External URL for connector records (e.g. Jira ticket, Confluence page).
+   * Passed to UnknownPreview so the "Open in Browser" button links to the
+   * source rather than the internal blob URL.
+   */
+  webUrl?: string;
 }
 
 /**

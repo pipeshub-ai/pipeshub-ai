@@ -9,6 +9,8 @@ import type { CitationData, CitationCallbacks } from './types';
 export interface InlineCitationGroupItem {
   /** The `[N]` number from the markdown text */
   chunkIndex: number;
+  /** Per-occurrence key when the same number appears multiple times */
+  occurrenceKey?: string;
   /** Full citation data for this marker */
   citation: CitationData;
 }
@@ -86,8 +88,9 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
       >
         {items.map((item, idx) => (
           <CitationNumberCircle
-            key={`cite-circle-${item.chunkIndex}-${idx}`}
+            key={item.occurrenceKey ?? `cite-circle-${item.chunkIndex}-${idx}`}
             chunkIndex={item.chunkIndex}
+            occurrenceKey={item.occurrenceKey}
             citation={item.citation}
             callbacks={callbacks}
           />

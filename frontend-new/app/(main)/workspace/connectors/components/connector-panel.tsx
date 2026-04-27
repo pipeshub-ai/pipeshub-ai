@@ -1,8 +1,8 @@
 'use client';
 
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
+import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef } from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
@@ -17,7 +17,6 @@ import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
 import { SelectRecordsPage } from './select-records-page';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
-import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
@@ -25,9 +24,14 @@ import {
   isOAuthType,
   isConnectorConfigAuthenticated,
   isConnectorInstanceAuthenticatedForUi,
+  resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
 import { trimConnectorConfig } from '../utils/trim-config';
-import { resolveAuthFields } from './authenticate-tab/helpers';
+import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
+import {
+  visibleAuthSchemaFields,
+  collectRequiredAuthFieldErrors,
+} from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import type { PanelTab } from '../types';
 
@@ -57,9 +61,7 @@ function oauthAppSelectionError(
 
 export function ConnectorPanel() {
   const router = useRouter();
-  const pathname = usePathname();
   const { t } = useTranslation();
-  const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const {
@@ -79,6 +81,7 @@ export function ConnectorPanel() {
     instanceName,
     instanceNameError,
     formData,
+    conditionalDisplay,
     registryConnectors,
     closePanel,
     setPanelActiveTab,
@@ -88,6 +91,7 @@ export function ConnectorPanel() {
     setSchemaError,
     setInstanceName,
     setInstanceNameError,
+    mergeFormErrors,
     setIsSavingAuth,
     setIsSavingConfig,
     setSaveError,
@@ -319,34 +323,102 @@ export function ConnectorPanel() {
 
   // ── Save handlers ────────────────────────────────────────────
 
+  const resolveAuthenticateOrReturn = useCallback((): boolean => {
+    if (!connectorSchema) {
+      setSaveError(t('workspace.connectors.loadingConfig'));
+      return false;
+    }
+    const { linkedOAuthAppId: oauthConfigIdStr, oauthFieldVisibility } = resolveOAuthFieldVisibility(
+      formData.auth,
+      connectorConfig,
+      isCreateMode,
+      isAdmin
+    );
+
+    const vFields = visibleAuthSchemaFields(
+      connectorSchema.auth,
+      selectedAuthType,
+      conditionalDisplay,
+      selectedAuthType === 'OAUTH' ? oauthFieldVisibility : null
+    );
+    const clearPatch: Record<string, null> = { oauthConfigId: null };
+    for (const f of vFields) {
+      clearPatch[f.name] = null;
+    }
+    mergeFormErrors(clearPatch);
+    setInstanceNameError(null);
+    setSaveError(null);
+
+    const oauthErrEarly = oauthAppSelectionError(
+      selectedAuthType,
+      oauthConfigIdStr,
+      isProfileInitialized,
+      isAdmin
+    );
+    if (oauthErrEarly) {
+      mergeFormErrors({ oauthConfigId: oauthErrEarly });
+      requestAnimationFrame(() => {
+        document
+          .querySelector('[data-ph-oauth-app-select]')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return false;
+    }
+
+    if (isCreateMode && !instanceName.trim()) {
+      setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
+      requestAnimationFrame(() => {
+        document
+          .querySelector('[data-ph-connector-instance-name]')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return false;
+    }
+
+    const fieldErrs = collectRequiredAuthFieldErrors(
+      vFields,
+      formData.auth,
+      (f) => t('workspace.actions.validation.fieldRequired', { field: f.displayName }),
+      (f) => t('workspace.actions.validation.fieldMustBeTrue', { field: f.displayName })
+    );
+    if (Object.keys(fieldErrs).length > 0) {
+      mergeFormErrors(fieldErrs);
+      const first = Object.keys(fieldErrs)[0];
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-ph-auth-field="${first}"]`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return false;
+    }
+
+    return true;
+  }, [
+    connectorSchema,
+    selectedAuthType,
+    conditionalDisplay,
+    formData.auth,
+    connectorConfig,
+    isProfileInitialized,
+    isAdmin,
+    isCreateMode,
+    instanceName,
+    mergeFormErrors,
+    setInstanceNameError,
+    setSaveError,
+    t,
+  ]);
+
   const handleSaveAuth = useCallback(async () => {
+    if (!resolveAuthenticateOrReturn()) {
+      return;
+    }
+
     if (isCreateMode) {
       // Create mode: POST /connectors
-      if (!instanceName.trim()) {
-        setInstanceNameError('Instance name is required');
-        addToast({
-          variant: 'warning',
-          title: 'Instance name required',
-          description: 'Enter a name for this connector instance before continuing.',
-          duration: 4000,
-        });
-        return;
-      }
-
       try {
         setIsSavingAuth(true);
         setSaveError(null);
-
-        const oauthErr = oauthAppSelectionError(
-          selectedAuthType,
-          formData.auth.oauthConfigId,
-          isProfileInitialized,
-          isAdmin
-        );
-        if (oauthErr) {
-          setSaveError(oauthErr);
-          return;
-        }
 
         const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
@@ -414,17 +486,6 @@ export function ConnectorPanel() {
         setIsSavingAuth(true);
         setSaveError(null);
 
-        const oauthErrEdit = oauthAppSelectionError(
-          selectedAuthType,
-          formData.auth.oauthConfigId,
-          isProfileInitialized,
-          isAdmin
-        );
-        if (oauthErrEdit) {
-          setSaveError(oauthErrEdit);
-          return;
-        }
-
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
             ...trimConnectorConfig(formData.auth),
@@ -472,6 +533,7 @@ export function ConnectorPanel() {
     }
   }, [
     isCreateMode,
+    resolveAuthenticateOrReturn,
     instanceName,
     connectorType,
     selectedAuthType,
@@ -482,13 +544,9 @@ export function ConnectorPanel() {
     setIsLoadingConfig,
     setAuthState,
     setPanelActiveTab,
-    setInstanceNameError,
     setIsSavingAuth,
     setSaveError,
-    isAdmin,
-    isProfileInitialized,
     selectedScope,
-    addToast,
   ]);
 
   const handleSaveConfig = useCallback(async () => {
@@ -500,11 +558,26 @@ export function ConnectorPanel() {
       return;
     }
 
+    setSaveError(null);
+
+    const syncCustomFields = connectorSchema?.sync?.customFields ?? [];
+    const trimmedCustomValues = trimConnectorConfig(
+      formData.sync.customValues
+    ) as Record<string, unknown>;
+    const syncFieldErrors = collectSyncCustomFieldErrors(syncCustomFields, trimmedCustomValues);
+
+    const syncErrorPatch: Record<string, string | null | undefined> = {};
+    for (const f of syncCustomFields) {
+      syncErrorPatch[f.name] = syncFieldErrors[f.name] ?? '';
+    }
+    mergeFormErrors(syncErrorPatch);
+
+    if (Object.keys(syncFieldErrors).length > 0) {
+      return;
+    }
+
     try {
       setIsSavingConfig(true);
-      setSaveError(null);
-
-      const trimmedCustomValues = trimConnectorConfig(formData.sync.customValues);
       const syncPayload: {
         selectedStrategy: string;
         customValues: Record<string, unknown>;
@@ -565,32 +638,21 @@ export function ConnectorPanel() {
   }, [
     panelConnectorId,
     formData,
+    connectorSchema,
+    mergeFormErrors,
     closePanel,
     connectorType,
     router,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     bumpCatalogRefresh,
+    setSaveError,
+    setIsSavingConfig,
+    t,
   ]);
-
-  // ── Footer logic ─────────────────────────────────────────────
 
   const isAuthReady =
     authState === 'success' || isNoneAuthType(selectedAuthType);
-
-  // Check if all required auth fields are filled
-  const areRequiredAuthFieldsFilled = (() => {
-    if (!connectorSchema) return false;
-    const authFields = resolveAuthFields(connectorSchema.auth, selectedAuthType);
-    const requiredFields = authFields.filter((f) => f.required);
-    if (requiredFields.length === 0) return true;
-    return requiredFields.every((f) => {
-      const val = formData.auth[f.name];
-      if (val === undefined || val === null || val === '') return false;
-      if (typeof val === 'string' && val.trim() === '') return false;
-      return true;
-    });
-  })();
 
   const handleBackFromConfigure = useCallback(async () => {
     await refreshPanelFromServer();
@@ -610,8 +672,6 @@ export function ConnectorPanel() {
     panelView,
     panelActiveTab,
     isAuthReady,
-    areRequiredAuthFieldsFilled,
-    instanceName,
     hasConnectorId: !!panelConnectorId,
     authTypeForConfigureGate,
     instanceAuthenticated,
@@ -623,12 +683,16 @@ export function ConnectorPanel() {
     onSave: handleSaveConfig,
     labels: {
       next: t('common.next'),
-      fillRequired: t('workspace.aiModels.configFillRequiredTooltip'),
+      saving: t('action.saving'),
       cancel: t('action.cancel'),
-      authFirst: t('workspace.connectors.tooltips.authFirst'),
       loadingConfig: t('workspace.connectors.loadingConfig'),
       saveConfig: t('workspace.connectors.saveConfig'),
-      back: t('common.back'),
+      completeAuthForSave: t('workspace.connectors.tooltips.authFirst'),
+      continueToConfigure: t('workspace.connectors.continueToConfiguration'),
+      oauthInProgress: t('workspace.connectors.oauthSigningIn'),
+      authBeforeConfigure: t('workspace.connectors.authRequiredBeforeConfig'),
+      backToAuth: t('workspace.connectors.backToCredentials'),
+      backFromConfigure: t('workspace.connectors.backFromConfigure'),
     },
     onContinueFromAuthorize: async () => {
       await refreshPanelFromServer();
@@ -702,22 +766,27 @@ export function ConnectorPanel() {
         <Flex direction="column" style={{ height: '100%' }}>
           {/* ── Create mode: Instance name input ── */}
           {isCreateMode && connectorSchema && (
-            <Box style={{ marginBottom: 16 }}>
+            <Box style={{ marginBottom: 16 }} data-ph-connector-instance-name>
               <FormField
                 label={t('workspace.actions.instanceName')}
+                required
                 error={instanceNameError ?? undefined}
               >
                 <input
                   type="text"
+                  data-ph-connector-instance-name
                   value={instanceName}
                   onChange={(e) => setInstanceName(e.target.value)}
                   placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
+                  aria-invalid={instanceNameError ? true : undefined}
                   style={{
                     height: 32,
                     width: '100%',
                     padding: '6px 8px',
-                    backgroundColor: 'var(--color-surface)',
-                    border: '1px solid var(--gray-a5)',
+                    backgroundColor: instanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
+                    border: instanceNameError
+                      ? '1px solid var(--red-9)'
+                      : '1px solid var(--gray-a5)',
                     borderRadius: 'var(--radius-2)',
                     fontSize: 14,
                     fontFamily: 'var(--default-font-family)',
@@ -806,8 +875,6 @@ function getFooterConfig({
   panelView,
   panelActiveTab,
   isAuthReady: _isAuthReady,
-  areRequiredAuthFieldsFilled,
-  instanceName,
   hasConnectorId,
   authTypeForConfigureGate,
   instanceAuthenticated,
@@ -826,8 +893,6 @@ function getFooterConfig({
   panelView: string;
   panelActiveTab: PanelTab;
   isAuthReady: boolean;
-  areRequiredAuthFieldsFilled: boolean;
-  instanceName: string;
   hasConnectorId: boolean;
   authTypeForConfigureGate: string;
   instanceAuthenticated: boolean;
@@ -839,12 +904,16 @@ function getFooterConfig({
   onSave: () => void;
   labels: {
     next: string;
-    fillRequired: string;
+    saving: string;
     cancel: string;
-    authFirst: string;
     loadingConfig: string;
     saveConfig: string;
-    back: string;
+    completeAuthForSave: string;
+    continueToConfigure: string;
+    oauthInProgress: string;
+    authBeforeConfigure: string;
+    backToAuth: string;
+    backFromConfigure: string;
   };
   onContinueFromAuthorize: () => void | Promise<void>;
   onBackFromConfigure: () => void | Promise<void>;
@@ -862,17 +931,12 @@ function getFooterConfig({
   }
 
   if (panelActiveTab === 'authenticate') {
-    const instanceNameReady = hasConnectorId || instanceName.trim().length > 0;
     return {
-      primaryLabel: 'Next →',
-      primaryDisabled:
-        !areRequiredAuthFieldsFilled || isSavingAuth || !instanceNameReady,
+      primaryLabel: `${labels.next} →`,
+      /** Validation runs on click; only disable while the save request is in flight. */
+      primaryDisabled: isSavingAuth,
       primaryLoading: isSavingAuth,
-      primaryTooltip: !instanceNameReady
-        ? 'Enter an instance name to continue'
-        : !areRequiredAuthFieldsFilled
-          ? 'Fill in all required fields to continue'
-          : undefined,
+      primaryTooltip: isSavingAuth ? labels.saving : undefined,
       onPrimary: onNext,
       secondaryLabel: labels.cancel,
     };
@@ -880,16 +944,16 @@ function getFooterConfig({
 
   if (panelActiveTab === 'authorize') {
     return {
-      primaryLabel: 'Continue to configuration →',
+      primaryLabel: labels.continueToConfigure,
       primaryDisabled: !instanceAuthenticated || isOAuthPopupBusy,
       primaryLoading: isOAuthPopupBusy,
       primaryTooltip: isOAuthPopupBusy
-        ? 'Finish signing in with your provider…'
+        ? labels.oauthInProgress
         : !instanceAuthenticated
-          ? 'Complete OAuth authorization before configuring sync and filters'
+          ? labels.authBeforeConfigure
           : undefined,
       onPrimary: onContinueFromAuthorize,
-      secondaryLabel: '← Back to credentials',
+      secondaryLabel: labels.backToAuth,
       onSecondary: () => {
         void onBackFromAuthorize();
       },
@@ -904,20 +968,20 @@ function getFooterConfig({
       !isOAuthType(authTypeForConfigureGate));
 
   const configTooltip = !hasConnectorId
-    ? 'Complete authentication first to save configuration'
+    ? labels.completeAuthForSave
     : !configureSaveAllowed
-    ? 'Complete OAuth authorization before configuring sync and filters.'
+    ? labels.authBeforeConfigure
     : isLoadingSchema || isLoadingConfig
     ? labels.loadingConfig
     : undefined;
 
   return {
-    primaryLabel: 'Save Configuration',
+    primaryLabel: labels.saveConfig,
     primaryDisabled: !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,
-    secondaryLabel: '← Back',
+    secondaryLabel: labels.backFromConfigure,
     onSecondary: () => {
       void onBackFromConfigure();
     },

@@ -1,14 +1,13 @@
 """
 Extended unit tests for ArangoHTTPProvider covering uncovered methods:
 - ensure_schema (full success path, collection creation, graph creation)
-- _create_typed_record_from_arango (all record types and fallback)
+- _create_typed_record_from_arango (all record types; missing type doc raises ValueError)
 - _check_record_group_permissions (allowed, denied, exception)
 - check_connector_name_exists (personal scope, team scope, exception)
 - batch_update_connector_status (success, empty keys, exception)
 - get_user_connector_instances (success, empty, exception)
 - get_filtered_connector_instances (various filters, scope counts, exception)
 - reindex_record_group_records (success, missing group, missing user, permission denied)
-- _reset_indexing_status_to_queued (success, already queued, not found, exception)
 - _ensure_departments_seed (success with new departments)
 - _ensure_indexes
 """
@@ -133,7 +132,7 @@ class TestEnsureSchemaExtended:
 
 
 class TestCreateTypedRecordFromArango:
-    def test_no_type_doc_returns_base_record(self, provider):
+    def test_no_type_doc_raises(self, provider):
         record_dict = {
             "_key": "r1", "recordType": "FILE", "orgId": "org1",
             "recordName": "test.txt", "externalRecordId": "ext1",
@@ -142,12 +141,11 @@ class TestCreateTypedRecordFromArango:
             "createdAtTimestamp": 1700000000000,
             "updatedAtTimestamp": 1700000000000,
         }
-        result = provider._create_typed_record_from_arango(record_dict, None)
-        assert result is not None
+        with pytest.raises(ValueError, match="No type collection or no type doc"):
+            provider._create_typed_record_from_arango(record_dict, None)
 
-    def test_unknown_record_type_returns_base_record(self, provider):
-        # Use a valid RecordType that is NOT in RECORD_TYPE_COLLECTION_MAPPING
-        # so the code falls back to base Record
+    def test_unknown_record_type_raises(self, provider):
+        # OTHERS is not in RECORD_TYPE_COLLECTION_MAPPING
         record_dict = {
             "_key": "r1", "recordType": "OTHERS", "orgId": "org1",
             "recordName": "test.txt", "externalRecordId": "ext1",
@@ -157,8 +155,8 @@ class TestCreateTypedRecordFromArango:
             "updatedAtTimestamp": 1700000000000,
         }
         type_doc = {"_key": "t1"}
-        result = provider._create_typed_record_from_arango(record_dict, type_doc)
-        assert result is not None
+        with pytest.raises(ValueError, match="No type collection or no type doc"):
+            provider._create_typed_record_from_arango(record_dict, type_doc)
 
     @patch("app.services.graph_db.arango.arango_http_provider.FileRecord")
     def test_file_record_type(self, mock_file_record, provider):
@@ -235,8 +233,9 @@ class TestCreateTypedRecordFromArango:
         provider._create_typed_record_from_arango(record_dict, type_doc)
         mock_sql_view.from_arango_record.assert_called_once()
 
-    def test_typed_record_exception_falls_back(self, provider):
-        """If from_arango_record raises, fall back to base Record."""
+
+    def test_typed_record_exception_wraps(self, provider):
+        """If from_arango_record raises, the factory re-raises ValueError."""
         record_dict = {
             "_key": "r1", "recordType": "FILE", "orgId": "org1",
             "recordName": "test.txt", "externalRecordId": "ext1",
@@ -248,8 +247,8 @@ class TestCreateTypedRecordFromArango:
         type_doc = {"_key": "t1"}
         with patch("app.services.graph_db.arango.arango_http_provider.FileRecord") as mock_fr:
             mock_fr.from_arango_record = MagicMock(side_effect=Exception("parse error"))
-            result = provider._create_typed_record_from_arango(record_dict, type_doc)
-            assert result is not None
+            with pytest.raises(ValueError, match="Failed to create typed record for FILE"):
+                provider._create_typed_record_from_arango(record_dict, type_doc)
 
 
 # ---------------------------------------------------------------------------
@@ -614,53 +613,6 @@ class TestReindexRecordGroupRecords:
         )
         assert result["success"] is False
         assert result["code"] == 500
-
-
-# ---------------------------------------------------------------------------
-# _reset_indexing_status_to_queued
-# ---------------------------------------------------------------------------
-
-
-class TestResetIndexingStatusToQueued:
-    @pytest.mark.asyncio
-    async def test_resets_to_queued(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "r1", "indexingStatus": "COMPLETED"
-        })
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_already_queued_skips(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "r1", "indexingStatus": "QUEUED"
-        })
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_empty_status_skips(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "r1", "indexingStatus": "EMPTY"
-        })
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value=None)
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_exception_handled(self, connected_provider):
-        connected_provider.get_document = AsyncMock(side_effect=Exception("db error"))
-        # Should not raise
-        await connected_provider._reset_indexing_status_to_queued("r1")
 
 
 # ---------------------------------------------------------------------------

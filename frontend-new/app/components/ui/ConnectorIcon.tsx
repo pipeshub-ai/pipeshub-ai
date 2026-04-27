@@ -44,6 +44,9 @@ export type ConnectorType =
   | 'notion'
   | 'confluence'
   | 'bookstack'
+  /** PipesHub Collections / KB — backend `Connectors.KNOWLEDGE_BASE` = `"KB"` */
+  | 'kb'
+  | 'knowledge-base'
   | 'google-docs'
   | 'google-sheets'
   | 'google-slides'
@@ -119,6 +122,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'notion':           { svg: '/icons/connectors/notion.svg',           fallback: 'description' },
   'confluence':       { svg: '/icons/connectors/confluence.svg',       fallback: 'article' },
   'bookstack':        { svg: '/icons/connectors/BookStack.svg',        fallback: 'menu_book' },
+  'kb':               { svg: null,                                      fallback: 'folder' },
+  'knowledge-base':   { svg: null,                                      fallback: 'folder' },
   'google-docs':      { svg: '/icons/connectors/Google-Docs.svg',      fallback: 'description' },
   'google-sheets':    { svg: '/icons/connectors/Google-Sheets.svg',    fallback: 'table_chart' },
   'google-slides':    { svg: '/icons/connectors/Google-Slides.svg',    fallback: 'slideshow' },

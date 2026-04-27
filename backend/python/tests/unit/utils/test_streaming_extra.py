@@ -953,3 +953,85 @@ class TestCallAiterLlmStreamSimpleMultiPartAccumulation:
         # Two-part accumulation should produce a tool_calls event since
         # accumulated.tool_calls is truthy.
         assert any(e.get("event") == "tool_calls" for e in events)
+
+
+class TestVirtualRecordIdMapForwarding:
+    """Validate virtual_record_id_to_result is forwarded to chat citation normalization."""
+
+    @pytest.mark.asyncio
+    async def test_handle_json_mode_fast_path_forwards_vrid_map(self):
+        from langchain_core.messages import AIMessage
+        from app.utils.streaming import handle_json_mode
+
+        vrid_map = {"vr1": {"id": "rec-1"}}
+        messages = [AIMessage(content='{"answer":"hello","reason":"r","confidence":"High"}')]
+
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("hello", [])) as mock_norm:
+            events = []
+            async for event in handle_json_mode(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                records=[],
+                logger=logging.getLogger("test"),
+                target_words_per_chunk=5,
+                virtual_record_id_to_result=vrid_map,
+            ):
+                events.append(event)
+
+        assert any(e.get("event") == "complete" for e in events)
+        assert mock_norm.called
+        assert mock_norm.call_args.kwargs.get("virtual_record_id_to_result") == vrid_map
+
+    @pytest.mark.asyncio
+    async def test_handle_simple_mode_fast_path_forwards_vrid_map(self):
+        from langchain_core.messages import AIMessage
+        from app.utils.streaming import handle_simple_mode
+
+        vrid_map = {"vr2": {"id": "rec-2"}}
+        messages = [AIMessage(content="plain answer")]
+
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("plain answer", [])) as mock_norm:
+            events = []
+            async for event in handle_simple_mode(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                records=[],
+                logger=logging.getLogger("test"),
+                target_words_per_chunk=5,
+                virtual_record_id_to_result=vrid_map,
+            ):
+                events.append(event)
+
+        assert any(e.get("event") == "complete" for e in events)
+        assert mock_norm.called
+        assert mock_norm.call_args.kwargs.get("virtual_record_id_to_result") == vrid_map
+
+    @pytest.mark.asyncio
+    async def test_call_aiter_llm_stream_simple_forwards_vrid_map(self):
+        from app.utils.streaming import call_aiter_llm_stream_simple
+
+        vrid_map = {"vr3": {"id": "rec-3"}}
+
+        async def mock_aiter(llm, messages, parts=None):
+            yield "hello world"
+
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), \
+             patch("app.utils.streaming.detect_hallucinated_citation_urls", return_value=[]), \
+             patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("hello world", [])) as mock_norm:
+            events = []
+            async for event in call_aiter_llm_stream_simple(
+                llm=MagicMock(),
+                messages=[HumanMessage(content="q")],
+                final_results=[],
+                records=[],
+                target_words_per_chunk=10,
+                virtual_record_id_to_result=vrid_map,
+                original_llm=MagicMock(),
+            ):
+                events.append(event)
+
+        assert any(e.get("event") == "complete" for e in events)
+        assert mock_norm.called
+        assert mock_norm.call_args.kwargs.get("virtual_record_id_to_result") == vrid_map

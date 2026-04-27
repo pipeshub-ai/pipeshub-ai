@@ -4022,187 +4022,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
-    async def get_all_virtual_record_ids_for_knowledge(
-        self,
-        org_id: str,
-        connector_ids: list[str] | None = None,
-        kb_ids: list[str] | None = None,
-    ) -> dict[str, str]:
-        """
-        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
-        WITHOUT applying per-user permission filtering.
-
-        Used exclusively for service account agents that act as "super entities" with
-        full access to their configured knowledge sources regardless of who is querying.
-
-        Args:
-            org_id: Organization ID to scope the query
-            connector_ids: List of connector/app IDs to include (non-KB connectors)
-            kb_ids: List of KB RecordGroup IDs to include
-
-        Returns:
-            Dict mapping virtualRecordId -> recordId; empty dict if nothing configured.
-        """
-        start_time = time.time()
-
-        has_connectors = bool(connector_ids)
-        has_kbs = bool(kb_ids)
-
-        if not has_connectors and not has_kbs:
-            self.logger.info(
-                "get_all_virtual_record_ids_for_knowledge: no connectors/KBs configured, returning empty"
-            )
-            return {}
-
-        try:
-            tasks = []
-
-            # For each non-KB connector fetch all completed records (no permission filtering)
-            if has_connectors:
-                for connector_id in connector_ids:
-                    if connector_id.startswith("knowledgeBase_"):
-                        continue
-                    tasks.append(self._get_all_virtual_ids_for_connector_neo4j(org_id, connector_id))
-
-            # For KBs fetch all completed UPLOAD records belonging to those RecordGroups
-            if has_kbs:
-                tasks.append(self._get_all_kb_virtual_ids_neo4j(org_id, kb_ids))
-
-            if not tasks:
-                return {}
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            virtual_id_to_record_id: dict[str, str] = {}
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        f"get_all_virtual_record_ids_for_knowledge task {i} failed: {result}"
-                    )
-                    continue
-                if result:
-                    for vid, rid in result.items():
-                        if vid not in virtual_id_to_record_id:
-                            virtual_id_to_record_id[vid] = rid
-
-            elapsed = time.time() - start_time
-            self.logger.info(
-                f"get_all_virtual_record_ids_for_knowledge: found {len(virtual_id_to_record_id)} records "
-                f"(connectors={connector_ids}, kb_ids={kb_ids}) in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(
-                f"get_all_virtual_record_ids_for_knowledge failed: {e}", exc_info=True
-            )
-            return {}
-
-    async def _get_all_virtual_ids_for_connector_neo4j(
-        self,
-        org_id: str,
-        connector_id: str,
-    ) -> dict[str, str]:
-        """
-        Get all virtualRecordId -> recordId for a connector WITHOUT user permission filtering.
-        Returns all completed, non-deleted records for the org in this connector.
-        """
-        try:
-            query = """
-            MATCH (r:Record)
-            WHERE r.connectorId = $connectorId
-              AND r.orgId = $orgId
-              AND r.indexingStatus = $completedStatus
-              AND (r.isDeleted IS NULL OR r.isDeleted = false)
-              AND r.virtualRecordId IS NOT NULL
-              AND r.virtualRecordId <> ''
-              AND r.id IS NOT NULL
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
-            """
-            parameters = {
-                "connectorId": connector_id,
-                "orgId": org_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-            }
-
-            query_start = time.time()
-            results = await self.client.execute_query(query, parameters=parameters)
-            elapsed = time.time() - query_start
-
-            virtual_id_to_record_id: dict[str, str] = {}
-            if results:
-                for r in results:
-                    vid = r.get("virtualId")
-                    rid = r.get("recordId")
-                    if vid and rid and vid not in virtual_id_to_record_id:
-                        virtual_id_to_record_id[vid] = rid
-
-            self.logger.info(
-                f"Service account connector {connector_id}: "
-                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(
-                f"_get_all_virtual_ids_for_connector_neo4j({connector_id}) failed: {e}",
-                exc_info=True,
-            )
-            return {}
-
-    async def _get_all_kb_virtual_ids_neo4j(
-        self,
-        org_id: str,
-        kb_ids: list[str],
-    ) -> dict[str, str]:
-        """
-        Get all virtualRecordId -> recordId for KB RecordGroups WITHOUT user permission filtering.
-        Returns all completed UPLOAD records that belong to the specified RecordGroups.
-        """
-        try:
-            query = """
-            MATCH (kb:RecordGroup)
-            WHERE kb.id IN $kbIds
-            MATCH (r:Record)-[:BELONGS_TO]->(kb)
-            WHERE r.orgId = $orgId
-              AND r.origin = 'UPLOAD'
-              AND r.indexingStatus = $completedStatus
-              AND (r.isDeleted IS NULL OR r.isDeleted = false)
-              AND r.virtualRecordId IS NOT NULL
-              AND r.virtualRecordId <> ''
-              AND r.id IS NOT NULL
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
-            """
-            parameters = {
-                "kbIds": kb_ids,
-                "orgId": org_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-            }
-
-            query_start = time.time()
-            results = await self.client.execute_query(query, parameters=parameters)
-            elapsed = time.time() - query_start
-
-            virtual_id_to_record_id: dict[str, str] = {}
-            if results:
-                for r in results:
-                    vid = r.get("virtualId")
-                    rid = r.get("recordId")
-                    if vid and rid and vid not in virtual_id_to_record_id:
-                        virtual_id_to_record_id[vid] = rid
-
-            self.logger.info(
-                f"Service account KBs ({len(kb_ids)} ids): "
-                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(
-                f"_get_all_kb_virtual_ids_neo4j failed: {e}", exc_info=True
-            )
-            return {}
-
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -7681,9 +7500,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            if not record.get("isInternal"):
-                # Reset indexing status to QUEUED before reindexing
-                await self._reset_indexing_status_to_queued(record_id)
+            # Reset indexing status to QUEUED before reindexing (skips isInternal in bulk helper)
+            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -10399,38 +10217,51 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return {}
 
-
-
-    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
+    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
-        Reset indexing status to QUEUED before sending update/reindex events.
-        Only resets if status is not already QUEUED or EMPTY.
+        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
+        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
         """
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return
+        coll = CollectionNames.RECORDS.value
+        skip_status = frozenset({ProgressStatus.EMPTY.value, ProgressStatus.QUEUED.value})
         try:
-            # Get the record
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
-                self.logger.warning(f"Record {record_id} not found for status reset")
+            label = collection_to_label(coll)
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.id IN $ids
+            RETURN n
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"ids": unique_ids},
+                txn_id=None,
+            )
+            if not results:
                 return
 
-            current_status = record.get("indexingStatus")
+            to_upsert: list[dict] = []
+            for row in results:
+                node_data = dict(row["n"])
+                record = self._neo4j_to_arango_node(node_data, coll)
+                rid = record.get("id") or record.get("_key")
+                if not rid:
+                    continue
+                if record.get("isInternal"):
+                    continue
+                if record.get("indexingStatus") in skip_status:
+                    continue
+                to_upsert.append({"id": rid, "indexingStatus": ProgressStatus.QUEUED.value})
 
-            # Only reset if not already QUEUED or EMPTY
-            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
-                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
-                return
-
-            # Update indexing status to QUEUED
-            doc = {
-                "id": record_id,
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            }
-
-            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+            if to_upsert:
+                await self.batch_upsert_nodes(to_upsert, coll)
+                self.logger.debug(
+                    "✅ Reset %s record(s) indexing status to QUEUED", len(to_upsert)
+                )
         except Exception as e:
-            # Log but don't fail the main operation if status update fails
-            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+            self.logger.error(f"❌ Failed bulk reset records to QUEUED: {str(e)}")
 
     async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
@@ -13732,8 +13563,12 @@ class Neo4jProvider(IGraphDBProvider):
                        recordType: null,
                        recordGroupType: rg.groupType,
                        indexingStatus: null,
-                       createdAt: COALESCE(rg.sourceCreatedAtTimestamp, 0),
-                       updatedAt: COALESCE(rg.sourceLastModifiedTimestamp, 0),
+                       createdAt: CASE WHEN rg.connectorName = 'KB'
+                           THEN COALESCE(rg.createdAtTimestamp, 0)
+                           ELSE COALESCE(rg.sourceCreatedAtTimestamp, 0) END,
+                       updatedAt: CASE WHEN rg.connectorName = 'KB'
+                           THEN COALESCE(rg.updatedAtTimestamp, 0)
+                           ELSE COALESCE(rg.sourceLastModifiedTimestamp, 0) END,
                        sizeInBytes: null,
                        mimeType: null,
                        extension: null,
@@ -13788,6 +13623,7 @@ class Neo4jProvider(IGraphDBProvider):
            recordType: record.recordType,
            recordGroupType: null,
            indexingStatus: record.indexingStatus,
+           reason: record.reason,
            createdAt: COALESCE(record.sourceCreatedAtTimestamp, 0),
            updatedAt: COALESCE(record.sourceLastModifiedTimestamp, 0),
            sizeInBytes: COALESCE(record.sizeInBytes,
@@ -14546,8 +14382,12 @@ class Neo4jProvider(IGraphDBProvider):
             recordType: null,
             recordGroupType: rg.groupType,
             indexingStatus: null,
-            createdAt: coalesce(rg.sourceCreatedAtTimestamp, 0),
-            updatedAt: coalesce(rg.sourceLastModifiedTimestamp, 0),
+            createdAt: CASE WHEN rg.connectorName = 'KB'
+                THEN coalesce(rg.createdAtTimestamp, 0)
+                ELSE coalesce(rg.sourceCreatedAtTimestamp, 0) END,
+            updatedAt: CASE WHEN rg.connectorName = 'KB'
+                THEN coalesce(rg.updatedAtTimestamp, 0)
+                ELSE coalesce(rg.sourceLastModifiedTimestamp, 0) END,
             sizeInBytes: null,
             mimeType: null,
             extension: null,
@@ -14634,6 +14474,7 @@ class Neo4jProvider(IGraphDBProvider):
                 recordType: record.recordType,
                 recordGroupType: null,
                 indexingStatus: record.indexingStatus,
+                reason: record.reason,
                 createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
                 sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
@@ -14721,8 +14562,12 @@ class Neo4jProvider(IGraphDBProvider):
                 recordType: null,
                 recordGroupType: node.groupType,
                 indexingStatus: null,
-                createdAt: coalesce(node.sourceCreatedAtTimestamp, node.createdAtTimestamp, 0),
-                updatedAt: coalesce(node.sourceLastModifiedTimestamp, node.updatedAtTimestamp, 0),
+                createdAt: CASE WHEN node.connectorName = 'KB'
+                    THEN coalesce(node.createdAtTimestamp, 0)
+                    ELSE coalesce(node.sourceCreatedAtTimestamp, node.createdAtTimestamp, 0) END,
+                updatedAt: CASE WHEN node.connectorName = 'KB'
+                    THEN coalesce(node.updatedAtTimestamp, 0)
+                    ELSE coalesce(node.sourceLastModifiedTimestamp, node.updatedAtTimestamp, 0) END,
                 sizeInBytes: null,
                 mimeType: null,
                 extension: null,
@@ -14789,6 +14634,7 @@ class Neo4jProvider(IGraphDBProvider):
                 recordType: record.recordType,
                 recordGroupType: null,
                 indexingStatus: record.indexingStatus,
+                reason: record.reason,
                 createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
                 sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
@@ -14877,6 +14723,7 @@ class Neo4jProvider(IGraphDBProvider):
             recordType: record.recordType,
             recordGroupType: null,
             indexingStatus: record.indexingStatus,
+            reason: record.reason,
             createdAt: coalesce(record.sourceCreatedAtTimestamp, 0),
             updatedAt: coalesce(record.sourceLastModifiedTimestamp, 0),
             sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),

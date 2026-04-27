@@ -7,8 +7,12 @@ import { FileIcon, FolderIcon } from '@/app/components/ui';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
-import { runItemMenuOpenFromMenu } from '../utils/kb-table-item-actions';
+import {
+  runItemMenuOpenFromMenu,
+  shouldHideIndexingStatusForHubRecord,
+} from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
 
 import type { 
   KnowledgeBaseItem, 
@@ -27,6 +31,7 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
 interface GridCardProps {
   item: TableItem;
   isSelected: boolean;
+  showCheckbox?: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -42,6 +47,7 @@ interface GridCardProps {
 function GridCard({
   item,
   isSelected,
+  showCheckbox = true,
   onSelect,
   onClick,
   onOpen,
@@ -139,6 +145,9 @@ function GridCard({
   // Status badge component (only shown for files)
   const getStatusBadge = () => {
     if (isFolder) return null;
+    if (shouldHideIndexingStatusForHubRecord(item)) {
+      return null;
+    }
 
     // For KnowledgeHubNode, use indexingStatus
     if (isKnowledgeHubNode(item)) {
@@ -396,22 +405,25 @@ function GridCard({
       onKeyDown={handleKeyDown}
       onClick={onClick}
     >
-      {/* Checkbox column - only visible on hover or when selected */}
+      {/* Checkbox column - only visible on hover or when selected.
+          Kept as a spacer when fully hidden so the card layout doesn't shift. */}
       <Flex
         align="center"
         style={{
           paddingTop: 'var(--space-1)',
           paddingBottom: 'var(--space-1)',
           flexShrink: 0,
-          visibility: isHovered || isSelected ? 'visible' : 'hidden',
+          visibility: showCheckbox && (isHovered || isSelected) ? 'visible' : 'hidden',
         }}
       >
-        <Checkbox
-          size="1"
-          checked={isSelected}
-          onCheckedChange={() => onSelect()}
-          onClick={(e) => e.stopPropagation()}
-        />
+        {showCheckbox && (
+          <Checkbox
+            size="1"
+            checked={isSelected}
+            onCheckedChange={() => onSelect()}
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+          />
+        )}
       </Flex>
 
       {/* Main content column */}
@@ -476,12 +488,20 @@ function GridCard({
                       Rename
                     </DropdownMenu.Item>
                   )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
-                    <DropdownMenu.Item onClick={() => onReindex(item)}>
-                      <MaterialIcon name={isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'redo' : 'refresh'} size={16} />
-                      {isKnowledgeHubNode(item) && item.indexingStatus === 'COMPLETED' ? 'Force Reindex' : 'Reindex'}
-                    </DropdownMenu.Item>
-                  )}
+                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
+                    const node = isKnowledgeHubNode(item)
+                      ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
+                      : { nodeType: undefined, indexingStatus: undefined };
+                    return (
+                      <DropdownMenu.Item
+                        onClick={() => onReindex(item)}
+                        disabled={isReindexDisabled(node)}
+                      >
+                        <MaterialIcon name={getReindexIcon(node)} size={16} />
+                        {getReindexLabel(node)}
+                      </DropdownMenu.Item>
+                    );
+                  })()}
                   {!isFolder && onReplace && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />
@@ -607,7 +627,7 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {isFolder ? null : (getStatusBadge() || (
+          {isFolder ? null : shouldHideIndexingStatusForHubRecord(item) ? (
             <Text
               size="2"
               weight="medium"
@@ -616,9 +636,22 @@ function GridCard({
                 lineHeight: 'var(--line-height-2)',
               }}
             >
-              -
+              —
             </Text>
-          ))}
+          ) : (
+            getStatusBadge() || (
+              <Text
+                size="2"
+                weight="medium"
+                style={{
+                  color: 'var(--slate-9)',
+                  lineHeight: 'var(--line-height-2)',
+                }}
+              >
+                -
+              </Text>
+            )
+          )}
         </Flex>
       </Flex>
     </Flex>
@@ -628,6 +661,7 @@ function GridCard({
 interface KbGridViewProps {
   items: TableItem[];
   selectedItems: Set<string>;
+  showCheckbox?: boolean;
   pagination?: {
     page: number;
     limit: number;
@@ -652,6 +686,7 @@ interface KbGridViewProps {
 export function KbGridView({
   items,
   selectedItems,
+  showCheckbox = true,
   pagination,
   onSelectItem,
   onItemClick,
@@ -689,6 +724,7 @@ export function KbGridView({
               key={item.id}
               item={item}
               isSelected={selectedItems.has(item.id)}
+              showCheckbox={showCheckbox}
               onSelect={() => onSelectItem(item.id)}
               onClick={() => onItemClick(item)}
               onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

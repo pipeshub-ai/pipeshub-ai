@@ -384,6 +384,10 @@ class BlobStorage(Transformer):
 
         return cleaned
 
+    def _is_non_versioned_exception(self, error: Exception) -> bool:
+        """Detect Node storage errors for legacy documents that are not version-enabled."""
+        return "cannot be versioned" in str(error).lower()
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
@@ -403,9 +407,20 @@ class BlobStorage(Transformer):
                 "📄 Existing storage doc found for vrid %s (doc_id=%s), uploading next version",
                 virtual_record_id, existing_doc_id
             )
-            document_id, file_size_bytes = await self.upload_next_version(
-                org_id, record_id, existing_doc_id, record_dict, virtual_record_id
-            )
+            try:
+                document_id, file_size_bytes = await self.upload_next_version(
+                    org_id, record_id, existing_doc_id, record_dict, virtual_record_id
+                )
+            except Exception as e:
+                if not self._is_non_versioned_exception(e):
+                    raise
+                self.logger.warning(
+                    "⚠️ Existing storage doc %s is not version-enabled; creating replacement document",
+                    existing_doc_id,
+                )
+                document_id, file_size_bytes = await self.save_record_to_storage(
+                    org_id, record_id, virtual_record_id, record_dict
+                )
         else:
             self.logger.info(
                 "📄 No existing storage doc for vrid %s, creating new document",
@@ -426,14 +441,30 @@ class BlobStorage(Transformer):
         try:
             async with session.post(url, json=data, headers=headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    error_detail = ""
                     try:
                         error_response = await response.json()
                         self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
                                         response.status, error_response)
+                        if isinstance(error_response, dict):
+                            error_obj = error_response.get("error")
+                            if isinstance(error_obj, dict):
+                                error_detail = str(error_obj.get("message", "")).strip()
+                            elif error_obj is not None:
+                                error_detail = str(error_obj).strip()
+                            if not error_detail:
+                                error_detail = str(error_response)
+                        else:
+                            error_detail = str(error_response)
+                        if "cannot be versioned" in error_detail.lower():
+                            self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
                     except aiohttp.ContentTypeError:
                         error_text = await response.text()
+                        error_detail = error_text[:200].strip()
                         self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
                                         response.status, error_text[:200])
+                    if error_detail:
+                        raise aiohttp.ClientError(f"Failed with status {response.status}: {error_detail}")
                     raise aiohttp.ClientError(f"Failed with status {response.status}")
 
                 response_data = await response.json()
@@ -1102,6 +1133,7 @@ class BlobStorage(Transformer):
 
                     async with session.post(upload_url, data=form_data, headers=headers) as response:
                         if response.status != HttpStatusCode.SUCCESS.value:
+                            error_response = None
                             try:
                                 error_response = await response.json()
                                 self.logger.error("❌ Failed to upload next version. Status: %d, Error: %s",
@@ -1110,7 +1142,17 @@ class BlobStorage(Transformer):
                                 error_text = await response.text()
                                 self.logger.error("❌ Failed to upload next version. Status: %d, Response: %s",
                                                 response.status, error_text[:200])
-                            raise Exception("Failed to upload next version")
+                            if (
+                                response.status == HttpStatusCode.BAD_REQUEST.value
+                                and isinstance(error_response, dict)
+                                and "cannot be versioned"
+                                in str(error_response.get("error", {}).get("message", "")).lower()
+                            ):
+                                raise Exception("This document cannot be versioned")
+
+                            raise Exception(
+                                f"Failed to upload next version (status: {response.status})"
+                            )
 
                     self.logger.info("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
@@ -1171,11 +1213,22 @@ class BlobStorage(Transformer):
 
             metadata_document_id = None
             if existing_metadata_doc_id:
-                doc_id, _ = await self.upload_next_version(
-                    org_id, record_id, existing_metadata_doc_id,
-                    metadata_dict, virtual_record_id
-                )
-                metadata_document_id = doc_id
+                try:
+                    doc_id, _ = await self.upload_next_version(
+                        org_id, record_id, existing_metadata_doc_id,
+                        metadata_dict, virtual_record_id
+                    )
+                    metadata_document_id = doc_id
+                except Exception as e:
+                    if not self._is_non_versioned_exception(e):
+                        raise
+                    self.logger.warning(
+                        "⚠️ Existing metadata doc %s is not version-enabled; creating replacement metadata document",
+                        existing_metadata_doc_id,
+                    )
+                    metadata_document_id = await self._create_metadata_document(
+                        org_id, record_id, virtual_record_id, metadata_dict
+                    )
             else:
                 metadata_document_id = await self._create_metadata_document(
                     org_id, record_id, virtual_record_id, metadata_dict

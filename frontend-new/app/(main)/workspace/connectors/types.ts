@@ -137,7 +137,8 @@ export interface AuthSchemaField {
     | 'MULTISELECT'
     | 'CHECKBOX'
     | 'NUMBER'
-    | 'FILE';
+    | 'FILE'
+    | 'TAGS';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];
@@ -167,12 +168,14 @@ export interface SyncCustomField {
     | 'NUMBER'
     | 'FILE'
     | 'JSON'
-    | 'BOOLEAN';
+    | 'BOOLEAN'
+    | 'TAGS';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];
   validation?: FieldValidation;
   isSecret?: boolean;
+  nonEditable?: boolean;
 }
 
 export interface FilterSchemaField {
