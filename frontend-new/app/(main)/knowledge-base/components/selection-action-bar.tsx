@@ -59,20 +59,20 @@ export function SelectionActionBar({
 
       {/* Selection count text */}
       <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap', fontStyle: 'normal' }}>
-        {selectedCount} {selectedCount === 1 ? 'Record' : 'Records'} Selected
+        {selectedCount} {selectedCount === 1 ? 'Item' : 'Items'} Selected
       </Text>
 
       {/* Divider */}
       <Separator orientation="vertical" size="1" style={{ height: '16px', background: 'var(--olive-3)' }} />
 
-      {/* Chat button - Accent style */}
+      {/* Chat button - temporarily hidden
       <Button
         size="1"
         variant="surface"
         onClick={onChat}
         style={{
           backgroundColor: 'var(--accent-surface)',
-          // border: '1px solid var(--accent-a7)',
+          border: '1px solid var(--accent-a7)',
           color: 'var(--accent-a11)',
           cursor: 'pointer',
           borderRadius: 'var(--radius-2)',
@@ -82,6 +82,7 @@ export function SelectionActionBar({
         <MaterialIcon name="assistant" size={16} />
         Chat
       </Button>
+      */}
 
       {/* Re-index button - Neutral style */}
       <Button

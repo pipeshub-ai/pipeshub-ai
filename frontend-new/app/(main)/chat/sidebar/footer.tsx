@@ -65,7 +65,7 @@ export function ChatSidebarFooter() {
       >
         {/* Org avatar — logo if available, else initial */}
         <UserAvatar
-          fullName={org?.shortName}
+          fullName={org?.shortName || org?.registeredName}
           src={orgLogoUrl}
           size={HEADER_ELEMENT_SIZE}
           radius="small"
