@@ -1751,16 +1751,8 @@ class BookStackConnector(BaseConnector):
                 parent_external_id = f"chapter/{page.get('chapter_id')}"
 
             # 2. Convert timestamp
-            updated_at_timestamp_ms = None
-            created_at_timestamp_ms = None
-            updated_at_str = page.get("updated_at")
-            created_at_str = page.get("created_at")
-            if updated_at_str:
-                dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
-                updated_at_timestamp_ms = int(dt_obj.timestamp() * 1000)
-            if created_at_str:
-                dt_obj = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                created_at_timestamp_ms = int(dt_obj.timestamp() * 1000)
+            updated_at_timestamp_ms = self._parse_timestamp(page.get("updated_at"))
+            created_at_timestamp_ms = self._parse_timestamp(page.get("created_at"))
 
 
             # 3. Create the FileRecord object
