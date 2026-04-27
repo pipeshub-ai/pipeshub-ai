@@ -35,7 +35,7 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
         backgroundColor: 'var(--olive-a2)',
         border: '1px solid var(--slate-4)',
         borderRadius: 'var(--radius-full)',
-        padding: removable ? '6px var(--space-2) 6px var(--space-3)' : '6px var(--space-3)',
+        padding: removable ? 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)' : 'var(--space-2) var(--space-3)',
         maxWidth: '200px',
         flexShrink: 0,
       }}

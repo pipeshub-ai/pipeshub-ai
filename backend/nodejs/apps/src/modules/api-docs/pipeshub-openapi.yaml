@@ -2676,6 +2676,46 @@ components:
             format: uuid
           description: Filter by knowledge base IDs
 
+    AppliedFilterNode:
+      type: object
+      description: A single filter node selected by the user (used for display/persistence of active filters)
+      required:
+        - id
+        - name
+        - nodeType
+        - connector
+      properties:
+        id:
+          type: string
+          description: Unique identifier of the filter node
+        name:
+          type: string
+          description: Display name of the filter node
+        nodeType:
+          type: string
+          description: Type of the node (e.g. app, kb)
+        connector:
+          type: string
+          description: Connector identifier associated with this node
+
+    AppliedFilters:
+      type: object
+      description: |
+        Rich filter state selected by the user, used for display and persistence only.
+        This mirrors the active selection shown in the UI and is distinct from the
+        machine-readable `filters` field used for retrieval scoping.
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied app/connector filter nodes
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied knowledge-base filter nodes
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
       type: object
@@ -2717,6 +2757,8 @@ components:
           description: Filter by department IDs to scope the search
         filters:
           $ref: '#/components/schemas/Filters'
+        appliedFilters:
+          $ref: '#/components/schemas/AppliedFilters'
         modelKey:
           type: string
           description: |
@@ -2776,6 +2818,8 @@ components:
           example: "Can you elaborate on the revenue trends?"
         filters:
           $ref: '#/components/schemas/Filters'
+        appliedFilters:
+          $ref: '#/components/schemas/AppliedFilters'
         modelKey:
           type: string
           description: Override the model for this specific message
