@@ -13,6 +13,10 @@ from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
     FilterType,
+    SyncFilterKey,
+)
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
     AppUser,
@@ -234,67 +238,32 @@ class TestExtractEmailFromHeader:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _pass_date_filter
+# Tests: build_gmail_received_date_threads_query (RECEIVED_DATE)
 # ---------------------------------------------------------------------------
 
 class TestPassDateFilter:
-    def test_no_filter_always_passes(self):
+    def test_no_filter_empty_query(self):
         connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is True
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_invalid_internal_date_passes(self):
+    def test_is_between_query(self):
         connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {"internalDate": "not-a-number"}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_no_internal_date_passes(self):
-        connector = _make_connector()
-        connector.sync_filters = FilterCollection()
-        msg = {}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_with_start_filter_passes(self):
-        connector = _make_connector()
-        # Create a real Filter with start=1000000000000, end=None
-        # Value must be a dict so the model_validator converts it to a tuple
         date_filter = Filter(
-            key="received_date",
-            value={"start": 1000000000000, "end": None},
+            key=SyncFilterKey.RECEIVED_DATE.value,
+            value={"start": 1000000000000, "end": 2000000000000},
             type=FilterType.DATETIME,
-            operator=DatetimeOperator.IS_AFTER,
+            operator=DatetimeOperator.IS_BETWEEN,
         )
         connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_with_start_filter_fails(self):
-        connector = _make_connector()
-        # Create a real Filter with start=1800000000000, end=None
-        date_filter = Filter(
-            key="received_date",
-            value={"start": 1800000000000, "end": None},
-            type=FilterType.DATETIME,
-            operator=DatetimeOperator.IS_AFTER,
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
         )
-        connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is False
-
-    def test_with_end_filter_fails(self):
-        connector = _make_connector()
-        # Create a real Filter with start=None, end=1600000000000
-        date_filter = Filter(
-            key="received_date",
-            value={"start": None, "end": 1600000000000},
-            type=FilterType.DATETIME,
-            operator=DatetimeOperator.IS_BEFORE,
-        )
-        connector.sync_filters = FilterCollection(filters=[date_filter])
-        msg = {"internalDate": "1700000000000"}
-        assert connector._pass_date_filter(msg) is False
+        assert q == "after:1000000000 before:2000000000"
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +617,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=permissions,
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is not None
         assert result.record.record_type == RecordType.FILE
@@ -675,6 +645,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -698,6 +669,7 @@ class TestProcessGmailAttachment:
             message_id="msg-1",
             attachment_info=attach_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 

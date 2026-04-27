@@ -1122,19 +1122,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
             return {"success": False, "code": 500, "reason": str(e)}
 
-    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
-        """Reset record indexing status to QUEUED (only if not already QUEUED or EMPTY)."""
+    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+        """
+        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
+        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        """
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return
+        coll = CollectionNames.RECORDS.value
+        skip_status = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value})
         try:
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                RETURN doc
+            """
+            bind_vars = {"@collection": coll, "keys": unique_ids}
+            raw_docs = await self.execute_query(query, bind_vars=bind_vars)
+            if not raw_docs:
                 return
-            current_status = record.get("indexingStatus")
-            if current_status in ("QUEUED", "EMPTY"):
-                return
-            doc = {"_key": record_id, "indexingStatus": "QUEUED"}
-            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            to_upsert: list[dict] = []
+            for arango_doc in raw_docs:
+                record = self._translate_node_from_arango(arango_doc)
+                rid = record.get("id") or record.get("_key")
+                if not rid:
+                    continue
+                if record.get("isInternal"):
+                    continue
+                if record.get("indexingStatus") in skip_status:
+                    continue
+                to_upsert.append({"_key": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+
+            if to_upsert:
+                await self.batch_upsert_nodes(to_upsert, coll)
         except Exception as e:
-            self.logger.error("❌ Failed to reset record %s to QUEUED: %s", record_id, str(e))
+            self.logger.error("❌ Failed bulk reset records to QUEUED: %s", str(e))
 
     async def _check_record_permissions(
         self,
@@ -1471,8 +1495,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            if not rec.get("isInternal"):
-                await self._reset_indexing_status_to_queued(record_id)
+            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:

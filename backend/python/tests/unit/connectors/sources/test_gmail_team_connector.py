@@ -27,9 +27,13 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
+    Filter,
     FilterCollection,
     IndexingFilterKey,
     SyncFilterKey,
+)
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
     AppUser,
@@ -2754,7 +2758,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.record_name == "unnamed_attachment"
 
@@ -2767,7 +2771,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.extension is None
 
@@ -2783,7 +2787,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -2810,7 +2814,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         assert result.is_new is False
         assert result.record.id == "existing-att"
@@ -2832,7 +2836,7 @@ class TestProcessGmailAttachmentEdgeCases:
             "size": 100, "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            "u@e.com", "msg-1", attachment_info, []
+            "u@e.com", "msg-1", attachment_info, [], "u@e.com:OTHERS"
         )
         # _get_existing_record swallows tx errors and returns None → treated as new attachment
         assert result is not None
@@ -2900,7 +2904,8 @@ class TestAttachmentGeneratorError:
             async for update in connector._process_gmail_attachment_generator(
                 "u@e.com", "msg-1",
                 [{"attachmentId": "att-1", "stableAttachmentId": "msg-1~1", "isDriveFile": False}],
-                []
+                [],
+                "u@e.com:OTHERS",
             ):
                 if update:
                     results.append(update)
@@ -3311,30 +3316,30 @@ class TestRunFullSyncErrors:
 
 
 # ===========================================================================
-# _pass_date_filter - additional branch
+# build_gmail_received_date_threads_query (edge cases)
 # ===========================================================================
 
 class TestPassDateFilterEdgeCases:
-    def test_no_internal_date_passes(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
+    def test_empty_received_date_no_query(self, connector):
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-        message = {"internalDate": None}
-        # None internalDate should skip the filter check
-        assert connector._pass_date_filter(message) is True
-
-    def test_missing_internal_date_key(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-
-        message = {}
-        assert connector._pass_date_filter(message) is True
+    def test_is_after_with_start_builds_query(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:1"
 
 
 # ===========================================================================

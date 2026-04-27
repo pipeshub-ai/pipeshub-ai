@@ -10,6 +10,8 @@ import type {
   ConnectorStatsResponse,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
+import { trimConnectorConfig } from './utils/trim-config';
+import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 
 const BASE_URL = '/api/v1/connectors';
 
@@ -177,9 +179,44 @@ export const ConnectorsApi = {
       baseUrl: string;
     }
   ) {
+    const f = payload.filters;
+    const body =
+      f != null
+        ? {
+            ...payload,
+            filters: {
+              ...f,
+              ...(f.sync
+                ? {
+                    sync: {
+                      ...f.sync,
+                      values: trimConnectorConfig(
+                        expandRelativeDatetimeFiltersForSave(
+                          (f.sync.values ?? {}) as Record<string, unknown>
+                        )
+                      ),
+                    },
+                  }
+                : {}),
+              ...(f.indexing
+                ? {
+                    indexing: {
+                      ...f.indexing,
+                      values: trimConnectorConfig(
+                        expandRelativeDatetimeFiltersForSave(
+                          (f.indexing.values ?? {}) as Record<string, unknown>
+                        )
+                      ),
+                    },
+                  }
+                : {}),
+            },
+          }
+        : payload;
+
     const { data } = await apiClient.put(
       `${BASE_URL}/${connectorId}/config/filters-sync`,
-      payload
+      body
     );
     return data;
   },

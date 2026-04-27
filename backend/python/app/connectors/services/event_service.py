@@ -428,6 +428,18 @@ class EventService:
 
                 self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
 
+                # Clear AUTO_INDEX_OFF (etc.) on the same batch we are about to reindex — one graph
+                # read path (get_records_* / get_records_by_status) + status updates only.
+                record_ids_to_queue = [
+                    rid
+                    for r in records
+                    if (rid := getattr(r, "id", None)) and isinstance(rid, str)
+                ]
+                if record_ids_to_queue:
+                    await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(
+                        record_ids_to_queue
+                    )
+
                 # Process this batch with typed records
                 await connector.reindex_records(records)
 

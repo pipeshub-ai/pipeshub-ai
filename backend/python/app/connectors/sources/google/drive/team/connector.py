@@ -58,6 +58,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
+from app.connectors.sources.google.common.drive_file_fields import (
+    DRIVE_WORKSPACE_FILE_GET_FIELDS,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -1024,7 +1027,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             # Fetch root drive info to get the actual drive ID
-            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_info = await user_drive_data_source.files_get(
+                fileId="root",
+                supportsAllDrives=True,
+                fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+            )
             drive_id = drive_info.get("id")
 
             if not drive_id:
@@ -1679,7 +1686,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.error(f"Failed to get user permissionId for {user.email}")
                 return
 
-            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_info = await user_drive_data_source.files_get(
+                fileId="root",
+                supportsAllDrives=True,
+                fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+            )
             drive_id = drive_info.get("id")
 
             if not drive_id:
@@ -2766,7 +2777,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 file_metadata = await user_drive_data_source.files_get(
                     fileId=file_id,
-                    supportsAllDrives=True
+                    supportsAllDrives=True,
+                    fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
                 )
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
