@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel  # type: ignore
 
@@ -6,28 +6,28 @@ from pydantic import BaseModel  # type: ignore
 class GraphQLError(BaseModel):
     """GraphQL error representation."""
     message: str
-    locations: list[dict[str, int]] | None = None
-    path: list[str | int] | None = None
-    extensions: dict[str, Any] | None = None
+    locations: Optional[List[Dict[str, int]]] = None
+    path: Optional[List[Union[str, int]]] = None
+    extensions: Optional[Dict[str, Any]] = None
 
 class GraphQLResponse(BaseModel):
     """Standardized GraphQL response wrapper."""
     success: bool
-    data: dict[str, Any] | None = None
-    errors: list[GraphQLError] | None = None
-    extensions: dict[str, Any] | None = None
-    message: str | None = None
+    data: Optional[Dict[str, Any]] = None
+    errors: Optional[List[GraphQLError]] = None
+    extensions: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
 
     def to_json(self) -> str:
         return self.model_dump_json()
 
     @classmethod
-    def from_response(cls, response_data: dict[str, Any]) -> "GraphQLResponse":
+    def from_response(cls, response_data: Dict[str, Any]) -> "GraphQLResponse":
         """Create GraphQLResponse from raw GraphQL response."""
         success = "errors" not in response_data or not response_data["errors"]
 
         errors = None
-        if response_data.get("errors"):
+        if "errors" in response_data and response_data["errors"]:
             errors = [
                 GraphQLError(
                     message=error.get("message", "Unknown error"),

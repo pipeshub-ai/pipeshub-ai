@@ -1,7 +1,9 @@
 
 from typing import (
     Any,
-    Self,
+    Dict,
+    List,
+    Optional,
 )
 
 import openai
@@ -9,12 +11,13 @@ from langchain_core.language_models.base import LangSmithParams
 from langchain_core.utils.utils import from_env, secret_from_env
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import ConfigDict, Field, SecretStr, model_validator
+from typing_extensions import Self
 
 
 class ChatTogether(BaseChatOpenAI):
 
     @property
-    def lc_secrets(self) -> dict[str, str]:
+    def lc_secrets(self) -> Dict[str, str]:
         """A map of constructor argument names to secret ids.
 
         For example,
@@ -23,17 +26,17 @@ class ChatTogether(BaseChatOpenAI):
         return {"together_api_key": "TOGETHER_API_KEY"}
 
     @classmethod
-    def get_lc_namespace(cls) -> list[str]:
+    def get_lc_namespace(cls) -> List[str]:
         """Get the namespace of the langchain object."""
         return ["langchain", "chat_models", "together"]
 
     @property
-    def lc_attributes(self) -> dict[str, Any]:
+    def lc_attributes(self) -> Dict[str, Any]:
         """List of attribute names that should be included in the serialized kwargs.
 
         These attributes must be accepted by the constructor.
         """
-        attributes: dict[str, Any] = {}
+        attributes: Dict[str, Any] = {}
 
         if self.together_api_base:
             attributes["together_api_base"] = self.together_api_base
@@ -46,7 +49,7 @@ class ChatTogether(BaseChatOpenAI):
         return "together-chat"
 
     def _get_ls_params(
-        self, stop: list[str] | None = None, **kwargs: Any
+        self, stop: Optional[List[str]] = None, **kwargs: Any  # noqa: ANN401
     ) -> LangSmithParams:
         """Get the parameters used to invoke the model."""
         params = super()._get_ls_params(stop=stop, **kwargs)
@@ -57,7 +60,7 @@ class ChatTogether(BaseChatOpenAI):
         default="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", alias="model"
     )
     """Model name to use."""
-    together_api_key: SecretStr | None = Field(
+    together_api_key: Optional[SecretStr] = Field(
         alias="api_key",
         default_factory=secret_from_env("TOGETHER_API_KEY", default=None),
     )

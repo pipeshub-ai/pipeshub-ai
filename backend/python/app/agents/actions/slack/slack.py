@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -32,7 +32,7 @@ MIN_PARTIAL_MATCH_LENGTH = 3  # Minimum length for partial name matching
 
 class AmbiguousUserError(Exception):
     """Raised when multiple users match a given identifier"""
-    def __init__(self, identifier: str, matches: list[dict[str, Any]]) -> None:
+    def __init__(self, identifier: str, matches: List[Dict[str, Any]]) -> None:
         self.identifier = identifier
         self.matches = matches
         super().__init__(f"Multiple users found matching '{identifier}'. Please use email or user ID for disambiguation.")
@@ -47,13 +47,13 @@ class SendMessageInput(BaseModel):
 class GetChannelHistoryInput(BaseModel):
     """Schema for getting channel history"""
     channel: str = Field(description="The channel to get the history of")
-    limit: int | None = Field(default=None, description="Maximum number of messages to return")
+    limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
 
 
 class SearchAllInput(BaseModel):
     """Schema for searching in Slack"""
     query: str = Field(description="The search query to find messages, files, and channels")
-    limit: int | None = Field(default=None, description="Maximum number of results to return")
+    limit: Optional[int] = Field(default=None, description="Maximum number of results to return")
 
 
 class GetUserInfoInput(BaseModel):
@@ -65,11 +65,11 @@ class SendDirectMessageInput(BaseModel):
     """Schema for sending a direct message. Accepts both 'message' and 'text' fields (text is aliased to message)."""
     user: str = Field(description="User ID, email, or display name to send DM to")
     message: str = Field(description="The message to send")
-    text: str | None = Field(default=None, exclude=True, description="Alternative field name for message (alias) - will be converted to 'message'")
+    text: Optional[str] = Field(default=None, exclude=True, description="Alternative field name for message (alias) - will be converted to 'message'")
 
     @model_validator(mode='before')
     @classmethod
-    def handle_text_alias(cls, data: Any) -> Any:
+    def handle_text_alias(cls, data: Any) -> Any:  # noqa: ANN401
         """Handle both 'text' and 'message' fields - prefer 'message' but accept 'text' as fallback"""
         if isinstance(data, dict):
             # If 'text' is provided but 'message' is not, use 'text' as 'message'
@@ -85,31 +85,31 @@ class ReplyToMessageInput(BaseModel):
     """Schema for replying to a message"""
     channel: str = Field(description="The channel containing the message to reply to")
     message: str = Field(description="The reply message")
-    thread_ts: str | None = Field(default=None, description="Timestamp of the parent message to reply to")
-    latest_message: bool | None = Field(default=None, description="Whether to reply to the latest message in the channel")
+    thread_ts: Optional[str] = Field(default=None, description="Timestamp of the parent message to reply to")
+    latest_message: Optional[bool] = Field(default=None, description="Whether to reply to the latest message in the channel")
 
 
 class SendMessageToMultipleChannelsInput(BaseModel):
     """Schema for sending a message to multiple channels"""
-    channels: list[str] = Field(description="List of channels to send the message to")
+    channels: List[str] = Field(description="List of channels to send the message to")
     message: str = Field(description="The message to send to all channels")
 
 class CreateChannelInput(BaseModel):
     """Schema for creating a channel"""
     name: str = Field(description="Name of the channel to create")
-    is_private: bool | None = Field(default=None, description="Whether the channel should be private")
-    topic: str | None = Field(default=None, description="Topic for the channel")
-    purpose: str | None = Field(default=None, description="Purpose of the channel")
+    is_private: Optional[bool] = Field(default=None, description="Whether the channel should be private")
+    topic: Optional[str] = Field(default=None, description="Topic for the channel")
+    purpose: Optional[str] = Field(default=None, description="Purpose of the channel")
 
 
 class UploadFileInput(BaseModel):
     """Schema for uploading a file"""
     channel: str = Field(description="The channel to upload the file to")
     filename: str = Field(description="Name of the file")
-    file_path: str | None = Field(default=None, description="Path to the file to upload")
-    file_content: str | None = Field(default=None, description="Content of the file to upload")
-    title: str | None = Field(default=None, description="Title of the file")
-    initial_comment: str | None = Field(default=None, description="Initial comment about the file")
+    file_path: Optional[str] = Field(default=None, description="Path to the file to upload")
+    file_content: Optional[str] = Field(default=None, description="Content of the file to upload")
+    title: Optional[str] = Field(default=None, description="Title of the file")
+    initial_comment: Optional[str] = Field(default=None, description="Initial comment about the file")
 
 class GetChannelInfoInput(BaseModel):
     """Schema for getting the info of a channel"""
@@ -136,9 +136,9 @@ class AddReactionInput(BaseModel):
 class SearchMessagesInput(BaseModel):
     """Schema for searching messages"""
     query: str = Field(description="The search query to find messages")
-    channel: str | None = Field(default=None, description="The channel to search in")
-    count: int | None = Field(default=None, description="Maximum number of results to return")
-    sort: str | None = Field(default=None, description="Sort order (timestamp, score)")
+    channel: Optional[str] = Field(default=None, description="The channel to search in")
+    count: Optional[int] = Field(default=None, description="Maximum number of results to return")
+    sort: Optional[str] = Field(default=None, description="Sort order (timestamp, score)")
 
 class SetUserStatusInput(BaseModel):
     """Schema for setting user status"""
@@ -146,7 +146,7 @@ class SetUserStatusInput(BaseModel):
         description="Status text to set. Pass a non-empty string to SET a status (e.g., 'In a meeting', 'Away'). "
                     "To CLEAR the status, pass an empty string: '' (you must also pass status_emoji='' to clear)."
     )
-    status_emoji: str | None = Field(
+    status_emoji: Optional[str] = Field(
         default=None,
         description="OPTIONAL status emoji. Use standard Slack emoji names (with or without colons): "
                     "':calendar:' or 'calendar' for meetings, ':airplane:' or 'airplane' for travel, "
@@ -154,7 +154,7 @@ class SetUserStatusInput(BaseModel):
                     "If unsure or emoji not critical, OMIT this parameter entirely - status will work fine without it. "
                     "To CLEAR the status, pass an empty string: '' (you must also pass status_text='')."
     )
-    duration_seconds: int | None = Field(
+    duration_seconds: Optional[int] = Field(
         default=None,
         description="Duration in seconds from NOW for how long the status should last. "
                     "Do NOT pass a Unix timestamp - pass only the number of seconds. "
@@ -181,47 +181,47 @@ class GetUnreadMessagesInput(BaseModel):
 
 class GetScheduledMessagesInput(BaseModel):
     """Schema for getting scheduled messages"""
-    channel: str | None = Field(default=None, description="The channel to get scheduled messages for")
+    channel: Optional[str] = Field(default=None, description="The channel to get scheduled messages for")
 
 class SendMessageWithMentionsInput(BaseModel):
     """Schema for sending a message with user mentions"""
     channel: str = Field(description="The channel to send the message to")
     message: str = Field(description="The message to send with mentions")
-    mentions: list[str] | None = Field(default=None, description="List of users to mention")
+    mentions: Optional[List[str]] = Field(default=None, description="List of users to mention")
 
 class GetUsersListInput(BaseModel):
     """Schema for getting list of all users in the organization"""
-    include_deleted: bool | None = Field(default=None, description="Include deleted users in the list. Defaults to True (includes all users by default).")
-    limit: int | None = Field(default=None, description="Maximum number of users to return. If not specified, returns ALL users with pagination.")
+    include_deleted: Optional[bool] = Field(default=None, description="Include deleted users in the list. Defaults to True (includes all users by default).")
+    limit: Optional[int] = Field(default=None, description="Maximum number of users to return. If not specified, returns ALL users with pagination.")
 
 class GetUserConversationsInput(BaseModel):
     """Schema for getting conversations for the authenticated user"""
-    types: str | None = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
-    exclude_archived: bool | None = Field(default=None, description="Exclude archived conversations")
-    limit: int | None = Field(default=None, description="Maximum number of conversations to return. If not specified, returns ALL conversations with automatic pagination.")
+    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
+    exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived conversations")
+    limit: Optional[int] = Field(default=None, description="Maximum number of conversations to return. If not specified, returns ALL conversations with automatic pagination.")
 
 class GetUserGroupsInput(BaseModel):
     """Schema for getting list of user groups in the organization"""
-    include_users: bool | None = Field(default=None, description="Include users in each user group")
-    include_disabled: bool | None = Field(default=None, description="Include disabled user groups")
+    include_users: Optional[bool] = Field(default=None, description="Include users in each user group")
+    include_disabled: Optional[bool] = Field(default=None, description="Include disabled user groups")
 
 class GetUserGroupInfoInput(BaseModel):
     """Schema for getting user group info"""
     usergroup: str = Field(description="User group ID to get info for")
-    include_disabled: bool | None = Field(default=None, description="Include disabled user groups")
+    include_disabled: Optional[bool] = Field(default=None, description="Include disabled user groups")
 
 
 class GetUserChannelsInput(BaseModel):
     """Schema for getting channels for the authenticated user"""
-    exclude_archived: bool | None = Field(default=None, description="Exclude archived channels")
-    types: str | None = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types. Returns ALL channels with automatic pagination.")
+    exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived channels")
+    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types. Returns ALL channels with automatic pagination.")
 
 
 class DeleteMessageInput(BaseModel):
     """Schema for deleting a message"""
     channel: str = Field(description="The channel containing the message")
     timestamp: str = Field(description="Timestamp of the message to delete")
-    as_user: bool | None = Field(default=None, description="Delete the message as the authenticated user")
+    as_user: Optional[bool] = Field(default=None, description="Delete the message as the authenticated user")
 
 
 class UpdateMessageInput(BaseModel):
@@ -229,8 +229,8 @@ class UpdateMessageInput(BaseModel):
     channel: str = Field(description="The channel containing the message")
     timestamp: str = Field(description="Timestamp of the message to update")
     text: str = Field(description="New text content for the message")
-    blocks: list[dict] | None = Field(default=None, description="Rich message blocks for advanced formatting")
-    as_user: bool | None = Field(default=None, description="Update the message as the authenticated user")
+    blocks: Optional[List[Dict]] = Field(default=None, description="Rich message blocks for advanced formatting")
+    as_user: Optional[bool] = Field(default=None, description="Update the message as the authenticated user")
 
 
 class GetMessagePermalinkInput(BaseModel):
@@ -243,7 +243,7 @@ class GetReactionsInput(BaseModel):
     """Schema for getting reactions"""
     channel: str = Field(description="The channel containing the message")
     timestamp: str = Field(description="Timestamp of the message to get reactions for")
-    full: bool | None = Field(default=None, description="Return full reaction objects")
+    full: Optional[bool] = Field(default=None, description="Return full reaction objects")
 
 
 class RemoveReactionInput(BaseModel):
@@ -268,7 +268,7 @@ class GetThreadRepliesInput(BaseModel):
     """Schema for getting thread replies"""
     channel: str = Field(description="The channel containing the thread")
     timestamp: str = Field(description="Timestamp of the parent message")
-    limit: int | None = Field(default=None, description="Maximum number of replies to return")
+    limit: Optional[int] = Field(default=None, description="Maximum number of replies to return")
 
 class UploadFileToChannelInput(BaseModel):
     """Schema for uploading a file to a Slack channel"""
@@ -281,11 +281,11 @@ class UploadFileToChannelInput(BaseModel):
         description="The full text content of the file to upload. "
                     "For transcripts, pass the entire text — not a summary."
     )
-    title: str | None = Field(
+    title: Optional[str] = Field(
         default=None,
         description="Display title for the file in Slack"
     )
-    initial_comment: str | None = Field(
+    initial_comment: Optional[str] = Field(
         default=None,
         description="Message posted alongside the file in the channel"
     )
@@ -384,7 +384,7 @@ class Slack:
         """
         self.client = SlackDataSource(client)
 
-    def _handle_slack_response(self, response: Any) -> SlackResponse:
+    def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         """Handle Slack API response and convert to standardized format.
         - If response already is a SlackResponse (has 'success'), pass it through
         - If it's a dict with 'ok'==False, return error
@@ -532,7 +532,7 @@ class Slack:
         return result
 
 
-    async def _get_authenticated_user_id(self) -> str | None:
+    async def _get_authenticated_user_id(self) -> Optional[str]:
         """Get the authenticated user ID from the token.
 
         Returns:
@@ -666,7 +666,7 @@ class Slack:
         category=ToolCategory.COMMUNICATION,
         llm_description="Send a message to a Slack channel. Use this tool when user explicitly wants to send/post/write a message in Slack. The message will be automatically converted from standard markdown to Slack's mrkdwn format"
     )
-    async def send_message(self, channel: str, message: str) -> tuple[bool, str]:
+    async def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel using Slack's mrkdwn format.
 
         The message will be automatically converted from standard markdown to Slack's mrkdwn format.
@@ -733,7 +733,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_channel_history(self, channel: str, limit: int | None = None) -> tuple[bool, str]:
+    async def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
@@ -871,7 +871,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_channel_info(self, channel: str) -> tuple[bool, str]:
+    async def get_channel_info(self, channel: str) -> Tuple[bool, str]:
         """Get the info of a channel"""
         """
         Args:
@@ -915,7 +915,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_user_info(self, user: str) -> tuple[bool, str]:
+    async def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user with transformed response for easy field extraction"""
         try:
             try:
@@ -998,7 +998,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def fetch_channels(self) -> tuple[bool, str]:
+    async def fetch_channels(self) -> Tuple[bool, str]:
         """Fetch all conversations (public channels, private channels, DMs, group DMs) with pagination"""
         """
         Returns:
@@ -1070,7 +1070,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def search_all(self, query: str, limit: int | None = None) -> tuple[bool, str]:
+    async def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
         """
         Args:
@@ -1129,7 +1129,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_channel_members(self, channel: str) -> tuple[bool, str]:
+    async def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
         """
         Args:
@@ -1175,7 +1175,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_channel_members_by_id(self, channel_id: str) -> tuple[bool, str]:
+    async def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
         """
         Args:
@@ -1215,7 +1215,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def resolve_user(self, user_id: str) -> tuple[bool, str]:
+    async def resolve_user(self, user_id: str) -> Tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
         try:
             response = await self.client.users_info(user=user_id)
@@ -1259,7 +1259,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def check_token_info(self) -> tuple[bool, str]:
+    async def check_token_info(self) -> Tuple[bool, str]:
         """Check Slack token information and available scopes"""
         """
         Returns:
@@ -1298,7 +1298,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def send_direct_message(self, user: str, message: str) -> tuple[bool, str]:
+    async def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
         """Send a direct message to a user"""
         try:
             # Try to resolve the user (don't allow ambiguous matches)
@@ -1379,7 +1379,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def reply_to_message(self, channel: str, message: str, thread_ts: str | None = None, latest_message: bool | None = None) -> tuple[bool, str]:
+    async def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
         """Reply to a specific message in a channel"""
         """
         Args:
@@ -1452,7 +1452,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def send_message_to_multiple_channels(self, channels: list[str], message: str) -> tuple[bool, str]:
+    async def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
         """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
         """Send the same message to multiple channels"""
         """
@@ -1528,7 +1528,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def add_reaction(self, channel: str, timestamp: str, name: str) -> tuple[bool, str]:
+    async def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Add a reaction to a message"""
         """
         Args:
@@ -1577,7 +1577,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def search_messages(self, query: str, channel: str | None = None, count: int | None = None, sort: str | None = None) -> tuple[bool, str]:
+    async def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
         """Search for messages in Slack"""
         """
         Args:
@@ -1639,7 +1639,7 @@ class Slack:
         category=ToolCategory.COMMUNICATION,
         llm_description="Set, update, or CLEAR the user's Slack status. To SET a status: pass status_text with the desired text. To CLEAR the status (make user appear active/available): pass status_text='' (empty string) AND status_emoji='' (empty string). Pass duration_seconds as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass a Unix timestamp - just the duration in seconds. The status_emoji parameter is OPTIONAL when setting a status - if you're not sure which emoji to use or the user didn't specify one, simply omit it. Common emojis: calendar (meetings), airplane (travel), house (WFH), palm_tree (vacation). The tool calculates the expiration time internally. No calculator or other tool is needed."
     )
-    async def set_user_status(self, status_text: str, status_emoji: str | None = None, duration_seconds: int | None = None) -> tuple[bool, str]:
+    async def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, duration_seconds: Optional[int] = None) -> Tuple[bool, str]:
         """Set user status in Slack.
         Args:
             status_text: Status text to set (e.g., "In a meeting", "Away", "agent testing").
@@ -1740,7 +1740,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def schedule_message(self, channel: str, message: str, post_at: str) -> tuple[bool, str]:
+    async def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
         """
         Args:
@@ -1793,7 +1793,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def pin_message(self, channel: str, timestamp: str) -> tuple[bool, str]:
+    async def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Pin a message to a channel"""
         """
         Args:
@@ -1840,7 +1840,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_unread_messages(self, channel: str) -> tuple[bool, str]:
+    async def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
         """Get unread messages from a channel"""
         """
         Args:
@@ -1914,7 +1914,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_scheduled_messages(self, channel: str | None = None) -> tuple[bool, str]:
+    async def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
         """Get scheduled messages"""
         """
         Args:
@@ -1958,7 +1958,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def send_message_with_mentions(self, channel: str, message: str, mentions: list[str] | None = None) -> tuple[bool, str]:
+    async def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
         """Send a message with user mentions"""
         """
         Args:
@@ -2027,7 +2027,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_users_list(self, include_deleted: bool | None = None, limit: int | None = None) -> tuple[bool, str]:
+    async def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get list of all users in the organization with pagination"""
         """
         Args:
@@ -2116,7 +2116,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_user_conversations(self, types: str | None = None, exclude_archived: bool | None = None, limit: int | None = None) -> tuple[bool, str]:
+    async def get_user_conversations(self, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """
         Args:
             types: Comma-separated list of conversation types (defaults to all: public_channel,private_channel,mpim,im)
@@ -2216,7 +2216,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_user_groups(self, include_users: bool | None = None, include_disabled: bool | None = None) -> tuple[bool, str]:
+    async def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get list of user groups in the organization"""
         """
         Args:
@@ -2263,7 +2263,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_user_group_info(self, usergroup: str, include_disabled: bool | None = None) -> tuple[bool, str]:
+    async def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get information about a specific user group"""
         """
         Args:
@@ -2309,7 +2309,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_user_channels(self, exclude_archived: bool | None = None, types: str | None = None) -> tuple[bool, str]:
+    async def get_user_channels(self, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
         """
         Args:
             exclude_archived: Exclude archived channels
@@ -2393,7 +2393,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def delete_message(self, channel: str, timestamp: str, as_user: bool | None = None) -> tuple[bool, str]:
+    async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
         """
         Args:
@@ -2445,7 +2445,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def update_message(self, channel: str, timestamp: str, text: str, blocks: list[dict] | None = None, as_user: bool | None = None) -> tuple[bool, str]:
+    async def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Update an existing message"""
         """
         Args:
@@ -2502,7 +2502,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_message_permalink(self, channel: str, timestamp: str) -> tuple[bool, str]:
+    async def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Get a permalink for a specific message"""
         """
         Args:
@@ -2546,7 +2546,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_reactions(self, channel: str, timestamp: str, full: bool | None = None) -> tuple[bool, str]:
+    async def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
         """Get reactions for a specific message"""
         """
         Args:
@@ -2595,7 +2595,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def remove_reaction(self, channel: str, timestamp: str, name: str) -> tuple[bool, str]:
+    async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""
         """
         Args:
@@ -2641,7 +2641,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_pinned_messages(self, channel: str) -> tuple[bool, str]:
+    async def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
         """Get pinned messages from a channel"""
         """
         Args:
@@ -2681,7 +2681,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def unpin_message(self, channel: str, timestamp: str) -> tuple[bool, str]:
+    async def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Unpin a message from a channel"""
         """
         Args:
@@ -2726,7 +2726,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_thread_replies(self, channel: str, timestamp: str, limit: int | None = None) -> tuple[bool, str]:
+    async def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get replies in a thread"""
         """
         Args:
@@ -2785,9 +2785,9 @@ class Slack:
         channel: str,
         filename: str,
         file_content: str,
-        title: str | None = None,
-        initial_comment: str | None = None,
-    ) -> tuple[bool, str]:
+        title: Optional[str] = None,
+        initial_comment: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """Upload a text file to a Slack channel.
 
         Uses the Slack SDK's files_upload_v2 which handles the 3-step upload
@@ -2830,7 +2830,7 @@ class Slack:
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
-    async def _resolve_user_identifier(self, user_identifier: str, allow_ambiguous: bool = False) -> str | None:
+    async def _resolve_user_identifier(self, user_identifier: str, allow_ambiguous: bool = False) -> Optional[str]:
         """Resolve user identifier (email, display name, or user ID) to user ID.
 
         Args:
