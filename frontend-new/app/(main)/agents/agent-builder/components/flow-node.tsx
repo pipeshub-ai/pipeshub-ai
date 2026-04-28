@@ -16,6 +16,7 @@ import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/
 import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
+import { McpServerFlowNode } from './mcp-server-flow-node';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
 export type FlowNodeProps = {
@@ -110,6 +111,12 @@ export const FlowNode = React.memo(function FlowNode({
   if (data.type.startsWith('toolset-')) {
     return (
       <ToolsetFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />
+    );
+  }
+
+  if (data.type.startsWith('mcp-server-')) {
+    return (
+      <McpServerFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />
     );
   }
 

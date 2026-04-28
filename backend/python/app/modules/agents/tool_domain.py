@@ -35,15 +35,19 @@ def derive_tool_domain(tool: Any) -> tuple[str, str]:
 
     Resolution order:
     1. ``tool._original_name`` if it contains a ``.`` (canonical form set
-       by the tool registry / `tool_system.py`).
+       by the tool registry / ``tool_system.py``).
     2. ``tool.name`` if it contains a ``.``.
-    3. Fall back to ``("utility", name)`` for any bare name.
+    3. MCP tools — bare names prefixed with ``mcp_`` (e.g.
+       ``mcp_jira_search_issues``) — map to domain ``"mcp"``.
+    4. Any other bare name falls back to ``("utility", name)``.
     """
     name = getattr(tool, "name", "") or ""
     canonical = getattr(tool, "_original_name", "") or name
 
     if "." in canonical:
         domain, action = canonical.split(".", 1)
+    elif canonical.startswith("mcp_"):
+        domain, action = "mcp", canonical
     else:
         domain, action = "utility", canonical
 

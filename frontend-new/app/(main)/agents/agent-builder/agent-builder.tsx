@@ -71,6 +71,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setError,
     refreshToolsets,
     refreshAgent,
+    mcpServers,
+    mcpServersHasMore,
+    mcpServersLoadingMore,
+    refreshMcpServers,
+    loadMoreMcpServers,
   } = useAgentBuilderData(editingKey);
 
   const {
@@ -382,6 +387,26 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   /** Logical toolset types already on the canvas (legacy: at most one per type). */
   const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
 
+  const activeMcpServerTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          nodes
+            .filter((n) => n.data?.type?.startsWith('mcp-server-'))
+            .map((n) => {
+              const cfg = n.data.config || {};
+              const instanceId = cfg.instanceId as string | undefined;
+              const name =
+                (cfg.mcpServerName as string) ||
+                String(n.data.type || '').replace(/^mcp-server-/, '');
+              return (instanceId || name).toLowerCase();
+            })
+            .filter(Boolean)
+        )
+      ),
+    [nodes]
+  );
+
   const saveRef = useRef(false);
 
   const focusAgentNameInput = useCallback(() => {
@@ -673,6 +698,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             activeToolsetTypeKeys={activeToolsetTypeKeys}
             toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
+            mcpServers={mcpServers}
+            activeMcpServerTypes={activeMcpServerTypes}
+            mcpServersHasMore={mcpServersHasMore}
+            mcpServersLoadingMore={mcpServersLoadingMore}
+            onLoadMoreMcpServers={loadMoreMcpServers}
+            refreshMcpServers={refreshMcpServers}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
             isServiceAccount={isServiceAccount}

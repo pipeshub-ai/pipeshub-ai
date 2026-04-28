@@ -141,6 +141,135 @@ export function handleFlowCanvasDrop(
     toolsetName: toolset,
   });
 
+  // ── MCP Server / Tool drop ─────────────────────────────────────────────────
+  const mcpServerName = event.dataTransfer.getData('mcpServerName');
+  const mcpDisplayName = event.dataTransfer.getData('mcpDisplayName');
+  const mcpServerType = event.dataTransfer.getData('mcpServerType');
+  const mcpInstanceId = event.dataTransfer.getData('mcpInstanceId');
+  const mcpToolsStr = event.dataTransfer.getData('mcpTools');
+  const mcpSelectedToolsStr = event.dataTransfer.getData('mcpSelectedTools');
+  const mcpIconPath = event.dataTransfer.getData('mcpIconPath');
+  const isMcpConfigured = event.dataTransfer.getData('isMcpConfigured') === 'true';
+  const isMcpAuthenticated = event.dataTransfer.getData('isMcpAuthenticated') === 'true';
+
+  const isMcpDrop =
+    type.startsWith('mcp-server-') ||
+    event.dataTransfer.getData('type') === 'mcp-server' ||
+    event.dataTransfer.getData('type') === 'mcp-tool';
+
+  if (isMcpDrop && mcpServerName) {
+    if (!isMcpConfigured || !isMcpAuthenticated) {
+      onError?.(
+        t('agentBuilder.mcpServerNotReady', {
+          name: mcpDisplayName || mcpServerName,
+          reason: !isMcpConfigured
+            ? t('agentBuilder.notConfiguredReason')
+            : t('agentBuilder.notAuthenticatedReason'),
+        })
+      );
+      return;
+    }
+
+    if (!mcpToolsStr) {
+      onError?.(t('agentBuilder.mcpServerDropNoTools'));
+      return;
+    }
+
+    type McpToolEntry = {
+      name: string;
+      namespacedName: string;
+      description: string;
+      inputSchema?: Record<string, unknown>;
+    };
+
+    const allMcpTools = parseJson<McpToolEntry[]>(mcpToolsStr, []);
+    const selectedMcpTools = mcpSelectedToolsStr
+      ? parseJson<string[]>(mcpSelectedToolsStr, [])
+      : allMcpTools.map((t) => t.name);
+
+    const mcpNodeType = `mcp-server-${mcpInstanceId || mcpServerName}`;
+
+    const existingMcpNode = nodes.find(
+      (n) =>
+        n.data?.type?.startsWith('mcp-server-') &&
+        n.data.config?.mcpServerName === mcpServerName
+    );
+
+    if (existingMcpNode) {
+      const existingTools = (existingMcpNode.data.config?.tools as McpToolEntry[]) || [];
+      const existingAvail =
+        (existingMcpNode.data.config?.availableTools as McpToolEntry[]) || existingTools;
+      const existingKeys = new Set(existingTools.map((t) => t.name));
+      const newTools = allMcpTools.filter((t) => !existingKeys.has(t.name));
+      const mergedAvail = [...existingAvail];
+      allMcpTools.forEach((t) => {
+        if (!mergedAvail.some((x) => x.name === t.name)) mergedAvail.push(t);
+      });
+      if (newTools.length > 0) {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === existingMcpNode.id
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    config: {
+                      ...node.data.config,
+                      tools: [...existingTools, ...newTools],
+                      selectedTools: [
+                        ...((node.data.config?.selectedTools as string[]) || []),
+                        ...newTools.map((t) => t.name),
+                      ],
+                      availableTools: mergedAvail,
+                    },
+                  },
+                }
+              : node
+          )
+        );
+      }
+      return;
+    }
+
+    const toolsOnNode = allMcpTools.filter((t) => selectedMcpTools.includes(t.name));
+    const toolsForNode = toolsOnNode.length > 0 ? toolsOnNode : allMcpTools;
+
+    const mcpNodeId = `${mcpNodeType}-${Date.now()}`;
+    const newMcpNode: Node<FlowNodeData> = {
+      id: mcpNodeId,
+      type: 'flowNode',
+      position: place(mcpNodeType),
+      data: {
+        id: mcpNodeId,
+        type: mcpNodeType,
+        label: normalizeDisplayName(mcpDisplayName || mcpServerName),
+        description: t('agentBuilder.mcpServerNodeDescriptionTools', {
+          name: mcpDisplayName || mcpServerName,
+          count: toolsForNode.length,
+        }),
+        icon: mcpIconPath || 'dns',
+        category: 'mcp-server',
+        config: {
+          mcpServerName,
+          displayName: mcpDisplayName || mcpServerName,
+          serverType: mcpServerType,
+          instanceId: mcpInstanceId || undefined,
+          iconPath: mcpIconPath || undefined,
+          tools: toolsForNode,
+          availableTools: allMcpTools,
+          selectedTools: toolsForNode.map((t) => t.name),
+          isConfigured: isMcpConfigured,
+          isAuthenticated: isMcpAuthenticated,
+        },
+        inputs: [],
+        outputs: ['output'],
+        isConfigured: true,
+      },
+    };
+    appendNodeWithAutoConnect(newMcpNode);
+    return;
+  }
+
   if (type.startsWith('toolset-') || toolsetType === 'toolset') {
     if (!isToolsetConfigured || !isToolsetAuthenticated) {
       onError?.(

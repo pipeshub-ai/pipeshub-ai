@@ -5,3 +5,4 @@
 # Other static hosts need an equivalent rule (e.g. CloudFront/S3 website redirect).
 /toolsets/oauth/callback/:slug /toolsets/oauth/callback/ 302
 /connectors/oauth/callback/:slug /connectors/oauth/callback/ 302
+/mcp-servers/oauth/callback/:slug /mcp-servers/oauth/callback/ 302
