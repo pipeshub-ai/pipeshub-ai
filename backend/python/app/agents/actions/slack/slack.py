@@ -1018,10 +1018,9 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION,
         llm_description=(
-            "Returns ALL conversations the user can access. In Slack, 'channel' and 'DM' are the same data type — "
-            "differentiated by the 'is_im' / 'is_mpim' / 'is_private' flags and the id prefix (D/G/C). "
-            "DM (im) entries have NO 'name' field — only 'id' (D…) and 'user' (the partner's U… ID); "
-            "resolve that user ID via users_info / resolve_user to get a human-readable label."
+            "Lists all conversations the user can access. Differentiate by 'is_im'/'is_mpim'/'is_private' "
+            "or id prefix (D/G/C). DM entries have no 'name' — only 'id' (D…) and 'user' (U…); "
+            "resolve that user ID via users_info / resolve_user for a readable label."
         ),
     )
     async def fetch_channels(self) -> Tuple[bool, str]:
@@ -1408,12 +1407,9 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION,
         llm_description=(
-            "Fetch the message history of the 1:1 direct-message conversation between the "
-            "authenticated user and the specified user. Resolves the user (by email, "
-            "display name, real name, or Slack user ID) to the IM channel automatically — "
-            "do NOT pass a channel ID here. Use this for any 'personal chat', 'DM', or "
-            "'1:1 conversation with X' request; do not fall back to search_messages for "
-            "this case, since search returns channel mentions, not the DM thread."
+            "Fetch the 1:1 DM history with a user. Pass the user (email, display name, "
+            "real name, or Slack user ID) — NOT a channel ID. Use for any 'DM' / 'personal "
+            "chat' / '1:1 with X' request; do not use search_messages for this."
         ),
     )
     async def get_dm_history(self, user: str, limit: Optional[int] = None) -> Tuple[bool, str]:
