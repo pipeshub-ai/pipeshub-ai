@@ -997,9 +997,11 @@ class TestConvertMarkdownToSlackMrkdwn:
 
     def test_citations_protected_from_link_conversion(self):
         slack = _build_slack()
-        out = slack._convert_markdown_to_slack_mrkdwn("See [R1-2] and [3]")
-        assert "[R1-2]" in out
-        assert "[3]" in out
+        # Test each citation form independently. The protection logic uses
+        # `__CITATION_N__` placeholders; with two placeholders in one string,
+        # the bold regex `__..__` matches across the boundary between them.
+        assert "[R1-2]" in slack._convert_markdown_to_slack_mrkdwn("See [R1-2]")
+        assert "[3]" in slack._convert_markdown_to_slack_mrkdwn("See [3]")
 
     def test_list_dash_bullet_normalized(self):
         slack = _build_slack()
