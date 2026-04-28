@@ -35,7 +35,10 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
         backgroundColor: 'var(--olive-a2)',
         border: '1px solid var(--slate-4)',
         borderRadius: 'var(--radius-full)',
-        padding: removable ? 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)' : 'var(--space-2) var(--space-3)',
+        padding: removable
+          ? '0 var(--space-2) 0 var(--space-3)'
+          : '0 var(--space-3)',
+        minWidth: "80px",
         maxWidth: '200px',
         flexShrink: 0,
       }}
@@ -52,7 +55,8 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
-          padding: "var(--space-1)"
+          padding: "var(--space-1)",
+          flex: 1,
         }}
       >
         {item.name}

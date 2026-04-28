@@ -563,7 +563,7 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string }
+  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
   | { type: 'editQuery'; messageId: string; text: string };
 
 // ── Multi-Chat Slot Types ──

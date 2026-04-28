@@ -32,7 +32,7 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
-import type { UploadedFile, ActiveMessageAction, ModelOverride } from '@/chat/types';
+import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -252,7 +252,31 @@ export function ChatInput({
   // Build selected collections from store (roots → apps API; record groups → kb API).
   // Includes connector metadata so pills show the right icon per source type.
   // In agent mode, read from the effective agent knowledge scope instead of settings.filters.
+  // In regenerate mode, read from the original message's appliedFilters (locked, non-removable).
+  const regenAppliedFilters = isRegenerateMode && activeMessageAction?.type === 'regenerate'
+    ? activeMessageAction.appliedFilters
+    : undefined;
+
   const selectedCollections = useMemo(() => {
+    // Regenerate mode: derive pills directly from the original message's appliedFilters nodes
+    // (they carry name + connector already, so no cache lookup needed).
+    if (regenAppliedFilters) {
+      return [
+        ...regenAppliedFilters.apps.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: (node.nodeType === 'app' ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+        ...regenAppliedFilters.kb.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: 'collection' as const,
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+      ];
+    }
+
     const source = isAgentChat
       ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
       : settings.filters;
@@ -279,7 +303,7 @@ export function ChatInput({
         };
       }),
     ];
-  }, [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
+  }, [regenAppliedFilters, isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
@@ -332,11 +356,11 @@ export function ChatInput({
   // as { messageId, text: question }).
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
-    const { messageId, text } = payload as { messageId: string; text?: string };
+    const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
     if (!messageId) return;
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'regenerate', messageId });
+    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
   }, [dismissExpansionPanels]);
@@ -388,10 +412,14 @@ export function ChatInput({
 
     if (activeMessageAction.type === 'regenerate') {
       const modelOverride = regenModelOverride ?? undefined;
+      const af = activeMessageAction.appliedFilters;
+      const originalFilters = af
+        ? { apps: af.apps.map((a) => a.id), kb: af.kb.map((k) => k.id) }
+        : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
       if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride);
+        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
       return;
     }
@@ -751,13 +779,13 @@ export function ChatInput({
             borderRight: '1px solid var(--slate-5)',
             borderTopLeftRadius: 'var(--radius-1)',
             borderTopRightRadius: 'var(--radius-1)',
-            padding: 'var(--space-3) var(--space-4)',
+            padding: 'var(--space-2) var(--space-3)',
           }}
         >
           <SelectedCollections
             collections={selectedCollections}
-            removable
-            onRemove={handleRemoveCollection}
+            removable={!isRegenerateMode}
+            onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
           />
         </Flex>
       )}

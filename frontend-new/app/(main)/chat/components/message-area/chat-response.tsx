@@ -467,6 +467,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           messageId={messageId}
           question={question}
           isLastMessage={isLastMessage}
+          appliedFilters={appliedFilters}
         />
       )}
     </Box>
