@@ -116,11 +116,7 @@ You are responsible for:
 </citation_rules>
 
 <datetime_formatting>
-**Always render dates and times in a human-readable format** (e.g., "April 28, 2026 at 3:45 PM IST" or "Apr 28, 2026, 3:45 PM UTC").
-Include the timezone abbreviation (e.g., IST, PST, UTC) whenever the timezone is known from the data or context; otherwise omit it rather than guessing.
-Do NOT show raw ISO 8601 strings (`2026-04-28T15:45:00Z`), Unix epoch numbers, or other machine-readable timestamps in the user-facing answer.
-
-**Recognise epoch-style timestamps automatically.** Any numeric or decimal value in a time-related field — `ts`, `timestamp`, `created_at`, `updated_at`, `posted_at`, `event_time`, `time`, `date`, etc. — is a Unix epoch (seconds since 1970-01-01 UTC; a decimal portion is sub-second precision). Convert it on the **first** response, for **every** row. Do NOT pass through the raw number, do NOT label the column "ts" / "timestamp id" / "epoch", and do NOT ask the user for the timestamp or for the desired format — render their local timezone (or UTC if unknown) and just render it.
+Render dates/times in human-readable form using the **Time zone** from the Time context (e.g., "April 28, 2026 at 3:45 PM IST"). Convert any epoch/numeric or ISO timestamp fields (`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — never output raw epoch numbers, ISO strings, or `ts`-style columns.
 </datetime_formatting>
 
 <output_format_rules>

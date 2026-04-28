@@ -48,6 +48,27 @@ class GetChannelHistoryInput(BaseModel):
     """Schema for getting channel history"""
     channel: str = Field(description="The channel to get the history of")
     limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of time range as a Slack Unix timestamp string (epoch seconds, "
+            "e.g. '1700000000.000000'). Use this for 'last N hours/days' queries: "
+            "compute as (current_epoch_seconds - N*3600 for hours, or N*86400 for days). "
+            "For 'last 24 hours' use (now - 86400). Pair with 'latest' for an explicit "
+            "end bound, otherwise omit 'latest' to mean 'up to now'."
+        ),
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of time range as a Slack Unix timestamp string (epoch seconds, "
+            "e.g. '1700050000.000000'). Omit to fetch up to the current time."
+        ),
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
 
 
 class SearchAllInput(BaseModel):
@@ -85,11 +106,32 @@ class GetDmHistoryInput(BaseModel):
     """Schema for getting DM history with a specific user"""
     user: str = Field(description="DM partner identifier. Accepts email, display name, real name, or Slack user ID (starts with 'U').")
     limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of time range as a Slack Unix timestamp string (epoch seconds, "
+            "e.g. '1700000000.000000'). Use this for 'last N hours/days' queries: "
+            "compute as (current_epoch_seconds - N*3600 for hours, or N*86400 for days). "
+            "For 'last 24 hours' use (now - 86400). Pair with 'latest' for an explicit "
+            "end bound, otherwise omit 'latest' to mean 'up to now'."
+        ),
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of time range as a Slack Unix timestamp string (epoch seconds, "
+            "e.g. '1700050000.000000'). Omit to fetch up to the current time."
+        ),
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
 
 
 class ReplyToMessageInput(BaseModel):
     """Schema for replying to a message"""
-    channel: str = Field(description="The channel containing the message to reply to")
+    channel: str = Field(description="The channel id containing the message (e.g 'C1234567890','G1234567890', 'D1234567890') to reply to")
     message: str = Field(description="The reply message")
     thread_ts: Optional[str] = Field(default=None, description="Timestamp of the parent message to reply to")
     latest_message: Optional[bool] = Field(default=None, description="Whether to reply to the latest message in the channel")
@@ -135,7 +177,7 @@ class ResolveUserInput(BaseModel):
 
 class AddReactionInput(BaseModel):
     """Schema for adding a reaction to a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to add reaction to")
     name: str = Field(description="Name of the emoji reaction (e.g., 'thumbsup', '+1')")
 
@@ -157,6 +199,28 @@ class SearchMessagesInput(BaseModel):
     )
     count: Optional[int] = Field(default=None, description="Maximum number of results to return")
     sort: Optional[str] = Field(default=None, description="Sort order (timestamp, score)")
+    sort_dir: Optional[str] = Field(
+        default=None,
+        description="Sort direction: 'asc' or 'desc'. Defaults to Slack's default ('desc') when omitted.",
+    )
+    after: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict to messages after this date (YYYY-MM-DD). Adds Slack's "
+            "'after:<date>' modifier. WARNING: this is EXCLUSIVE — 'after:2025-01-15' "
+            "matches messages from 2025-01-16 onward, NOT 2025-01-15. For narrow "
+            "windows like 'today' or 'last 24 hours', use get_channel_history with "
+            "'oldest'/'latest' instead — search has indexing lag and exclusive bounds."
+        ),
+    )
+    before: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict to messages before this date (YYYY-MM-DD). Adds Slack's "
+            "'before:<date>' modifier. WARNING: this is EXCLUSIVE — 'before:2025-01-15' "
+            "matches messages up to 2025-01-14, NOT including 2025-01-15."
+        ),
+    )
 
 class SetUserStatusInput(BaseModel):
     """Schema for setting user status"""
@@ -190,7 +254,7 @@ class ScheduleMessageInput(BaseModel):
 
 class PinMessageInput(BaseModel):
     """Schema for pinning a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to pin")
 
 class GetUnreadMessagesInput(BaseModel):
@@ -237,14 +301,14 @@ class GetUserChannelsInput(BaseModel):
 
 class DeleteMessageInput(BaseModel):
     """Schema for deleting a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to delete")
     as_user: Optional[bool] = Field(default=None, description="Delete the message as the authenticated user")
 
 
 class UpdateMessageInput(BaseModel):
     """Schema for updating a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to update")
     text: str = Field(description="New text content for the message")
     blocks: Optional[List[Dict]] = Field(default=None, description="Rich message blocks for advanced formatting")
@@ -253,20 +317,20 @@ class UpdateMessageInput(BaseModel):
 
 class GetMessagePermalinkInput(BaseModel):
     """Schema for getting message permalink"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to get permalink for")
 
 
 class GetReactionsInput(BaseModel):
     """Schema for getting reactions"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to get reactions for")
     full: Optional[bool] = Field(default=None, description="Return full reaction objects")
 
 
 class RemoveReactionInput(BaseModel):
     """Schema for removing a reaction"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to remove reaction from")
     name: str = Field(description="Name of the emoji reaction to remove")
 
@@ -278,15 +342,27 @@ class GetPinnedMessagesInput(BaseModel):
 
 class UnpinMessageInput(BaseModel):
     """Schema for unpinning a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to unpin")
 
 
 class GetThreadRepliesInput(BaseModel):
     """Schema for getting thread replies"""
-    channel: str = Field(description="The channel containing the thread")
+    channel: str = Field(description="The channel id containing the thread e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the parent message")
     limit: Optional[int] = Field(default=None, description="Maximum number of replies to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description="Start of time range (inclusive of older). Slack Unix timestamp string, e.g. '1700000000.000000'.",
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description="End of time range (inclusive of newer). Slack Unix timestamp string, e.g. '1700050000.000000'.",
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
 
 class UploadFileToChannelInput(BaseModel):
     """Schema for uploading a file to a Slack channel"""
@@ -731,15 +807,17 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_channel_history",
-        description="Get message history from a Slack channel",
+        description="Get message history from a Slack channel, optionally filtered by a time window",
         args_schema=GetChannelHistoryInput,
         when_to_use=[
-            "User wants to read messages from Slack channel",
+            "User wants to read messages from a Slack channel",
+            "User wants messages from a channel within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
             "User mentions 'Slack' + wants to see messages/history",
             "User asks for recent messages in a channel"
         ],
         when_not_to_use=[
             "User wants to send a message (use send_message)",
+            "User wants to keyword-search across messages (use search_messages)",
             "User wants info ABOUT Slack (use retrieval)",
             "No Slack mention (use other tools)"
         ],
@@ -747,15 +825,38 @@ class Slack:
         typical_queries=[
             "Show me messages from #general",
             "Get Slack channel history",
+            "What was said in #tech in the last 24 hours?",
+            "Messages in #engineering since yesterday",
+            "Today's messages in #general",
             "What was said in the channel?"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Fetch messages from a Slack channel. For time-windowed requests "
+            "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' "
+            "(and optionally 'latest') to Slack Unix timestamp strings: a string "
+            "of the epoch seconds, e.g. '1700000000.000000'. For 'last N hours' "
+            "compute oldest = (now_epoch - N*3600). PREFER this tool over "
+            "search_messages whenever the user wants channel messages from a "
+            "time window without a keyword."
+        ),
     )
-    async def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_channel_history(
+        self,
+        channel: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
             channel: The channel to get the history of
+            limit: Maximum number of messages to return
+            oldest: Start of time range (Slack Unix timestamp string)
+            latest: End of time range (Slack Unix timestamp string)
+            inclusive: Include messages with exact oldest/latest timestamps
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the history details
         """
@@ -763,10 +864,14 @@ class Slack:
             # Resolve channel name like "#bugs" to channel ID
             chan = await self._resolve_channel(channel)
 
-            # Use SlackDataSource method
+            # Use SlackDataSource method. SDS already drops None-valued kwargs,
+            # so passing all params unconditionally is safe.
             response = await self.client.conversations_history(
                 channel=chan,
-                limit=limit
+                limit=limit,
+                oldest=oldest,
+                latest=latest,
+                inclusive=inclusive,
             )
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not slack_response.data:
@@ -1023,22 +1128,36 @@ class Slack:
             "resolve that user ID via users_info / resolve_user for a readable label."
         ),
     )
-    async def fetch_channels(self) -> Tuple[bool, str]:
+    async def fetch_channels(
+        self,
+        types: Optional[str] = None,
+        exclude_archived: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Fetch all conversations (public channels, private channels, DMs, group DMs) with pagination"""
         """
+        Args:
+            types: Comma-separated channel types to include. Any combination of
+                'public_channel', 'private_channel', 'mpim', 'im'. Defaults to all four.
+            exclude_archived: When True, archived channels are omitted. Defaults to False
+                (archived channels are included) to preserve prior behavior.
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with all conversations
         """
         try:
+            effective_types = types or "public_channel,private_channel,mpim,im"
+            effective_exclude_archived = (
+                False if exclude_archived is None else exclude_archived
+            )
+
             # Fetch ALL conversation types with pagination
             all_conversations = []
             cursor = None
 
             while True:
-                kwargs = {
-                    "types": "public_channel,private_channel,mpim,im",
-                    "exclude_archived": False,
-                    "limit": 1000
+                kwargs: Dict[str, Any] = {
+                    "types": effective_types,
+                    "exclude_archived": effective_exclude_archived,
+                    "limit": 1000,
                 }
                 if cursor:
                     kwargs["cursor"] = cursor
@@ -1384,17 +1503,18 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_dm_history",
-        description="Get direct message (DM) history with a specific user",
+        description="Get direct message (DM) history with a specific user, optionally filtered by a time window",
         args_schema=GetDmHistoryInput,
         when_to_use=[
             "User wants to read their personal/direct chat with a specific person",
             "User asks to summarize DMs / personal chats / 1:1 conversation with someone",
+            "User wants their DM thread with a person within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
             "User mentions 'Slack' + 'DM' / 'direct message' / 'personal chat' with a named person",
             "User wants the conversation between themselves and another user (not a channel)"
         ],
         when_not_to_use=[
             "User wants channel messages (use get_channel_history)",
-            "User wants to search by keyword across Slack (use search_messages)",
+            "User wants to keyword-search across Slack (use search_messages)",
             "User wants to send a DM (use send_direct_message)",
             "No Slack mention"
         ],
@@ -1403,21 +1523,38 @@ class Slack:
             "Summarize my DMs with John Doe",
             "Show my personal chat with user@company.com",
             "What did I talk about with @john in Slack DMs?",
-            "Get my direct messages with Alice"
+            "Get my direct messages with Alice",
+            "Last 24 hours of my DMs with Vishwjeet",
+            "My DMs with bob@company.com since yesterday",
+            "Today's DMs with @alice"
         ],
         category=ToolCategory.COMMUNICATION,
         llm_description=(
             "Fetch the 1:1 DM history with a user. Pass the user (email, display name, "
-            "real name, or Slack user ID) — NOT a channel ID. Use for any 'DM' / 'personal "
-            "chat' / '1:1 with X' request; do not use search_messages for this."
+            "real name, or Slack user ID) — NOT a channel ID. For time-windowed requests "
+            "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' (and "
+            "optionally 'latest') to Slack Unix timestamp strings: a string of the epoch "
+            "seconds, e.g. '1700000000.000000'. For 'last N hours' compute "
+            "oldest = (now_epoch - N*3600). Use for any 'DM' / 'personal chat' / "
+            "'1:1 with X' request; do not use search_messages for this."
         ),
     )
-    async def get_dm_history(self, user: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_dm_history(
+        self,
+        user: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Get DM history with a specific user.
 
         Args:
             user: User identifier (email, display name, real name, or Slack user ID)
             limit: Maximum number of messages to return
+            oldest: Start of time range (Slack Unix timestamp string)
+            latest: End of time range (Slack Unix timestamp string)
+            inclusive: Include messages with exact oldest/latest timestamps
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the DM history
         """
@@ -1470,7 +1607,13 @@ class Slack:
 
             # Delegate to get_channel_history: it already accepts a channel ID,
             # performs mention enrichment and response transformation.
-            return await self.get_channel_history(channel_id, limit)
+            return await self.get_channel_history(
+                channel_id,
+                limit=limit,
+                oldest=oldest,
+                latest=latest,
+                inclusive=inclusive,
+            )
 
         except AmbiguousUserError:
             raise
@@ -1681,29 +1824,37 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="search_messages",
-        description="Search for messages in Slack",
+        description="Keyword-search messages in Slack (requires a query term)",
         args_schema=SearchMessagesInput,
         when_to_use=[
-            "User wants to search for specific messages",
-            "User mentions 'Slack' + wants to find messages",
-            "User asks to search messages by content",
+            "User wants to find messages containing specific keywords or phrases",
+            "User mentions 'Slack' + wants to find messages by content",
             "User wants keyword search constrained to messages with/from a specific person (use with_user / from_user)"
         ],
         when_not_to_use=[
-            "User wants to read channel history (use get_channel_history)",
+            "User wants to browse a channel's recent messages or a time window of a channel — use get_channel_history with oldest/latest instead (search has indexing lag and 'before/after' are exclusive day boundaries — bad for narrow windows)",
             "User wants the full DM thread with someone (use get_dm_history)",
-            "User wants to search all content (use search_all)",
+            "User wants to search all content types — files, channels (use search_all)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "Search for messages about 'project'",
             "Find messages in #general about X",
-            "Search Slack messages",
             "Find messages from @alice about deploys",
             "Search my conversation with bob@company.com for 'roadmap'"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Keyword search across Slack messages. Requires a real keyword/phrase "
+            "in 'query'. Do NOT use this for 'all messages in #channel in the last N "
+            "hours/days' — use get_channel_history with oldest/latest instead. "
+            "Slack search has indexing lag (recent messages may not appear) and "
+            "the 'before:'/'after:' modifiers are EXCLUSIVE day boundaries: "
+            "'after:2025-01-01 before:2025-01-02' returns NOTHING (no day strictly "
+            "between them). For 'today's' or 'last 24h' messages, use "
+            "get_channel_history."
+        ),
     )
     async def search_messages(
         self,
@@ -1713,6 +1864,9 @@ class Slack:
         from_user: Optional[str] = None,
         count: Optional[int] = None,
         sort: Optional[str] = None,
+        sort_dir: Optional[str] = None,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Search for messages in Slack.
 
@@ -1724,6 +1878,9 @@ class Slack:
             from_user: Restrict to messages authored by this user. Adds 'from:@handle'.
             count: Maximum number of results to return
             sort: Sort order (timestamp, score)
+            sort_dir: Sort direction ('asc' or 'desc')
+            after: Restrict to messages after this date (YYYY-MM-DD). Adds 'after:<date>'.
+            before: Restrict to messages before this date (YYYY-MM-DD). Adds 'before:<date>'.
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
@@ -1733,6 +1890,11 @@ class Slack:
             if channel:
                 channel_name = channel[1:] if channel.startswith('#') else channel
                 modifiers.append(f"in:{channel_name}")
+
+            if after:
+                modifiers.append(f"after:{after}")
+            if before:
+                modifiers.append(f"before:{before}")
 
             # Resolve with_user / from_user to Slack handles for use in search modifiers.
             # Slack's search syntax requires the username (e.g. 'with:@john'), not user IDs,
@@ -1773,7 +1935,8 @@ class Slack:
             response = await self.client.search_messages(
                 query=search_query,
                 count=count,
-                sort=sort
+                sort=sort,
+                sort_dir=sort_dir,
             )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -2902,23 +3065,40 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_thread_replies(
+        self,
+        channel: str,
+        timestamp: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Get replies in a thread"""
         """
         Args:
             channel: The channel containing the thread
             timestamp: Timestamp of the parent message
             limit: Maximum number of replies to return
+            oldest: Start of time range (Slack Unix timestamp string)
+            latest: End of time range (Slack Unix timestamp string)
+            inclusive: Include messages with exact oldest/latest timestamps
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the thread replies
         """
         try:
-            kwargs = {
+            kwargs: Dict[str, Any] = {
                 "channel": channel,
-                "ts": timestamp
+                "ts": timestamp,
             }
-            if limit:
+            if limit is not None:
                 kwargs["limit"] = limit
+            if oldest is not None:
+                kwargs["oldest"] = oldest
+            if latest is not None:
+                kwargs["latest"] = latest
+            if inclusive is not None:
+                kwargs["inclusive"] = inclusive
 
             response = await self.client.conversations_replies(**kwargs)
             slack_response = self._handle_slack_response(response)
