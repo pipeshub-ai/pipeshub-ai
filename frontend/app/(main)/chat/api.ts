@@ -46,6 +46,24 @@ export interface StreamMessageCallbacks {
   signal?: AbortSignal;
 }
 
+/** One line from a single SSE `error` event (`message` vs `error` depends on the emitter). */
+function textFromSseErrorPayload(data: SSEErrorEvent): string {
+  const m = typeof data.message === 'string' ? data.message.trim() : '';
+  const e = typeof data.error === 'string' ? data.error.trim() : '';
+  return m || e || '';
+}
+
+/**
+ * Collect distinct error lines in order. The backend may emit several `error` events
+ * (e.g. toolset config + "no complete response"); the UI should show all of them, not only the last.
+ */
+function pushSseErrorLineUnique(lines: string[], data: SSEErrorEvent): void {
+  const t = textFromSseErrorPayload(data);
+  if (t && !lines.includes(t)) {
+    lines.push(t);
+  }
+}
+
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
@@ -266,9 +284,10 @@ export const ChatApi = {
       };
     }
 
-    // Track whether a complete event was received and the last SSE error
+    // Track whether a complete event was received and every distinct SSE `error` line
     let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
+    const sseErrorLines: string[] = [];
+    let sseErrorEventCount = 0;
 
     await streamSSERequest(
       endpoint,
@@ -305,13 +324,11 @@ export const ChatApi = {
             case 'artifact':
               callbacks.onArtifact?.(event.data as SSEArtifactEvent);
               break;
-            case 'error':
-              // SSE error events may be non-fatal — the backend might still
-              // continue streaming after this. Save the error and check after
-              // the stream ends whether a complete event followed.
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Chat SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
+            case 'error': {
+              sseErrorEventCount += 1;
+              pushSseErrorLineUnique(sseErrorLines, event.data as SSEErrorEvent);
               break;
+            }
             default:
               // Future / proxy-only event names — ignore silently (no user-facing noise)
               break;
@@ -324,11 +341,11 @@ export const ChatApi = {
       }
     );
 
-    // If the stream ended without a complete event but had an error,
-    // the error was fatal — propagate it.
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
+    // All distinct `error` events (in order), even when `complete` is also sent.
+    if (sseErrorLines.length > 0) {
+      callbacks.onError?.(new Error(sseErrorLines.join('\n\n')));
+    } else if (!receivedComplete && sseErrorEventCount > 0) {
+      callbacks.onError?.(new Error('Stream ended with an error'));
     }
   },
 
@@ -359,7 +376,8 @@ export const ChatApi = {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
+    const sseErrorLines: string[] = [];
+    let sseErrorEventCount = 0;
 
     const body: Record<string, unknown> = {
       modelKey: request.modelKey,
@@ -404,10 +422,11 @@ export const ChatApi = {
               break;
             case 'metadata':
               break;
-            case 'error':
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
+            case 'error': {
+              sseErrorEventCount += 1;
+              pushSseErrorLineUnique(sseErrorLines, event.data as SSEErrorEvent);
               break;
+            }
             default:
               break;
           }
@@ -419,9 +438,10 @@ export const ChatApi = {
       }
     );
 
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
+    if (sseErrorLines.length > 0) {
+      callbacks.onError?.(new Error(sseErrorLines.join('\n\n')));
+    } else if (!receivedComplete && sseErrorEventCount > 0) {
+      callbacks.onError?.(new Error('Stream ended with an error'));
     }
   },
 
@@ -447,7 +467,8 @@ export const ChatApi = {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
+    const sseErrorLines: string[] = [];
+    let sseErrorEventCount = 0;
 
     const agentRegenBody: Record<string, unknown> = {
       modelKey: model.modelKey,
@@ -492,10 +513,11 @@ export const ChatApi = {
               break;
             case 'metadata':
               break;
-            case 'error':
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Agent regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
+            case 'error': {
+              sseErrorEventCount += 1;
+              pushSseErrorLineUnique(sseErrorLines, event.data as SSEErrorEvent);
               break;
+            }
             default:
               break;
           }
@@ -507,9 +529,10 @@ export const ChatApi = {
       }
     );
 
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
+    if (sseErrorLines.length > 0) {
+      callbacks.onError?.(new Error(sseErrorLines.join('\n\n')));
+    } else if (!receivedComplete && sseErrorEventCount > 0) {
+      callbacks.onError?.(new Error('Stream ended with an error'));
     }
   },
 

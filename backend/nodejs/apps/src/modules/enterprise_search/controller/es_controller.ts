@@ -5244,6 +5244,8 @@ export const unshareAgent =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
+      /** Upstream `event: error` lines; when stream ends without `complete`, persist for the user. */
+      const sseErrorLines: string[] = [];
 
       // Handle client disconnect
       req.on('close', () => {
@@ -5275,6 +5277,24 @@ export const unshareAgent =
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
 
+            if (eventType === 'error' && dataLine) {
+              try {
+                const errData = JSON.parse(dataLine) as {
+                  message?: string;
+                  error?: string;
+                };
+                const lineText =
+                  (typeof errData.message === 'string'
+                    ? errData.message.trim()
+                    : '') ||
+                  (typeof errData.error === 'string' ? errData.error.trim() : '');
+                if (lineText && !sseErrorLines.includes(lineText)) {
+                  sseErrorLines.push(lineText);
+                }
+              } catch {
+                // ignore; event still forwarded
+              }
+            }
             if (eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -5366,6 +5386,11 @@ export const unshareAgent =
         logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the complete conversation data to database
+          // Mark as failed if no complete data received — use upstream SSE error text when present
+            const failReason =
+              sseErrorLines.length > 0
+                ? sseErrorLines.join('\n\n')
+                : 'No complete response received from AI service';
           if (completeData && savedConversation) {
             const conversation = await saveCompleteAgentConversation(
               savedConversation,
@@ -5403,15 +5428,12 @@ export const unshareAgent =
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             await markAgentConversationFailed(
               savedConversation as IAgentConversationDocument,
-              'No complete response received from AI service',
+              failReason,
               session,
             );
 
-            // Send error event
             res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
+              `event: error\ndata: ${JSON.stringify({ error: failReason })}\n\n`,
             );
           }
         } catch (dbError: any) {
@@ -6238,6 +6260,7 @@ export const addMessageStreamToAgentConversation =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
+      const sseErrorLines: string[] = [];
 
       // Handle client disconnect
       req.on('close', () => {
@@ -6268,6 +6291,24 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (eventType === 'error' && dataLine) {
+              try {
+                const errData = JSON.parse(dataLine) as {
+                  message?: string;
+                  error?: string;
+                };
+                const lineText =
+                  (typeof errData.message === 'string'
+                    ? errData.message.trim()
+                    : '') ||
+                  (typeof errData.error === 'string' ? errData.error.trim() : '');
+                if (lineText && !sseErrorLines.includes(lineText)) {
+                  sseErrorLines.push(lineText);
+                }
+              } catch {
+                // ignore; event still forwarded
+              }
+            }
             if (eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -6343,6 +6384,10 @@ export const addMessageStreamToAgentConversation =
         logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the AI response to the existing conversation
+          const failReason =
+              sseErrorLines.length > 0
+                ? sseErrorLines.join('\n\n')
+                : 'No complete response received from AI service';
           if (completeData && existingConversation) {
             try {
               // Create and save citations
@@ -6457,28 +6502,14 @@ export const addMessageStreamToAgentConversation =
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (existingConversation) {
-              existingConversation.status = CONVERSATION_STATUS.FAILED as any;
-              existingConversation.failReason =
-                'No complete response received from AI service';
-              existingConversation.lastActivityAt = Date.now();
-
-              const savedWithError = session
-                ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
-
-              if (!savedWithError) {
-                logger.error('Failed to save conversation error state', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                });
-              }
+              await markAgentConversationFailed(
+                existingConversation as IAgentConversationDocument,
+                failReason,
+                session,
+              );
             }
-
-            // Send error event
             res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
+              `event: error\ndata: ${JSON.stringify({ error: failReason })}\n\n`,
             );
           }
         } catch (dbError: any) {

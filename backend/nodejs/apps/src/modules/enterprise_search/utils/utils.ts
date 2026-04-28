@@ -1086,8 +1086,9 @@ export const markAgentConversationFailed = async (
       metadata,
     );
 
-    // Add failure message
+    // Add failure message (same as markConversationFailed: persist exact reason for the user)
     const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    failedMessage.content = failReason;
     conversation.messages.push(failedMessage);
 
     // Save failed conversation
