@@ -442,7 +442,7 @@ class TestHtmlToBlocks:
         html = '<html><body><img src="/logo.png" alt="logo"></body></html>'
         blocks = html_to_blocks(html, base_url="https://site.com", use_trafilatura=False)
         img_blocks = [b for b in blocks if isinstance(b, ImageBlock)]
-        assert any("site.com" in b.url for b in img_blocks)
+        assert any(b.url == "https://site.com/logo.png" for b in img_blocks)
 
     def test_multiple_headings_produce_text_blocks(self) -> None:
         html = (
