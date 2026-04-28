@@ -17,7 +17,8 @@ export type ToolsetTypeKeyFlowNode = {
 
 /**
  * Normalized logical toolset types already present on the flow (legacy parity: one type per canvas).
- * Same resolution order as old `activeToolsetTypes`: toolsetType → toolsetName → `toolset-` prefix stripped from node type.
+ * Resolution: `config.toolsetType` → `config.toolsetName` → `toolset-` prefix stripped from node `type`.
+ * Unifies checks that previously lived in `activeToolsetInstanceIds` and `activeToolsetTypeKeysWithoutInstance`.
  */
 export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowNode[]): Set<string> {
   const keys = new Set<string>();
@@ -33,6 +34,32 @@ export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowN
     if (k) keys.add(k);
   }
   return keys;
+}
+
+/**
+ * Existing toolset node a drop would merge into — same rules as
+ * `canvas-drop-handler` `findExistingToolsetNodeForMerge` (instanceId first, else legacy name + no id).
+ */
+export function findMergeTargetToolsetNode(
+  nodes: ToolsetTypeKeyFlowNode[],
+  toolsetName: string,
+  instanceIdRaw: string | undefined
+): ToolsetTypeKeyFlowNode | undefined {
+  const instanceId = instanceIdRaw?.trim();
+  if (instanceId) {
+    return nodes.find(
+      (n) =>
+        String(n.data?.type ?? '').startsWith('toolset-') &&
+        String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim() ===
+          instanceId
+    );
+  }
+  return nodes.find(
+    (n) =>
+      String(n.data?.type ?? '').startsWith('toolset-') &&
+      (n.data?.config as Record<string, unknown> | undefined)?.toolsetName === toolsetName &&
+      !String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim()
+  );
 }
 
 export function buildToolsetDragPayload(ts: BuilderSidebarToolset): Record<string, string> {

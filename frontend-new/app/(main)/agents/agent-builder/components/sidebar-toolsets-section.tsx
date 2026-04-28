@@ -9,9 +9,11 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
+  findMergeTargetToolsetNode,
   getToolsetSidebarStatus,
   groupToolsetsByType,
   normalizeToolsetTypeKey,
+  type ToolsetTypeKeyFlowNode,
 } from '../sidebar-toolset-utils';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
@@ -85,18 +87,27 @@ function ToolDragRow(props: {
   needsConfiguration: boolean;
   /** Viewer without edit: block dragging tools onto the canvas. */
   structureLocked?: boolean;
-  onBlocked?: () => void;
+  /** Same type already on canvas and this row would not merge (different instance). */
+  duplicateTypeDragBlocked: boolean;
+  onDragBlocked?: () => void;
 }) {
-  const { tool, toolset, needsConfiguration, structureLocked = false, onBlocked } = props;
+  const {
+    tool,
+    toolset,
+    needsConfiguration,
+    structureLocked = false,
+    duplicateTypeDragBlocked,
+    onDragBlocked,
+  } = props;
   const payload = buildToolDragPayload(tool, toolset);
-  const blocked = needsConfiguration || structureLocked;
+  const blocked = needsConfiguration || structureLocked || duplicateTypeDragBlocked;
   return (
     <Box
       draggable={!blocked}
       onDragStart={(e) => {
         if (blocked) {
           e.preventDefault();
-          onBlocked?.();
+          onDragBlocked?.();
           return;
         }
         applyToolDrag(e, payload);
@@ -151,6 +162,8 @@ export function AgentBuilderToolsetsSection(props: {
     search?: string
   ) => Promise<void>;
   activeToolsetTypeKeys: Set<string>;
+  /** Flow nodes for merge vs duplicate-type checks on single-tool drags (same shape as canvas). */
+  toolsetMergeCheckNodes: ToolsetTypeKeyFlowNode[];
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
@@ -167,6 +180,7 @@ export function AgentBuilderToolsetsSection(props: {
     loading,
     refreshToolsets,
     activeToolsetTypeKeys,
+    toolsetMergeCheckNodes,
     isServiceAccount,
     agentKey,
     onManageAgentToolsetCredentials,
@@ -404,6 +418,17 @@ export function AgentBuilderToolsetsSection(props: {
                       () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
                     );
 
+                    const toolsetNameForMerge = ts.toolsetType || ts.name || '';
+                    const dupType = activeToolsetTypeKeys.has(
+                      normalizeToolsetTypeKey(toolsetNameForMerge)
+                    );
+                    const mergeTarget = findMergeTargetToolsetNode(
+                      toolsetMergeCheckNodes,
+                      toolsetNameForMerge,
+                      ts.instanceId
+                    );
+                    const duplicateTypeDragBlocked = dupType && !mergeTarget;
+
                     return (
                       <SidebarCategoryRow
                         key={ts.instanceId || ts.displayName}
@@ -433,11 +458,12 @@ export function AgentBuilderToolsetsSection(props: {
                             toolset={ts}
                             needsConfiguration={needsConfiguration}
                             structureLocked={structureLocked}
-                            onBlocked={
-                              structureLocked
-                                ? notifyStructureDragBlocked
-                                : () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                            }
+                            duplicateTypeDragBlocked={duplicateTypeDragBlocked}
+                            onDragBlocked={() => {
+                              if (structureLocked) notifyStructureDragBlocked();
+                              else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
+                              else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
+                            }}
                           />
                         ))}
                       </SidebarCategoryRow>

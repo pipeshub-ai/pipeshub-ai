@@ -35,7 +35,10 @@ import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-contex
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { toast } from '@/lib/store/toast-store';
-import { collectActiveToolsetTypeKeysFromNodes } from './sidebar-toolset-utils';
+import {
+  collectActiveToolsetTypeKeysFromNodes,
+  type ToolsetTypeKeyFlowNode,
+} from './sidebar-toolset-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -668,6 +671,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
             activeToolsetTypeKeys={activeToolsetTypeKeys}
+            toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}

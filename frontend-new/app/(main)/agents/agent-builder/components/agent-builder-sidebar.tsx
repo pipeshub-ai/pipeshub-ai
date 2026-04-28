@@ -9,6 +9,7 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
+import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
 import { AGENT_LLM_FALLBACK_ICON, AGENT_TOOLSET_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
@@ -101,6 +102,7 @@ export function AgentBuilderSidebar(props: {
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypeKeys: Set<string>;
+  toolsetMergeCheckNodes: ToolsetTypeKeyFlowNode[];
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,
@@ -125,6 +127,7 @@ export function AgentBuilderSidebar(props: {
     configuredConnectors,
     toolsets,
     activeToolsetTypeKeys,
+    toolsetMergeCheckNodes,
     refreshToolsets,
     onNotify,
     agentKey = null,
@@ -437,6 +440,7 @@ export function AgentBuilderSidebar(props: {
                 loading={loading}
                 refreshToolsets={refreshToolsets}
                 activeToolsetTypeKeys={activeToolsetTypeKeys}
+                toolsetMergeCheckNodes={toolsetMergeCheckNodes}
                 isServiceAccount={isServiceAccount}
                 agentKey={agentKey}
                 onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
