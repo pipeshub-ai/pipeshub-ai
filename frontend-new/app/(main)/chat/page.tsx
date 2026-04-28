@@ -726,6 +726,8 @@ function ChatContent() {
     );
   }, [conversationId, historyAndShareAgentId]);
 
+  // Agent threads are not shareable by anyone (including the owner), so gate on
+  // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
   const showConversationShare =
     Boolean(
       conversationId &&

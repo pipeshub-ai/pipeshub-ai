@@ -84,7 +84,6 @@ function LoadingState() {
 // ======================================================
 
 interface ArchivedChatViewProps {
-  conversationId: string;
   conversationTitle: string;
   messages: ConversationMessage[];
   isLoading: boolean;
