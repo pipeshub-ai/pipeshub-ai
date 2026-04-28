@@ -472,7 +472,7 @@ export function CollectionsTab({
         setLoadingMoreRootId(null);
       }
     },
-    [childrenMetaByRootId, loadingChildrenRootId, loadingMoreRootId, setCollectionNamesCache, setCollectionMetaCache, t]
+    [childrenMetaByRootId, loadingChildrenRootIds, loadingMoreRootId, setCollectionNamesCache, setCollectionMetaCache, t]
   );
 
   const toggleExpanded = useCallback(
