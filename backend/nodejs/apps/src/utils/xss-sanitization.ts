@@ -36,7 +36,7 @@ const SVG_TAG_PATTERN = /<[\s]*svg[^>]{0,10000}>/gi;
 // Pattern matches: % followed by optional positional (digits$), flags, width, precision, and type
 // Optimized to prevent ReDoS: limited quantifiers and more specific patterns
 // Max width: 10 digits, max precision: 10 digits to prevent exponential backtracking
-const FORMAT_SPECIFIER_PATTERN = /(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]/g;
+const FORMAT_SPECIFIER_PATTERN = /(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]/;
 
 /**
  * Checks if a string contains potentially dangerous XSS patterns
