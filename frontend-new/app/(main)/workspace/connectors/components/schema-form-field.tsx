@@ -5,7 +5,10 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
-import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
+import {
+  WORKSPACE_DRAWER_POPPER_Z_INDEX,
+  WorkspaceRightPanelBodyPortalContext,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ValidationRuleType } from '../types';
 import { normalizeUrlInputOnBlur } from '../utils/url-field';
@@ -36,6 +39,8 @@ interface SchemaFormFieldProps {
   selectPortalZIndex?: number;
   /** Optional icon or node inside the left side of text-like inputs */
   startAdornment?: React.ReactNode;
+  /** Shown on hover/focus when `disabled` is true (e.g. non-editable sync fields). */
+  disabledTooltip?: string;
 }
 
 // ========================================
@@ -92,7 +97,10 @@ export function SchemaFormField({
   error,
   selectPortalZIndex,
   startAdornment,
+  disabledTooltip,
 }: SchemaFormFieldProps) {
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+
   if (!visible) return null;
 
   const fieldType = field.fieldType || 'TEXT';
@@ -242,7 +250,7 @@ export function SchemaFormField({
     }
   };
 
-  return (
+  const inner = (
     <Flex direction="column" gap="1" data-ph-auth-field={field.name}>
       {renderField()}
 
@@ -254,6 +262,27 @@ export function SchemaFormField({
       )}
     </Flex>
   );
+
+  if (disabled && disabledTooltip) {
+    return (
+      <Tooltip
+        content={disabledTooltip}
+        delayDuration={200}
+        container={panelBodyPortal ?? undefined}
+        sideOffset={0}
+        style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+      >
+        <span
+          className="ph-disabled-field-tooltip-wrap"
+          style={{ display: 'block', width: '100%', cursor: 'not-allowed' }}
+        >
+          {inner}
+        </span>
+      </Tooltip>
+    );
+  }
+
+  return inner;
 }
 
 // ========================================

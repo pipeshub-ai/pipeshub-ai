@@ -190,7 +190,7 @@ class WebApp(App):
             display_name="Website URL",
             field_type="URL",
             required=True,
-            description="The URL of the website to crawl (e.g., https://example.com)",
+            description="The URL of the website to crawl (e.g., https://example.com). Can't be changed later.",
             non_editable=True,
         ))
         .add_sync_custom_field(CustomField(
