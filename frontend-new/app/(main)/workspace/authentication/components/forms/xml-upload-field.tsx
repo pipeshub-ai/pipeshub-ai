@@ -9,54 +9,101 @@ import type { XmlUploadFieldDef } from '../../constants';
 
 // ── SAML metadata XML parser ──────────────────────────────────
 
-function parseSamlMetadata(xmlText: string): Record<string, string> {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'application/xml');
-  const result: Record<string, string> = {};
+type SamlErrorKind = 'malformed' | 'not-saml' | 'invalid-url' | 'invalid-cert';
 
-  const parseError = doc.querySelector('parsererror');
-  if (parseError) return result;
+interface SamlParseResult {
+  values: Record<string, string> | null;
+  errorKind: SamlErrorKind | null;
+}
 
-  // Entity ID
-  const entityDescriptor = doc.querySelector('EntityDescriptor');
-  if (entityDescriptor) {
-    const entityId = entityDescriptor.getAttribute('entityID');
-    if (entityId) result.entityId = entityId;
+const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function parseSamlMetadata(xmlText: string): SamlParseResult {
+  let doc: Document;
+  try {
+    const parser = new DOMParser();
+    doc = parser.parseFromString(xmlText, 'application/xml');
+  } catch {
+    return { values: null, errorKind: 'malformed' };
   }
 
+  if (doc.querySelector('parsererror')) {
+    return { values: null, errorKind: 'malformed' };
+  }
+
+  // Confirm this is actually SAML metadata before extracting any fields
+  const entityDescriptor = doc.querySelector('EntityDescriptor');
+  if (!entityDescriptor) {
+    return { values: null, errorKind: 'not-saml' };
+  }
+
+  const result: Record<string, string> = {};
+
+  // Entity ID
+  const entityId = entityDescriptor.getAttribute('entityID')?.trim();
+  if (entityId) result.entityId = entityId;
+
   // SSO entry point — prefer HTTP-POST, fall back to HTTP-Redirect
-  const ssoPost = doc.querySelector(
-    'SingleSignOnService[Binding$="HTTP-POST"]',
-  );
-  const ssoRedirect = doc.querySelector(
-    'SingleSignOnService[Binding$="HTTP-Redirect"]',
-  );
-  const ssoEl = ssoPost ?? ssoRedirect;
-  if (ssoEl) {
-    const location = ssoEl.getAttribute('Location');
-    if (location) result.entryPoint = location;
+  try {
+    const ssoPost = doc.querySelector('SingleSignOnService[Binding$="HTTP-POST"]');
+    const ssoRedirect = doc.querySelector('SingleSignOnService[Binding$="HTTP-Redirect"]');
+    const ssoEl = ssoPost ?? ssoRedirect;
+    if (ssoEl) {
+      const location = ssoEl.getAttribute('Location') ?? '';
+      if (location && !isValidHttpUrl(location)) {
+        return { values: null, errorKind: 'invalid-url' };
+      }
+      if (location) result.entryPoint = location;
+    }
+  } catch {
+    return { values: null, errorKind: 'malformed' };
   }
 
   // Logout URL
-  const sloEl = doc.querySelector('SingleLogoutService[Binding$="HTTP-POST"], SingleLogoutService[Binding$="HTTP-Redirect"]');
-  if (sloEl) {
-    const location = sloEl.getAttribute('Location');
-    if (location) result.logoutUrl = location;
+  try {
+    const sloEl = doc.querySelector(
+      'SingleLogoutService[Binding$="HTTP-POST"], SingleLogoutService[Binding$="HTTP-Redirect"]',
+    );
+    if (sloEl) {
+      const location = sloEl.getAttribute('Location') ?? '';
+      if (location && !isValidHttpUrl(location)) {
+        return { values: null, errorKind: 'invalid-url' };
+      }
+      if (location) result.logoutUrl = location;
+    }
+  } catch {
+    return { values: null, errorKind: 'malformed' };
   }
 
   // X.509 certificate (first one found under IDPSSODescriptor)
-  const idpDescriptor = doc.querySelector('IDPSSODescriptor');
-  if (idpDescriptor) {
-    const certEl = idpDescriptor.querySelector('X509Certificate');
-    if (certEl) {
-      const raw = certEl.textContent?.replace(/\s+/g, '').trim() ?? '';
-      if (raw) {
-        result.certificate = `-----BEGIN CERTIFICATE-----\n${raw}\n-----END CERTIFICATE-----`;
+  try {
+    const idpDescriptor = doc.querySelector('IDPSSODescriptor');
+    if (idpDescriptor) {
+      const certEl = idpDescriptor.querySelector('X509Certificate');
+      if (certEl) {
+        const raw = certEl.textContent?.replace(/\s+/g, '').trim() ?? '';
+        if (raw) {
+          if (!BASE64_RE.test(raw)) {
+            return { values: null, errorKind: 'invalid-cert' };
+          }
+          result.certificate = `-----BEGIN CERTIFICATE-----\n${raw}\n-----END CERTIFICATE-----`;
+        }
       }
     }
+  } catch {
+    return { values: null, errorKind: 'malformed' };
   }
 
-  return result;
+  return { values: result, errorKind: null };
 }
 
 // ── Component ─────────────────────────────────────────────────
@@ -83,13 +130,19 @@ export function XmlUploadField({ field, onPopulate }: XmlUploadFieldProps) {
     reader.onload = (ev) => {
       const text = ev.target?.result;
       if (typeof text !== 'string') return;
-      const parsed = parseSamlMetadata(text);
-      if (Object.keys(parsed).length === 0) {
+      const result = parseSamlMetadata(text);
+      if (result.errorKind) {
         setFileName(null);
-        setError(t('workspace.authentication.xmlUpload.parseError'));
+        const errorKey = {
+          'malformed': 'workspace.authentication.xmlUpload.parseError',
+          'not-saml': 'workspace.authentication.xmlUpload.notSamlError',
+          'invalid-url': 'workspace.authentication.xmlUpload.invalidUrlError',
+          'invalid-cert': 'workspace.authentication.xmlUpload.invalidCertError',
+        }[result.errorKind];
+        setError(t(errorKey));
         return;
       }
-      onPopulate(parsed);
+      if (result.values) onPopulate(result.values);
     };
     reader.onerror = () => {
       setFileName(null);
