@@ -1,4 +1,5 @@
 import type { AuthSchemaField, ConnectorAuthConfig } from '../../types';
+import { getUrlValidationError } from '../../utils/url-field';
 import {
   shouldRenderOAuthAuthSchemaField,
   type OAuthAuthFieldVisibilityContext,
@@ -62,16 +63,27 @@ export function collectRequiredAuthFieldErrors(
     mustBeTrueMessage ?? ((f: AuthSchemaField) => `${f.displayName} must be true`);
 
   for (const field of fields) {
-    if (!field.required) continue;
     if (field.fieldType === 'CHECKBOX') {
-      if (formDataAuth[field.name] !== true) {
+      if (field.required && formDataAuth[field.name] !== true) {
         out[field.name] = mustBeTrue(field);
       }
       continue;
     }
+
     const v = formDataAuth[field.name];
-    if (!valueMissingForField(v, field)) continue;
-    out[field.name] = messageFor(field);
+
+    if (field.required && valueMissingForField(v, field)) {
+      out[field.name] = messageFor(field);
+      continue;
+    }
+
+    if (field.fieldType === 'URL') {
+      const asString = typeof v === 'string' ? v : v != null ? String(v) : '';
+      if (asString.trim() !== '') {
+        const urlErr = getUrlValidationError(field.displayName, asString);
+        if (urlErr) out[field.name] = urlErr;
+      }
+    }
   }
   return out;
 }

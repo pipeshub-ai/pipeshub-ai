@@ -8,6 +8,7 @@ import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ValidationRuleType } from '../types';
+import { normalizeUrlInputOnBlur } from '../utils/url-field';
 import type { SchemaField, ValidationRule } from '../types';
 
 /** Extra left padding when `startAdornment` is set (icon column) */
@@ -432,7 +433,15 @@ function TextInput({
           disabled={disabled}
           onChange={(e) => onChange(field.name, e.target.value)}
           onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          onBlur={() => {
+            setIsFocused(false);
+            if (!disabled && fieldType === 'URL') {
+              const next = normalizeUrlInputOnBlur(String(value ?? ''));
+              if (next !== String(value ?? '')) {
+                onChange(field.name, next);
+              }
+            }
+          }}
           aria-invalid={hasError || undefined}
           style={{
             ...inputStyle,

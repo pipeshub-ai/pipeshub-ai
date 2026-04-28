@@ -188,7 +188,7 @@ class WebApp(App):
         .add_sync_custom_field(CustomField(
             name="url",
             display_name="Website URL",
-            field_type="TEXT",
+            field_type="URL",
             required=True,
             description="The URL of the website to crawl (e.g., https://example.com)",
             non_editable=True,
