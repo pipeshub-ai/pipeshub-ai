@@ -157,8 +157,10 @@ export function ChatInput({
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
+  const agentChatToolGroups = useChatStore((s) => s.agentChatToolGroups);
   const universalAgentStreamTools = useChatStore((s) => s.universalAgentStreamTools);
   const universalAgentToolsLoading = useChatStore((s) => s.universalAgentToolsLoading);
+  const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -379,6 +381,77 @@ export function ChatInput({
     if (activeMessageAction) {
       executeMessageAction();
       return;
+    }
+
+    // ── Agent tool validation ─────────────────────────────────
+    const isUrlAgent = Boolean(agentId);
+    const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
+    if (isUrlAgent || isUniversalAgentMode) {
+      const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
+      const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;
+
+      const stripPrefix = (key: string) => {
+        const colon = key.indexOf(':');
+        return colon >= 0 ? key.slice(colon + 1) : key;
+      };
+
+      // Count resolved (stripped + deduped) tools
+      const resolvedCount =
+        toolsSel === null
+          ? new Set(groups.flatMap((g) => g.fullNames)).size
+          : new Set(toolsSel.map(stripPrefix)).size;
+
+      if (resolvedCount > 128) {
+        toast.error(
+          t('chat.toolValidation.tooManyTools', {
+            defaultValue:
+              'Too many tools selected. Maximum 128 tools are allowed per request due to performance limits.',
+          })
+        );
+        return;
+      }
+
+      // Detect multiple selected instances of the same toolset type.
+      // Key format differs by mode:
+      //   universal agent  → `${instanceId}:${fullName}` (prefixed)
+      //   URL-scoped agent → bare `fullName`
+      const instanceCountBySlug = new Map<string, number>();
+      if (toolsSel === null) {
+        // null = all tools selected → every group contributes
+        for (const group of groups) {
+          instanceCountBySlug.set(
+            group.toolsetSlug,
+            (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+          );
+        }
+      } else {
+        const selectedKeys = new Set(toolsSel);
+        for (const group of groups) {
+          const hasSelected = isUniversalAgentMode
+            // Universal: keys are `${instanceId}:${fullName}`
+            ? group.fullNames.some((fn) => selectedKeys.has(`${group.instanceId ?? ''}:${fn}`))
+            // URL-scoped: keys are bare fullNames
+            : group.fullNames.some((fn) => selectedKeys.has(fn));
+          if (hasSelected) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
+        }
+      }
+      const multiTypes = [...instanceCountBySlug.entries()]
+        .filter(([, n]) => n > 1)
+        .map(([slug]) => slug);
+      if (multiTypes.length > 0) {
+        toast.error(
+          t('chat.toolValidation.multipleInstances', {
+            defaultValue:
+              'Multiple instances of the same action type cannot be used together. Please select only one instance per type.',
+          })
+        );
+        return;
+      }
     }
 
     // ── Normal send flow (unchanged) ──────────────────────────

@@ -214,6 +214,22 @@ function UniversalToolsetRowIcon({
   return <ConnectorIcon type={resolveConnectorType(toolsetSlug || label)} size={18} />;
 }
 
+/** Page size used for the paginated my-toolsets fetch in the Actions tab. */
+const ACTIONS_PAGE_SIZE = 50;
+
+/**
+ * Module-level actions cache — survives tab switches (Actions ↔ Connectors/Collections)
+ * within the same page session so we never re-fetch on every remount.
+ *
+ * Reset to empty on the first page load so stale data from a previous user session is
+ * always overwritten when the component mounts fresh.
+ */
+let _actionsPageCache: {
+  toolsets: BuilderSidebarToolset[];
+  page: number;
+  hasMore: boolean;
+} = { toolsets: [], page: 0, hasMore: false };
+
 /**
  * Build tool groups from authenticated my-toolsets.
  *
@@ -337,32 +353,75 @@ export function UniversalAgentResourcesPanel({
   }, [selectedTools, toolCatalog.length]);
   const atToolCap = selectedCount >= MAX_USER_TOOLS;
 
-  // ── Load toolsets on first mount (or when panel mounts fresh) ──
-  const hasFetchedRef = useRef(false);
+  // ── Pagination state ──
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const isFetchingPageRef = useRef(false);
 
-  useEffect(() => {
-    if (hasFetchedRef.current) return;
-    // Only fetch if not already loaded (avoid refetch every panel open)
-    if (toolGroups.length > 0 || toolsLoading) return;
-    hasFetchedRef.current = true;
+  // Load a single page and append it to the module-level cache then rebuild groups.
+  const loadPage = useCallback(
+    async (page: number) => {
+      if (isFetchingPageRef.current) return;
+      isFetchingPageRef.current = true;
 
-    setToolsLoading(true);
-    ToolsetsApi.getAllMyToolsets({ authStatus: 'authenticated', limitPerPage: 50 })
-      .then(({ toolsets }) => {
-        const groups = buildUniversalToolGroups(toolsets);
+      if (page === 1) {
+        // Reset cache so a fresh session always overwrites stale module state.
+        _actionsPageCache = { toolsets: [], page: 0, hasMore: false };
+        setToolsLoading(true);
+      } else {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        const result = await ToolsetsApi.getMyToolsets({
+          page,
+          limit: ACTIONS_PAGE_SIZE,
+          authStatus: 'authenticated',
+        });
+
+        _actionsPageCache = {
+          toolsets: [..._actionsPageCache.toolsets, ...result.toolsets],
+          page,
+          hasMore: result.hasNext,
+        };
+
+        // Rebuild from full accumulated list so instanceId-based discriminators are stable.
+        const groups = buildUniversalToolGroups(_actionsPageCache.toolsets);
         const catalogFullNames = groups.flatMap((g) => g.fullNames);
         hydrateResources({ toolGroups: groups, toolCatalogFullNames: catalogFullNames });
-      })
-      .catch((err) => {
-        console.error('[UniversalAgentResourcesPanel] Failed to load my-toolsets', err);
-        setToolsError(
-          t('chat.universalAgent.toolsLoadError', {
-            defaultValue: 'Failed to load available actions.',
-          })
-        );
-        setToolsLoading(false);
-      });
-  }, [toolGroups.length, toolsLoading, hydrateResources, setToolsLoading, setToolsError, t]);
+        setHasNextPage(result.hasNext);
+      } catch (err) {
+        console.error('[UniversalAgentResourcesPanel] Failed to load my-toolsets page', page, err);
+        if (page === 1) {
+          setToolsError(
+            t('chat.universalAgent.toolsLoadError', {
+              defaultValue: 'Failed to load available actions.',
+            })
+          );
+          setToolsLoading(false);
+        }
+      } finally {
+        if (page > 1) setIsLoadingMore(false);
+        isFetchingPageRef.current = false;
+      }
+    },
+    [hydrateResources, setToolsLoading, setToolsError, t]
+  );
+
+  // Initial load — skips re-fetch when data already exists in the store (tab switches).
+  useEffect(() => {
+    if (toolGroups.length > 0 || toolsLoading) {
+      // Data already in store from a previous load; restore pagination state from cache.
+      setHasNextPage(_actionsPageCache.hasMore);
+      return;
+    }
+    void loadPage(1);
+  }, [toolGroups.length, toolsLoading, loadPage]);
+
+  const handleLoadMore = useCallback(() => {
+    if (!hasNextPage || isLoadingMore) return;
+    void loadPage(_actionsPageCache.page + 1);
+  }, [hasNextPage, isLoadingMore, loadPage]);
 
   // ── Tool selection helpers (same semantics as AgentScopedResourcesPanel) ──
 
@@ -789,6 +848,30 @@ export function UniversalAgentResourcesPanel({
                     </Flex>
                   );
                 })}
+
+                {/* Load more — same pattern as the collections tab's "Load more" button */}
+                {hasNextPage && (
+                  <Flex align="center" style={{ paddingTop: 'var(--space-1)' }}>
+                    <button
+                      type="button"
+                      onClick={handleLoadMore}
+                      disabled={isLoadingMore}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: isLoadingMore ? 'default' : 'pointer',
+                        color: 'var(--olive-9)',
+                        fontSize: 12,
+                        padding: 0,
+                        textAlign: 'left',
+                      }}
+                    >
+                      {isLoadingMore
+                        ? t('agentBuilder.loadingMore', { defaultValue: 'Loading more…' })
+                        : t('agentBuilder.loadMore', { defaultValue: 'Load more' })}
+                    </button>
+                  </Flex>
+                )}
 
                 {/* Configure more actions link */}
                 <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>

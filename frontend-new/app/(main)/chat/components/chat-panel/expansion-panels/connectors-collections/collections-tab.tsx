@@ -208,12 +208,14 @@ export function CollectionsTab({
   >({});
   const [childrenErrorByRootId, setChildrenErrorByRootId] = useState<Record<string, string>>({});
   const [childrenMetaByRootId, setChildrenMetaByRootId] = useState<Record<string, ChildListMeta>>({});
-  const [loadingChildrenRootId, setLoadingChildrenRootId] = useState<string | null>(null);
+  // Set so multiple containers can show their individual spinners concurrently
+  const [loadingChildrenRootIds, setLoadingChildrenRootIds] = useState<Set<string>>(new Set());
   const [loadingMoreRootId, setLoadingMoreRootId] = useState<string | null>(null);
   const [rootsListMeta, setRootsListMeta] = useState<ChildListMeta | null>(null);
   const [loadingMoreApps, setLoadingMoreApps] = useState(false);
   const loadedChildrenRef = useRef<Set<string>>(new Set());
-  const loadingChildRootRef = useRef<string | null>(null);
+  // Tracks every in-flight loadChildren call; prevents duplicate concurrent fetches per ID
+  const loadingChildRootRef = useRef<Set<string>>(new Set());
 
   const setCollectionNamesCache = useChatStore((s) => s.setCollectionNamesCache);
   const { t } = useTranslation();
@@ -223,11 +225,12 @@ export function CollectionsTab({
       setIsLoading(true);
       setHasError(false);
       loadedChildrenRef.current.clear();
+      loadingChildRootRef.current.clear();
       setChildrenByRootId({});
       setChildrenMetaByRootId({});
       setExpandedRootIds({});
       setChildrenErrorByRootId({});
-      setLoadingChildrenRootId(null);
+      setLoadingChildrenRootIds(new Set());
       setLoadingMoreRootId(null);
       setRootsListMeta(null);
       setLoadingMoreApps(false);
@@ -332,9 +335,9 @@ export function CollectionsTab({
   }, []);
 
   const loadChildren = useCallback(async (row: CollectionSelectItem) => {
-    if (loadedChildrenRef.current.has(row.id) || loadingChildRootRef.current === row.id) return;
-    loadingChildRootRef.current = row.id;
-    setLoadingChildrenRootId(row.id);
+    if (loadedChildrenRef.current.has(row.id) || loadingChildRootRef.current.has(row.id)) return;
+    loadingChildRootRef.current.add(row.id);
+    setLoadingChildrenRootIds((prev) => new Set(prev).add(row.id));
     setChildrenErrorByRootId((prev) => {
       const next = { ...prev };
       delete next[row.id];
@@ -372,8 +375,12 @@ export function CollectionsTab({
         [row.id]: t('chat.failedToLoadCollections', { defaultValue: 'Failed to load' }),
       }));
     } finally {
-      loadingChildRootRef.current = null;
-      setLoadingChildrenRootId(null);
+      loadingChildRootRef.current.delete(row.id);
+      setLoadingChildrenRootIds((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     }
   }, [setCollectionNamesCache, t]);
 
@@ -391,7 +398,7 @@ export function CollectionsTab({
     async (row: CollectionSelectItem) => {
       const meta = childrenMetaByRootId[row.id];
       if (!meta?.hasMore) return;
-      if (loadingMoreRootId === row.id || loadingChildrenRootId === row.id) return;
+      if (loadingMoreRootId === row.id || loadingChildrenRootIds.has(row.id)) return;
       setLoadingMoreRootId(row.id);
       setChildrenErrorByRootId((prev) => {
         const next = { ...prev };
@@ -438,7 +445,7 @@ export function CollectionsTab({
         setLoadingMoreRootId(null);
       }
     },
-    [childrenMetaByRootId, loadingChildrenRootId, loadingMoreRootId, setCollectionNamesCache, t]
+    [childrenMetaByRootId, loadingChildrenRootIds, loadingMoreRootId, setCollectionNamesCache, t]
   );
 
   const toggleExpanded = useCallback(
@@ -764,7 +771,7 @@ export function CollectionsTab({
                       ) : null}
                     </Flex>
 
-                    {expanded && loadingChildrenRootId === col.id ? (
+                    {expanded && loadingChildrenRootIds.has(col.id) ? (
                       <Flex justify="center" style={{ padding: 'var(--space-2)' }}>
                         <LottieLoader variant="loader" size={32} />
                       </Flex>
