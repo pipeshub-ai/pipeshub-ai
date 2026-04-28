@@ -1272,6 +1272,7 @@
       },
       "validation": {
         "fieldRequired": "{{field}} ist erforderlich",
+        "fieldMustBeTrue": "{{field}} muss wahr sein",
         "fixErrorsAbove": "Korrigieren Sie die hervorgehobenen Felder oben, um fortzufahren."
       }
     },

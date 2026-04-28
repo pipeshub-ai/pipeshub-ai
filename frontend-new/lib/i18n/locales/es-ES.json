@@ -1269,6 +1269,7 @@
       },
       "validation": {
         "fieldRequired": "{{field}} es obligatorio",
+        "fieldMustBeTrue": "{{field}} debe ser verdadero",
         "fixErrorsAbove": "Corrija los campos resaltados arriba para continuar."
       }
     },

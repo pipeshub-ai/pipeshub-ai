@@ -560,6 +560,65 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+async def _enrich_user_info_for_service_account_agent_chat(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """
+    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
+    permission checks must use the agent creator's real userId — the same identity whose
+    knowledge access configured the agent — not the service principal.
+    """
+    creator_key = agent.get("createdBy")
+    if not creator_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
+        )
+    creator_doc = await graph_provider.get_document(
+        str(creator_key), CollectionNames.USERS.value
+    )
+    if not creator_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+        )
+    creator_user_id = creator_doc.get("userId")
+    if not creator_user_id:
+        logger.error(
+            "Service account agent creator %s has no userId field",
+            creator_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+        )
+    synthetic = {
+        "userId": str(creator_user_id),
+        "orgId": str(creator_doc.get("orgId") or "").strip(),
+        "email": (creator_doc.get("email") or "").strip(),
+    }
+    return await _enrich_user_info(synthetic, creator_doc)
+
+
+async def _load_service_account_agent_for_chat(
+    agent_id: str,
+    org_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fetch service-account agent, validate, and build creator-based user info for chat/stream."""
+    agent = await graph_provider.get_agent(agent_id, org_key)
+    if not agent or not agent.get("isServiceAccount"):
+        raise AgentNotFoundError(agent_id)
+    enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+        agent, graph_provider, logger
+    )
+    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+    return agent, enriched_user_info, perm
+
+
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
     """Validate required fields in request data"""
     for field in required_fields:
@@ -2676,23 +2735,18 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        is_service_account = agent.get("isServiceAccount", False)
+
         if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
+            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                agent, graph_provider, logger
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -2700,9 +2754,6 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
             if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
                 raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -2778,6 +2829,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "conversationId": chat_query.conversationId,
+            "is_service_account": is_service_account,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
@@ -2859,7 +2911,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
@@ -2872,31 +2923,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            is_service_account = False
 
         else:
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+            is_service_account = agent.get("isServiceAccount", False)
+
             if is_service_account:
-                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-                # Service account agents are always org-wide, so skip user-specific permission checks
-                # and the user document lookup which would fail.
-                enriched_user_info = {
-                    "userId": user_context["userId"],
-                    "orgId": user_context["orgId"],
-                    "userEmail": user_context.get("email", user_context["userId"]),
-                    "_key": None,
-                }
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent or not agent.get("isServiceAccount"):
-                    raise AgentNotFoundError(agent_id)
+                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                    agent, graph_provider, logger
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+                logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
-                    raise AgentNotFoundError(agent_id)
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent:
                     raise AgentNotFoundError(agent_id)
 
         agent.update(perm)

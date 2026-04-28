@@ -1122,19 +1122,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
             return {"success": False, "code": 500, "reason": str(e)}
 
-    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
-        """Reset record indexing status to QUEUED (only if not already QUEUED or EMPTY)."""
+    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+        """
+        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
+        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        """
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return
+        coll = CollectionNames.RECORDS.value
+        skip_status = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value})
         try:
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                RETURN doc
+            """
+            bind_vars = {"@collection": coll, "keys": unique_ids}
+            raw_docs = await self.execute_query(query, bind_vars=bind_vars)
+            if not raw_docs:
                 return
-            current_status = record.get("indexingStatus")
-            if current_status in ("QUEUED", "EMPTY"):
-                return
-            doc = {"_key": record_id, "indexingStatus": "QUEUED"}
-            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            to_upsert: list[dict] = []
+            for arango_doc in raw_docs:
+                record = self._translate_node_from_arango(arango_doc)
+                rid = record.get("id") or record.get("_key")
+                if not rid:
+                    continue
+                if record.get("isInternal"):
+                    continue
+                if record.get("indexingStatus") in skip_status:
+                    continue
+                to_upsert.append({"_key": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+
+            if to_upsert:
+                await self.batch_upsert_nodes(to_upsert, coll)
         except Exception as e:
-            self.logger.error("❌ Failed to reset record %s to QUEUED: %s", record_id, str(e))
+            self.logger.error("❌ Failed bulk reset records to QUEUED: %s", str(e))
 
     async def _check_record_permissions(
         self,
@@ -1471,8 +1495,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            if not rec.get("isInternal"):
-                await self._reset_indexing_status_to_queued(record_id)
+            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -13779,8 +13802,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
-                    createdAt: rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0),
-                    updatedAt: rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0),
+                    createdAt: rg.connectorName == "KB"
+                        ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
+                        : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
+                    updatedAt: rg.connectorName == "KB"
+                        ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
+                        : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15021,8 +15048,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15191,8 +15222,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -15439,8 +15474,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0,
-                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0,
+                    createdAt: node.connectorName == "KB"
+                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
+                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
+                    updatedAt: node.connectorName == "KB"
+                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
+                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
@@ -17287,177 +17326,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
-            return {}
-
-    async def get_all_virtual_record_ids_for_knowledge(
-        self,
-        org_id: str,
-        connector_ids: list[str] | None = None,
-        kb_ids: list[str] | None = None,
-    ) -> dict[str, str]:
-        """
-        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
-        WITHOUT applying per-user permission filtering.
-
-        Used exclusively for service account agents that have "super entity" access to
-        their configured knowledge sources.
-
-        Args:
-            org_id: Organization ID to scope the query
-            connector_ids: List of connector/app IDs to include (non-KB connectors)
-            kb_ids: List of KB record group IDs to include
-
-        Returns:
-            Dict mapping virtualRecordId -> recordId; empty dict if nothing configured.
-        """
-        start_time = time.time()
-
-        has_connectors = bool(connector_ids)
-        has_kbs = bool(kb_ids)
-
-        if not has_connectors and not has_kbs:
-            self.logger.info("get_all_virtual_record_ids_for_knowledge: no connectors/KBs configured, returning empty")
-            return {}
-
-        try:
-            tasks = []
-
-            # For each connector, fetch ALL records (no user permission join)
-            if has_connectors:
-                for connector_id in connector_ids:
-                    if connector_id.startswith("knowledgeBase_"):
-                        continue
-                    tasks.append(self._get_all_virtual_ids_for_connector(org_id, connector_id))
-
-            # For KBs, fetch ALL records belonging to those record groups
-            if has_kbs:
-                tasks.append(self._get_all_kb_virtual_ids(org_id, kb_ids))
-
-            if not tasks:
-                return {}
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            virtual_id_to_record_id: dict[str, str] = {}
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    self.logger.error(f"get_all_virtual_record_ids_for_knowledge task {i} failed: {result}")
-                    continue
-                if result:
-                    for vid, rid in result.items():
-                        if vid not in virtual_id_to_record_id:
-                            virtual_id_to_record_id[vid] = rid
-
-            elapsed = time.time() - start_time
-            self.logger.info(
-                f"get_all_virtual_record_ids_for_knowledge: found {len(virtual_id_to_record_id)} records "
-                f"(connectors={connector_ids}, kb_ids={kb_ids}) in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(f"get_all_virtual_record_ids_for_knowledge failed: {e}", exc_info=True)
-            return {}
-
-    async def _get_all_virtual_ids_for_connector(
-        self,
-        org_id: str,
-        connector_id: str,
-    ) -> dict[str, str]:
-        """
-        Get all virtualRecordId -> recordId for a connector WITHOUT user permission filtering.
-        Returns all completed records for the org in this connector.
-        """
-        try:
-            query = """
-            FOR record IN @@records
-                FILTER record.connectorId == @connectorId
-                FILTER record.orgId == @orgId
-                FILTER record.indexingStatus == @completedStatus
-                FILTER record.isDeleted != true
-                FILTER record.virtualRecordId != null AND record.virtualRecordId != ""
-                COLLECT virtualRecordId = record.virtualRecordId INTO groups
-                LET recordId = FIRST(groups).record._key
-                FILTER recordId != null
-                RETURN {virtualRecordId: virtualRecordId, recordId: recordId}
-            """
-            bind_vars = {
-                "@records": CollectionNames.RECORDS.value,
-                "connectorId": connector_id,
-                "orgId": org_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-            }
-
-            query_start = time.time()
-            results = await self.execute_query(query, bind_vars=bind_vars)
-            elapsed = time.time() - query_start
-
-            virtual_id_to_record_id = {
-                r["virtualRecordId"]: r["recordId"]
-                for r in results
-                if r and r.get("virtualRecordId") and r.get("recordId")
-            } if results else {}
-
-            self.logger.info(
-                f"Service account connector {connector_id}: "
-                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(f"_get_all_virtual_ids_for_connector({connector_id}) failed: {e}", exc_info=True)
-            return {}
-
-    async def _get_all_kb_virtual_ids(
-        self,
-        org_id: str,
-        kb_ids: list[str],
-    ) -> dict[str, str]:
-        """
-        Get all virtualRecordId -> recordId for KB record groups WITHOUT user permission filtering.
-        Returns all completed UPLOAD records belonging to the specified record groups.
-        """
-        try:
-            query = f"""
-            FOR kb IN @@recordGroups
-                FILTER kb._key IN @kb_ids
-                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.origin == "UPLOAD"
-                    FILTER record.orgId == @orgId
-                    FILTER record.indexingStatus == @completedStatus
-                    FILTER record.isDeleted != true
-                    FILTER record.virtualRecordId != null AND record.virtualRecordId != ""
-                    COLLECT virtualRecordId = record.virtualRecordId INTO groups
-                    LET recordId = FIRST(groups).record._key
-                    FILTER recordId != null
-                    RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
-            """
-            bind_vars = {
-                "@recordGroups": CollectionNames.RECORD_GROUPS.value,
-                "kb_ids": kb_ids,
-                "orgId": org_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-            }
-
-            query_start = time.time()
-            results = await self.execute_query(query, bind_vars=bind_vars)
-            elapsed = time.time() - query_start
-
-            virtual_id_to_record_id = {
-                r["virtualRecordId"]: r["recordId"]
-                for r in results
-                if r and r.get("virtualRecordId") and r.get("recordId")
-            } if results else {}
-
-            self.logger.info(
-                f"Service account KBs ({len(kb_ids)} ids): "
-                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
-            )
-            return virtual_id_to_record_id
-
-        except Exception as e:
-            self.logger.error(f"_get_all_kb_virtual_ids failed: {e}", exc_info=True)
             return {}
 
     async def get_accessible_virtual_record_ids(

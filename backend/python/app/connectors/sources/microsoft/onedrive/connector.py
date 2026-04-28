@@ -195,12 +195,11 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
 
-        has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
-            has_admin_consent=has_admin_consent,
+            has_admin_consent=True,
         )
          # Initialize MS Graph client
         # Store credential as instance variable to prevent it from being garbage collected

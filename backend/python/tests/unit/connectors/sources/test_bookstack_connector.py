@@ -550,6 +550,7 @@ class TestBookStackRecordsSync:
             "book_slug": "test-book",
             "slug": "test-page",
             "revision_count": 3,
+            "created_at": "2024-06-01T10:00:00Z",
             "updated_at": "2024-06-01T12:00:00Z",
         }
         result = await bookstack_connector._process_bookstack_page(page, {}, [])
@@ -575,8 +576,14 @@ class TestBookStackRecordsSync:
         mock_tx = mock_data_store_provider.transaction.return_value
         mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
         page = {
-            "id": 42, "name": "New Name", "book_id": 1, "book_slug": "b",
-            "slug": "p", "revision_count": 5, "updated_at": "2024-06-01T12:00:00Z",
+            "id": 42,
+            "name": "New Name",
+            "book_id": 1,
+            "book_slug": "b",
+            "slug": "p",
+            "revision_count": 5,
+            "created_at": "2024-05-01T10:00:00Z",
+            "updated_at": "2024-06-01T12:00:00Z",
         }
         result = await bookstack_connector._process_bookstack_page(page, {}, [])
         assert result.is_updated is True

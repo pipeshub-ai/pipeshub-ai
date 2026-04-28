@@ -66,6 +66,7 @@ import {
 import { getIsAllRecordsMode } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
@@ -1792,7 +1793,6 @@ function KnowledgeBasePageContent() {
   const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
 
     const toastId = toast.loading('Re-indexing...', {
-      description: `Collection ${item.name} is getting re-indexed. This may take a few seconds`,
       icon: 'lap_timer',
     });
 
@@ -1812,17 +1812,17 @@ function KnowledgeBasePageContent() {
 
       toast.update(toastId, {
         variant: 'success',
-        title: 'Reindexed successfully',
-        description: `"${item.name}" has been reindexed`,
+        title: getReindexSuccessTitle({
+          nodeType,
+          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
+        }),
       });
 
       await refreshData();
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
+    } catch {
       toast.update(toastId, {
         variant: 'error',
-        title: 'Re-indexing failed',
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        title: 'Failed to start reindexing',
         action: {
           label: 'Try Again',
           icon: 'refresh',
@@ -2171,6 +2171,7 @@ function KnowledgeBasePageContent() {
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
+          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           onRefresh={() => { void handleRefresh(); }}
@@ -2206,15 +2207,20 @@ function KnowledgeBasePageContent() {
           refreshData={refreshData}
         />
 
-        {/* Selection Action Bar - shows when items are selected */}
-        <SelectionActionBar
-          selectedCount={selectedCount}
-          onDeselectAll={handleDeselectAll}
-          onChat={handleBulkChat}
-          onReindex={handleBulkReindex}
-          onDelete={handleBulkDeleteClick}
-          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-        />
+        {/* Selection Action Bar - shows when items are selected.
+            Hidden in All Records "All" and connector views (mirrors the checkbox guard
+            above). Rows in those views are top-level aggregates that aren't individually
+            reindexable, and stale selections from a prior view shouldn't surface here. */}
+        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
+          <SelectionActionBar
+            selectedCount={selectedCount}
+            onDeselectAll={handleDeselectAll}
+            onChat={handleBulkChat}
+            onReindex={handleBulkReindex}
+            onDelete={handleBulkDeleteClick}
+            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          />
+        )}
 
         {/* Chat Bar (temporarily disabled)
         {selectedCount === 0 &&

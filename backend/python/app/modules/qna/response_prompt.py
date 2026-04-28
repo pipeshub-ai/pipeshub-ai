@@ -18,7 +18,7 @@ This approach ensures the agent sees the exact same block format as the chatbot.
 from datetime import datetime
 from typing import Any
 
-from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
 from app.utils.time_conversion import build_llm_time_context
 
 # Constants
@@ -408,8 +408,8 @@ def build_response_prompt(state, max_iterations=30) -> str:
     if clock_block:
         complete_prompt += f"\n\n{clock_block}"
 
-    if base_prompt and base_prompt not in ["You are an enterprise questions answering expert", ""]:
-        complete_prompt = f"{base_prompt}\n\n{complete_prompt}"
+    if is_custom_agent_system_prompt(base_prompt):
+        complete_prompt = f"{base_prompt.strip()}\n\n{complete_prompt}"
 
     if instructions and instructions.strip():
         complete_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{complete_prompt}"

@@ -4571,6 +4571,7 @@ components:
         - clientId
         - clientSecret
         - tenantId
+        - hasAdminConsent
       properties:
         clientId:
           type: string
@@ -4583,8 +4584,10 @@ components:
           description: Microsoft/Azure tenant ID
         hasAdminConsent:
           type: boolean
-          description: Whether admin consent has been granted
-          default: false
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     SharePointConfig:
       type: object
@@ -4594,6 +4597,7 @@ components:
         - clientSecret
         - tenantId
         - sharepointDomain
+        - hasAdminConsent
       properties:
         clientId:
           type: string
@@ -4609,8 +4613,10 @@ components:
           description: SharePoint domain (e.g., 'mycompany.sharepoint.com')
         hasAdminConsent:
           type: boolean
-          description: Whether admin consent has been granted
-          default: false
+          description: |
+            Must be the literal boolean `true`.
+            Microsoft admin consent is required before saving credentials.
+          example: true
 
     # URL Configuration Schemas
     URLConfig:

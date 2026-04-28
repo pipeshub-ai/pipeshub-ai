@@ -43,7 +43,8 @@ def _make_response(success=True, data=None, error=None):
 
 
 def _make_page(page_id=1, name="Test Page", book_id=10, chapter_id=5, slug="test-page",
-               book_slug="test-book", revision_count=1, updated_at="2025-01-01T00:00:00Z"):
+               book_slug="test-book", revision_count=1,
+               created_at="2024-12-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z"):
     return {
         "id": page_id,
         "name": name,
@@ -52,6 +53,7 @@ def _make_page(page_id=1, name="Test Page", book_id=10, chapter_id=5, slug="test
         "slug": slug,
         "book_slug": book_slug,
         "revision_count": revision_count,
+        "created_at": created_at,
         "updated_at": updated_at,
     }
 
