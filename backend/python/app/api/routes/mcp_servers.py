@@ -1885,6 +1885,84 @@ async def set_instance_oauth_config(
     return {"status": "success", "message": "OAuth client configuration saved."}
 
 
+async def get_authenticated_mcp_servers_for_user(
+    user_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+) -> list[dict[str, Any]]:
+    """
+    Build agent-shaped MCP server entries for all instances the user can execute.
+
+    Includes instances with ``authMode == "none"`` (no credential record) and
+    instances where the user has an authenticated etcd config (including
+    ``useAdminAuth`` api_token/headers via ``_resolve_effective_user_auth``).
+
+    Each entry matches the graph ``get_agent`` ``mcpServers`` shape so
+    ``chat/stream`` can load configs and run tool discovery the same way as
+    for persisted agents.
+    """
+    try:
+        instances = await _load_instances(config_service, org_id)
+    except Exception as e:
+        logger.error("Failed to load MCP server instances for user: %s", e, exc_info=True)
+        return []
+
+    enabled = [i for i in instances if i.get("enabled", True)]
+    if not enabled:
+        return []
+
+    async def _resolve(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        return inst, await _resolve_effective_user_auth(inst, user_id, config_service)
+
+    resolved = await asyncio.gather(*[_resolve(i) for i in enabled])
+
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for inst, user_auth in resolved:
+        auth_mode = inst.get("authMode", "none")
+        if auth_mode == "none":
+            rows.append((inst, user_auth if isinstance(user_auth, dict) else {}))
+        elif user_auth and user_auth.get("isAuthenticated"):
+            rows.append((inst, user_auth))
+
+    if not rows:
+        return []
+
+    discovery_tasks = [
+        asyncio.create_task(_discover_tools_for_instance(inst, ua))
+        for inst, ua in rows
+    ]
+    tool_lists = await asyncio.gather(*discovery_tasks, return_exceptions=True)
+
+    out: list[dict[str, Any]] = []
+    for (inst, _ua), tools_raw in zip(rows, tool_lists, strict=True):
+        if isinstance(tools_raw, Exception):
+            logger.warning(
+                "Tool discovery failed for MCP instance %s: %s",
+                inst.get("_id"),
+                tools_raw,
+                exc_info=True,
+            )
+            tools_list: list[dict[str, Any]] = []
+        else:
+            tools_list = tools_raw
+
+        instance_id = inst.get("_id", "")
+        server_type = inst.get("serverType", "custom")
+        name = (instance_id or server_type).lower().replace(" ", "_")
+
+        out.append({
+            "name": name,
+            "displayName": inst.get("displayName") or inst.get("instanceName") or instance_id,
+            "type": server_type,
+            "instanceId": instance_id,
+            "instanceName": inst.get("instanceName", ""),
+            "authMode": inst.get("authMode", "none"),
+            "tools": tools_list,
+        })
+
+    return out
+
+
 # ============================================================================
 # User Views (merged instances + auth status)
 # ============================================================================

@@ -891,8 +891,10 @@ class TestGetAssistantAgentHelper:
         graph_provider = AsyncMock()
         toolset_registry = MagicMock()
         logger = MagicMock()
-        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
+        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets, \
+             patch("app.api.routes.mcp_servers.get_authenticated_mcp_servers_for_user", new_callable=AsyncMock) as mock_mcp:
             mock_get_toolsets.return_value = []
+            mock_mcp.return_value = []
             graph_provider.get_user_by_user_id = AsyncMock(
                 return_value={"id": "u1", "_key": "u1"},
             )
@@ -907,6 +909,8 @@ class TestGetAssistantAgentHelper:
             assert "systemPrompt" in result
             assert "models" in result
             assert "toolsets" in result
+            assert "mcpServers" in result
+            assert result["mcpServers"] == []
             assert "knowledge" in result
         assert result["knowledge"] == []
 
@@ -921,8 +925,10 @@ class TestGetAssistantAgentHelper:
             {"id": "rg-1", "name": "Alpha"},
             {"id": "rg-2", "name": "Beta"},
         ]
-        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
+        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets, \
+             patch("app.api.routes.mcp_servers.get_authenticated_mcp_servers_for_user", new_callable=AsyncMock) as mock_mcp:
             mock_get_toolsets.return_value = []
+            mock_mcp.return_value = []
             graph_provider.get_user_by_user_id = AsyncMock(
                 return_value={"id": "u1", "_key": "u1"},
             )
@@ -953,8 +959,10 @@ class TestGetAssistantAgentHelper:
         toolset_registry = MagicMock()
         logger = MagicMock()
 
-        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
+        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets, \
+             patch("app.api.routes.mcp_servers.get_authenticated_mcp_servers_for_user", new_callable=AsyncMock) as mock_mcp:
             mock_get_toolsets.side_effect = Exception("Error")
+            mock_mcp.side_effect = Exception("Error")
             graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})
             graph_provider.list_user_knowledge_bases = AsyncMock(return_value=([], 0, {}))
             graph_provider.get_user_apps.side_effect = Exception("Error")
@@ -963,6 +971,7 @@ class TestGetAssistantAgentHelper:
             result = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
 
             assert result["toolsets"] == []
+            assert result["mcpServers"] == []
             assert result["knowledge"] == []
 
 class TestReasoningModelValidation:

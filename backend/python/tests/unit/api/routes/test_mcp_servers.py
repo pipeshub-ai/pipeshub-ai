@@ -42,6 +42,7 @@ from app.api.routes.mcp_servers import (  # noqa: E402
     _parse_request_json,
     authenticate_instance,
     create_instance,
+    get_authenticated_mcp_servers_for_user,
     get_catalog,
     get_catalog_item,
     get_instances,
@@ -413,3 +414,85 @@ class TestGetMyMcpServers:
         )
         assert len(result["mcpServers"]) == 1
         assert result["mcpServers"][0]["displayName"] == "Company GitHub Integration"
+
+
+class TestGetAuthenticatedMcpServersForUser:
+    """Tests for get_authenticated_mcp_servers_for_user (assistant / placeholder wiring)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_instances(self, mock_config_service):
+        with patch("app.api.routes.mcp_servers._load_instances", new_callable=AsyncMock) as load:
+            load.return_value = []
+            out = await get_authenticated_mcp_servers_for_user("user-1", "org-1", mock_config_service)
+            assert out == []
+
+    @pytest.mark.asyncio
+    async def test_builds_agent_shaped_entries(self, mock_config_service):
+        inst = {
+            "_id": "mcp-inst-1",
+            "orgId": "org-1",
+            "enabled": True,
+            "serverType": "brave_search",
+            "authMode": "api_token",
+            "displayName": "Brave",
+            "instanceName": "Brave",
+        }
+        tool_row = {
+            "name": "search",
+            "namespacedName": "mcp_brave_search_search",
+            "description": "Search the web",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+        with (
+            patch("app.api.routes.mcp_servers._load_instances", new_callable=AsyncMock) as load,
+            patch(
+                "app.api.routes.mcp_servers._resolve_effective_user_auth",
+                new_callable=AsyncMock,
+            ) as res_auth,
+            patch(
+                "app.api.routes.mcp_servers._discover_tools_for_instance",
+                new_callable=AsyncMock,
+            ) as disc,
+        ):
+            load.return_value = [inst]
+            res_auth.return_value = {"isAuthenticated": True, "auth": {"apiToken": "t"}}
+            disc.return_value = [tool_row]
+            out = await get_authenticated_mcp_servers_for_user("user-1", "org-1", mock_config_service)
+
+        assert len(out) == 1
+        row = out[0]
+        assert row["instanceId"] == "mcp-inst-1"
+        assert row["name"] == "mcp-inst-1"
+        assert row["type"] == "brave_search"
+        assert row["authMode"] == "api_token"
+        assert row["tools"] == [tool_row]
+        disc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_unauthenticated_non_none_auth(self, mock_config_service):
+        inst = {
+            "_id": "x1",
+            "orgId": "org-1",
+            "enabled": True,
+            "serverType": "custom",
+            "authMode": "oauth",
+            "displayName": "X",
+            "instanceName": "X",
+        }
+        with (
+            patch("app.api.routes.mcp_servers._load_instances", new_callable=AsyncMock) as load,
+            patch(
+                "app.api.routes.mcp_servers._resolve_effective_user_auth",
+                new_callable=AsyncMock,
+            ) as res_auth,
+            patch(
+                "app.api.routes.mcp_servers._discover_tools_for_instance",
+                new_callable=AsyncMock,
+            ) as disc,
+        ):
+            load.return_value = [inst]
+            res_auth.return_value = {"isAuthenticated": False}
+            out = await get_authenticated_mcp_servers_for_user("user-1", "org-1", mock_config_service)
+
+        assert out == []
+        disc.assert_not_called()

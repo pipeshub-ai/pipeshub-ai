@@ -3762,7 +3762,7 @@ async def get_assistant_agent(
     logger: Logger,
 ) -> dict:
     """
-    Get the assistant agent with all authenticated toolsets and accessible connectors.
+    Get the assistant agent with all authenticated toolsets, MCP servers, and connectors.
 
     Args:
         user_id: User ID
@@ -3773,8 +3773,10 @@ async def get_assistant_agent(
         logger: Logger instance
 
     Returns:
-        Dictionary containing assistant agent configuration with toolsets and knowledge sources
+        Assistant agent dict: toolsets, mcpServers (authenticated / no-auth instances),
+        and knowledge sources.
     """
+    from app.api.routes.mcp_servers import get_authenticated_mcp_servers_for_user
     from app.api.routes.toolsets import get_authenticated_toolsets
 
     # Get authenticated toolsets using the helper method
@@ -3788,6 +3790,17 @@ async def get_assistant_agent(
     except Exception as e:
         logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
         authenticated_toolsets_list = []
+
+    # All MCP instances the user can run (same scope as Settings → MCP Servers)
+    try:
+        authenticated_mcp_servers = await get_authenticated_mcp_servers_for_user(
+            user_id=user_id,
+            org_id=org_id,
+            config_service=config_service,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching authenticated MCP servers: {e}", exc_info=True)
+        authenticated_mcp_servers = []
 
     # Get all accessible connectors for knowledge sources
     knowledge_sources = []
@@ -3877,5 +3890,6 @@ async def get_assistant_agent(
         "isActive": True,
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
+        "mcpServers": authenticated_mcp_servers,
         "knowledge": knowledge_sources,
     }
