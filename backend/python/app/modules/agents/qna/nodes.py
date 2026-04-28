@@ -6801,6 +6801,11 @@ async def _generate_direct_response(
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
     system_content += f"\n\n{build_direct_answer_time_context(state)}"
+    system_content += (
+        "\n\nRender dates/times in human-readable form using the **Time zone** from the Time context "
+        "(e.g., 'April 28, 2026 at 3:45 PM IST'). Convert any epoch/numeric or ISO timestamp fields "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — never output raw epoch numbers, ISO strings, or `ts`-style columns."
+    )
 
     messages.append(SystemMessage(content=system_content))
 
@@ -6948,6 +6953,9 @@ async def _generate_fast_api_response(
         "- **Actionable**: Surface critical items prominently (overdue, high-priority, errors, "
         "action required). Include follow-ups and recommendations where supported by data\n"
         "- **No fabrication**: Only use data that is explicitly provided\n"
+        "- **Human-readable dates/times**: render every date/time using the **Time zone** from the Time context "
+        "(e.g., 'April 28, 2026 at 3:45 PM IST'). Convert any epoch/numeric or ISO timestamp fields "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — never output raw epoch numbers, ISO strings, or `ts`-style columns\n"
         "- Output ONLY markdown — no JSON wrapper, no code fences around the whole response\n"
     )
 
