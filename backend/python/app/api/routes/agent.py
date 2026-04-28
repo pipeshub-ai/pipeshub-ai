@@ -2992,7 +2992,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
-        if chat_query.tools:
+        if chat_query.tools is not None:
             enabled_tools_set = set(chat_query.tools)
             filtered_toolsets = []
             for toolset in agent_toolsets:

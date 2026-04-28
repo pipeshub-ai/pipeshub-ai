@@ -452,7 +452,9 @@ export const streamChat =
       };
       // For agent mode, forward the user-selected tool list so the backend
       // can scope toolset loading to the selected instances.
-      if (agentMode) {
+      // Only set when the client explicitly sent `tools`; omitting it means
+      // "use all configured tools" (Python receives None).
+      if (agentMode && req.body.tools !== undefined) {
         aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
       }
 
@@ -1486,7 +1488,7 @@ export const addMessageStream =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
-      if (agentMode) {
+      if (agentMode && req.body.tools !== undefined) {
         aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
       }
 
@@ -2723,7 +2725,7 @@ async function regenerateAnswersInternal(
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
     };
-    if (regenIsAgentMode) {
+    if (regenIsAgentMode && req.body.tools !== undefined) {
       aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
     }
 
