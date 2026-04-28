@@ -86,7 +86,7 @@ class TestNormalizeWebSearchImageSettings:
 class TestContentHandler:
     def test_format_message_returns_content(self) -> None:
         handler = ContentHandler()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message({"content": "Hello world"}, {})
         )
         assert result["ok"] is True
@@ -94,7 +94,7 @@ class TestContentHandler:
 
     def test_format_message_falls_back_to_str(self) -> None:
         handler = ContentHandler()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message({"other_key": "value"}, {})
         )
         assert result["ok"] is True
@@ -122,7 +122,7 @@ class TestRecordsHandler:
         context = {
             "message_contents": [[{"type": "text", "text": "record text"}]]
         }
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message(tool_result, context)
         )
         assert isinstance(result, list)
@@ -132,7 +132,7 @@ class TestRecordsHandler:
         handler = RecordsHandler()
         tool_result = {"not_available_ids": {"id1": "Record 1"}, "records": []}
         context = {"message_contents": []}
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message(tool_result, context)
         )
         assert any("id1" in m.get("text", "") for m in result)
@@ -140,7 +140,7 @@ class TestRecordsHandler:
     def test_format_message_empty_not_available(self) -> None:
         handler = RecordsHandler()
         context = {"message_contents": [[{"type": "text", "text": "hello"}]]}
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message({"not_available_ids": {}}, context)
         )
         assert len(result) == 1
@@ -182,7 +182,7 @@ class TestWebSearchHandler:
         }
         with patch("app.utils.tool_handlers.generate_text_fragment_url", side_effect=lambda l, s: f"{l}#{s}"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, {"ref_mapper": None})
             )
 
@@ -199,7 +199,7 @@ class TestWebSearchHandler:
         }
         with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://t.com"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, {"ref_mapper": None})
             )
         assert len(result) == 2  # header + 1 result
@@ -207,7 +207,7 @@ class TestWebSearchHandler:
     def test_format_message_non_list_web_results(self) -> None:
         handler = WebSearchHandler()
         tool_result = {"query": "q", "web_results": "not a list"}
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message(tool_result, {})
         )
         assert result[0]["type"] == "text"
@@ -218,7 +218,7 @@ class TestWebSearchHandler:
         tool_result = {"query": "q", "web_results": ["invalid_string", {"title": "T", "link": "https://t.com", "snippet": "S"}]}
         with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://t.com#S"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, {"ref_mapper": None})
             )
         # Header + 1 valid result (string skipped)
@@ -403,7 +403,7 @@ class TestUrlContentHandlerFormatMessage:
         }
         with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#Hello"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, context)
             )
 
@@ -422,7 +422,7 @@ class TestUrlContentHandlerFormatMessage:
             "ref_mapper": None,
             "is_multimodal_llm": False,
         }
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message(tool_result, context)
         )
         # No image blocks should be in output when not multimodal
@@ -436,7 +436,7 @@ class TestUrlContentHandlerFormatMessage:
             "ref_mapper": None,
             "is_multimodal_llm": False,
         }
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.format_message(tool_result, context)
         )
         assert len(result) == 1
@@ -457,7 +457,7 @@ class TestUrlContentHandlerFormatMessage:
         with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u), \
              patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, context)
             )
         image_blocks = [b for b in result if b.get("type") == "image"]
@@ -477,7 +477,7 @@ class TestUrlContentHandlerFormatMessage:
             "is_multimodal_llm": True,
         }
         with patch("app.utils.tool_handlers.supported_mime_types", ["image/png", "image/jpeg"]):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, context)
             )
         assert not any(b.get("type") == "image" for b in result)
@@ -497,7 +497,7 @@ class TestUrlContentHandlerFormatMessage:
         }
         with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#text"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler.format_message(tool_result, context)
             )
         assert isinstance(result, list)

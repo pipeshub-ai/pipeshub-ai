@@ -160,7 +160,7 @@ class TestFetchImageAsBase64:
             "app.utils.image_utils.get_image_info_from_url",
             return_value=(".gif", "image/gif"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/anim.gif")
             )
         assert result is None
@@ -172,7 +172,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img.png")
             )
         assert result is None
@@ -184,7 +184,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img.png")
             )
         assert result is None
@@ -198,7 +198,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(".png", "image/png")), \
              patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img.png")
             )
         assert result is not None
@@ -214,7 +214,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img")
             )
         assert result is None
@@ -224,7 +224,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", side_effect=FetchError("connection refused")):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img.png")
             )
         assert result is None
@@ -232,7 +232,7 @@ class TestFetchImageAsBase64:
     def test_generic_exception_returns_none(self) -> None:
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", side_effect=RuntimeError("unexpected")):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/img.png")
             )
         assert result is None
@@ -246,7 +246,7 @@ class TestFetchImageAsBase64:
 
         with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
              patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _fetch_image_as_base64("https://example.com/photo.tiff")
             )
         assert result is None
