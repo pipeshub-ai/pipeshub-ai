@@ -1022,12 +1022,6 @@ async def _handle_direct_answer(
     if agent_instructions and agent_instructions.strip():
         instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
 
-    system_content = (
-        f"{instructions_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely.\n\n"
-        "When mentioning dates or times, always use a human-readable format "
-        "(e.g., 'April 28, 2026 at 3:45 PM IST') — never raw ISO 8601 strings or Unix timestamps. "
-        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing."
-    )  
     role_prefix = ""
     persona = state.get("system_prompt")
     if is_custom_agent_system_prompt(persona):
@@ -1035,7 +1029,10 @@ async def _handle_direct_answer(
 
     system_content = (
         f"{instructions_prefix}{role_prefix}"
-        "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+        "You are a helpful, friendly AI assistant. Respond naturally and concisely.\n\n"
+        "When mentioning dates or times, always use a human-readable format "
+        "(e.g., 'April 28, 2026 at 3:45 PM IST') — never raw ISO 8601 strings or Unix timestamps. "
+        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing."
     )
 
     user_info = state.get("user_info") or {}
