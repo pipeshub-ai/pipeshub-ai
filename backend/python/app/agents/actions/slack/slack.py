@@ -81,6 +81,12 @@ class SendDirectMessageInput(BaseModel):
                 pass
         return data
 
+class GetDmHistoryInput(BaseModel):
+    """Schema for getting DM history with a specific user"""
+    user: str = Field(description="DM partner identifier. Accepts email, display name, real name, or Slack user ID (starts with 'U').")
+    limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
+
+
 class ReplyToMessageInput(BaseModel):
     """Schema for replying to a message"""
     channel: str = Field(description="The channel containing the message to reply to")
@@ -137,6 +143,18 @@ class SearchMessagesInput(BaseModel):
     """Schema for searching messages"""
     query: str = Field(description="The search query to find messages")
     channel: Optional[str] = Field(default=None, description="The channel to search in")
+    with_user: Optional[str] = Field(
+        default=None,
+        description="Filter to messages exchanged with this user, including DMs. "
+                    "Accepts email, display name, real name, or Slack user ID. "
+                    "Adds Slack's 'with:@user' search modifier.",
+    )
+    from_user: Optional[str] = Field(
+        default=None,
+        description="Filter to messages authored by this user. "
+                    "Accepts email, display name, real name, or Slack user ID. "
+                    "Adds Slack's 'from:@user' search modifier.",
+    )
     count: Optional[int] = Field(default=None, description="Maximum number of results to return")
     sort: Optional[str] = Field(default=None, description="Sort order (timestamp, score)")
 
@@ -978,15 +996,16 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="fetch_channels",
-        description="Fetch all conversations in the workspace (public channels, private channels, DMs, group DMs)",
+        description="Fetch all conversations in the workspace — in Slack, channels and DMs share one data model: public channels (C…), private channels (G…), group DMs (mpim) and 1:1 DMs (im, D…) are ALL returned",
         when_to_use=[
             "User wants to list all Slack channels/conversations",
-            "User mentions 'Slack' + wants to see channels/DMs",
-            "User asks for available channels/conversations"
+            "User mentions 'Slack' + wants to see channels/DMs/conversations",
+            "User asks for available channels/conversations",
+            "User wants to enumerate their DMs (returned as 'im' entries with id starting 'D' and a 'user' field for the partner)"
         ],
         when_not_to_use=[
             "User wants channel info (use get_channel_info)",
-            "User wants messages (use get_channel_history)",
+            "User wants messages (use get_channel_history; for DMs with a named person use get_dm_history)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
@@ -994,9 +1013,16 @@ class Slack:
             "List all Slack channels",
             "Show me available channels",
             "What channels are in Slack?",
-            "Show all conversations"
+            "Show all conversations including DMs",
+            "List my DMs"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Returns ALL conversations the user can access. In Slack, 'channel' and 'DM' are the same data type — "
+            "differentiated by the 'is_im' / 'is_mpim' / 'is_private' flags and the id prefix (C/G/D). "
+            "DM (im) entries have NO 'name' field — only 'id' (D…) and 'user' (the partner's U… ID); "
+            "resolve that user ID via users_info / resolve_user to get a human-readable label."
+        ),
     )
     async def fetch_channels(self) -> Tuple[bool, str]:
         """Fetch all conversations (public channels, private channels, DMs, group DMs) with pagination"""
@@ -1358,6 +1384,108 @@ class Slack:
 
     @tool(
         app_name="slack",
+        tool_name="get_dm_history",
+        description="Get direct message (DM) history with a specific user",
+        args_schema=GetDmHistoryInput,
+        when_to_use=[
+            "User wants to read their personal/direct chat with a specific person",
+            "User asks to summarize DMs / personal chats / 1:1 conversation with someone",
+            "User mentions 'Slack' + 'DM' / 'direct message' / 'personal chat' with a named person",
+            "User wants the conversation between themselves and another user (not a channel)"
+        ],
+        when_not_to_use=[
+            "User wants channel messages (use get_channel_history)",
+            "User wants to search by keyword across Slack (use search_messages)",
+            "User wants to send a DM (use send_direct_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Summarize my DMs with Kaushal",
+            "Show my personal chat with user@company.com",
+            "What did I talk about with @john in Slack DMs?",
+            "Get my direct messages with Alice"
+        ],
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Fetch the message history of the 1:1 direct-message conversation between the "
+            "authenticated user and the specified user. Resolves the user (by email, "
+            "display name, real name, or Slack user ID) to the IM channel automatically — "
+            "do NOT pass a channel ID here. Use this for any 'personal chat', 'DM', or "
+            "'1:1 conversation with X' request; do not fall back to search_messages for "
+            "this case, since search returns channel mentions, not the DM thread."
+        ),
+    )
+    async def get_dm_history(self, user: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+        """Get DM history with a specific user.
+
+        Args:
+            user: User identifier (email, display name, real name, or Slack user ID)
+            limit: Maximum number of messages to return
+        Returns:
+            A tuple with a boolean indicating success/failure and a JSON string with the DM history
+        """
+        try:
+            # Resolve identifier to a unique user ID
+            try:
+                user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
+            except AmbiguousUserError as e:
+                matches_list = []
+                for match in e.matches:
+                    match_str = f"  - {match.get('real_name') or match.get('display_name') or match.get('name', 'Unknown')}"
+                    if match.get('email'):
+                        match_str += f" ({match['email']})"
+                    match_str += f" [ID: {match.get('id', 'Unknown')}]"
+                    matches_list.append(match_str)
+
+                error_msg = (
+                    f"Multiple users found matching '{user}'. Please use email or user ID for disambiguation.\n\n"
+                    f"Matching users:\n" + "\n".join(matches_list) + "\n\n"
+                    "Tip: Use the user's email address (e.g., 'user@example.com') or Slack user ID (e.g., 'U1234567890') "
+                    "to uniquely identify the user."
+                )
+                return (False, SlackResponse(success=False, error=error_msg).to_json())
+
+            if not user_id:
+                return (
+                    False,
+                    SlackResponse(
+                        success=False,
+                        error=f"User '{user}' not found. Please use email address or Slack user ID.",
+                    ).to_json(),
+                )
+
+            # Open (or fetch existing) DM channel for the resolved user
+            open_response = await self.client.conversations_open(users=[user_id])
+            open_slack_response = self._handle_slack_response(open_response)
+            if not open_slack_response.success:
+                return (open_slack_response.success, open_slack_response.to_json())
+
+            channel_id = (
+                open_slack_response.data.get('channel', {}).get('id')
+                if open_slack_response.data
+                else None
+            )
+            if not channel_id:
+                return (
+                    False,
+                    SlackResponse(success=False, error="Failed to open DM channel").to_json(),
+                )
+
+            # Delegate to get_channel_history: it already accepts a channel ID,
+            # performs mention enrichment and response transformation.
+            return await self.get_channel_history(channel_id, limit)
+
+        except AmbiguousUserError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in get_dm_history: {e}")
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
+
+
+    @tool(
+        app_name="slack",
         tool_name="reply_to_message",
         description="Reply to a specific message in a channel",
         args_schema=ReplyToMessageInput,
@@ -1562,10 +1690,12 @@ class Slack:
         when_to_use=[
             "User wants to search for specific messages",
             "User mentions 'Slack' + wants to find messages",
-            "User asks to search messages by content"
+            "User asks to search messages by content",
+            "User wants keyword search constrained to messages with/from a specific person (use with_user / from_user)"
         ],
         when_not_to_use=[
             "User wants to read channel history (use get_channel_history)",
+            "User wants the full DM thread with someone (use get_dm_history)",
             "User wants to search all content (use search_all)",
             "No Slack mention"
         ],
@@ -1573,28 +1703,76 @@ class Slack:
         typical_queries=[
             "Search for messages about 'project'",
             "Find messages in #general about X",
-            "Search Slack messages"
+            "Search Slack messages",
+            "Find messages from @alice about deploys",
+            "Search my conversation with bob@company.com for 'roadmap'"
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
-        """Search for messages in Slack"""
-        """
+    async def search_messages(
+        self,
+        query: str,
+        channel: Optional[str] = None,
+        with_user: Optional[str] = None,
+        from_user: Optional[str] = None,
+        count: Optional[int] = None,
+        sort: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Search for messages in Slack.
+
         Args:
-            query: Search query
-            channel: Channel to search in (optional)
+            query: Search query (keywords / phrase)
+            channel: Channel to search in (optional). Adds an 'in:#channel' modifier.
+            with_user: Restrict to messages exchanged with this user (any identifier:
+                email, display name, real name, or user ID). Adds 'with:@handle'.
+            from_user: Restrict to messages authored by this user. Adds 'from:@handle'.
             count: Maximum number of results to return
-            sort: Sort order
+            sort: Sort order (timestamp, score)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            # Build search query with channel filter if provided
-            search_query = query
+            modifiers: List[str] = []
+
             if channel:
-                # Remove # if present
                 channel_name = channel[1:] if channel.startswith('#') else channel
-                search_query = f"in:{channel_name} {query}"
+                modifiers.append(f"in:{channel_name}")
+
+            # Resolve with_user / from_user to Slack handles for use in search modifiers.
+            # Slack's search syntax requires the username (e.g. 'with:@john'), not user IDs,
+            # so we must look up the handle.
+            for modifier_name, identifier in (("with", with_user), ("from", from_user)):
+                if not identifier:
+                    continue
+                try:
+                    handle = await self._resolve_user_handle(identifier)
+                except AmbiguousUserError as e:
+                    matches_list = []
+                    for match in e.matches:
+                        match_str = f"  - {match.get('real_name') or match.get('display_name') or match.get('name', 'Unknown')}"
+                        if match.get('email'):
+                            match_str += f" ({match['email']})"
+                        match_str += f" [ID: {match.get('id', 'Unknown')}]"
+                        matches_list.append(match_str)
+                    error_msg = (
+                        f"Multiple users found matching '{identifier}' for '{modifier_name}_user'. "
+                        "Please use email or user ID for disambiguation.\n\n"
+                        "Matching users:\n" + "\n".join(matches_list)
+                    )
+                    return (False, SlackResponse(success=False, error=error_msg).to_json())
+
+                if not handle:
+                    return (
+                        False,
+                        SlackResponse(
+                            success=False,
+                            error=f"Could not resolve '{identifier}' for '{modifier_name}_user' to a Slack user. "
+                                  "Please use email address or Slack user ID.",
+                        ).to_json(),
+                    )
+                modifiers.append(f"{modifier_name}:@{handle}")
+
+            search_query = " ".join([*modifiers, query]).strip() if modifiers else query
 
             response = await self.client.search_messages(
                 query=search_query,
@@ -1604,6 +1782,8 @@ class Slack:
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
 
+        except AmbiguousUserError:
+            raise
         except Exception as e:
             logger.error(f"Error in search_messages: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2981,6 +3161,30 @@ class Slack:
             logger.error(f"Error resolving user identifier '{user_identifier}': {e}")
             return None
 
+    async def _resolve_user_handle(self, user_identifier: str) -> Optional[str]:
+        """Resolve a user identifier to the Slack username/handle.
+
+        Slack search modifiers (`from:@handle`, `with:@handle`) require the username,
+        not the user ID. This helper resolves any identifier (email, display name,
+        real name, or user ID) to the underlying handle via users_info.
+
+        Returns the handle string on success, or None if resolution fails.
+        Raises AmbiguousUserError when the identifier matches multiple users.
+        """
+        user_id = await self._resolve_user_identifier(user_identifier, allow_ambiguous=False)
+        if not user_id:
+            return None
+        try:
+            response = await self.client.users_info(user=user_id)
+            slack_response = self._handle_slack_response(response)
+            if slack_response.success and slack_response.data:
+                user_obj = slack_response.data.get('user') or {}
+                handle = user_obj.get('name')
+                if isinstance(handle, str) and handle:
+                    return handle
+        except Exception as e:
+            logger.debug(f"Failed to fetch handle for '{user_identifier}' (id={user_id}): {e}")
+        return None
 
 
     # @tool(
