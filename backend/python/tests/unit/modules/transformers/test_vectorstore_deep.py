@@ -794,7 +794,33 @@ class TestCreateEmbeddingsDeeper:
 
     @pytest.mark.asyncio
     async def test_image_points_always_stored(self):
-        """Image points are always passed to store, even if empty."""
+        """_store_image_points is still called when embedding returns points;
+        when it returns empty *and* no caption recovery runs, EmbeddingError is raised."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from unittest.mock import MagicMock
+
+        vs = _make_vectorstore()
+        vs.delete_embeddings = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+        fake_point = MagicMock()  # represents a Qdrant PointStruct
+        vs._process_image_embeddings = AsyncMock(return_value=[fake_point])
+        vs._store_image_points = AsyncMock()
+
+        chunks = [
+            {"image_uri": "data:image/png;base64,abc", "metadata": {"virtualRecordId": "vr-1"}},
+        ]
+
+        await vs._create_embeddings(chunks, "rec-1", "vr-1")
+
+        vs._store_image_points.assert_awaited_once_with([fake_point])
+
+    @pytest.mark.asyncio
+    async def test_image_points_zero_raises_embedding_error(self):
+        """When all image chunks produce 0 Qdrant points and no VLM recovery
+        adds text, _create_embeddings must raise EmbeddingError so the job
+        does not record a false success."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
@@ -805,9 +831,10 @@ class TestCreateEmbeddingsDeeper:
             {"image_uri": "data:image/png;base64,abc", "metadata": {"virtualRecordId": "vr-1"}},
         ]
 
-        await vs._create_embeddings(chunks, "rec-1", "vr-1")
+        with pytest.raises(EmbeddingError, match="Azure deployment name"):
+            await vs._create_embeddings(chunks, "rec-1", "vr-1")
 
-        # Store is always called for image chunks, even with empty points
+        # _store_image_points is still called even when empty
         vs._store_image_points.assert_awaited_once_with([])
 
 
@@ -875,10 +902,10 @@ class TestDeleteEmbeddings:
     async def test_success(self):
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(return_value={"filter": {}})
-        vs.vector_db_service.delete_points = MagicMock()
+        vs.vector_db_service.delete_points = AsyncMock()
         await vs.delete_embeddings("vr-1")
         vs.vector_db_service.filter_collection.assert_awaited_once()
-        vs.vector_db_service.delete_points.assert_called_once()
+        vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
@@ -953,6 +980,16 @@ class TestProcessImageEmbeddings:
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
         await vs._process_image_embeddings([], [])
         vs._process_image_embeddings_bedrock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_azure_ai_provider_routing(self):
+        """azureAI routes to the Azure AI Inference handler, not Cohere SDK."""
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.AZURE_AI.value
+        vs._process_image_embeddings_azure_ai = AsyncMock(return_value=[MagicMock()])
+        result = await vs._process_image_embeddings([{"metadata": {}}], ["data:image/png;base64,abc"])
+        vs._process_image_embeddings_azure_ai.assert_awaited_once()
 
 
 # ===================================================================
@@ -1556,7 +1593,9 @@ class TestIndexDocumentsExceptions:
             "app.modules.transformers.vectorstore.get_llm",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            # Inner try/except wraps _create_embeddings errors as
+            # EmbeddingError (subclass of IndexingError).
+            with pytest.raises(IndexingError, match="Failed to create or store embeddings"):
                 await vs.index_documents(
                     BlocksContainer(blocks=[text_block], block_groups=[]),
                     "org-1", "rec-1", "vr-1", "text/plain",

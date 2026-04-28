@@ -76,6 +76,129 @@ class TestFormatResults:
     def test_formats_empty_list(self, retrieval_service):
         assert retrieval_service._format_results([]) == []
 
+    def test_new_style_image_point_has_empty_content(self, retrieval_service):
+        """New-style image points carry ``blockType=image`` on metadata and
+        an empty ``page_content``. The actual image bytes live in blob
+        storage — the Qdrant payload is identity-only, so retrieval must
+        pass the hit through with no base64 ever appearing in
+        ``content`` or on the metadata."""
+        metadata = {
+            "orgId": "o1",
+            "virtualRecordId": "v1",
+            "blockId": "b1",
+            "blockType": "image",
+        }
+        doc = Document(page_content="", metadata=metadata)
+        (result,) = retrieval_service._format_results([(doc, 0.9)])
+
+        assert result["content"] == ""
+        assert result["metadata"]["blockType"] == "image"
+        assert "imageUri" not in result["metadata"], (
+            "image bytes must not be surfaced on the retrieval payload"
+        )
+        assert result["metadata"]["blockId"] == "b1"
+
+    def test_legacy_image_point_is_healed(self, retrieval_service):
+        """Collections that were indexed before the cleanup stored the
+        image URI directly in ``page_content``. The formatter must
+        recognise the blob, tag the point as an image, and blank
+        ``content`` so it doesn't leak into the LLM prompt. Downstream
+        renderers will re-resolve the image from the record graph."""
+        blob = "data:image/png;base64," + "A" * 2048
+        doc = Document(page_content=blob, metadata={"orgId": "o1"})
+
+        (result,) = retrieval_service._format_results([(doc, 0.5)])
+
+        assert result["content"] == ""
+        assert result["metadata"]["blockType"] == "image"
+        assert "imageUri" not in result["metadata"], (
+            "legacy blob must be dropped, not relocated onto metadata"
+        )
+        # Original metadata is preserved.
+        assert result["metadata"]["orgId"] == "o1"
+
+    def test_legacy_bare_base64_blob_is_healed(self, retrieval_service):
+        """Some legacy writers stored raw (non-``data:`` prefixed) base64.
+        The heuristic must pick those up and blank them so the blob
+        never leaks into the LLM. Kept well above the minimum length
+        threshold so this test also documents the threshold tolerates
+        real-world image sizes."""
+        blob = "A" * 4096  # padded length, base64 alphabet only
+        doc = Document(page_content=blob, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.1)])
+
+        assert result["content"] == ""
+        assert result["metadata"]["blockType"] == "image"
+        assert "imageUri" not in result["metadata"]
+
+    def test_regular_text_content_is_untouched(self, retrieval_service):
+        """A natural-language chunk must not be heuristically mistaken for
+        a base64 blob."""
+        text = "The quick brown fox jumps over the lazy dog." * 20  # long but has spaces
+        doc = Document(page_content=text, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.8)])
+
+        assert result["content"] == text
+        assert "blockType" not in result["metadata"]
+
+    def test_long_jwt_like_token_is_not_healed_as_image(self, retrieval_service):
+        """A ~2KB JWT-style token (three base64 segments joined by ``.``)
+        embedded in a document must not be misidentified as an image.
+        The previous heuristic only sampled the first 256 characters and
+        would incorrectly blank this content."""
+        # Three chunky base64 segments separated by dots — the dots alone
+        # are enough to disqualify this from the base64 alphabet, and
+        # that's exactly the kind of regression we want to guard.
+        token = ".".join(["A" * 700] * 3)
+        assert len(token) > 2000
+        doc = Document(page_content=token, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.7)])
+
+        assert result["content"] == token
+        assert "blockType" not in result["metadata"]
+
+    def test_minified_payload_with_punctuation_is_not_healed(self, retrieval_service):
+        """Minified JSON / single-line source with no whitespace but with
+        punctuation outside the base64 alphabet (``{}:,;``) must pass
+        through unchanged."""
+        minified = ('{"k":"v","x":' + '"A"' * 1500 + '}')
+        assert len(minified) > 4096
+        doc = Document(page_content=minified, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.4)])
+
+        assert result["content"] == minified
+        assert "blockType" not in result["metadata"]
+
+    def test_bare_base64_blob_below_threshold_is_not_healed(self, retrieval_service):
+        """Strings shorter than the conservative bare-blob threshold pass
+        through even if they look base64-ish. The ``data:`` prefixed
+        form is still healed regardless of length — see the dedicated
+        test above."""
+        blob = "A" * 2048  # base64-ish but below the 4KB threshold
+        doc = Document(page_content=blob, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.1)])
+
+        assert result["content"] == blob
+        assert "blockType" not in result["metadata"]
+
+    def test_bare_base64_blob_with_bad_padding_is_not_healed(self, retrieval_service):
+        """Real base64 is always padded to a multiple of 4. A long
+        base64-alphabet blob whose length doesn't satisfy that must
+        not be treated as an image — overwhelmingly it's a hash/token
+        or some other opaque identifier in a real document."""
+        blob = "A" * 4097  # 4097 % 4 != 0
+        doc = Document(page_content=blob, metadata={})
+
+        (result,) = retrieval_service._format_results([(doc, 0.2)])
+
+        assert result["content"] == blob
+        assert "blockType" not in result["metadata"]
+
 
 # ============================================================================
 # _create_empty_response
@@ -304,49 +427,92 @@ class TestGetLlmInstance:
 # ============================================================================
 
 class TestGetEmbeddingModelInstance:
+    """The instance loader now keys its in-memory cache on a full signature
+    tuple — (provider, model_name, dimensions, is_default) — which it
+    derives by reading AI_MODELS directly via ``config_service``. Tests
+    mock ``mock_config_service.get_config`` accordingly rather than the
+    long-gone ``get_current_embedding_model_name`` helper path."""
+
     @pytest.mark.asyncio
-    async def test_returns_default_model(self, retrieval_service):
-        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value=DEFAULT_EMBEDDING_MODEL
-        )
-        # Reset cached model to force re-creation
+    async def test_returns_default_model(self, retrieval_service, mock_config_service):
+        # No embedding config → default path. The service must return a
+        # usable instance and must not call the provider constructor.
+        mock_config_service.get_config.return_value = {"embedding": []}
         retrieval_service.embedding_model = None
         retrieval_service.embedding_model_instance = None
-        with patch("app.modules.retrieval.retrieval_service.get_default_embedding_model") as mock_def:
+        retrieval_service.embedding_signature = None
+        with patch(
+            "app.modules.retrieval.retrieval_service.get_default_embedding_model"
+        ) as mock_def:
             mock_def.return_value = MagicMock()
             result = await retrieval_service.get_embedding_model_instance()
             assert result is not None
             mock_def.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_caches_embedding_model(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(return_value="cached-model")
+    async def test_caches_embedding_model(self, retrieval_service, mock_config_service):
+        """Matching signature + populated instance = cache hit, no load."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {
+                    "provider": "openai",
+                    "isDefault": True,
+                    "configuration": {
+                        "model": "cached-model",
+                        "dimensions": 1024,
+                    },
+                }
+            ]
+        }
         retrieval_service.embedding_model = "cached-model"
         cached = MagicMock()
         retrieval_service.embedding_model_instance = cached
-        result = await retrieval_service.get_embedding_model_instance()
-        assert result is cached
+        # Mirror the signature the code will compute for this config.
+        retrieval_service.embedding_signature = (
+            "openai",
+            "cached-model",
+            1024,
+            True,
+        )
+        with patch(
+            "app.modules.retrieval.retrieval_service.get_embedding_model"
+        ) as mock_emb:
+            result = await retrieval_service.get_embedding_model_instance()
+            assert result is cached
+            mock_emb.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_error(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            side_effect=Exception("error")
-        )
-        result = await retrieval_service.get_embedding_model_instance()
-        assert result is None
+    async def test_returns_none_on_error(self, retrieval_service, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {
+                    "provider": "openai",
+                    "isDefault": True,
+                    "configuration": {"model": "some-model"},
+                }
+            ]
+        }
+        retrieval_service.embedding_model = None
+        retrieval_service.embedding_model_instance = None
+        retrieval_service.embedding_signature = None
+        with patch(
+            "app.modules.retrieval.retrieval_service.get_embedding_model",
+            side_effect=Exception("provider boom"),
+        ):
+            result = await retrieval_service.get_embedding_model_instance()
+            assert result is None
 
     @pytest.mark.asyncio
     async def test_custom_embedding_model(self, retrieval_service, mock_config_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="custom-embed-model"
-        )
         mock_config_service.get_config.return_value = {
             "embedding": [
                 {"provider": "openai", "isDefault": True,
                  "configuration": {"model": "custom-embed-model"}}
             ]
         }
+        retrieval_service.embedding_model = None
+        retrieval_service.embedding_model_instance = None
+        retrieval_service.embedding_signature = None
         with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
             mock_emb.return_value = MagicMock()
             result = await retrieval_service.get_embedding_model_instance()
@@ -463,6 +629,99 @@ class TestExecuteParallelSearches:
             ["query"], qdrant_filter, 10
         )
         assert len(results) == 1  # deduplicated
+
+    @pytest.mark.asyncio
+    async def test_adds_image_only_dense_prefetch(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """Regression: image points are stored with only a ``dense`` vector
+        and no ``page_content``. Without a dedicated prefetch they lose
+        RRF fusion against text points (which score in both dense and
+        sparse) and are also crowded out of the dense top-N candidate
+        pool because text-to-text similarity is tighter than
+        text-to-image even in multimodal models. Assert the
+        QueryRequest now carries a third, image-only dense prefetch
+        filtered on ``metadata.blockType == "image"``.
+        """
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+
+        sparse_result = MagicMock()
+        sparse_result.indices = [1]
+        sparse_result.values = [0.5]
+        retrieval_service.sparse_embeddings.embed_query = MagicMock(return_value=sparse_result)
+
+        mock_vector_db_service.query_nearest_points.return_value = []
+
+        qdrant_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.orgId", match=models.MatchValue(value="o1")
+                )
+            ]
+        )
+        await retrieval_service._execute_parallel_searches(
+            ["test query"], qdrant_filter, 10
+        )
+
+        mock_vector_db_service.query_nearest_points.assert_called_once()
+        _, kwargs = mock_vector_db_service.query_nearest_points.call_args
+        query_requests = kwargs["requests"]
+        assert len(query_requests) == 1
+        prefetches = query_requests[0].prefetch
+        assert len(prefetches) == 3, (
+            "expected three prefetches: dense + sparse + image-only dense"
+        )
+        image_prefetch = prefetches[2]
+        assert image_prefetch.using == "dense"
+        assert image_prefetch.filter is not None
+
+        # The image prefetch must stack the image block-type constraint
+        # on top of the caller's org/accessible-vrid scoping, so images
+        # from other tenants never leak through the dedicated lane.
+        must = list(image_prefetch.filter.must or [])
+        keys = {c.key for c in must if hasattr(c, "key")}
+        assert "metadata.blockType" in keys
+        assert "metadata.orgId" in keys  # caller's scoping is preserved
+
+    def test_combine_with_image_filter_stacks_block_type_constraint(
+        self, retrieval_service
+    ):
+        """The helper ANDs ``blockType=image`` onto the caller's filter
+        without mutating the original — the caller still passes the
+        original to the text prefetches and top-level QueryRequest."""
+        base = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.orgId", match=models.MatchValue(value="o1")
+                )
+            ],
+            should=[
+                models.FieldCondition(
+                    key="metadata.virtualRecordId",
+                    match=models.MatchAny(any=["v1", "v2"]),
+                )
+            ],
+        )
+
+        combined = retrieval_service._combine_with_image_filter(base)
+
+        assert combined is not base  # must not mutate caller's filter
+        assert len(base.must) == 1  # sanity: caller's must unchanged
+
+        combined_keys = {c.key for c in combined.must if hasattr(c, "key")}
+        assert combined_keys == {"metadata.orgId", "metadata.blockType"}
+
+        image_cond = next(
+            c for c in combined.must if getattr(c, "key", None) == "metadata.blockType"
+        )
+        assert image_cond.match.value == "image"
+
+        # Preserve the should-clause so org-scoped accessible virtual
+        # record IDs still gate the image prefetch.
+        should_keys = {c.key for c in (combined.should or []) if hasattr(c, "key")}
+        assert "metadata.virtualRecordId" in should_keys
 
 
 class TestGetUserCached:
@@ -719,6 +978,46 @@ class TestSearchWithFilters:
         # Only the complete result should survive
         assert len(result["searchResults"]) == 1
         assert result["searchResults"][0]["content"] == "good content"
+
+    @pytest.mark.asyncio
+    async def test_image_results_with_empty_content_are_preserved(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """Image points legitimately carry an empty ``content`` — the
+        image bytes live in blob storage and are resolved downstream
+        from ``block.data.uri`` using ``virtualRecordId`` + ``blockId``.
+        The empty-content filter must therefore keep hits whose
+        ``blockType == 'image'`` regardless of whether any URI is
+        attached to the payload."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1",
+                "origin": "drive", "recordName": "Image Doc",
+                "webUrl": "https://x.com", "mimeType": "image/png",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9, "content": "",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1",
+                    "orgId": "o1",
+                    "blockId": "b1",
+                    "blockType": "image",
+                },
+            },
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        assert len(result["searchResults"]) == 1
+        assert result["searchResults"][0]["metadata"]["blockType"] == "image"
+        assert result["searchResults"][0]["content"] == ""
+        # Image payloads must stay identity-only — no base64 URI on the hit.
+        assert "imageUri" not in result["searchResults"][0]["metadata"]
 
     @pytest.mark.asyncio
     async def test_tool_provided_virtual_ids_use_must_filter(

@@ -277,3 +277,102 @@ class TestGeminiAdapterGenerate:
             images = await adapter.generate("mixed", n=1)
 
         assert images == [b"PNG"]
+
+    @pytest.mark.asyncio
+    async def test_gemini_image_text_only_response_raises_with_diagnostics(self):
+        """When the model returns text but no image (common when the model
+        name is invalid or the prompt is refused), the adapter must raise a
+        RuntimeError surfacing finish_reason and the refusal text so the
+        caller can show a useful message instead of "no images"."""
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("gemini-2.5-flash-image"),
+        )
+        text_part = SimpleNamespace(
+            inline_data=None,
+            text="I cannot generate images for this request.",
+        )
+        candidate = SimpleNamespace(
+            content=SimpleNamespace(parts=[text_part]),
+            finish_reason=SimpleNamespace(name="IMAGE_SAFETY"),
+            safety_ratings=[],
+        )
+        response = SimpleNamespace(
+            candidates=[candidate],
+            prompt_feedback=None,
+        )
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_content = AsyncMock(return_value=response)
+
+        with patch("google.genai.Client", return_value=fake_client):
+            with pytest.raises(RuntimeError) as excinfo:
+                await adapter.generate("blocked", n=1)
+
+        msg = str(excinfo.value)
+        assert "gemini-2.5-flash-image" in msg
+        assert "IMAGE_SAFETY" in msg
+        assert "cannot generate images" in msg
+
+    @pytest.mark.asyncio
+    async def test_gemini_image_prompt_block_reason_surfaced(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("gemini-2.5-flash-image"),
+        )
+        response = SimpleNamespace(
+            candidates=[],
+            prompt_feedback=SimpleNamespace(
+                block_reason=SimpleNamespace(name="SAFETY"),
+                block_reason_message="Prompt contains disallowed content.",
+            ),
+        )
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_content = AsyncMock(return_value=response)
+
+        with patch("google.genai.Client", return_value=fake_client):
+            with pytest.raises(RuntimeError) as excinfo:
+                await adapter.generate("blocked", n=1)
+
+        msg = str(excinfo.value)
+        assert "SAFETY" in msg
+        assert "disallowed content" in msg
+
+    @pytest.mark.asyncio
+    async def test_gemini_image_empty_response_raises_generic_hint(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("gemini-2.5-flash-image"),
+        )
+        response = SimpleNamespace(candidates=[], prompt_feedback=None)
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_content = AsyncMock(return_value=response)
+
+        with patch("google.genai.Client", return_value=fake_client):
+            with pytest.raises(RuntimeError) as excinfo:
+                await adapter.generate("x", n=1)
+
+        # Falls back to the hint pointing users at supported models.
+        msg = str(excinfo.value)
+        assert "gemini-2.5-flash-image" in msg or "imagen-" in msg
+
+    @pytest.mark.asyncio
+    async def test_imagen_empty_response_raises(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("imagen-4.0-generate-001"),
+        )
+        # Imagen returns no images with a rai_filtered_reason when blocked.
+        gi = SimpleNamespace(
+            image=None,
+            rai_filtered_reason="Content blocked by safety filters.",
+        )
+        response = SimpleNamespace(generated_images=[gi])
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_images = AsyncMock(return_value=response)
+
+        with patch("google.genai.Client", return_value=fake_client), \
+             patch("google.genai.types.GenerateImagesConfig", MagicMock()):
+            with pytest.raises(RuntimeError) as excinfo:
+                await adapter.generate("blocked", n=1)
+
+        assert "Content blocked" in str(excinfo.value)

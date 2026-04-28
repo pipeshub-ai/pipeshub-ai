@@ -151,6 +151,48 @@ def is_multimodal_llm(config: Dict[str, Any]) -> bool:
     )
 
 
+def llm_likely_accepts_vision_content(llm: Any) -> bool:
+    """Best-effort: whether a live chat-model instance can accept images.
+
+    Complements :func:`is_multimodal_llm` (which reads the AI_MODELS config
+    dict) for callers that only have the instantiated LangChain model object.
+    The heuristic inspects ``model_name``, ``model``, and ``model_id`` and
+    errs on the side of inclusion for modern vision-capable model families;
+    it explicitly excludes embedding model IDs.
+    """
+    if llm is None:
+        return False
+    parts: list[str] = []
+    for attr in ("model_name", "model", "model_id"):
+        raw = getattr(llm, attr, None)
+        if raw:
+            parts.append(str(raw).lower())
+    n = " ".join(parts)
+    if not n.strip():
+        return False
+    if "embedding" in n and "gemini" in n:
+        return False
+    if "gemini" in n and "embed" not in n:
+        return True
+    if "gpt-4o" in n or "gpt-5" in n or "chatgpt-4" in n:
+        return True
+    if "gpt-4" in n and ("vision" in n or "turbo" in n or "4o" in n):
+        return True
+    if "o1" in n or "o3" in n or "o4" in n:
+        if "embedding" in n:
+            return False
+        return True
+    if "claude" in n:
+        if "claude-2" in n or "claude-instant" in n:
+            return False
+        return True
+    if "qwen" in n and "vl" in n:
+        return True
+    if "llava" in n or ("vision" in n and "llama" in n):
+        return True
+    return False
+
+
 def _set_embedding_dimensions_kwarg(
     kwargs: Dict[str, Any],
     dimensions: int | None,
@@ -244,7 +286,21 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         _set_embedding_dimensions_kwarg(
             gemini_kwargs, dimensions, key="output_dimensionality"
         )
-        return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
+        embeddings = GoogleGenerativeAIEmbeddings(**gemini_kwargs)
+
+        # ``gemini-embedding-2*`` does not honour ``task_type``; Google's docs
+        # require task instructions to be prepended to the input text instead.
+        # Wrap the LangChain client so both ingestion (aembed_documents) and
+        # retrieval (aembed_query) carry the prescribed prefixes. Older
+        # Gemini-1 / -001 models keep the plain client because they still
+        # rely on ``task_type`` and have no documented prefix contract.
+        bare_model = model_name.removeprefix("models/").lower()
+        if bare_model.startswith("gemini-embedding-2"):
+            from app.utils.custom_embeddings import Gemini2PromptedEmbeddings
+
+            return Gemini2PromptedEmbeddings(embeddings)
+
+        return embeddings
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
         from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -830,6 +886,11 @@ class _GeminiImageAdapter(ImageGenerationAdapter):
                 data = getattr(img, "image_bytes", None) if img is not None else None
                 if data:
                     images.append(data)
+            if not images:
+                reason = _imagen_empty_reason(response)
+                raise RuntimeError(
+                    f"Gemini ({self.model}) returned no images. {reason}"
+                )
             return images
 
         # gemini-*-image models: multimodal generate_content with IMAGE modality.
@@ -837,7 +898,7 @@ class _GeminiImageAdapter(ImageGenerationAdapter):
         # parallel for multi-image generation.
         import asyncio
 
-        async def _one_call() -> list[bytes]:
+        async def _one_call() -> tuple[list[bytes], dict[str, Any]]:
             resp = await client.aio.models.generate_content(
                 model=self.model,
                 contents=[prompt],
@@ -853,10 +914,127 @@ class _GeminiImageAdapter(ImageGenerationAdapter):
                     data = getattr(inline, "data", None) if inline is not None else None
                     if data:
                         out.append(data)
-            return out
+            return out, _gemini_image_diagnostics(resp)
 
         results = await asyncio.gather(*[_one_call() for _ in range(max(1, n))])
-        return [img for batch in results for img in batch]
+        images = [img for batch, _ in results for img in batch]
+        if not images:
+            # Collect per-call diagnostics so the caller sees *why* the provider
+            # returned nothing (safety block, text-only refusal, bad modality,
+            # wrong model name, etc.) instead of an opaque error.
+            diagnostics = [diag for _, diag in results]
+            raise RuntimeError(
+                f"Gemini ({self.model}) returned no images. "
+                f"{_format_gemini_diagnostics(diagnostics)}"
+            )
+        return images
+
+
+def _gemini_image_diagnostics(resp: Any) -> dict[str, Any]:
+    """Extract a compact diagnostic record from a Gemini generate_content response.
+
+    Captures the bits that explain an empty-image response: finish_reason(s),
+    prompt-level block_reason, any text parts the model returned (often a
+    polite refusal), and triggered safety-rating categories.
+    """
+    info: dict[str, Any] = {
+        "finish_reasons": [],
+        "text": [],
+        "safety_blocked": [],
+    }
+
+    prompt_feedback = getattr(resp, "prompt_feedback", None)
+    if prompt_feedback is not None:
+        block_reason = getattr(prompt_feedback, "block_reason", None)
+        if block_reason is not None:
+            info["prompt_block_reason"] = _enum_to_str(block_reason)
+        block_message = getattr(prompt_feedback, "block_reason_message", None)
+        if block_message:
+            info["prompt_block_message"] = str(block_message)
+
+    for candidate in getattr(resp, "candidates", None) or []:
+        finish = getattr(candidate, "finish_reason", None)
+        if finish is not None:
+            info["finish_reasons"].append(_enum_to_str(finish))
+        finish_message = getattr(candidate, "finish_message", None)
+        if finish_message:
+            info.setdefault("finish_messages", []).append(str(finish_message))
+        for rating in getattr(candidate, "safety_ratings", None) or []:
+            if getattr(rating, "blocked", False):
+                info["safety_blocked"].append(
+                    _enum_to_str(getattr(rating, "category", None))
+                )
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                info["text"].append(str(text))
+
+    return info
+
+
+def _imagen_empty_reason(response: Any) -> str:
+    """Explain why an Imagen response carried no images."""
+    reasons: list[str] = []
+    for gi in getattr(response, "generated_images", None) or []:
+        rai = getattr(gi, "rai_filtered_reason", None)
+        if rai:
+            reasons.append(f"rai_filtered_reason={rai}")
+        err = getattr(gi, "error", None)
+        if err:
+            reasons.append(f"error={err}")
+    if not reasons:
+        return (
+            "The response contained no generated_images. This usually means "
+            "the prompt was filtered or the model name is invalid."
+        )
+    return "; ".join(reasons)
+
+
+def _format_gemini_diagnostics(diagnostics: list[dict[str, Any]]) -> str:
+    """Human-readable summary of per-call Gemini image diagnostics."""
+    finish: list[str] = []
+    block: list[str] = []
+    safety: list[str] = []
+    text: list[str] = []
+    for diag in diagnostics:
+        finish.extend(diag.get("finish_reasons") or [])
+        if diag.get("prompt_block_reason"):
+            block.append(diag["prompt_block_reason"])
+        if diag.get("prompt_block_message"):
+            block.append(diag["prompt_block_message"])
+        safety.extend(diag.get("safety_blocked") or [])
+        text.extend(diag.get("text") or [])
+
+    parts: list[str] = []
+    if block:
+        parts.append(f"prompt blocked: {', '.join(block)}")
+    if safety:
+        parts.append(f"safety categories blocked: {', '.join(sorted(set(safety)))}")
+    non_stop_finish = sorted({f for f in finish if f and f != "STOP"})
+    if non_stop_finish:
+        parts.append(f"finish_reason: {', '.join(non_stop_finish)}")
+    if text:
+        joined = " | ".join(t.strip() for t in text if t.strip())
+        if joined:
+            # Include a trimmed text sample so refusals are visible to the user.
+            parts.append(f"model text: {joined[:400]}")
+    if not parts:
+        parts.append(
+            "No image data in response. Verify the model name supports image "
+            "generation (e.g. gemini-2.5-flash-image, imagen-4.0-generate-001)."
+        )
+    return " ".join(parts)
+
+
+def _enum_to_str(value: Any) -> str | None:
+    """Normalize Gemini enum-like values (FinishReason, BlockReason, etc.) to str."""
+    if value is None:
+        return None
+    name = getattr(value, "name", None)
+    if name:
+        return str(name)
+    return str(value)
 
 
 def get_image_generation_model(

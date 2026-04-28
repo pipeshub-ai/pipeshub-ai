@@ -125,6 +125,10 @@ def is_base64_image(s: str) -> bool:
     return False
 
 
+# Re-exported from its canonical home in aimodels.py for backward compat.
+from app.utils.aimodels import llm_likely_accepts_vision_content as llm_likely_accepts_vision_content  # noqa: E402, F401
+
+
 class CitationRefMapper:
     """Builds a bidirectional mapping between tiny citation refs (ref1, ref2, ...) and full block web URLs.
 

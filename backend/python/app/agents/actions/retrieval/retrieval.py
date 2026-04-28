@@ -20,7 +20,11 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import CitationRefMapper, build_message_content_array, get_flattened_results
+from app.utils.chat_helpers import (
+    CitationRefMapper,
+    build_message_content_array,
+    get_flattened_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,16 +288,9 @@ class Retrieval:
                 graph_provider=graph_provider
             )
 
-            is_multimodal_llm = False
-            try:
-                llm_config = self.state.get("llm")
-                if hasattr(llm_config, 'model_name'):
-                    model_name = str(llm_config.model_name).lower()
-                    is_multimodal_llm = any(m in model_name for m in [
-                        'gpt-4-vision', 'gpt-4o', 'claude-3', 'gemini-pro-vision'
-                    ])
-            except Exception:
-                pass
+            # ``build_initial_state`` computes this via
+            # ``llm_likely_accepts_vision_content`` and stores it in state.
+            is_multimodal_llm = bool(self.state.get("is_multimodal_llm", False))
 
             virtual_record_id_to_result = {}
             # Retrieve virtual_to_record_map from search results — same as chatbot.

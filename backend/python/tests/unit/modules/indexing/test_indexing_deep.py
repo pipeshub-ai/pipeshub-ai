@@ -151,7 +151,9 @@ class TestInitializeCollection:
 
         await pipeline._initialize_collection(embedding_size=1024)
 
-        # Should create 2 indexes (virtualRecordId and orgId)
+        # Should create 2 indexes (virtualRecordId, orgId). The legacy
+        # ``_kind`` sentinel index was removed when the embedding-model
+        # spec moved to the ConfigurationService.
         assert pipeline.vector_db_service.create_index.await_count == 2
 
 
@@ -183,7 +185,11 @@ class TestGetEmbeddingModelInstance:
             result = await pipeline.get_embedding_model_instance()
 
         assert result is True
-        pipeline._initialize_collection.assert_awaited_once_with(embedding_size=1024)
+        pipeline._initialize_collection.assert_awaited_once_with(
+            embedding_size=1024,
+            embedding_provider=None,
+            embedding_model_name=None,
+        )
 
     @pytest.mark.asyncio
     async def test_configured_default_model(self):

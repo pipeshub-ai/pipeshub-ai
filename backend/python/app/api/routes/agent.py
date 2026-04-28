@@ -3348,6 +3348,7 @@ async def get_assistant_agent(
 
             if connector_type == Connectors.KNOWLEDGE_BASE.value:
                 continue
+
             # Build knowledge source entry
             knowledge_entry = {
                 "connectorId": connector_id,
