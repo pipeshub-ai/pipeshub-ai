@@ -6,7 +6,6 @@ export interface WebSearchProviderConfiguration {
   configuration: Record<string, any>;
   providerKey: string;
   isDefault: boolean;
-  [key: string]: any;
 }
 
 export interface WebSearchSettings {

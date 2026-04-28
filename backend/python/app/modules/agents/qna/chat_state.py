@@ -339,19 +339,6 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
                 "configuration": configuration if isinstance(configuration, dict) else {},
             }
 
-    legacy_web_search = chat_query.get("webSearch")
-    if isinstance(legacy_web_search, dict):
-        provider = str(legacy_web_search.get("provider", "")).strip().lower()
-        provider_key = str(legacy_web_search.get("providerKey", "")).strip()
-        if provider:
-            return {
-                "provider": provider,
-                "configuration": {"apiKey": provider_key} if provider_key else {},
-            }
-    elif isinstance(legacy_web_search, str):
-        provider = legacy_web_search.strip().lower()
-        if provider:
-            return {"provider": provider, "configuration": {}}
 
     return None
 

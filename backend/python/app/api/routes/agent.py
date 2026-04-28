@@ -2136,7 +2136,6 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
     except HTTPException:
         raise
     except Exception as e:
-        services["logger"].error(f"Error checking web search provider usage: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 

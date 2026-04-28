@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
+from app.utils.logger import create_logger
+
+logger = create_logger(__name__)
+
 # ---------------------------------------------------------------------------
 # HTTP status constants
 # ---------------------------------------------------------------------------
@@ -99,7 +103,14 @@ def _get_supported_profiles() -> list[str]:
     return supported
 
 
-_PROFILES = _get_supported_profiles()
+_PROFILES: list[str] | None = None
+
+
+def _get_profiles() -> list[str]:
+    global _PROFILES
+    if _PROFILES is None:
+        _PROFILES = _get_supported_profiles()
+    return _PROFILES
 
 
 def _try_curl_cffi(
@@ -117,10 +128,10 @@ def _try_curl_cffi(
         return None
 
     if profiles is None:
-        if not _PROFILES:
+        available = _get_profiles()
+        if not available:
             return None
-        # Default behavior: try up to 3 different profiles.
-        profiles_to_try = random.sample(_PROFILES, min(3, len(_PROFILES)))
+        profiles_to_try = random.sample(available, min(3, len(available)))
     else:
         # Constrained mode: callsites can force a single profile.
         profiles_to_try = profiles
@@ -152,7 +163,7 @@ def _try_curl_cffi(
 
                 # 403 → try next profile
                 if resp.status_code == HTTP_STATUS_FORBIDDEN:
-                    print(f"403 error for {url} with profile {profile}")
+                    logger.debug("403 for %s with profile %s", url, profile)
                     continue
 
                 # Other non-retryable errors
@@ -167,8 +178,8 @@ def _try_curl_cffi(
                     )
 
         except Exception:
-            print(f"Exception for {url} with profile {profile}")
-            continue  # TLS error, connection reset → try next profile
+            logger.debug("Exception for %s with profile %s", url, profile, exc_info=True)
+            continue
 
     return None
 
@@ -322,13 +333,13 @@ def fetch_url(
     for name, strategy_fn in strategies:
         for attempt in range(max_retries + 1):
             if verbose:
-                print(f"  [{name}] attempt {attempt + 1}/{max_retries + 1}...")
+                logger.debug("[%s] attempt %d/%d…", name, attempt + 1, max_retries + 1)
 
             try:
                 result = strategy_fn()
                 if result is not None:
                     if verbose:
-                        print(f"  ✓ Success via {result.strategy}")
+                        logger.debug("Success via %s", result.strategy)
                     return result
             except Exception as e:
                 errors.append(f"{e}")
@@ -338,7 +349,7 @@ def fetch_url(
                 time.sleep(0.5 * (attempt + 1) + random.uniform(0, 0.3))
 
         if verbose:
-            print(f"  ✗ {name} exhausted")
+            logger.debug("%s exhausted", name)
 
     raise FetchError(
         errors[0] if errors else "No error details."

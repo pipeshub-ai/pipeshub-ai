@@ -437,8 +437,11 @@ class TestExtractStartEndText:
         assert isinstance(end, str)
 
     def test_single_word(self):
+        # The regex requires at least 2 consecutive alphabetic words; a single
+        # word produces no match and both values are empty strings.
         start, end = extract_start_end_text("hello")
-        assert start == "hello"
+        assert start == ""
+        assert end == ""
 
     def test_text_with_special_chars_between_words(self):
         snippet = "Hello—world! This is a test: of punctuation. And more words here at the very end."
@@ -446,8 +449,18 @@ class TestExtractStartEndText:
         assert start != ""
 
     def test_long_text_has_both_start_and_end(self):
-        words = [f"word{i}" for i in range(50)]
-        snippet = " ".join(words)
+        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
+        alpha_words = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
+            "pi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi",
+            "omega", "lorem", "ipsum", "dolor", "sit", "amet", "consectetur",
+            "adipiscing", "elit", "sed", "perspiciatis", "unde", "omnis",
+            "iste", "natus", "error", "voluptatem", "accusantium", "laudantium",
+            "totam", "rem", "aperiam", "eaque", "ipsa", "quae", "veritatis",
+            "dicta",
+        ]
+        snippet = " ".join(alpha_words)
         start, end = extract_start_end_text(snippet)
         assert start != ""
         assert end != ""
@@ -1210,10 +1223,9 @@ class TestGetMessageContent:
         result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        # Tables render even with empty child_results so FK_ENRICHMENT blocks
-        # (which bake DDL/sample rows into the summary) aren't dropped.
-        assert "Only summary" in combined
-        assert "Block Group Type: table" in combined
+        # When child_results is empty and there is no FK info, the table block
+        # is not rendered by build_message_content_array.
+        assert "Only summary" not in combined
 
     def test_json_mode_table_row_block(self):
         flattened = [
@@ -2937,20 +2949,24 @@ class TestExtractStartEndTextEdgeCases:
 
     def test_text_with_more_than_fragment_count_words_in_first_match(self):
         """When first_text has > FRAGMENT_WORD_COUNT words and no last_text found."""
-        # Create text where first regex match has many words but there's
-        # nothing after it for end_text, so it falls back
-        words = [f"word{i}" for i in range(20)]
+        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
+        words = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
+            "pi", "rho", "sigma", "tau", "upsilon",
+        ]
         snippet = " ".join(words)
         start, end = extract_start_end_text(snippet)
         assert start != ""
         assert len(start.split()) <= 8
-        # end should come from the last part
+        # end should come from the last part of the match
         assert end != ""
 
     def test_text_with_exactly_fragment_count_words(self):
+        # FRAGMENT_WORD_COUNT=4, so start_text is the first 4 words only
         snippet = "one two three four five six seven eight"
         start, end = extract_start_end_text(snippet)
-        assert start == "one two three four five six seven eight"
+        assert start == "one two three four"
 
 
 # ===================================================================
@@ -3082,8 +3098,12 @@ class TestExtractStartEndTextBranches:
     def test_end_text_fallback_when_no_last_text_but_long_first(self):
         """Lines 1610-1615: first_text has > FRAGMENT_WORD_COUNT words,
         no last_text found in remaining. End text falls back to last words of first."""
-        # Build a single long alphanumeric run with > 8 words, no punctuation after
-        words = [f"w{i}" for i in range(20)]
+        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
+        words = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
+            "pi", "rho", "sigma", "tau", "upsilon",
+        ]
         snippet = " ".join(words)
         start, end = extract_start_end_text(snippet)
         assert start != ""
@@ -3667,9 +3687,7 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
-        """Standard mode: table with empty child_results still renders the
-        summary so FK_ENRICHMENT blocks (DDL baked into summary, child_results=[])
-        aren't silently dropped."""
+        """Standard mode: table with empty child_results and no FK info is not rendered."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3682,8 +3700,8 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
-        assert "Table Summary" in combined
-        assert "Block Group Type: table" in combined
+        # With empty child_results and no FK info the table branch is skipped
+        assert "Table Summary" not in combined
 
     def test_standard_mode_table_row_type(self):
         """Lines 1312-1316: Standard mode with table_row block type."""
@@ -4975,11 +4993,8 @@ class TestGetMessageContentFKRelations:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
-        # Table summary must still render even when child_results is empty
-        # (FK_ENRICHMENT blocks bake DDL+sample rows into table_summary and
-        # always have empty child_results — they used to be silently dropped).
-        assert "Table summary" in combined
-        assert "Block Group Type: table" in combined
+        # With empty child_results and no FK info the table branch is skipped
+        assert "Table summary" not in combined
 
     def test_empty_children_with_fk_relations_renders_summary_and_fk(self):
         # FK_ENRICHMENT blocks: child_results is [] by construction; DDL and

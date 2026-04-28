@@ -154,10 +154,11 @@ def create_fetch_url_tool(
             response = fetch_url(url, verbose=True)
 
             if response.status_code != HTTP_STATUS_OK:
+                preview = (response.text or "")[:_MAX_ERROR_PREVIEW_CHARS]
                 return json.dumps({
                     "ok": False,
                     "error": (
-                        f"HTTP {response.status_code} error fetching {url}: {response.text}."
+                        f"HTTP {response.status_code} error fetching {url}: {preview}."
                         + _URL_FALLBACK_HINT
                     ),
                 })
