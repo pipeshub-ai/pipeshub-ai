@@ -202,7 +202,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_nodes(self, keys: list[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
-    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
+    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_from(from_id, from_collection, collection, transaction=self.txn)
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
@@ -503,6 +503,31 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_record_relation(
             from_record_id, to_record_id, relation_type, transaction=self.txn
         )
+
+    async def create_node_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        from_collection: str,
+        to_collection: str,
+        relationship_type: str
+    ) -> None:
+        """
+        Create a relation edge between two arbitrary nodes.
+
+        Delegates to graph_provider for implementation.
+
+        Args:
+            from_id: Source node ID
+            to_id: Target node ID
+            from_collection: Collection of the source node
+            to_collection: Collection of the target node
+            relationship_type: Type of relationship between the two nodes
+        """
+        return await self.graph_provider.create_node_relation(
+            from_id, to_id, from_collection, to_collection, relationship_type, transaction=self.txn
+        )
+
     async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
         """
         Create BELONGS_TO edge from record to record group.
@@ -521,6 +546,16 @@ class GraphTransactionStore(TransactionStore):
             record_id, record_group_id, transaction=self.txn
         )
 
+    async def create_inherit_permissions_relation_record_group_to_app(self, record_group_id: str, app_id: str) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record group to app.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_inherit_permissions_relation_record_group_to_app(
+            record_group_id, app_id, transaction=self.txn
+        )
+
     async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
         """
         Delete INHERIT_PERMISSIONS edge from record to record group.
@@ -537,7 +572,7 @@ class GraphTransactionStore(TransactionStore):
                     "from_id": child_record_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": parent_record_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.RECORDS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }

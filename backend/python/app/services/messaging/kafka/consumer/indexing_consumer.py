@@ -4,7 +4,9 @@ import ssl
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, Optional, override
+from typing import Any, Optional
+
+from typing_extensions import override
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore

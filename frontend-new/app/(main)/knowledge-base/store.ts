@@ -5,7 +5,10 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import { categorizeNode, mergeChildrenIntoTree } from './utils/tree-builder';
-import type { SidebarNodeChildrenPaginationMeta } from './utils/sidebar-child-pagination-meta';
+import type {
+  SidebarHubCursorPaginationMeta,
+  SidebarNodeChildrenPaginationMeta,
+} from './utils/sidebar-child-pagination-meta';
 
 /**
  * Default page size for KB and all-records pagination. Shared across store
@@ -32,7 +35,8 @@ import type {
   AllRecordsSidebarSelection,
   AllRecordsFilter,
   AllRecordsSortConfig,
-  AllRecordsPagination,
+  KnowledgeHubListPagination,
+  KnowledgeHubApiPaginationSlice,
 } from './types';
 
 // Enable Immer support for Map and Set
@@ -84,7 +88,7 @@ interface KnowledgeBaseState {
   } | null;
 
   // Collections mode pagination
-  collectionsPagination: AllRecordsPagination;
+  collectionsPagination: KnowledgeHubListPagination;
 
   // ========================================
   // All Records Mode State
@@ -98,10 +102,10 @@ interface KnowledgeBaseState {
   connectors: Connector[]; // DEPRECATED - will be removed
   appNodes: KnowledgeHubNode[]; // Flat list of app nodes (each becomes own section)
   appChildrenCache: Map<string, KnowledgeHubNode[]>; // Cache for app children
-  /** Server pagination for root app list (getNavigationNodes); null before first page */
-  appRootListPagination: { hasNext: boolean; nextPage: number } | null;
+  /** Server pagination for root app list (getNavigationNodes); null before first fetch */
+  appRootListPagination: SidebarHubCursorPaginationMeta | null;
   /** Server pagination for each app's direct children (getNodeChildren with parent app) */
-  appChildrenPagination: Map<string, { hasNext: boolean; nextPage: number }>;
+  appChildrenPagination: Map<string, SidebarHubCursorPaginationMeta>;
   /** True while a "load more" for root app list is in flight */
   loadingRootAppListMore: boolean;
   /** Nested sidebar trees for non-KB apps (All Records), keyed by app id — mirrors categorizedNodes for KB */
@@ -131,7 +135,7 @@ interface KnowledgeBaseState {
   allRecordsSearchQuery: string;
 
   // All Records pagination
-  allRecordsPagination: AllRecordsPagination;
+  allRecordsPagination: KnowledgeHubListPagination;
 
   // All Records loading states (deprecated fields)
   isLoadingAllRecords: boolean;
@@ -204,10 +208,11 @@ interface KnowledgeBaseActions {
   setSelectedNode: (node: { nodeType: string; nodeId: string } | null) => void;
   clearTableData: () => void;
 
-  // Collections pagination actions
-  setCollectionsPagination: (pagination: AllRecordsPagination) => void;
-  setCollectionsPage: (page: number) => void;
+  // Collections pagination actions (same hub cursor model as All Records)
+  setCollectionsPagination: (pagination: KnowledgeHubListPagination) => void;
+  setCollectionsListUrlCursor: (cursor: string | null) => void;
   setCollectionsLimit: (limit: number) => void;
+  syncCollectionsPaginationMeta: (pagination: KnowledgeHubApiPaginationSlice) => void;
 
   // ========================================
   // All Records Mode Actions
@@ -221,8 +226,8 @@ interface KnowledgeBaseActions {
   setConnectors: (connectors: Connector[]) => void;
   setAppNodes: (nodes: KnowledgeHubNode[]) => void;
   appendAppNodes: (appNodes: KnowledgeHubNode[]) => void;
-  setAppRootListPagination: (p: { hasNext: boolean; nextPage: number } | null) => void;
-  setAppChildPagination: (appId: string, p: { hasNext: boolean; nextPage: number }) => void;
+  setAppRootListPagination: (p: SidebarHubCursorPaginationMeta | null) => void;
+  setAppChildPagination: (appId: string, p: SidebarHubCursorPaginationMeta) => void;
   setLoadingRootAppListMore: (loading: boolean) => void;
   cacheAppChildren: (appId: string, children: KnowledgeHubNode[]) => void;
   setConnectorAppTree: (appId: string, tree: EnhancedFolderTreeNode[]) => void;
@@ -252,8 +257,9 @@ interface KnowledgeBaseActions {
   setAllRecordsSearchQuery: (query: string) => void;
 
   // All Records pagination
-  setAllRecordsPagination: (pagination: AllRecordsPagination) => void;
-  setAllRecordsPage: (page: number) => void;
+  setAllRecordsPagination: (pagination: KnowledgeHubListPagination) => void;
+  /** All Records list: opaque cursor in URL / API (null = first page, send filters + limit). */
+  setAllRecordsListUrlCursor: (cursor: string | null) => void;
   setAllRecordsLimit: (limit: number) => void;
 
   // All Records loading
@@ -269,7 +275,7 @@ interface KnowledgeBaseActions {
 
   // All Records table data
   setAllRecordsTableData: (data: KnowledgeHubApiResponse | null) => void;
-  syncAllRecordsPaginationMeta: (pagination: { totalItems: number; totalPages: number; hasNext: boolean; hasPrev: boolean }) => void;
+  syncAllRecordsPaginationMeta: (pagination: KnowledgeHubApiPaginationSlice) => void;
   setIsLoadingAllRecordsTable: (loading: boolean) => void;
   setAllRecordsTableError: (error: string | null) => void;
 
@@ -328,12 +334,15 @@ const initialState: KnowledgeBaseState = {
   tableDataError: null,
   selectedNode: null,
   collectionsPagination: {
-    page: 1,
     limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
-    totalPages: 0,
     hasNext: false,
     hasPrev: false,
+    listUrlCursor: null,
+    startIndex: undefined,
+    endIndex: undefined,
+    nextCursor: null,
+    prevCursor: null,
   },
 
   // All Records mode state
@@ -358,12 +367,15 @@ const initialState: KnowledgeBaseState = {
   allRecordsSort: { field: 'updatedAt', order: 'desc' },
   allRecordsSearchQuery: '',
   allRecordsPagination: {
-    page: 1,
     limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
-    totalPages: 0,
     hasNext: false,
     hasPrev: false,
+    listUrlCursor: null,
+    startIndex: undefined,
+    endIndex: undefined,
+    nextCursor: null,
+    prevCursor: null,
   },
   isLoadingAllRecords: false,
   isLoadingConnectors: false,
@@ -453,7 +465,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setFilter: (filter) =>
         set((state) => {
           state.filter = { ...state.filter, ...filter };
-          state.collectionsPagination.page = 1; // Reset to page 1 on filter change
+          state.collectionsPagination.listUrlCursor = null;
         }),
 
       hydrateFilter: (filter) =>
@@ -464,19 +476,19 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       clearFilter: () =>
         set((state) => {
           state.filter = {};
-          state.collectionsPagination.page = 1; // Reset to page 1 on filter clear
+          state.collectionsPagination.listUrlCursor = null;
         }),
 
       setSort: (sort) =>
         set((state) => {
           state.sort = sort;
-          state.collectionsPagination.page = 1; // Reset to page 1 on sort change
+          state.collectionsPagination.listUrlCursor = null;
         }),
 
       setSearchQuery: (query) =>
         set((state) => {
           state.searchQuery = query;
-          state.collectionsPagination.page = 1; // Reset to page 1 on search
+          state.collectionsPagination.listUrlCursor = null;
         }),
 
       toggleFolderExpanded: (folderId) =>
@@ -671,20 +683,26 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.collectionsPagination = pagination;
         }),
 
-      setCollectionsPage: (page) =>
+      setCollectionsListUrlCursor: (cursor) =>
         set((state) => {
-          state.collectionsPagination.page = page;
-          state.collectionsPagination.hasNext = page < state.collectionsPagination.totalPages;
-          state.collectionsPagination.hasPrev = page > 1;
+          state.collectionsPagination.listUrlCursor = cursor;
         }),
 
       setCollectionsLimit: (limit) =>
         set((state) => {
           state.collectionsPagination.limit = limit;
-          state.collectionsPagination.page = 1; // Reset to first page when limit changes
-          state.collectionsPagination.totalPages = Math.ceil(state.collectionsPagination.totalItems / limit);
-          state.collectionsPagination.hasNext = 1 < state.collectionsPagination.totalPages;
-          state.collectionsPagination.hasPrev = false;
+          state.collectionsPagination.listUrlCursor = null;
+        }),
+
+      syncCollectionsPaginationMeta: (pagination) =>
+        set((state) => {
+          state.collectionsPagination.totalItems = pagination.totalItems;
+          state.collectionsPagination.hasNext = pagination.hasNext;
+          state.collectionsPagination.hasPrev = pagination.hasPrev;
+          state.collectionsPagination.startIndex = pagination.startIndex;
+          state.collectionsPagination.endIndex = pagination.endIndex;
+          state.collectionsPagination.nextCursor = pagination.nextCursor ?? null;
+          state.collectionsPagination.prevCursor = pagination.prevCursor ?? null;
         }),
 
       // ========================================
@@ -700,12 +718,8 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           state.allRecords = records;
           state.allRecordsPagination.totalItems = records.length;
-          state.allRecordsPagination.totalPages = Math.ceil(
-            records.length / state.allRecordsPagination.limit
-          );
-          state.allRecordsPagination.hasNext =
-            state.allRecordsPagination.page < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = state.allRecordsPagination.page > 1;
+          state.allRecordsPagination.hasNext = false;
+          state.allRecordsPagination.hasPrev = false;
         }),
 
       setConnectors: (connectors) =>
@@ -718,7 +732,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.appNodes = nodes;
         }),
 
-      // Append like chat `CollectionsTab.loadMoreApps`: strict API page order at the end (no re-sort).
+      // Append root apps from cursor “load more” at the end (no re-sort).
       appendAppNodes: (newAppNodes) =>
         set((state) => {
           const existingIds = new Set(state.appNodes.map((n) => n.id));
@@ -773,9 +787,9 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         set((state) => {
           state.allRecordsSidebarSelection = selection;
           state.selectedRecords.clear();
-          // URL drilldown uses `explorer`; keep table page when switching folder in tree.
+          // URL drilldown uses `explorer`; keep list cursor when switching folder in tree.
           if (selection.type !== 'explorer') {
-            state.allRecordsPagination.page = 1;
+            state.allRecordsPagination.listUrlCursor = null;
           }
         }),
 
@@ -830,7 +844,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setAllRecordsFilter: (filter) =>
         set((state) => {
           state.allRecordsFilter = { ...state.allRecordsFilter, ...filter };
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.listUrlCursor = null;
         }),
 
       hydrateAllRecordsFilter: (filter) =>
@@ -841,19 +855,19 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       clearAllRecordsFilter: () =>
         set((state) => {
           state.allRecordsFilter = {};
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.listUrlCursor = null;
         }),
 
       setAllRecordsSort: (sort) =>
         set((state) => {
           state.allRecordsSort = sort;
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.listUrlCursor = null;
         }),
 
       setAllRecordsSearchQuery: (query) =>
         set((state) => {
           state.allRecordsSearchQuery = query;
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.listUrlCursor = null;
         }),
 
       setAllRecordsPagination: (pagination) =>
@@ -861,20 +875,15 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.allRecordsPagination = pagination;
         }),
 
-      setAllRecordsPage: (page) =>
+      setAllRecordsListUrlCursor: (cursor) =>
         set((state) => {
-          state.allRecordsPagination.page = page;
-          state.allRecordsPagination.hasNext = page < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = page > 1;
+          state.allRecordsPagination.listUrlCursor = cursor;
         }),
 
       setAllRecordsLimit: (limit) =>
         set((state) => {
           state.allRecordsPagination.limit = limit;
-          state.allRecordsPagination.page = 1; // Reset to first page when limit changes
-          state.allRecordsPagination.totalPages = Math.ceil(state.allRecordsPagination.totalItems / limit);
-          state.allRecordsPagination.hasNext = 1 < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = false;
+          state.allRecordsPagination.listUrlCursor = null;
         }),
 
       setLoadingAllRecords: (loading) =>
@@ -919,14 +928,16 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.allRecordsTableData = data;
         }),
 
-      // Sync only derived pagination metadata from API response (totalItems, totalPages, hasNext, hasPrev).
-      // Does NOT overwrite page/limit — those are the source of truth from user actions.
-      syncAllRecordsPaginationMeta: (pagination: { totalItems: number; totalPages: number; hasNext: boolean; hasPrev: boolean }) =>
+      // Sync derived pagination metadata from API (cursor-based or legacy page-based).
+      syncAllRecordsPaginationMeta: (pagination) =>
         set((state) => {
           state.allRecordsPagination.totalItems = pagination.totalItems;
-          state.allRecordsPagination.totalPages = pagination.totalPages;
           state.allRecordsPagination.hasNext = pagination.hasNext;
           state.allRecordsPagination.hasPrev = pagination.hasPrev;
+          state.allRecordsPagination.startIndex = pagination.startIndex;
+          state.allRecordsPagination.endIndex = pagination.endIndex;
+          state.allRecordsPagination.nextCursor = pagination.nextCursor ?? null;
+          state.allRecordsPagination.prevCursor = pagination.prevCursor ?? null;
         }),
 
       setIsLoadingAllRecordsTable: (loading) =>

@@ -353,6 +353,7 @@ class TestAbstractMethodInventory:
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
         # Knowledge hub operations
+        "get_node_connector_id",
         "get_knowledge_hub_root_nodes",
         "get_knowledge_hub_children",
         "get_knowledge_hub_search",

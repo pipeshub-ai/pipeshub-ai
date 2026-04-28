@@ -1,48 +1,47 @@
-import type { NodeType } from '../types';
+import type { KnowledgeHubApiResponse, NodeType } from '../types';
 
-type HubPagination = {
-  hasNext: boolean;
-  page: number;
-};
-
+/** Sidebar “load more” uses hub cursor pagination only (no page / client heuristics). */
 export type SidebarNodeChildrenPaginationMeta = {
   hasNext: boolean;
-  nextPage: number;
+  /** Opaque token for the next `getNodeChildren` request; null when no further pages. */
+  nextCursor: string | null;
   nodeType: NodeType;
 };
 
-/** After loading page `requestedPage`, compute meta for the next request. */
-export function sidebarNodeChildrenMetaAfterPage(
-  pagination: HubPagination | undefined,
-  itemsLength: number,
-  pageLimit: number,
-  requestedPage: number,
+export type SidebarHubCursorPaginationMeta = {
+  hasNext: boolean;
+  nextCursor: string | null;
+};
+
+/**
+ * Build sidebar child pagination meta from the hub API `pagination` object.
+ * When pagination is missing, treats as no further pages (no inferred hasNext from item counts).
+ */
+export function sidebarChildrenPaginationFromApi(
+  pagination: KnowledgeHubApiResponse['pagination'] | undefined | null,
   nodeType: NodeType
 ): SidebarNodeChildrenPaginationMeta {
-  if (pagination) {
-    return {
-      hasNext: pagination.hasNext,
-      nextPage: pagination.hasNext ? pagination.page + 1 : pagination.page,
-      nodeType,
-    };
+  if (!pagination) {
+    return { hasNext: false, nextCursor: null, nodeType };
   }
-  const fullPage = itemsLength >= pageLimit;
+  const next = pagination.nextCursor ?? null;
   return {
-    hasNext: fullPage,
-    nextPage: fullPage ? requestedPage + 1 : requestedPage,
+    hasNext: Boolean(pagination.hasNext && next),
+    nextCursor: next,
     nodeType,
   };
 }
 
-/**
- * First-page sidebar cursor (same rules as {@link sidebarNodeChildrenMetaAfterPage} with
- * `requestedPage === 1`).
- */
-export function sidebarNodeChildrenMetaFromResponse(
-  pagination: HubPagination | undefined,
-  itemsLength: number,
-  pageLimit: number,
-  nodeType: NodeType
-): SidebarNodeChildrenPaginationMeta {
-  return sidebarNodeChildrenMetaAfterPage(pagination, itemsLength, pageLimit, 1, nodeType);
+/** Root navigation list (`/knowledge-hub/nodes`) — cursor only. */
+export function sidebarRootPaginationFromApi(
+  pagination: KnowledgeHubApiResponse['pagination'] | undefined | null
+): SidebarHubCursorPaginationMeta {
+  if (!pagination) {
+    return { hasNext: false, nextCursor: null };
+  }
+  const next = pagination.nextCursor ?? null;
+  return {
+    hasNext: Boolean(pagination.hasNext && next),
+    nextCursor: next,
+  };
 }

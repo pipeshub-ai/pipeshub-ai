@@ -6,6 +6,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ConnectorScopes,
+    RecordRelations,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -571,7 +572,7 @@ class EntityEventService(BaseEventService):
             if not kb_app:
                 self.logger.error(f"Failed to get or create KB app for org {orgId}")
                 return {}
-            kb_app_id = kb_app.get('_key')
+            kb_app_id = kb_app.get("_key") or kb_app.get("id")
             current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
 
@@ -615,6 +616,15 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
             await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
             await self.graph_provider.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value)
+
+            # App → KB record group on RECORD_RELATIONS (same as KnowledgeBaseService.create_knowledge_base)
+            await self.graph_provider.create_node_relation(
+                from_id=kb_app_id,
+                to_id=kb_key,
+                from_collection=CollectionNames.APPS.value,
+                to_collection=CollectionNames.RECORD_GROUPS.value,
+                relationship_type=RecordRelations.PARENT_CHILD.value,
+            )
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId} with app connection")
             return {

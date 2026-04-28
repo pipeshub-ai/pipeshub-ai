@@ -2015,6 +2015,7 @@ class NotionConnector(BaseConnector):
                         inherit_permissions=True,
                         parent_external_record_id=parent_ext_id,
                         parent_record_type=parent_record_type,
+                        preview_renderable=False,
                     )
 
                 records_to_create.append((minimal_record, []))
@@ -3051,6 +3052,7 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                preview_renderable=False,
             )
 
         except Exception as e:
@@ -3492,6 +3494,7 @@ class NotionConnector(BaseConnector):
                     inherit_permissions=True,
                     parent_external_record_id=parent_data_source_id,
                     parent_record_type=RecordType.DATASOURCE,  # Parent is a datasource
+                    preview_renderable=False,
                 )
 
                 await self.data_entities_processor.on_new_records([(minimal_record, [])])

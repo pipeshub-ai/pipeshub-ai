@@ -2081,6 +2081,29 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_node_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        from_collection: str,
+        to_collection: str,
+        relation_type: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Create a relation edge between two arbitrary nodes.
+
+        Args:
+            from_id (str): Source node ID
+            to_id (str): Target node ID
+            from_collection (str): Collection of the source node
+            to_collection (str): Collection of the target node
+            relation_type (str): Type of relation edge collection to use
+            transaction (Optional[str]): Optional transaction ID
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_record_groups(
         self,
         record_groups: list,
@@ -2142,6 +2165,50 @@ class IGraphDBProvider(ABC):
         Args:
             record_id (str): Record ID
             record_group_id (str): Record group ID
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    # @abstractmethod
+    # async def get_accessible_records_for_app(
+    #     self,
+    #     user_id: str,
+    #     org_id: str,
+    #     app_id: str,
+    #     root_node_id: str | None = None,
+    #     root_node_type: str | None = None,
+    # ) -> list[str]:
+    #     """
+    #     Get all accessible record IDs for a user within an app (or within a subtree).
+
+    #     Uses top-down BFS with hasRestriction-aware permission checking.
+    #     Prunes entire subtrees when a node is not accessible.
+
+    #     Args:
+    #         user_id (str): The user ID
+    #         org_id (str): The organization ID
+    #         app_id (str): The app/connector ID
+    #         root_node_id (Optional[str]): If provided, start traversal from this node (subtree mode)
+    #         root_node_type (Optional[str]): Type of root node - "RecordGroup" or "Record" (required if root_node_id is set)
+
+    #     Returns:
+    #         list[str]: List of accessible record IDs
+    #     """
+    #     pass
+
+    @abstractmethod
+    async def create_inherit_permissions_relation_record_group_to_app(
+        self,
+        record_group_id: str,
+        app_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record group to app.
+
+        Args:
+            record_group_id (str): Record group ID
+            app_id (str): App (connector) ID
             transaction (Optional[Any]): Optional transaction context
         """
         pass
@@ -3195,6 +3262,31 @@ class IGraphDBProvider(ABC):
     # ==================== Knowledge Hub Operations ====================
 
     @abstractmethod
+    async def get_node_connector_id(
+        self,
+        node_id: str,
+        node_type: str | None,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Return ``connectorId`` for a graph node identified by generic ``id``.
+
+        ``node_type`` uses the same vocabulary as Knowledge Hub parents and
+        related APIs (e.g. ``record``, ``folder``, ``recordGroup``, ``kb``, ``app``).
+        Implementations map this to the native collection (Arango) or label (Neo4j).
+
+        Args:
+            node_id: Generic node identifier (maps to ``id`` / ``_key`` per provider).
+            node_type: Domain node kind; if omitted, providers may use a best-effort
+                lookup only where the backing store allows (e.g. single graph id space).
+            transaction: Optional transaction id.
+
+        Returns:
+            The node's ``connectorId`` when present, otherwise ``None``.
+        """
+        pass
+
+    @abstractmethod
     async def get_knowledge_hub_root_nodes(
         self,
         user_key: str,
@@ -3206,7 +3298,8 @@ class IGraphDBProvider(ABC):
         sort_dir: str,
         *,
         only_containers: bool,
-        transaction: str | None = None,
+        search_query: str | None = None,
+        transaction: str | None = None
     ) -> dict[str, Any]:
         """
         Get root level nodes (Apps) for Knowledge Hub.
@@ -3220,6 +3313,7 @@ class IGraphDBProvider(ABC):
             sort_field: Field to sort by
             sort_dir: Sort direction (ASC/DESC)
             only_containers: Only return nodes with children
+            search_query: Optional search string; filter KB/app names when set
             transaction: Optional transaction context
 
         Returns:
@@ -3290,10 +3384,11 @@ class IGraphDBProvider(ABC):
         size: dict[str, int | None] | None = None,
         *,
         only_containers: bool = False,
-        parent_id: str | None = None,
-        parent_type: str | None = None,
-        record_group_ids: list[str] | None = None,
-        transaction: str | None = None,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[str] = None,
+        flattened: bool = False,
+        strict_permission: bool = False,
+        transaction: Optional[str] = None
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
@@ -3301,6 +3396,10 @@ class IGraphDBProvider(ABC):
         Supports both:
         - Global search (parent_id=None): Search across all accessible nodes
         - Scoped search (parent_id set): Search within a specific parent's hierarchy
+
+        When parent_id is set, flattened controls scope:
+        - False (default): return only direct children of the parent (browse mode)
+        - True: return all descendants under the parent (flattened)
 
         Includes:
         - RecordGroups with direct permissions
@@ -3328,14 +3427,169 @@ class IGraphDBProvider(ABC):
             size: Optional size range filter
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent node ID for scoped search
-            parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
-            record_group_ids: Optional list of record group IDs to restrict visibility.
-                When set, only recordGroup nodes whose IDs are in this list are returned;
-                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
+            parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            flattened: If True and parent_id set, return all descendants; if False, return only direct children
             transaction: Optional transaction ID
 
         Returns:
             Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_search_v2(
+        self,
+        org_id: str,
+        user_key: str,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        partition_offsets: dict[str, int] | None = None,
+        is_prev_page: bool = False,
+        cached_total: int | None = None,
+        search_query: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
+        only_containers: bool = False,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
+        flattened: bool = False,
+        strict_permission: bool = True,
+        transaction: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Knowledge Hub Search V2 with offset-based multi-partition pagination.
+        
+        Key features:
+        - Parallel queries per connector for better performance
+        - Offset-based per-partition pagination for precise resume
+        - Heap-based merge for global sorting
+        - New record_group_ids filter (traversal-based ancestor matching)
+        - Optimized total count calculation (skips fullCount when cached)
+        
+        Note: Cursor filter extraction is handled by the service layer. This method
+        receives clean, pre-extracted parameters ready for query execution.
+        
+        Args:
+            org_id: Organization ID
+            user_key: User's key for permission filtering
+            limit: Page size
+            sort_field: Field to sort by
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            partition_offsets: Per-connector offsets {connector_id: offset}
+            is_prev_page: If True, navigating backwards
+            cached_total: Pre-calculated total from cursor (None triggers calculation)
+            search_query: Optional search query to filter by name
+            node_types: Optional list of node types to filter by
+            record_types: Optional list of record types to filter by
+            origins: Optional list of origins to filter by (KB/CONNECTOR)
+            connector_ids: Optional list of connector IDs to filter by
+            record_group_ids: Optional list of record group IDs for traversal-based filtering
+            indexing_status: Optional list of indexing statuses to filter by
+            created_at: Optional date range filter for creation date
+            updated_at: Optional date range filter for update date
+            size: Optional size range filter
+            only_containers: If True, only return nodes that can have children
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Optional type of parent (app/kb/recordGroup/record/folder)
+            flattened: If True and parent_id set, return all descendants
+            strict_permission: If True, every ancestor must be accessible
+            transaction: Optional transaction ID
+            
+        Returns:
+            Dict with:
+            - 'nodes': List of result nodes
+            - 'total': Total count (from cache or calculated)
+            - 'partition_ranges': {connector_id: (first_idx, last_idx)} for cursor generation
+            - 'has_more_items': Boolean indicating if there are more items beyond current page
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_search_v3(
+        self,
+        org_id: str,
+        user_key: str,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        partition_offsets: dict[str, int] | None = None,
+        is_prev_page: bool = False,
+        cached_total: int | None = None,
+        search_query: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
+        only_containers: bool = False,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
+        flattened: bool = False,
+        strict_permission: bool = True,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Knowledge Hub Search V3 with QPP-based permission traversal.
+
+        This version uses Quantified Path Patterns (QPP) with hasRestriction-aware
+        permission checking for improved security and performance.
+
+        Key improvements over V2:
+        - Uses shared QPP core from fetch_accessible_descendant_records
+        - Per-hop hasRestriction validation with subtree pruning
+        - Parallel per-connector queries for global search
+        - All sorting and pagination done in database (required for cursor pagination)
+
+        Modes:
+        - Global search (no parent_id): Parallel per-connector QPP queries + heap merge
+        - Scoped search (parent_id set): Single QPP query from parent node
+        - Browse mode (flattened=false): Returns only direct children (depth=1)
+        - Flatten mode (flattened=true): Returns all descendants (unlimited depth)
+
+        Args:
+            org_id: Organization ID
+            user_key: User's internal key for permission filtering
+            limit: Page size
+            sort_field: Field to sort by (name/updatedAt/createdAt/sizeInBytes/nodeType)
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            partition_offsets: Per-connector offsets from cursor {connector_id: offset}
+            is_prev_page: If True, navigating backwards (affects offset calculation)
+            cached_total: Pre-calculated total from cursor (None triggers recalculation)
+            search_query: Text search filter on node name
+            node_types: Filter by nodeType (record/folder/recordGroup/app)
+            record_types: Filter by recordType (DOCUMENT/etc)
+            origins: Filter by origin (COLLECTION/CONNECTOR)
+            connector_ids: Filter by specific connector IDs
+            record_group_ids: Filter by specific record group IDs (traversal-based)
+            indexing_status: Filter by indexing status
+            created_at: Date range filter for creation timestamp
+            updated_at: Date range filter for update timestamp
+            size: Size range filter in bytes
+            only_containers: Only return nodes that can have children
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Type of parent (recordGroup/record/folder)
+            flattened: If True, return all descendants; if False, only direct children
+            strict_permission: If True, enforce strict permission checks
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with:
+            - 'nodes': List of result nodes
+            - 'total': Total count (from cache or calculated)
+            - 'partition_ranges': {connector_id: (first_idx, last_idx)} for cursor generation
+            - 'has_more_items': Boolean indicating if there are more items beyond current page
         """
         pass
 

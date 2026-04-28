@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -20,7 +20,6 @@ import {
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
-  ChatWidgetWrapper,
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
@@ -62,9 +61,14 @@ import {
   parseAllRecordsParams,
   buildFilterUrl,
   buildNavUrl as buildNavUrlFn,
+  HUB_LIST_KEYS_STRIP_WHEN_CURSOR,
 } from './url-params';
 import { getIsAllRecordsMode } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
+import {
+  sidebarChildrenPaginationFromApi,
+  sidebarRootPaginationFromApi,
+} from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
@@ -79,6 +83,20 @@ import {
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 
+/** Drop stale hub table responses when the browser URL already moved (e.g. child drill-in). */
+function kbLocationMatchesTableFetch(
+  allRecords: boolean,
+  reqNodeType: string | undefined,
+  reqNodeId: string | undefined
+): boolean {
+  if (typeof window === 'undefined') return true;
+  const sp = new URLSearchParams(window.location.search);
+  if (getIsAllRecordsMode(sp) !== allRecords) return false;
+  const nt = sp.get('nodeType') ?? undefined;
+  const nid = sp.get('nodeId') ?? undefined;
+  return nt === (reqNodeType ?? undefined) && nid === (reqNodeId ?? undefined);
+}
+
 function KnowledgeBasePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -90,6 +108,9 @@ function KnowledgeBasePageContent() {
   const kbId = searchParams.get('kbId');
   const folderId = searchParams.get('folderId');
   const nodeId = searchParams.get('nodeId');
+
+  /** Re-run hub table fetch when any query param changes (incl. `cursor`); `useSearchParams` identity can miss cursor-only updates. Store `listUrlCursor` stays out of deps to avoid the drill-in race. */
+  const hubTableUrlQueryKey = searchParams.toString();
 
   const {
     // Collections mode state
@@ -110,9 +131,9 @@ function KnowledgeBasePageContent() {
     setIsLoadingTableData,
     setTableDataError,
     setSelectedNode,
-    setCollectionsPagination,
-    setCollectionsPage,
     setCollectionsLimit,
+    setCollectionsListUrlCursor,
+    syncCollectionsPaginationMeta,
     collectionsPagination,
     clearTableData,
     // All Records mode state
@@ -139,6 +160,7 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setLoadingFlatCollections,
     setAllRecordsLimit,
+    setAllRecordsListUrlCursor,
     // Refresh state
     isRefreshing,
     setIsRefreshing,
@@ -252,6 +274,13 @@ function KnowledgeBasePageContent() {
 
   const hasHydratedFromUrl = useRef(false);
   const isFirstUrlSyncRender = useRef(true);
+  /**
+   * After `clearFilter` / `clearAllRecordsFilter` + `router.push`, URL sync can run in the same
+   * commit with stale `searchParams` (still the old node) while the store already cleared
+   * `listUrlCursor` — that would `router.replace` and strip `cursor` from the old URL (page 1).
+   * Skip store→URL sync until `searchParams` reflects the navigation target.
+   */
+  const pendingUrlSyncUntilRef = useRef<string | null>(null);
 
   // Hydration: Parse URL params into store once the URL is readable.
   // useSearchParams() can mount empty before the real query is available; defer until it matches
@@ -274,32 +303,62 @@ function KnowledgeBasePageContent() {
 
     if (allRecords) {
       const parsed = parseAllRecordsParams(searchParams);
-      if (Object.keys(parsed.filter).length > 0) store.hydrateAllRecordsFilter(parsed.filter);
-      if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
-        store.setAllRecordsSort(parsed.sort);
-      }
-      // Set page/limit after sort (sort resets page to 1)
-      if (parsed.limit !== 50) store.setAllRecordsLimit(parsed.limit);
-      if (parsed.page !== 1) store.setAllRecordsPage(parsed.page);
-      if (parsed.searchQuery) {
-        store.setAllRecordsSearchQuery(parsed.searchQuery);
-        setIsSearchOpen(true);
+      if (parsed.listUrlCursor) {
+        if (parsed.limit !== 50) store.setAllRecordsLimit(parsed.limit);
+        store.setAllRecordsListUrlCursor(parsed.listUrlCursor);
+      } else {
+        if (Object.keys(parsed.filter).length > 0) store.hydrateAllRecordsFilter(parsed.filter);
+        if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
+          store.setAllRecordsSort(parsed.sort);
+        }
+        if (parsed.limit !== 50) store.setAllRecordsLimit(parsed.limit);
+        store.setAllRecordsListUrlCursor(null);
+        if (parsed.searchQuery) {
+          store.setAllRecordsSearchQuery(parsed.searchQuery);
+          setIsSearchOpen(true);
+        }
       }
     } else {
       const parsed = parseCollectionsParams(searchParams);
-      if (Object.keys(parsed.filter).length > 0) store.hydrateFilter(parsed.filter);
-      if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
-        store.setSort(parsed.sort);
-      }
-      // Set page/limit after sort (sort resets page to 1)
-      if (parsed.limit !== 50) store.setCollectionsLimit(parsed.limit);
-      if (parsed.page !== 1) store.setCollectionsPage(parsed.page);
-      if (parsed.searchQuery) {
-        store.setSearchQuery(parsed.searchQuery);
-        setIsSearchOpen(true);
+      if (parsed.listUrlCursor) {
+        if (parsed.limit !== 50) store.setCollectionsLimit(parsed.limit);
+        store.setCollectionsListUrlCursor(parsed.listUrlCursor);
+      } else {
+        if (Object.keys(parsed.filter).length > 0) store.hydrateFilter(parsed.filter);
+        if (parsed.sort.field !== 'updatedAt' || parsed.sort.order !== 'desc') {
+          store.setSort(parsed.sort);
+        }
+        if (parsed.limit !== 50) store.setCollectionsLimit(parsed.limit);
+        store.setCollectionsListUrlCursor(null);
+        if (parsed.searchQuery) {
+          store.setSearchQuery(parsed.searchQuery);
+          setIsSearchOpen(true);
+        }
       }
     }
   }, [searchParams]);
+
+  /**
+   * Hub list pagination: initial hydration parses `cursor` once. Later changes (browser
+   * back/forward, cursor-only `router.replace`) update the URL without re-running that
+   * gate — keep store `listUrlCursor` aligned so fetch and serialize use the URL token.
+   */
+  useEffect(() => {
+    if (!hasHydratedFromUrl.current) return;
+    const c = searchParams.get('cursor');
+    if (!c) return;
+
+    const allRecords = getIsAllRecordsMode(searchParams);
+    const st = useKnowledgeBaseStore.getState();
+    if (allRecords) {
+      if (st.allRecordsPagination.listUrlCursor === c) return;
+      setAllRecordsListUrlCursor(c);
+      return;
+    }
+
+    if (st.collectionsPagination.listUrlCursor === c) return;
+    setCollectionsListUrlCursor(c);
+  }, [hubTableUrlQueryKey, searchParams, setAllRecordsListUrlCursor, setCollectionsListUrlCursor]);
 
   // URL sync: Write store state to URL when filter/sort/pagination/search changes
   useEffect(() => {
@@ -309,6 +368,24 @@ function KnowledgeBasePageContent() {
       return;
     }
     if (!hasHydratedFromUrl.current) return;
+
+    const pending = pendingUrlSyncUntilRef.current;
+    if (pending !== null) {
+      const nid = searchParams.get('nodeId');
+      const fid = searchParams.get('folderId');
+      let urlMatchesPending = false;
+      if (pending.startsWith('legacy:')) {
+        urlMatchesPending = fid === pending.slice(7);
+      } else if (pending === '') {
+        urlMatchesPending = !nid && !fid;
+      } else {
+        urlMatchesPending = nid === pending;
+      }
+      if (!urlMatchesPending) {
+        return;
+      }
+      pendingUrlSyncUntilRef.current = null;
+    }
 
     // Always read the latest store snapshot here. This effect can run in the same commit as
     // hydration; React closures may still hold the pre-hydration filter, which would serialize
@@ -329,14 +406,20 @@ function KnowledgeBasePageContent() {
       filterParams = serializeAllRecordsParams(
         store.allRecordsFilter,
         store.allRecordsSort,
-        { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+        {
+          limit: store.allRecordsPagination.limit,
+          listUrlCursor: store.allRecordsPagination.listUrlCursor ?? null,
+        },
         debouncedAllRecordsSearchQuery
       );
     } else {
       filterParams = serializeCollectionsParams(
         store.filter,
         store.sort,
-        { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+        {
+          limit: store.collectionsPagination.limit,
+          listUrlCursor: store.collectionsPagination.listUrlCursor ?? null,
+        },
         debouncedSearchQuery
       );
     }
@@ -348,8 +431,8 @@ function KnowledgeBasePageContent() {
       router.replace(newUrl);
     }
   }, [
-    filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
-    allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
+    filter, sort, collectionsPagination.listUrlCursor, collectionsPagination.limit, debouncedSearchQuery,
+    allRecordsFilter, allRecordsSort, allRecordsPagination.limit, allRecordsPagination.listUrlCursor, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
   ]);
 
@@ -443,7 +526,6 @@ function KnowledgeBasePageContent() {
   // Upload store actions
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
 
-  const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
   const accessToken = useAuthStore((s) => s.accessToken);
 
   // Sync current folder from URL params (Collections mode only).
@@ -461,7 +543,6 @@ function KnowledgeBasePageContent() {
       try {
         setLoadingFlatCollections(true);
         const response = await KnowledgeHubApi.getNavigationNodes({
-          page: 1,
           limit: SIDEBAR_PAGINATION_PAGE_SIZE,
           include: 'counts',
           sortBy: 'updatedAt',
@@ -474,15 +555,7 @@ function KnowledgeBasePageContent() {
         const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
         setAppNodes([...kbApps, ...connectorApps]);
 
-        const p = response.pagination;
-        setAppRootListPagination(
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : null
-        );
+        setAppRootListPagination(sidebarRootPaginationFromApi(response.pagination));
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         toast.error('Failed to load sidebar', {
@@ -551,23 +624,13 @@ function KnowledgeBasePageContent() {
       try {
         const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
           onlyContainers: true,
-          page: 1,
           limit: SIDEBAR_PAGINATION_PAGE_SIZE,
           sortBy: 'name',
           sortOrder: 'asc',
         });
         cacheAppChildren(app.id, response.items);
 
-        const pag = response.pagination;
-        setAppChildPagination(
-          app.id,
-          pag
-            ? {
-                hasNext: pag.hasNext,
-                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-              }
-            : { hasNext: false, nextPage: 1 }
-        );
+        setAppChildPagination(app.id, sidebarChildrenPaginationFromApi(response.pagination, 'app'));
 
         if (isKbApp) {
           setNodes(response.items);
@@ -610,12 +673,21 @@ function KnowledgeBasePageContent() {
       const currentAllRecordsFilter = currentState.allRecordsFilter;
       const currentAllRecordsSort = currentState.allRecordsSort;
 
+      const urlCursor =
+        typeof window !== 'undefined'
+          ? new URLSearchParams(window.location.search).get('cursor')
+          : null;
+      const effectivePagination =
+        !currentPagination.listUrlCursor && urlCursor
+          ? { ...currentPagination, listUrlCursor: urlCursor }
+          : currentPagination;
+
       // Build API query params using the new utility
       // Include allRecordsSearchQuery from store to enable API search
       const params = buildAllRecordsFilterParams(
         { ...currentAllRecordsFilter, searchQuery: currentAllRecordsSearchQuery },
         currentAllRecordsSort,
-        currentPagination
+        effectivePagination
       );
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
@@ -627,15 +699,24 @@ function KnowledgeBasePageContent() {
           nodeId,
           params
         );
+        if (!kbLocationMatchesTableFetch(true, nodeType, nodeId)) return;
       } else {
         // Root level - fetch all records
         data = await KnowledgeHubApi.getAllRootItems(params);
+        if (!kbLocationMatchesTableFetch(true, undefined, undefined)) return;
       }
       setAllRecordsTableData(data);
-      // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
-      // without overwriting user-controlled page/limit to avoid triggering effect loops
+      // Sync cursor list metadata from API (hub list; folder table + All Records).
       if (data.pagination) {
-        syncAllRecordsPaginationMeta(data.pagination);
+        syncAllRecordsPaginationMeta({
+          totalItems: data.pagination.totalItems,
+          hasNext: data.pagination.hasNext,
+          hasPrev: data.pagination.hasPrev,
+          startIndex: data.pagination.startIndex,
+          endIndex: data.pagination.endIndex,
+          nextCursor: data.pagination.nextCursor,
+          prevCursor: data.pagination.prevCursor,
+        });
       }
     } catch (error) {
       console.error('Error fetching all records:', error);
@@ -659,7 +740,8 @@ function KnowledgeBasePageContent() {
   const allRecordsNodeType = isAllRecordsMode ? searchParams.get('nodeType') : null;
   const allRecordsNodeId = isAllRecordsMode ? searchParams.get('nodeId') : null;
 
-  // All Records mode: Fetch data on initial load or when navigating to a different node
+  // All Records: fetch on node / mode / URL query changes. Omit store listUrlCursor from deps
+  // (drill-in race). Use hubTableUrlQueryKey so cursor-only `router.replace` still refetches.
   useEffect(() => {
     if (!isAllRecordsMode) return;
 
@@ -670,7 +752,59 @@ function KnowledgeBasePageContent() {
       // Root level - show all records
       fetchAllRecordsTableData();
     }
-  }, [isAllRecordsMode, allRecordsNodeType, allRecordsNodeId]);
+  }, [isAllRecordsMode, allRecordsNodeType, allRecordsNodeId, hubTableUrlQueryKey, fetchAllRecordsTableData]);
+
+  // Hub list cursor: align store with browser back/forward (URL is source of truth on popstate).
+  useEffect(() => {
+    const onPopState = () => {
+      const sp = new URLSearchParams(window.location.search);
+      const c = sp.get('cursor') || null;
+      if (getIsAllRecordsMode(sp)) {
+        useKnowledgeBaseStore.getState().setAllRecordsListUrlCursor(c);
+      } else {
+        useKnowledgeBaseStore.getState().setCollectionsListUrlCursor(c);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // All Records: if `cursor` is set, strip redundant query keys (same behavior as legacy all-records-page).
+  useEffect(() => {
+    if (!hasHydratedFromUrl.current || !getIsAllRecordsMode(searchParams)) return;
+    const cursor = searchParams.get('cursor');
+    if (!cursor) return;
+    const hasExtra = HUB_LIST_KEYS_STRIP_WHEN_CURSOR.some((k) => searchParams.has(k));
+    if (!hasExtra) return;
+    const newParams = new URLSearchParams();
+    newParams.set('cursor', cursor);
+    newParams.set('view', 'all-records');
+    const nt = searchParams.get('nodeType');
+    const nid = searchParams.get('nodeId');
+    if (nt) newParams.set('nodeType', nt);
+    if (nid) newParams.set('nodeId', nid);
+    router.replace(`/knowledge-base?${newParams.toString()}`);
+  }, [router, searchParams]);
+
+  // Collections: if `cursor` is set, strip redundant filter/sort keys (same hub contract as All Records).
+  useEffect(() => {
+    if (!hasHydratedFromUrl.current || getIsAllRecordsMode(searchParams)) return;
+    const cursor = searchParams.get('cursor');
+    if (!cursor) return;
+    const hasExtra = HUB_LIST_KEYS_STRIP_WHEN_CURSOR.some((k) => searchParams.has(k));
+    if (!hasExtra) return;
+    const newParams = new URLSearchParams();
+    newParams.set('cursor', cursor);
+    const kbId = searchParams.get('kbId');
+    const folderId = searchParams.get('folderId');
+    const nt = searchParams.get('nodeType');
+    const nid = searchParams.get('nodeId');
+    if (kbId) newParams.set('kbId', kbId);
+    if (folderId) newParams.set('folderId', folderId);
+    if (nt) newParams.set('nodeType', nt);
+    if (nid) newParams.set('nodeId', nid);
+    router.replace(`/knowledge-base?${newParams.toString()}`);
+  }, [router, searchParams]);
 
   // All Records mode: Re-fetch when filter or sort changes
   const isFirstFilterSortFetch = useRef(true);
@@ -684,21 +818,36 @@ function KnowledgeBasePageContent() {
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
-  // All Records mode: Re-fetch when pagination page changes
-  useEffect(() => {
-    if (isAllRecordsMode) {
-      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-      prevAllRecordsPageRef.current = allRecordsPagination.page;
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
-  }, [allRecordsPagination.page]);
-
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
     if (isAllRecordsMode && allRecordsPagination.limit !== DEFAULT_PAGE_SIZE) {
       fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
     }
   }, [allRecordsPagination.limit]);
+
+  const handleHubListCursorStep = useCallback(
+    (direction: 'prev' | 'next') => {
+      const st = useKnowledgeBaseStore.getState();
+      if (isAllRecordsMode) {
+        const p = st.allRecordsTableData?.pagination;
+        if (!p) return;
+        if (direction === 'next' && p.nextCursor) {
+          setAllRecordsListUrlCursor(p.nextCursor);
+        } else if (direction === 'prev' && p.prevCursor) {
+          setAllRecordsListUrlCursor(p.prevCursor);
+        }
+      } else {
+        const p = st.tableData?.pagination;
+        if (!p) return;
+        if (direction === 'next' && p.nextCursor) {
+          setCollectionsListUrlCursor(p.nextCursor);
+        } else if (direction === 'prev' && p.prevCursor) {
+          setCollectionsListUrlCursor(p.prevCursor);
+        }
+      }
+    },
+    [isAllRecordsMode, setAllRecordsListUrlCursor, setCollectionsListUrlCursor]
+  );
 
   // All Records mode: Transform API response items to include source display info
   const allRecordsItems = useMemo(() => {
@@ -743,12 +892,21 @@ function KnowledgeBasePageContent() {
         const currentFilter = currentState.filter;
         const currentSort = currentState.sort;
 
+        const urlCursor =
+          typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search).get('cursor')
+            : null;
+        const effectivePagination =
+          !currentPagination.listUrlCursor && urlCursor
+            ? { ...currentPagination, listUrlCursor: urlCursor }
+            : currentPagination;
+
         // Build query params with filter/sort/pagination
         // Include searchQuery from store to enable API search
         const params = buildFilterParams(
           { ...currentFilter, searchQuery: currentSearchQuery },
           currentSort,
-          currentPagination
+          effectivePagination
         );
 
         const data = await KnowledgeHubApi.loadFolderData(
@@ -757,11 +915,21 @@ function KnowledgeBasePageContent() {
           params
         );
 
+        if (!kbLocationMatchesTableFetch(false, nodeType, nodeId)) return;
+
         setTableData(data);
 
-        // Update pagination from response
         if (data.pagination) {
-          setCollectionsPagination(data.pagination);
+          const p = data.pagination;
+          syncCollectionsPaginationMeta({
+            totalItems: p.totalItems,
+            hasNext: p.hasNext,
+            hasPrev: p.hasPrev,
+            startIndex: p.startIndex,
+            endIndex: p.endIndex,
+            nextCursor: p.nextCursor,
+            prevCursor: p.prevCursor,
+          });
         }
         setSelectedNode({ nodeType, nodeId });
 
@@ -795,7 +963,6 @@ function KnowledgeBasePageContent() {
               try {
                 const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
                   onlyContainers: true,
-                  page: 1,
                   limit: 50,
                 });
                 const kbFoldersCount =
@@ -843,7 +1010,7 @@ function KnowledgeBasePageContent() {
                   const folderChildren = await KnowledgeHubApi.getNodeChildren(
                     breadcrumb.nodeType as NodeType,
                     breadcrumb.id,
-                    { onlyContainers: true, page: 1, limit: 50 }
+                    { onlyContainers: true, limit: 50 }
                   );
                   const foldersCount =
                     folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
@@ -895,7 +1062,7 @@ function KnowledgeBasePageContent() {
       setIsLoadingTableData,
       setTableDataError,
       setSelectedNode,
-      setCollectionsPagination,
+      syncCollectionsPaginationMeta,
       setCurrentFolderId,
       expandFolderExclusive,
       cacheNodeChildren,
@@ -912,10 +1079,8 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, debouncedSearchQuery, debouncedAllRecordsSearchQuery]
   );
 
-  // Sync with URL params and fetch data
-  // Sync with URL params and fetch data.
-  // When filters/sort/pagination change, the URL sync effect calls router.replace,
-  // which updates searchParams and triggers this effect to refetch with latest store values.
+  // Collections: sync with URL and fetch. Omit store listUrlCursor from deps (drill-in race).
+  // Depend on hubTableUrlQueryKey so cursor-only URL updates refetch (see All Records effect).
   useEffect(() => {
     if (isAllRecordsMode) return;
 
@@ -928,7 +1093,7 @@ function KnowledgeBasePageContent() {
       // No node selected, clear table
       clearTableData();
     }
-  }, [isAllRecordsMode, searchParams, fetchTableData, clearTableData]);
+  }, [isAllRecordsMode, hubTableUrlQueryKey, fetchTableData, clearTableData]);
 
   // Collections mode: Fetch table data when debounced search query changes
   // This effect runs when the user types in the search bar and the debounced value updates
@@ -1244,6 +1409,7 @@ function KnowledgeBasePageContent() {
           }
 
           // Navigate to new collection
+          pendingUrlSyncUntilRef.current = newCollection.id;
           router.push(buildNavUrl({ nodeType: 'recordGroup', nodeId: newCollection.id }));
 
           // Close dialog and reset
@@ -1654,6 +1820,7 @@ function KnowledgeBasePageContent() {
           (item.nodeType === 'record' && item.hasChildren);
 
         if (isNavigableContainer) {
+          pendingUrlSyncUntilRef.current = item.id;
           // Reset filters and search when navigating into a container
           if (isAllRecordsMode) {
             clearAllRecordsFilter();
@@ -1672,6 +1839,7 @@ function KnowledgeBasePageContent() {
       } else {
         // Handle legacy KnowledgeBaseItem format
         if (item.type === 'folder') {
+          pendingUrlSyncUntilRef.current = `legacy:${item.id}`;
           // Reset filters and search when navigating into a folder
           clearFilter();
           setSearchQuery('');
@@ -1770,6 +1938,11 @@ function KnowledgeBasePageContent() {
   // Handle breadcrumb click - navigate to the clicked breadcrumb
   const handleBreadcrumbClick = useCallback(
     (breadcrumb: Breadcrumb) => {
+      if (breadcrumb.id === 'all-records-root') {
+        pendingUrlSyncUntilRef.current = '';
+      } else {
+        pendingUrlSyncUntilRef.current = breadcrumb.id;
+      }
       // Reset filters and search when navigating via breadcrumbs
       if (isAllRecordsMode) {
         clearAllRecordsFilter();
@@ -1981,6 +2154,7 @@ function KnowledgeBasePageContent() {
         // (e.g. permissions fetch for the now-deleted node)
         clearTableData();
         await refreshKbTree();
+        pendingUrlSyncUntilRef.current = '';
         router.push(buildNavUrl({}));
       } else {
         await refreshData();
@@ -2175,13 +2349,7 @@ function KnowledgeBasePageContent() {
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           onRefresh={() => { void handleRefresh(); }}
-          onPageChange={(page) => {
-            if (isAllRecordsMode) {
-              useKnowledgeBaseStore.getState().setAllRecordsPage(page);
-            } else {
-              setCollectionsPage(page);
-            }
-          }}
+          onHubListCursorStep={handleHubListCursorStep}
           onLimitChange={(limit) => {
             if (isAllRecordsMode) {
               setAllRecordsLimit(limit);

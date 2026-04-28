@@ -5,7 +5,7 @@ import type {
   SortConfig,
   AllRecordsFilter,
   AllRecordsSortConfig,
-  AllRecordsPagination,
+  KnowledgeHubListPagination,
   KnowledgeHubQueryParams,
   SizeRange,
   DateFilterType,
@@ -134,18 +134,26 @@ export function convertDateRangeToApiFormat(
  *
  * @param filter Collections mode filter state
  * @param sort Collections mode sort configuration
- * @param pagination Optional pagination config (defaults to page 1, limit 50)
+ * @param pagination Hub list pagination (cursor in URL → API uses `cursor` only)
  * @returns Complete query parameters object for API
  */
 export function buildFilterParams(
   filter: KnowledgeBaseFilter,
   sort: SortConfig,
-  pagination?: { page: number; limit: number }
+  pagination: KnowledgeHubListPagination
 ): KnowledgeHubQueryParams {
+  const include = 'counts,permissions,breadcrumbs,availableFilters';
+
+  if (pagination.listUrlCursor) {
+    return {
+      cursor: pagination.listUrlCursor,
+      include,
+    };
+  }
+
   const params: KnowledgeHubQueryParams = {
-    page: pagination?.page ?? 1,
-    limit: pagination?.limit ?? 50,
-    include: 'counts,permissions,breadcrumbs,availableFilters',
+    limit: pagination.limit,
+    include,
   };
 
   // Search query (omit `q` until long enough — backend returns 400 otherwise)
@@ -227,12 +235,20 @@ export function buildFilterParams(
 export function buildAllRecordsFilterParams(
   filter: AllRecordsFilter,
   sort: AllRecordsSortConfig,
-  pagination: AllRecordsPagination
+  pagination: KnowledgeHubListPagination
 ): KnowledgeHubQueryParams {
+  const include = 'counts,permissions,breadcrumbs,availableFilters';
+
+  if (pagination.listUrlCursor) {
+    return {
+      cursor: pagination.listUrlCursor,
+      include,
+    };
+  }
+
   const params: KnowledgeHubQueryParams = {
-    page: pagination.page,
     limit: pagination.limit,
-    include: 'counts,permissions,breadcrumbs,availableFilters',
+    include,
   };
 
   const searchTrimmedAll = filter.searchQuery?.trim();

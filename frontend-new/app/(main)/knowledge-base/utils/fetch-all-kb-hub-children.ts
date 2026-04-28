@@ -3,28 +3,30 @@ import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
 
 /** Caps refresh pagination if the API returns a stuck `hasNext` (defensive). */
-const MAX_KB_HUB_CHILD_PAGES = 200;
+const MAX_KB_HUB_CHILD_CURSOR_STEPS = 200;
 
 /**
  * Larger page size for bulk hub refresh only — fewer round-trips than sidebar
- * `load more` while still bounded by {@link MAX_KB_HUB_CHILD_PAGES}.
+ * `load more` while still bounded by {@link MAX_KB_HUB_CHILD_CURSOR_STEPS}.
  */
 const KB_HUB_BULK_FETCH_LIMIT = 100;
 
 /**
- * Fetches every page of direct container children for the KB Collections hub app
- * (`parentType` app). Used so the Collections sidebar lists all knowledge bases,
- * not only the first page of items.
+ * Fetches every cursor page of direct container children for the KB Collections hub app
+ * (`parentType` app). Used so the Collections sidebar lists all knowledge bases.
  */
 export async function fetchAllKbAppContainerChildren(appId: string): Promise<KnowledgeHubNode[]> {
   const mergedItems: KnowledgeHubNode[] = [];
-  let page = 1;
+  let cursor: string | null = null;
+  let steps = 0;
   let hasNext = true;
+
   while (hasNext) {
-    if (page > MAX_KB_HUB_CHILD_PAGES) {
-      console.error('[fetchAllKbAppContainerChildren] stopped at max pages', {
+    steps += 1;
+    if (steps > MAX_KB_HUB_CHILD_CURSOR_STEPS) {
+      console.error('[fetchAllKbAppContainerChildren] stopped at max cursor steps', {
         appId,
-        maxPages: MAX_KB_HUB_CHILD_PAGES,
+        maxSteps: MAX_KB_HUB_CHILD_CURSOR_STEPS,
         itemsLoaded: mergedItems.length,
       });
       toast.error('Collections list was truncated', {
@@ -32,20 +34,29 @@ export async function fetchAllKbAppContainerChildren(appId: string): Promise<Kno
       });
       break;
     }
-    const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
-      onlyContainers: true,
-      page,
-      limit: KB_HUB_BULK_FETCH_LIMIT,
-      sortBy: 'name',
-      sortOrder: 'asc',
-    });
+
+    const response = await KnowledgeHubApi.getNodeChildren(
+      'app',
+      appId,
+      cursor
+        ? { onlyContainers: true, cursor }
+        : {
+            onlyContainers: true,
+            limit: KB_HUB_BULK_FETCH_LIMIT,
+            sortBy: 'name',
+            sortOrder: 'asc',
+          }
+    );
     mergedItems.push(...response.items);
-    hasNext = response.pagination?.hasNext ?? false;
+
+    const p = response.pagination;
+    const next = p?.nextCursor ?? null;
+    hasNext = Boolean(p?.hasNext && next);
     if (hasNext && response.items.length === 0) {
-      console.error('[fetchAllKbAppContainerChildren] hasNext with empty page; stopping', { appId, page });
+      console.error('[fetchAllKbAppContainerChildren] hasNext with empty page; stopping', { appId, steps });
       break;
     }
-    page += 1;
+    cursor = next;
   }
   return mergedItems;
 }

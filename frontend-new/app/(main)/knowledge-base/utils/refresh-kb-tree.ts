@@ -6,6 +6,7 @@ import { categorizeNodes } from './tree-builder';
 import { isKbCollectionsHubApp } from './all-records-transformer';
 import { getCollectionsHubBootstrapFromToken } from './collections-hub-app';
 import { fetchAllKbAppContainerChildren } from './fetch-all-kb-hub-children';
+import { sidebarRootPaginationFromApi } from './sidebar-child-pagination-meta';
 
 /**
  * Refreshes the Collections sidebar tree by re-fetching the KB app's children.
@@ -43,7 +44,6 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
       kbApp = boot.app;
     } else {
       const response = await KnowledgeHubApi.getNavigationNodes({
-        page: 1,
         limit: SIDEBAR_PAGINATION_PAGE_SIZE,
         include: 'counts',
         sortBy: 'updatedAt',
@@ -53,15 +53,7 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
       const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
       const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
       setAppNodes([...kbApps, ...connectorApps]);
-      const p = response.pagination;
-      setAppRootListPagination(
-        p
-          ? {
-              hasNext: p.hasNext,
-              nextPage: p.hasNext ? p.page + 1 : p.page,
-            }
-          : null
-      );
+      setAppRootListPagination(sidebarRootPaginationFromApi(response.pagination));
       kbApp = useKnowledgeBaseStore.getState().appNodes.find((n) => isKbCollectionsHubApp(n));
       if (!kbApp) {
         return;
@@ -73,7 +65,7 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
 
   cacheAppChildren(kbApp.id, mergedItems);
   setNodes(mergedItems);
-  setAppChildPagination(kbApp.id, { hasNext: false, nextPage: 1 });
+  setAppChildPagination(kbApp.id, { hasNext: false, nextCursor: null });
 
   const { nodeChildrenCache: freshNodeChildren, addNodes } = useKnowledgeBaseStore.getState();
   const cachedSubfolderNodes = Array.from(freshNodeChildren.values()).flat();

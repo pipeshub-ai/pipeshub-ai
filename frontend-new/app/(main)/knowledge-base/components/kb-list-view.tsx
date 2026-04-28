@@ -592,6 +592,10 @@ function TableRow({
   );
 }
 
+type ListPaginationControl =
+  | { mode: 'page'; onPageChange?: (page: number) => void }
+  | { mode: 'cursor'; onStep: (direction: 'prev' | 'next') => void };
+
 interface KbListViewProps {
   items: TableItem[];
   selectedItems: Set<string>;
@@ -600,18 +604,20 @@ interface KbListViewProps {
   showCheckbox?: boolean;
   sort: SortConfig | AllRecordsSortConfig;
   pagination?: {
-    page: number;
+    page?: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    totalPages?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    startIndex?: number;
+    endIndex?: number;
   };
+  paginationControl?: ListPaginationControl;
   onSelectAll: () => void;
   onSelectItem: (id: string) => void;
   onItemClick: (item: TableItem) => void;
   onSort: (config: SortConfig | AllRecordsSortConfig) => void;
-  onPageChange?: (page: number) => void;
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
@@ -634,7 +640,7 @@ export function KbListView({
   onSelectItem,
   onItemClick,
   onSort,
-  onPageChange,
+  paginationControl,
   onLimitChange,
   onPreview,
   onRename,
@@ -645,7 +651,18 @@ export function KbListView({
   onDownload,
 }: KbListViewProps) {
   const isMobile = useIsMobile();
-  console.log('pagination data', pagination);
+  const pc: ListPaginationControl = paginationControl ?? { mode: 'page', onPageChange: undefined };
+
+  const rangeFrom = !pagination
+    ? 0
+    : pc.mode === 'cursor'
+      ? (pagination.startIndex ?? 0)
+      : ((pagination.page ?? 1) - 1) * pagination.limit + 1;
+  const rangeTo = !pagination
+    ? 0
+    : pc.mode === 'cursor'
+      ? (pagination.endIndex ?? 0)
+      : Math.min((pagination.page ?? 1) * pagination.limit, pagination.totalItems);
 
   return (
     <>
@@ -748,7 +765,7 @@ export function KbListView({
           }}
         >
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            Showing {((pagination.page - 1) * pagination.limit) + 1}-{Math.min(pagination.page * pagination.limit, pagination.totalItems)} of {pagination.totalItems} Items
+            Showing {rangeFrom}-{rangeTo} of {pagination.totalItems} Items
           </Text>
           <Flex gap="3" align="center">
             {/* Previous Button */}
@@ -760,7 +777,14 @@ export function KbListView({
                 opacity: pagination.hasPrev ? 1 : 0.5,
                 color: 'var(--slate-11)',
               }}
-              onClick={() => pagination.hasPrev && onPageChange?.(pagination.page - 1)}
+              onClick={() => {
+                if (!pagination.hasPrev) return;
+                if (pc.mode === 'cursor') {
+                  pc.onStep('prev');
+                } else {
+                  pc.onPageChange?.((pagination.page ?? 1) - 1);
+                }
+              }}
             >
               <MaterialIcon name="chevron_left" size={16} />
               <Text size="2">Previous</Text>
@@ -777,7 +801,7 @@ export function KbListView({
               }}
             >
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {pagination.page}
+                {pc.mode === 'cursor' ? '·' : (pagination.page ?? 1)}
               </Text>
             </Box>
 
@@ -790,7 +814,14 @@ export function KbListView({
                 opacity: pagination.hasNext ? 1 : 0.5,
                 color: 'var(--slate-11)',
               }}
-              onClick={() => pagination.hasNext && onPageChange?.(pagination.page + 1)}
+              onClick={() => {
+                if (!pagination.hasNext) return;
+                if (pc.mode === 'cursor') {
+                  pc.onStep('next');
+                } else {
+                  pc.onPageChange?.((pagination.page ?? 1) + 1);
+                }
+              }}
             >
               <Text size="2">Next</Text>
               <MaterialIcon name="chevron_right" size={16} />

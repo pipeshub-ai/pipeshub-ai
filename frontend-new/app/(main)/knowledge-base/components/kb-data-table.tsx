@@ -31,12 +31,16 @@ interface KbDataTableProps {
   isRefreshing?: boolean;
   error?: string | null;
   pagination?: {
-    page: number;
+    page?: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    totalPages?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    startIndex?: number;
+    endIndex?: number;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   permissions?: NodePermissions;
   currentNodeName?: string;
@@ -47,6 +51,8 @@ interface KbDataTableProps {
   hasSearchQuery?: boolean;
   onRefresh?: () => void;
   onPageChange?: (page: number) => void;
+  /** Hub folder table + All Records: cursor pagination (prev/next). When set, table uses cursors instead of page numbers. */
+  onHubListCursorStep?: (direction: 'prev' | 'next') => void;
   onLimitChange?: (limit: number) => void;
   onItemClick: (item: TableItem) => void;
   onPreview?: (item: TableItem) => void;
@@ -77,6 +83,7 @@ export function KbDataTable({
   hasSearchQuery = false,
   onRefresh,
   onPageChange,
+  onHubListCursorStep,
   onLimitChange,
   onItemClick,
   onPreview,
@@ -102,6 +109,10 @@ export function KbDataTable({
     isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const isAllRecords = pageViewMode === 'all-records';
+  const paginationControl =
+    onHubListCursorStep != null
+      ? { mode: 'cursor' as const, onStep: onHubListCursorStep }
+      : { mode: 'page' as const, onPageChange };
   const activeSelectedItems = isAllRecords ? selectedRecords : selectedItems;
   const activeToggleSelection = isAllRecords ? toggleRecordSelection : toggleItemSelection;
 
@@ -376,7 +387,7 @@ export function KbDataTable({
           selectedItems={activeSelectedItems}
           showCheckbox={showCheckbox}
           pagination={pagination}
-          onPageChange={onPageChange}
+          paginationControl={paginationControl}
           onLimitChange={onLimitChange}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
@@ -397,7 +408,7 @@ export function KbDataTable({
           showCheckbox={showCheckbox}
           sort={isAllRecords ? allRecordsSort : sort}
           pagination={pagination}
-          onPageChange={onPageChange}
+          paginationControl={paginationControl}
           onLimitChange={onLimitChange}
           onSelectAll={handleSelectAll}
           onSort={isAllRecords ? setAllRecordsSort : setSort}
