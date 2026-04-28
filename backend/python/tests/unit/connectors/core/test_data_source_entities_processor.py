@@ -133,6 +133,7 @@ def _make_tx_store():
     tx_store.delete_nodes_and_edges = AsyncMock()
     tx_store.get_app_creator_user = AsyncMock(return_value=None)
     tx_store.create_record_groups_relation = AsyncMock()
+    tx_store.create_node_relation = AsyncMock()
     tx_store.get_edges_to_node = AsyncMock(return_value=[])
     tx_store.batch_upsert_record_relations = AsyncMock()
     return tx_store
@@ -699,7 +700,7 @@ class TestOnNewRecordGroupsAdvanced:
 
     @pytest.mark.asyncio
     async def test_parent_record_group_id_creates_relation(self):
-        """Creates record groups relation when parent_record_group_id is set."""
+        """Creates BELONGS_TO + RECORD_RELATIONS (PARENT_CHILD) when parent_record_group_id is set."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -713,16 +714,17 @@ class TestOnNewRecordGroupsAdvanced:
             parent_record_group_id="parent-rg-internal-id",
         )
 
-        # Add a permission so we reach the parent_record_group_id check after permissions
-        perm = Permission(
-            type=PermissionType.READ,
-            entity_type=EntityType.ORG,
-        )
-
-        await proc.on_new_record_groups([(rg, [perm])])
+        await proc.on_new_record_groups([(rg, [])])
 
         tx_store.create_record_groups_relation.assert_awaited_once_with(
             rg.id, "parent-rg-internal-id"
+        )
+        tx_store.create_node_relation.assert_awaited_once_with(
+            "parent-rg-internal-id",
+            rg.id,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            RecordRelations.PARENT_CHILD.value,
         )
 
     @pytest.mark.asyncio

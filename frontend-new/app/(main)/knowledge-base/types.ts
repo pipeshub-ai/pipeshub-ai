@@ -140,7 +140,8 @@ export interface NodePermission {
  * All parameters are optional and can be combined for flexible filtering.
  */
 export interface KnowledgeHubQueryParams {
-  // Pagination
+  // Pagination (cursor wins when set — omit page/limit/filters on same request)
+  cursor?: string;
   page?: number;              // Page number (≥ 1)
   limit?: number;             // Items per page (1-200)
   
@@ -297,13 +298,19 @@ export interface KnowledgeHubApiResponse {
     nodeType: string;
   } | null;
   items: KnowledgeHubNode[];
+  /** Page fields omitted when API returns cursor-only pagination (e.g. all-records list). */
   pagination: {
-    page: number;
+    page?: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    totalPages?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    currentPageItems?: number;
+    startIndex?: number;
+    endIndex?: number;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   filters?: {
     applied: AppliedFilters;
@@ -428,14 +435,32 @@ export interface AllRecordsSortConfig {
   order: 'asc' | 'desc';
 }
 
-// Pagination for All Records
-export interface AllRecordsPagination {
-  page: number;
+/**
+ * Knowledge hub data tables (Collections folder view + All Records list).
+ * Same API: cursor-based pages; `limit` applies to first-page requests only.
+ */
+export interface KnowledgeHubListPagination {
   limit: number;
   totalItems: number;
-  totalPages: number;
   hasNext: boolean;
   hasPrev: boolean;
+  /** Opaque token in URL; when set, API uses `cursor` only. */
+  listUrlCursor: string | null;
+  startIndex?: number;
+  endIndex?: number;
+  nextCursor?: string | null;
+  prevCursor?: string | null;
+}
+
+/** Subset of hub API `pagination` synced into {@link KnowledgeHubListPagination}. */
+export interface KnowledgeHubApiPaginationSlice {
+  totalItems: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+  startIndex?: number;
+  endIndex?: number;
+  nextCursor?: string | null;
+  prevCursor?: string | null;
 }
 
 // More Connectors link item (navigates to connectors page with the connector panel open)

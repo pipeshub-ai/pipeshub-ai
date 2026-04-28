@@ -14,11 +14,25 @@ const BASE_URL = '/api/v1/knowledgeBase';
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
 
+/** Fills `page` / `totalPages` when the API omits them — non-cursor hub responses that still expect offset fields (e.g. folder table). */
+function ensureHubPaginationShape(data: KnowledgeHubApiResponse): KnowledgeHubApiResponse {
+  const p = data.pagination;
+  if (!p) return data;
+  const limit = p.limit || DEFAULT_PAGE_SIZE;
+  const totalItems = p.totalItems ?? 0;
+  const page = p.page ?? 1;
+  const totalPages = p.totalPages ?? (limit > 0 ? Math.ceil(totalItems / limit) : 0);
+  return {
+    ...data,
+    pagination: { ...p, limit, totalItems, page, totalPages },
+  };
+}
+
 function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
   params?: {
-    page?: number;
+    cursor?: string;
     limit?: number;
     include?: string;
     onlyContainers?: boolean;
@@ -26,13 +40,13 @@ function getNodeChildrenCacheKey(
     sortOrder?: 'asc' | 'desc';
   }
 ) {
-  const page = params?.page ?? 1;
+  const cursor = params?.cursor ?? '';
   const limit = params?.limit ?? 50;
   const include = params?.include ?? '';
   const sortBy = params?.sortBy ?? '';
   const sortOrder = params?.sortOrder ?? '';
   const onlyContainers = params?.onlyContainers !== false;
-  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}\0${sortBy}\0${sortOrder}`;
+  return `${nodeType}\0${nodeId}\0${cursor}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}\0${sortBy}\0${sortOrder}`;
 }
 
 function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
@@ -79,7 +93,6 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
         },
@@ -105,7 +118,6 @@ export const KnowledgeHubApi = {
       {
         params: {
           nodeId,
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
         },
       }
@@ -130,19 +142,25 @@ export const KnowledgeHubApi = {
     nodeId: string,
     params?: Partial<KnowledgeHubQueryParams>
   ) {
+    const defaultInclude = 'counts,permissions,breadcrumbs,availableFilters';
+    const requestParams: Record<string, unknown> = params?.cursor
+      ? {
+          cursor: params.cursor,
+          include: params.include ?? defaultInclude,
+        }
+      : {
+          limit: params?.limit ?? DEFAULT_PAGE_SIZE,
+          include: defaultInclude,
+          ...params,
+        };
+
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
       {
-        params: {
-          page: 1,
-          limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
-          // Data area: Never use onlyContainers (we need both folders AND files)
-          ...params,
-        },
+        params: requestParams,
       }
     );
-    return data;
+    return params?.cursor ? data : ensureHubPaginationShape(data);
   },
 
   /**
@@ -174,16 +192,22 @@ export const KnowledgeHubApi = {
    * @returns Filtered results across all sources
    */
   async searchAllRecords(params: KnowledgeHubQueryParams) {
+    const defaultInclude = 'counts,permissions,availableFilters';
+    const requestParams: Record<string, unknown> = params?.cursor
+      ? {
+          cursor: params.cursor,
+          include: params.include ?? defaultInclude,
+        }
+      : {
+          limit: params.limit ?? DEFAULT_PAGE_SIZE,
+          include: defaultInclude,
+          ...params,
+        };
+
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
-        params: {
-          page: 1,
-          limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,availableFilters',
-          // Data area: Never use onlyContainers (we need all record types)
-          ...params,
-        },
+        params: requestParams,
       }
     );
     return data;
@@ -205,7 +229,7 @@ export const KnowledgeHubApi = {
     nodeId: string,
     params?: {
       onlyContainers?: boolean;
-      page?: number;
+      cursor?: string;
       limit?: number;
       include?: string;
       sortBy?: string;
@@ -217,21 +241,27 @@ export const KnowledgeHubApi = {
     if (existing) return existing;
 
     const onlyContainers = params?.onlyContainers !== false;
+    const defaultInclude = 'counts';
 
     const promise = (async (): Promise<KnowledgeHubApiResponse> => {
       try {
-        const { data } = await apiClient.get<KnowledgeHubApiResponse>(
-          `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
-          {
-            params: {
-              page: params?.page ?? 1,
+        const requestParams: Record<string, unknown> = params?.cursor
+          ? {
+              cursor: params.cursor,
+              include: params.include ?? defaultInclude,
+              onlyContainers,
+            }
+          : {
               limit: params?.limit ?? 50,
-              include: params?.include,
+              include: params?.include ?? defaultInclude,
               onlyContainers,
               ...(params?.sortBy != null ? { sortBy: params.sortBy } : {}),
               ...(params?.sortOrder != null ? { sortOrder: params.sortOrder } : {}),
-            },
-          }
+            };
+
+        const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+          `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
+          { params: requestParams }
         );
 
         return onlyContainers ? withSidebarFilteredItems(data) : data;
@@ -272,16 +302,22 @@ export const KnowledgeHubApi = {
    * @returns All root-level items with metadata
    */
   async getAllRootItems(params?: Partial<KnowledgeHubQueryParams>) {
+    const defaultInclude = 'counts,permissions,breadcrumbs,availableFilters';
+    const requestParams: Record<string, unknown> = params?.cursor
+      ? {
+          cursor: params.cursor,
+          include: params.include ?? defaultInclude,
+        }
+      : {
+          limit: params?.limit ?? DEFAULT_PAGE_SIZE,
+          include: defaultInclude,
+          ...params,
+        };
+
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
-        params: {
-          page: 1,
-          limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
-          // Data area: Never use onlyContainers (we need all root items including records)
-          ...params,
-        },
+        params: requestParams,
       }
     );
     return data;
@@ -330,7 +366,7 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
       { params }
     );
-    return data;
+    return ensureHubPaginationShape(data);
   },
 };
 

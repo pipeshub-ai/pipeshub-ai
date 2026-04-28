@@ -60,6 +60,22 @@ export function buildTreeFromNodes(
 }
 
 /**
+ * KB hub + connector apps: pick root rows when the API uses `apps/<id>`, raw app id, or `null` parentId.
+ * Mirrors {@link buildConnectorAppSidebarTree} so Collections sidebar matches All Records flat fallback.
+ */
+function buildHubChildRoots(items: KnowledgeHubNode[], appId: string): EnhancedFolderTreeNode[] {
+  const filtered = items.filter((n) => n.nodeType !== 'app');
+  const appPrefix = `apps/${appId}`;
+  const byAppPrefix = buildTreeFromNodes(filtered, appPrefix);
+  if (byAppPrefix.length > 0) return byAppPrefix;
+  const byAppId = buildTreeFromNodes(filtered, appId);
+  if (byAppId.length > 0) return byAppId;
+  const byNull = buildTreeFromNodes(filtered, null);
+  if (byNull.length > 0) return byNull;
+  return filtered.map((n) => nodeToTreeNode(n, 0, []));
+}
+
+/**
  * Categorize nodes into sidebar sections
  * @param nodes - The nodes to categorize (KB app children or root nodes)
  * @param rootParentId - The parentId that identifies top-level nodes (null for root nodes, 'apps/<id>' for KB app children)
@@ -78,9 +94,20 @@ export function categorizeNodes(nodes: KnowledgeHubNode[], rootParentId: string 
     nodesBySection[section].push(node);
   });
 
+  const buildSectionRoots = (sectionNodes: KnowledgeHubNode[]): EnhancedFolderTreeNode[] => {
+    if (rootParentId == null) {
+      return buildTreeFromNodes(sectionNodes, null);
+    }
+    if (rootParentId.startsWith('apps/')) {
+      const appId = rootParentId.slice('apps/'.length);
+      return buildHubChildRoots(sectionNodes, appId);
+    }
+    return buildTreeFromNodes(sectionNodes, rootParentId);
+  };
+
   return {
-    shared: buildTreeFromNodes(nodesBySection.shared, rootParentId),
-    private: buildTreeFromNodes(nodesBySection.private, rootParentId),
+    shared: buildSectionRoots(nodesBySection.shared),
+    private: buildSectionRoots(nodesBySection.private),
   };
 }
 
@@ -129,15 +156,7 @@ export function buildConnectorAppSidebarTree(
   appId: string,
   items: KnowledgeHubNode[]
 ): EnhancedFolderTreeNode[] {
-  const filtered = items.filter((n) => n.nodeType !== 'app');
-  const appPrefix = `apps/${appId}`;
-  const byAppPrefix = buildTreeFromNodes(filtered, appPrefix);
-  if (byAppPrefix.length > 0) return byAppPrefix;
-  const byAppId = buildTreeFromNodes(filtered, appId);
-  if (byAppId.length > 0) return byAppId;
-  const byNull = buildTreeFromNodes(filtered, null);
-  if (byNull.length > 0) return byNull;
-  return filtered.map((n) => nodeToTreeNode(n, 0, []));
+  return buildHubChildRoots(items, appId);
 }
 
 export function mergeChildrenIntoTree(

@@ -105,13 +105,16 @@ class BreadcrumbItem(BaseModel):
         exclude_none = True
 
 class PaginationInfo(BaseModel):
-    """Response model for pagination information"""
-    page: int = Field(..., description="Current page number")
+    """Response model for cursor-based pagination information"""
     limit: int = Field(..., description="Items per page")
     totalItems: int = Field(..., description="Total number of items")
-    totalPages: int = Field(..., description="Total number of pages")
+    currentPageItems: int = Field(..., description="Number of items in current page")
+    startIndex: int = Field(..., description="Start index of current page (1-based, for display)")
+    endIndex: int = Field(..., description="End index of current page (1-based, for display)")
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
+    nextCursor: Optional[str] = Field(None, description="Cursor for next page (encoded state)")
+    prevCursor: Optional[str] = Field(None, description="Cursor for previous page (encoded state)")
 
 class FilterOption(BaseModel):
     """Response model for a filter option"""

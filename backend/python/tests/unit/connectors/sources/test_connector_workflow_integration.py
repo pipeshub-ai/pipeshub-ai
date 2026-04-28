@@ -315,6 +315,20 @@ class MockTransactionStore:
             "to_collection": CollectionNames.RECORD_GROUPS.value,
         })
 
+    async def create_node_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        from_collection: str,
+        to_collection: str,
+        relationship_type: str,
+    ) -> None:
+        self._s.add_edge(CollectionNames.RECORD_RELATIONS.value, {
+            "_from": f"{from_collection}/{from_id}",
+            "_to": f"{to_collection}/{to_id}",
+            "relationshipType": relationship_type,
+        })
+
     async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
         self._s.add_edge(CollectionNames.RECORD_RELATIONS.value, {
             "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
@@ -1941,6 +1955,14 @@ class TestRecordGroupAdvanced:
                      if CollectionNames.RECORD_GROUPS.value in e.get("_from", "")
                      and CollectionNames.RECORD_GROUPS.value in e.get("_to", "")]
         assert len(rg_to_rg) >= 1
+        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
+        parent_to_child = [
+            e for e in rr
+            if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+            and CollectionNames.RECORD_GROUPS.value in (e.get("_from") or "")
+            and CollectionNames.RECORD_GROUPS.value in (e.get("_to") or "")
+        ]
+        assert len(parent_to_child) >= 1
 
     @pytest.mark.asyncio
     async def test_record_group_belongs_to_org(self, processor, graph_store):

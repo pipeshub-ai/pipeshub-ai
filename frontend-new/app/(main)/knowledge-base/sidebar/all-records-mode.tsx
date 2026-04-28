@@ -20,6 +20,7 @@ import type {
   NodeType,
   EnhancedFolderTreeNode,
 } from '../types';
+import type { SidebarHubCursorPaginationMeta } from '../utils/sidebar-child-pagination-meta';
 
 // ========================================
 // Types
@@ -39,7 +40,7 @@ interface AllRecordsModeProps {
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
   /** Per-app hub child pagination (direct children under each app node) */
-  appChildrenPagination?: Map<string, { hasNext: boolean; nextPage: number }>;
+  appChildrenPagination?: Map<string, SidebarHubCursorPaginationMeta>;
   onLoadMoreAppChildPage?: (appId: string) => void;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];

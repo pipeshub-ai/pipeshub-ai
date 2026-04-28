@@ -38,13 +38,40 @@ const PARAM = {
   PAGE: 'page',
   LIMIT: 'limit',
   SEARCH: 'search',
+  /** Opaque pagination token (filters encoded server-side) */
+  CURSOR: 'cursor',
 } as const;
+
+/**
+ * Params that must not appear alongside `cursor` in hub list URLs
+ * (Collections folder table + All Records — same API; mirrors legacy all-records-page).
+ */
+export const HUB_LIST_KEYS_STRIP_WHEN_CURSOR = [
+  PARAM.SEARCH,
+  PARAM.SORT_FIELD,
+  PARAM.SORT_ORDER,
+  PARAM.PAGE,
+  PARAM.LIMIT,
+  PARAM.RECORD_TYPES,
+  PARAM.INDEXING_STATUS,
+  PARAM.SIZE_RANGES,
+  PARAM.CONNECTOR_IDS,
+  PARAM.ORIGINS,
+  PARAM.CREATED_AFTER,
+  PARAM.CREATED_BEFORE,
+  PARAM.CREATED_DATE_TYPE,
+  PARAM.UPDATED_AFTER,
+  PARAM.UPDATED_BEFORE,
+  PARAM.UPDATED_DATE_TYPE,
+] as const;
+
+/** @deprecated Use {@link HUB_LIST_KEYS_STRIP_WHEN_CURSOR} */
+export const ALL_RECORDS_KEYS_STRIP_WHEN_CURSOR = HUB_LIST_KEYS_STRIP_WHEN_CURSOR;
 
 // Defaults — values matching these are omitted from the URL
 const DEFAULTS = {
   SORT_FIELD: 'updatedAt' as const,
   SORT_ORDER: 'desc' as const,
-  PAGE: 1,
   LIMIT: 50,
 };
 
@@ -137,26 +164,23 @@ function serializeSortParams(
   if (order !== DEFAULTS.SORT_ORDER) params[PARAM.SORT_ORDER] = order;
 }
 
-function serializePaginationParams(
-  page: number,
-  limit: number,
-  params: Record<string, string>
-): void {
-  if (page !== DEFAULTS.PAGE) params[PARAM.PAGE] = String(page);
-  if (limit !== DEFAULTS.LIMIT) params[PARAM.LIMIT] = String(limit);
-}
-
-/** Serialize collections mode filter/sort/pagination/search to URL param entries */
+/** Serialize collections mode filter/sort/pagination/search to URL param entries (cursor-based list, same hub API as All Records). */
 export function serializeCollectionsParams(
   filter: KnowledgeBaseFilter,
   sort: SortConfig,
-  pagination: { page: number; limit: number },
+  pagination: { limit: number; listUrlCursor?: string | null },
   searchQuery: string
 ): Record<string, string> {
+  if (pagination.listUrlCursor) {
+    return { [PARAM.CURSOR]: pagination.listUrlCursor };
+  }
+
   const params: Record<string, string> = {};
   serializeCommonFilterParams(filter, params);
   serializeSortParams(sort.field, sort.order, params);
-  serializePaginationParams(pagination.page, pagination.limit, params);
+  if (pagination.limit !== DEFAULTS.LIMIT) {
+    params[PARAM.LIMIT] = String(pagination.limit);
+  }
   if (searchQuery) params[PARAM.SEARCH] = searchQuery;
   return params;
 }
@@ -165,9 +189,13 @@ export function serializeCollectionsParams(
 export function serializeAllRecordsParams(
   filter: AllRecordsFilter,
   sort: AllRecordsSortConfig,
-  pagination: { page: number; limit: number },
+  pagination: { limit: number; listUrlCursor?: string | null },
   searchQuery: string
 ): Record<string, string> {
+  if (pagination.listUrlCursor) {
+    return { [PARAM.CURSOR]: pagination.listUrlCursor };
+  }
+
   const params: Record<string, string> = {};
   serializeCommonFilterParams(filter, params);
 
@@ -179,7 +207,9 @@ export function serializeAllRecordsParams(
   if (conn) params[PARAM.CONNECTOR_IDS] = conn;
 
   serializeSortParams(sort.field, sort.order, params);
-  serializePaginationParams(pagination.page, pagination.limit, params);
+  if (pagination.limit !== DEFAULTS.LIMIT) {
+    params[PARAM.LIMIT] = String(pagination.limit);
+  }
   if (searchQuery) params[PARAM.SEARCH] = searchQuery;
   return params;
 }
@@ -231,19 +261,19 @@ function parseCommonFilter(searchParams: URLSearchParams): {
 export function parseCollectionsParams(searchParams: URLSearchParams): {
   filter: KnowledgeBaseFilter;
   sort: SortConfig;
-  page: number;
   limit: number;
   searchQuery: string;
+  listUrlCursor: string | null;
 } {
+  const rawCursor = searchParams.get(PARAM.CURSOR);
+  const listUrlCursor = rawCursor && rawCursor.length > 0 ? rawCursor : null;
+
   const filter = parseCommonFilter(searchParams) as KnowledgeBaseFilter;
 
   const sfRaw = searchParams.get(PARAM.SORT_FIELD);
   const sf = sfRaw && VALID_SORT_FIELDS.has(sfRaw) ? (sfRaw as SortField) : DEFAULTS.SORT_FIELD;
   const soRaw = searchParams.get(PARAM.SORT_ORDER);
   const so = soRaw === 'asc' || soRaw === 'desc' ? soRaw : DEFAULTS.SORT_ORDER;
-
-  const pgRaw = searchParams.get(PARAM.PAGE);
-  const page = pgRaw ? Math.max(1, parseInt(pgRaw, 10) || 1) : DEFAULTS.PAGE;
 
   const lmRaw = searchParams.get(PARAM.LIMIT);
   const limit = lmRaw ? Math.max(1, Math.min(200, parseInt(lmRaw, 10) || DEFAULTS.LIMIT)) : DEFAULTS.LIMIT;
@@ -253,9 +283,9 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
   return {
     filter,
     sort: { field: sf, order: so },
-    page,
     limit,
     searchQuery,
+    listUrlCursor,
   };
 }
 
@@ -263,10 +293,13 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
 export function parseAllRecordsParams(searchParams: URLSearchParams): {
   filter: AllRecordsFilter;
   sort: AllRecordsSortConfig;
-  page: number;
   limit: number;
   searchQuery: string;
+  listUrlCursor: string | null;
 } {
+  const rawCursor = searchParams.get(PARAM.CURSOR);
+  const listUrlCursor = rawCursor && rawCursor.length > 0 ? rawCursor : null;
+
   const commonFilter = parseCommonFilter(searchParams);
   const filter: AllRecordsFilter = { ...commonFilter };
 
@@ -281,9 +314,6 @@ export function parseAllRecordsParams(searchParams: URLSearchParams): {
   const soRaw = searchParams.get(PARAM.SORT_ORDER);
   const so = soRaw === 'asc' || soRaw === 'desc' ? soRaw : DEFAULTS.SORT_ORDER;
 
-  const pgRaw = searchParams.get(PARAM.PAGE);
-  const page = pgRaw ? Math.max(1, parseInt(pgRaw, 10) || 1) : DEFAULTS.PAGE;
-
   const lmRaw = searchParams.get(PARAM.LIMIT);
   const limit = lmRaw ? Math.max(1, Math.min(200, parseInt(lmRaw, 10) || DEFAULTS.LIMIT)) : DEFAULTS.LIMIT;
 
@@ -292,9 +322,9 @@ export function parseAllRecordsParams(searchParams: URLSearchParams): {
   return {
     filter,
     sort: { field: sf, order: so },
-    page,
     limit,
     searchQuery,
+    listUrlCursor,
   };
 }
 
@@ -349,13 +379,19 @@ export function buildNavUrl(
     ? serializeAllRecordsParams(
         store.allRecordsFilter,
         store.allRecordsSort,
-        { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+        {
+          limit: store.allRecordsPagination.limit,
+          listUrlCursor: store.allRecordsPagination.listUrlCursor ?? null,
+        },
         debouncedAllRecordsSearchQuery
       )
     : serializeCollectionsParams(
         store.filter,
         store.sort,
-        { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+        {
+          limit: store.collectionsPagination.limit,
+          listUrlCursor: store.collectionsPagination.listUrlCursor ?? null,
+        },
         debouncedSearchQuery
       );
 

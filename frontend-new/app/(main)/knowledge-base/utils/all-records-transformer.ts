@@ -6,7 +6,7 @@ import type {
   AllRecordsSidebarSelection,
   AllRecordsFilter,
   AllRecordsSortConfig,
-  AllRecordsPagination,
+  KnowledgeHubListPagination,
   KnowledgeHubQueryParams,
   AppNodeGroup,
 } from '../types';
@@ -144,11 +144,17 @@ export function buildAllRecordsQueryParams(
   sidebarSelection: AllRecordsSidebarSelection,
   filter: AllRecordsFilter,
   sort: AllRecordsSortConfig,
-  pagination: AllRecordsPagination,
+  pagination: KnowledgeHubListPagination,
   searchQuery?: string
 ): KnowledgeHubQueryParams {
+  if (pagination.listUrlCursor) {
+    return {
+      cursor: pagination.listUrlCursor,
+      include: 'counts,permissions,breadcrumbs,availableFilters',
+    };
+  }
+
   const params: KnowledgeHubQueryParams = {
-    page: pagination.page,
     limit: pagination.limit,
     sortBy: sort.field, // Note: 'source' is not a valid sort field (use 'origin' or 'name')
     sortOrder: sort.order,

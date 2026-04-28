@@ -9,7 +9,7 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 
 import asyncio
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiohttp
 
@@ -512,6 +512,77 @@ class ArangoHTTPClient:
                         results.extend(result.get("result", []))
 
                 return results
+
+        except Exception as e:
+            self.logger.error(f"❌ Query execution failed: {str(e)}")
+            raise
+
+    async def execute_aql_with_full_count(
+        self,
+        query: str,
+        bind_vars: Optional[Dict] = None,
+        txn_id: Optional[str] = None,
+        batch_size: int = 1000
+    ) -> Tuple[List[Dict], int]:
+        """
+        Execute AQL query and return (results, full_count).
+
+        full_count is the total number of matching documents before the LIMIT clause,
+        provided by ArangoDB's native fullCount cursor option.  The query MUST use an
+        inline LIMIT (not SLICE on a subquery array) for fullCount to be populated.
+
+        Args:
+            query: AQL query string — must contain an inline LIMIT statement
+            bind_vars: Query bind variables
+            txn_id: Optional transaction ID
+            batch_size: Batch size for cursor
+
+        Returns:
+            Tuple of (result_list, full_count)
+
+        Raises:
+            Exception: If query execution fails
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/cursor"
+
+        payload = {
+            "query": query,
+            "bindVars": bind_vars or {},
+            "count": True,
+            "batchSize": batch_size,
+            "options": {"fullCount": True},
+        }
+
+        headers = {"x-arango-trx-id": txn_id} if txn_id else {}
+
+        try:
+            session = await self._get_session()
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status not in [200, 201]:
+                    error = await resp.text()
+                    raise Exception(f"Query failed (status={resp.status}): {error}")
+
+                result = await resp.json()
+                self._check_response_for_errors(result, "Query execution")
+                results = result.get("result", [])
+                # fullCount is only present in the first cursor response
+                full_count = result.get("extra", {}).get("stats", {}).get("fullCount", len(results))
+
+                # Handle cursor for large result sets
+                while result.get("hasMore"):
+                    cursor_id = result.get("id")
+                    cursor_url = f"{self.base_url}/_db/{self.database}/_api/cursor/{cursor_id}"
+
+                    async with session.put(cursor_url, headers=headers) as cursor_resp:
+                        if cursor_resp.status not in [200, 201]:
+                            error = await cursor_resp.text()
+                            raise Exception(f"Cursor fetch failed (status={cursor_resp.status}): {error}")
+
+                        result = await cursor_resp.json()
+                        self._check_response_for_errors(result, "Cursor fetch")
+                        results.extend(result.get("result", []))
+
+                return results, full_count
 
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")

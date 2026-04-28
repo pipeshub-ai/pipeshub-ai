@@ -3,7 +3,10 @@ import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { buildConnectorAppSidebarTree, categorizeNodes, treeHasNodeWithId } from './tree-builder';
 import { isKbCollectionsHubApp } from './all-records-transformer';
-import { sidebarNodeChildrenMetaAfterPage } from './sidebar-child-pagination-meta';
+import {
+  sidebarChildrenPaginationFromApi,
+  sidebarRootPaginationFromApi,
+} from './sidebar-child-pagination-meta';
 import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
 
@@ -16,12 +19,12 @@ function mergeNodesById(existing: KnowledgeHubNode[], incoming: KnowledgeHubNode
 }
 
 /**
- * Fetches the next page of root apps and appends to the store.
+ * Fetches the next cursor page of root apps and appends to the store.
  */
 export async function loadMoreRootAppList(): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
   const meta = state.appRootListPagination;
-  if (!meta?.hasNext) return;
+  if (!meta?.hasNext || !meta.nextCursor) return;
 
   const {
     appendAppNodes,
@@ -32,25 +35,14 @@ export async function loadMoreRootAppList(): Promise<void> {
   setLoadingRootAppListMore(true);
   try {
     const response = await KnowledgeHubApi.getNavigationNodes({
-      page: meta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+      cursor: meta.nextCursor,
       include: 'counts',
-      sortBy: 'updatedAt',
-      sortOrder: 'desc',
     });
 
     const appItems = response.items.filter((n) => n.nodeType === 'app');
     appendAppNodes(appItems);
 
-    const p = response.pagination;
-    setAppRootListPagination(
-      p
-        ? {
-            hasNext: p.hasNext,
-            nextPage: p.hasNext ? p.page + 1 : p.page,
-          }
-        : null
-    );
+    setAppRootListPagination(sidebarRootPaginationFromApi(response.pagination ?? null));
   } catch (error) {
     console.error('loadMoreRootAppList failed:', error);
     toast.error('Could not load more connectors', {
@@ -62,12 +54,12 @@ export async function loadMoreRootAppList(): Promise<void> {
 }
 
 /**
- * Fetches the next page of direct children for an app and merges into cache and trees.
+ * Fetches the next cursor page of direct children for an app and merges into cache and trees.
  */
 export async function loadMoreAppChildPage(appId: string): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
   const childMeta = state.appChildrenPagination.get(appId);
-  if (!childMeta?.hasNext) return;
+  if (!childMeta?.hasNext || !childMeta.nextCursor) return;
 
   const app = state.appNodes.find((a) => a.id === appId);
   if (!app) return;
@@ -87,10 +79,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
   try {
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
       onlyContainers: true,
-      page: childMeta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-      sortBy: 'name',
-      sortOrder: 'asc',
+      cursor: childMeta.nextCursor,
     });
 
     const previous = useKnowledgeBaseStore.getState().appChildrenCache.get(appId) || [];
@@ -98,19 +87,13 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     cacheAppChildren(appId, merged);
 
     const p = response.pagination;
-    setAppChildPagination(
-      appId,
-      p
-        ? {
-            hasNext: p.hasNext,
-            nextPage: p.hasNext ? p.page + 1 : p.page,
-          }
-        : { hasNext: false, nextPage: 1 }
-    );
+    setAppChildPagination(appId, {
+      hasNext: Boolean(p?.hasNext && p?.nextCursor),
+      nextCursor: p?.nextCursor ?? null,
+    });
 
     const isKbApp = isKbCollectionsHubApp(app);
     if (isKbApp) {
-      // Same as initial app-child fetch: table/sidebar use full merged list
       setNodes(merged);
       const { nodeChildrenCache: freshNodeChildren, addNodes: addNodesFresh } =
         useKnowledgeBaseStore.getState();
@@ -135,13 +118,13 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
 }
 
 /**
- * Fetches the next page of children for a nested sidebar parent (folder, kb,
+ * Fetches the next cursor page of children for a nested sidebar parent (folder, kb,
  * recordGroup, …). App direct children use {@link loadMoreAppChildPage} instead.
  */
 export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
   const meta = state.nodeChildrenPagination.get(parentId);
-  if (!meta?.hasNext || meta.nodeType === 'app') return;
+  if (!meta?.hasNext || !meta.nextCursor || meta.nodeType === 'app') return;
   if (state.loadingNodeChildrenMoreIds.has(parentId)) return;
 
   const {
@@ -157,26 +140,14 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
   try {
     const response = await KnowledgeHubApi.getNodeChildren(meta.nodeType, parentId, {
       onlyContainers: true,
-      page: meta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-      sortBy: 'name',
-      sortOrder: 'asc',
+      cursor: meta.nextCursor,
     });
 
     const previous = useKnowledgeBaseStore.getState().nodeChildrenCache.get(parentId) || [];
     const merged = mergeNodesById(previous, response.items);
     cacheNodeChildren(parentId, merged);
 
-    setNodeChildrenPagination(
-      parentId,
-      sidebarNodeChildrenMetaAfterPage(
-        response.pagination,
-        response.items.length,
-        SIDEBAR_PAGINATION_PAGE_SIZE,
-        meta.nextPage,
-        meta.nodeType
-      )
-    );
+    setNodeChildrenPagination(parentId, sidebarChildrenPaginationFromApi(response.pagination, meta.nodeType));
 
     addNodes(response.items);
     reMergeCachedChildrenIntoTree();
@@ -185,7 +156,6 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
     for (const [appId, tree] of connectorAppTrees) {
       if (!treeHasNodeWithId(tree, parentId)) continue;
       mergeConnectorAppTreeChildren(appId, parentId, merged);
-      // Each hub node appears under at most one connector app tree.
       break;
     }
   } catch (error) {
