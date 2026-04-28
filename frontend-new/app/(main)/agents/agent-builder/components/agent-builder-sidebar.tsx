@@ -277,7 +277,11 @@ export function AgentBuilderSidebar(props: {
               <Box className="agent-builder-palette-nest">
                 {agentTemplates.map((template) => (
                   <DraggableRow key={template.type} comfortable data={prepareDragData(template)}>
-                    <MaterialIcon name="auto_awesome" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
+                    <MaterialIcon
+                      name={typeof template.icon === 'string' && template.icon ? template.icon : 'auto_awesome'}
+                      size={PALETTE_ICON_SIZE}
+                      color="var(--olive-11)"
+                    />
                     <span style={paletteRowLabelStyle}>{template.label}</span>
                   </DraggableRow>
                 ))}

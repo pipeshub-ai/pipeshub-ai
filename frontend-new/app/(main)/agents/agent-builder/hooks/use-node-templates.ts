@@ -92,7 +92,7 @@ export function useAgentBuilderNodeTemplates(
         type: 'conditional-check',
         label: normalizeDisplayName('Condition Check'),
         description: t('agentBuilder.nodeDescConditional', { defaultValue: 'Evaluate the previous result and route to pass or fail path' }),
-        icon: 'source_branch',
+        icon: 'rule',
         defaultConfig: {
           mode: 'contains',
           expectedValue: 'done',

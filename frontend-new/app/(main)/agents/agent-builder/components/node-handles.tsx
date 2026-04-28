@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import { Handle, Position, useNodeConnections } from '@xyflow/react';
 import type { FlowNodeData } from '../types';
 import { FLOW_NODE_PANEL_BG } from '../flow-theme';
@@ -35,6 +36,7 @@ function ConnectedHandle({
   const resolvedBorderColor = meta
     ? `rgba(${parseInt(meta.color.slice(1, 3), 16)}, ${parseInt(meta.color.slice(3, 5), 16)}, ${parseInt(meta.color.slice(5, 7), 16)}, 0.35)`
     : 'var(--gray-7)';
+  const handleKind = meta ? `conditional-${id}` : 'default';
 
   return (
     <Handle
@@ -43,6 +45,7 @@ function ConnectedHandle({
       id={id}
       className="agent-builder-node-handle"
       data-connected={isConnected ? 'true' : 'false'}
+      data-handle-kind={handleKind}
       style={{
         ...style,
         backgroundColor: resolvedBackgroundColor,
@@ -92,29 +95,37 @@ export function NodeHandles({ data }: { data: FlowNodeData }) {
       {showOut ? (
         <>
           {data.outputs!.map((output, index) => (
-            <ConnectedHandle
-              key={`out-${output}-${index}`}
-              type="source"
-              position={Position.Right}
-              id={output}
-              isConditional={isConditional}
-              style={{
-                top: calculateHandlePosition(
-                  index,
-                  data.outputs!.length,
-                  HANDLE_CONFIG.OUTPUT.POSITION_OFFSET,
-                  HANDLE_CONFIG.OUTPUT.POSITION_INCREMENT
-                ),
-                right: HANDLE_CONFIG.OUTPUT.OFFSET_RIGHT,
-                width: HANDLE_CONFIG.OUTPUT.SIZE,
-                height: HANDLE_CONFIG.OUTPUT.SIZE,
-                background: handleRing,
-                border: '1.5px solid var(--gray-7)',
-                boxShadow: `0 0 0 1px ${handleRing}, 0 1px 2px var(--gray-a4)`,
-                borderRadius: '50%',
-                zIndex: HANDLE_CONFIG.OUTPUT.Z_INDEX,
-              }}
-            />
+            <React.Fragment key={`out-${output}-${index}`}>
+              <ConnectedHandle
+                type="source"
+                position={Position.Right}
+                id={output}
+                isConditional={isConditional}
+                style={{
+                  top: isConditional
+                    ? `calc(${calculateHandlePosition(
+                        index,
+                        data.outputs!.length,
+                        HANDLE_CONFIG.OUTPUT.POSITION_OFFSET,
+                        HANDLE_CONFIG.OUTPUT.POSITION_INCREMENT
+                      )} + 14px)`
+                    : calculateHandlePosition(
+                        index,
+                        data.outputs!.length,
+                        HANDLE_CONFIG.OUTPUT.POSITION_OFFSET,
+                        HANDLE_CONFIG.OUTPUT.POSITION_INCREMENT
+                      ),
+                  right: HANDLE_CONFIG.OUTPUT.OFFSET_RIGHT,
+                  width: HANDLE_CONFIG.OUTPUT.SIZE,
+                  height: HANDLE_CONFIG.OUTPUT.SIZE,
+                  background: handleRing,
+                  border: '1.5px solid var(--gray-7)',
+                  boxShadow: `0 0 0 1px ${handleRing}, 0 1px 2px var(--gray-a4)`,
+                  borderRadius: '50%',
+                  zIndex: HANDLE_CONFIG.OUTPUT.Z_INDEX,
+                }}
+              />
+            </React.Fragment>
           ))}
         </>
       ) : null}
