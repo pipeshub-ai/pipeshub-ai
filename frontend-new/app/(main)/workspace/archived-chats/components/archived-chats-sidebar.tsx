@@ -102,15 +102,14 @@ function ArchivedChatItemMenu({
       </DropdownMenu.Trigger>
       <DropdownMenu.Content
         side="bottom"
-        align="start"
+        align="end"
         sideOffset={4}
         style={{ minWidth: 160 }}
       >
         <DropdownMenu.Item
           disabled={isRestoring}
-          onClick={(event) => {
+          onSelect={(event) => {
             event.preventDefault();
-            event.stopPropagation();
             onRestore();
           }}
         >
