@@ -15584,6 +15584,39 @@ paths:
         '401':
           description: Unauthorized
 
+  /agents/web-search-usage/{provider}:
+    get:
+      tags:
+        - Agents
+      summary: Get web search provider usage
+      description: |
+        Retrieve usage statistics for a specific web search provider used by agents.<br><br>
+        <b>Overview:</b><br>
+        Returns information about how a particular web search provider is being used
+        across agents in the organization.
+      operationId: getWebSearchProviderUsage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The web search provider identifier (e.g. "google", "bing", "brave")
+      responses:
+        '200':
+          description: Web search provider usage data
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Bad request - provider or organization ID missing
+        '401':
+          description: Unauthorized
+
   /agents/{agentKey}:
     get:
       tags:
