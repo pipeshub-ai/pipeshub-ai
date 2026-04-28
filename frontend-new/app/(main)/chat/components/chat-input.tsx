@@ -15,6 +15,7 @@ import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expan
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
+import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   ModeSwitcher,
   AgentStrategyModeSwitcher,
@@ -31,7 +32,7 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
-import type { UploadedFile, ActiveMessageAction, ModelOverride } from '@/chat/types';
+import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -154,7 +155,10 @@ export function ChatInput({
   const setFilters = useChatStore((s) => s.setFilters);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
   const collectionNamesCache = useChatStore((s) => s.collectionNamesCache);
+  const collectionMetaCache = useChatStore((s) => s.collectionMetaCache);
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
+  const agentKnowledgeDefaults = useChatStore((s) => s.agentKnowledgeDefaults);
+  const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
   const agentChatToolGroups = useChatStore((s) => s.agentChatToolGroups);
@@ -245,39 +249,93 @@ export function ChatInput({
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
 
-  // Build selected collections from store (roots → apps API; record groups → kb API)
+  // Build selected collections from store (roots → apps API; record groups → kb API).
+  // Includes connector metadata so pills show the right icon per source type.
+  // In agent mode, read from the effective agent knowledge scope instead of settings.filters.
+  // In regenerate mode, read from the original message's appliedFilters (locked, non-removable).
+  const regenAppliedFilters = isRegenerateMode && activeMessageAction?.type === 'regenerate'
+    ? activeMessageAction.appliedFilters
+    : undefined;
+
   const selectedCollections = useMemo(() => {
-    const hubApps = settings.filters?.apps ?? [];
-    const groups = settings.filters?.kb ?? [];
+    // Regenerate mode: derive pills directly from the original message's appliedFilters nodes
+    // (they carry name + connector already, so no cache lookup needed).
+    if (regenAppliedFilters) {
+      return [
+        ...regenAppliedFilters.apps.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: (node.nodeType === 'app' ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+        ...regenAppliedFilters.kb.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: 'collection' as const,
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+      ];
+    }
+
+    const source = isAgentChat
+      ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
+      : settings.filters;
+    const hubApps = source?.apps ?? [];
+    const groups = source?.kb ?? [];
     return [
-      ...hubApps.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
-      ...groups.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
+      ...hubApps.map((id) => {
+        const meta = collectionMetaCache[id];
+        const isConnector = meta?.nodeType === 'app';
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: (isConnector ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
+      ...groups.map((id) => {
+        const meta = collectionMetaCache[id];
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: 'collection' as const,
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
     ];
-  }, [settings.filters, collectionNamesCache]);
+  }, [regenAppliedFilters, isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
-      const hubApps = settings.filters?.apps ?? [];
-      const groups = settings.filters?.kb ?? [];
-      if (hubApps.includes(id)) {
-        setFilters({
-          ...settings.filters,
-          apps: hubApps.filter((aid) => aid !== id),
-        });
+      if (isAgentChat) {
+        const eff = agentKnowledgeScope ?? agentKnowledgeDefaults;
+        const nextApps = eff.apps.filter((aid) => aid !== id);
+        const nextKb = eff.kb.filter((gid) => gid !== id);
+        // Normalize to null when result matches defaults (no customization applied)
+        const appsMatch =
+          new Set(nextApps).size === new Set(agentKnowledgeDefaults.apps).size &&
+          nextApps.every((x) => agentKnowledgeDefaults.apps.includes(x));
+        const kbMatch =
+          new Set(nextKb).size === new Set(agentKnowledgeDefaults.kb).size &&
+          nextKb.every((x) => agentKnowledgeDefaults.kb.includes(x));
+        setAgentKnowledgeScope(appsMatch && kbMatch ? null : { apps: nextApps, kb: nextKb });
       } else {
-        setFilters({
-          ...settings.filters,
-          kb: groups.filter((gid) => gid !== id),
-        });
+        const hubApps = settings.filters?.apps ?? [];
+        const groups = settings.filters?.kb ?? [];
+        if (hubApps.includes(id)) {
+          setFilters({
+            ...settings.filters,
+            apps: hubApps.filter((aid) => aid !== id),
+          });
+        } else {
+          setFilters({
+            ...settings.filters,
+            kb: groups.filter((gid) => gid !== id),
+          });
+        }
       }
     },
-    [settings.filters, setFilters]
+    [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, setAgentKnowledgeScope, settings.filters, setFilters]
   );
 
   // Toolbar icon color follows the active query mode so it stays consistent with ModeSwitcher.
@@ -298,11 +356,11 @@ export function ChatInput({
   // as { messageId, text: question }).
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
-    const { messageId, text } = payload as { messageId: string; text?: string };
+    const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
     if (!messageId) return;
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'regenerate', messageId });
+    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
   }, [dismissExpansionPanels]);
@@ -354,10 +412,14 @@ export function ChatInput({
 
     if (activeMessageAction.type === 'regenerate') {
       const modelOverride = regenModelOverride ?? undefined;
+      const af = activeMessageAction.appliedFilters;
+      const originalFilters = af
+        ? { apps: af.apps.map((a) => a.id), kb: af.kb.map((k) => k.id) }
+        : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
       if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride);
+        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
       return;
     }
@@ -705,7 +767,7 @@ export function ChatInput({
     >
       {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
       {selectedCollections.length > 0 &&
-        !isAgentChat &&
+        // !isAgentChat &&
         !isCollectionsPanelOpen &&
         !modeChromeOpen && (
         <Flex
@@ -717,13 +779,13 @@ export function ChatInput({
             borderRight: '1px solid var(--slate-5)',
             borderTopLeftRadius: 'var(--radius-1)',
             borderTopRightRadius: 'var(--radius-1)',
-            padding: 'var(--space-3) var(--space-4)',
+            padding: 'var(--space-2) var(--space-3)',
           }}
         >
           <SelectedCollections
             collections={selectedCollections}
-            removable
-            onRemove={handleRemoveCollection}
+            removable={!isRegenerateMode}
+            onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
           />
         </Flex>
       )}

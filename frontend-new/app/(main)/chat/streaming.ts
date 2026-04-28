@@ -192,7 +192,20 @@ export async function streamMessageForSlot(
       : {}),
     messages: [
       ...slot.messages,
-      { role: 'user', content: [{ type: 'text', text: query }] },
+      {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: query }],
+        ...(request.filters && (request.filters.apps.length > 0 || request.filters.kb.length > 0)
+          ? {
+              metadata: {
+                custom: {
+                  filters: request.filters,
+                  ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                },
+              },
+            }
+          : {}),
+      },
       {
         role: 'assistant' as const,
         id: pendingAssistantId,
@@ -513,7 +526,8 @@ export async function streamMessageForSlot(
 export async function streamRegenerateForSlot(
   slotId: string,
   messageId: string,
-  modelOverride?: ModelOverride
+  modelOverride?: ModelOverride,
+  originalFilters?: { apps: string[]; kb: string[] }
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -735,6 +749,7 @@ export async function streamRegenerateForSlot(
           modelProvider: resolvedModel.modelProvider ?? 'openAI',
           chatMode: agentApiChatMode,
           tools: regenTools,
+          filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         }
       );
     } else {
@@ -755,7 +770,7 @@ export async function streamRegenerateForSlot(
         modelName: resolvedModel.modelName,
         modelFriendlyName: resolvedModel.modelFriendlyName,
         chatMode,
-        filters: buildAssistantApiFilters(store.settings.filters),
+        filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
       });
     }

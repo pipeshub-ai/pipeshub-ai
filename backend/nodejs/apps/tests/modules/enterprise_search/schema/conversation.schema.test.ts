@@ -164,6 +164,20 @@ describe('enterprise_search/schema/conversation.schema', () => {
       const messageSchema = Conversation.schema.path('messages').schema
       expect(messageSchema.path('referenceData')).to.exist
     })
+
+    it('should have appliedFilters.apps as an array in messages', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      const path = messageSchema.path('appliedFilters.apps')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
+    })
+
+    it('should have appliedFilters.kb as an array in messages', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      const path = messageSchema.path('appliedFilters.kb')
+      expect(path).to.exist
+      expect(path.instance).to.equal('Array')
+    })
   })
 
   describe('timestamps', () => {

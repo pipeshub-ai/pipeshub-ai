@@ -9,7 +9,7 @@ import {
   stripMarkdownAndCitations,
   formatChatMode,
 } from '@/lib/utils/formatters';
-import type { ModelInfo } from '@/chat/types';
+import type { ModelInfo, AppliedFilters } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -42,6 +42,8 @@ interface MessageActionsProps {
   question?: string;
   /** Whether this is the last bot message in the conversation */
   isLastMessage?: boolean;
+  /** Filters that were active when this message was originally sent */
+  appliedFilters?: AppliedFilters;
 }
 
 /**
@@ -76,6 +78,7 @@ export function MessageActions({
   messageId,
   question,
   isLastMessage = false,
+  appliedFilters,
 }: MessageActionsProps) {
   const [feedback, setFeedback] = useState<FeedbackValue | undefined>(
     feedbackInfo?.value,
@@ -127,8 +130,8 @@ export function MessageActions({
 
   const handleRegenerate = useCallback(() => {
     if (!messageId) return;
-    useCommandStore.getState().dispatch('showRegenBar', { messageId, text: question });
-  }, [messageId, question]);
+    useCommandStore.getState().dispatch('showRegenBar', { messageId, text: question, appliedFilters });
+  }, [messageId, question, appliedFilters]);
 
   const copyToClipboard = useCallback(
     async (text: string, message: string) => {
@@ -320,7 +323,7 @@ export function MessageActions({
         </Tooltip>
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && (
+        {isLastMessage && messageId &&(
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"

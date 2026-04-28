@@ -4,13 +4,18 @@ import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KnowledgeItemIcon } from '@/app/components/ui/knowledge-item-icon';
+import type { ConnectorType } from '@/app/components/ui/ConnectorIcon';
 
 export interface SelectedItem {
   id: string;
   name: string;
+  /** 'connector' for hub apps/connectors, 'collection' for KB record groups */
+  kind?: 'collection' | 'connector';
+  /** Resolved connector type key — used to render the right connector icon */
+  connectorType?: string;
 }
 
-interface CollectionCardProps {
+interface CollectionPillProps {
   item: SelectedItem;
   /** Show remove (×) button — used in the input area, hidden in response area */
   removable?: boolean;
@@ -18,59 +23,61 @@ interface CollectionCardProps {
 }
 
 /**
- * A single collection card (150×84 px) with an icon and truncated name.
- * Used in both the chat input area and the chat response area.
+ * A single filter pill with a connector-aware icon and truncated name.
+ * Replaces the old 150×84 card style.
  */
-function CollectionCard({ item, removable = false, onRemove }: CollectionCardProps) {
+function CollectionPill({ item, removable = false, onRemove }: CollectionPillProps) {
   return (
     <Flex
-      direction="column"
-      justify="between"
+      align="center"
+      gap="1"
       style={{
-        width: '150px',
-        minWidth: '150px',
-        height: '84px',
         backgroundColor: 'var(--olive-a2)',
-        border: '1px solid var(--slate-3)',
-        borderRadius: 'var(--radius-1)',
-        padding: 'var(--space-2)',
-        overflow: 'hidden',
+        border: '1px solid var(--slate-4)',
+        borderRadius: 'var(--radius-full)',
+        padding: removable
+          ? '0 var(--space-2) 0 var(--space-3)'
+          : '0 var(--space-3)',
+        minWidth: "80px",
+        maxWidth: '200px',
+        flexShrink: 0,
       }}
     >
-      {/* Top: icon + optional close */}
-      <Flex align="center" justify="between">
-        <KnowledgeItemIcon kind="collection" size={20} />
-        {removable && onRemove && (
-          <IconButton
-            variant="ghost"
-            size="1"
-            onClick={() => onRemove(item.id)}
-            style={{
-              width: 'var(--space-4)',
-              height: 'var(--space-4)',
-              padding: 0,
-              cursor: 'pointer',
-            }}
-          >
-            <MaterialIcon name="close" size={14} color="var(--slate-9)" />
-          </IconButton>
-        )}
-      </Flex>
-
-      {/* Bottom: name */}
+      <KnowledgeItemIcon
+        kind={item.kind ?? 'collection'}
+        connectorType={item.connectorType as ConnectorType | undefined}
+        size={16}
+      />
       <Text
-        size="1"
-        weight="medium"
+        size="2"
         style={{
           color: 'var(--slate-11)',
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
-          lineHeight: 'var(--line-height-1)',
+          padding: "var(--space-1)",
+          flex: 1,
         }}
       >
         {item.name}
       </Text>
+      {removable && onRemove && (
+        <IconButton
+          variant="ghost"
+          size="1"
+          onClick={() => onRemove(item.id)}
+          style={{
+            width: '16px',
+            height: '16px',
+            minWidth: '16px',
+            padding: "var(--space-1)",
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <MaterialIcon name="close" size={20} color="var(--slate-9)" />
+        </IconButton>
+      )}
     </Flex>
   );
 }
@@ -78,19 +85,19 @@ function CollectionCard({ item, removable = false, onRemove }: CollectionCardPro
 // ── Exported list components ──
 
 interface SelectedCollectionsProps {
-  /** Collections to render as cards */
+  /** Collections to render as pills */
   collections: SelectedItem[];
-  /** Whether each card shows a × remove button */
+  /** Whether each pill shows a × remove button */
   removable?: boolean;
-  /** Called when a card's × is clicked */
+  /** Called when a pill's × is clicked */
   onRemove?: (id: string) => void;
 }
 
 /**
- * Horizontally scrollable row of collection cards.
+ * Horizontally scrollable row of filter pills.
  *
  * Used in two places:
- * 1. **Chat input area** — shows selected KB filters with × to remove.
+ * 1. **Chat input area** — shows selected KB / connector filters with × to remove.
  * 2. **Chat response** — shows which collections were scoped for a message (read-only).
  */
 export function SelectedCollections({
@@ -157,7 +164,7 @@ export function SelectedCollections({
         style={{ overflowX: 'auto', minWidth: 0, flex: 1 }}
       >
         {collections.map((col) => (
-          <CollectionCard
+          <CollectionPill
             key={col.id}
             item={col}
             removable={removable}

@@ -17,6 +17,8 @@ import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import {
   buildAssistantApiFilters,
   buildStreamRequestModeFields,
+  type AppliedFilterNode,
+  type AppliedFilters,
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ConversationMessage,
@@ -101,6 +103,12 @@ export function loadHistoricalMessages(
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
               feedbackInfo: msg.feedback?.[0] || undefined,
+            },
+          }
+        : msg.messageType === 'user_query' && msg.appliedFilters
+        ? {
+            custom: {
+              appliedFilters: msg.appliedFilters,
             },
           }
         : undefined,
@@ -225,22 +233,47 @@ export function buildExternalStoreConfig(
       const resolvedAgentKnowledge =
         isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
+      const resolvedFilters = isAgent
+        ? {
+            apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0
+            ),
+            kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0
+            ),
+          }
+        : buildAssistantApiFilters(assistantFilters);
+
+      const metaCache = currentState.collectionMetaCache;
+      const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
+        ids
+          .filter((id) => id.trim().length > 0)
+          .map((id) => {
+            const meta = metaCache[id];
+            return {
+              id,
+              name: meta?.name ?? currentState.collectionNamesCache[id] ?? id,
+              nodeType: meta?.nodeType ?? '',
+              connector: meta?.connector ?? '',
+            };
+          });
+
+      const hasFilters = resolvedFilters.apps.length > 0 || resolvedFilters.kb.length > 0;
+      const appliedFilters: AppliedFilters | undefined = hasFilters
+        ? {
+            apps: buildAppliedFilterNodes(resolvedFilters.apps),
+            kb: buildAppliedFilterNodes(resolvedFilters.kb),
+          }
+        : undefined;
+
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
-        filters: isAgent
-          ? {
-              apps: (resolvedAgentKnowledge?.apps ?? []).filter(
-                (id): id is string => typeof id === 'string' && id.trim().length > 0
-              ),
-              kb: (resolvedAgentKnowledge?.kb ?? []).filter(
-                (id): id is string => typeof id === 'string' && id.trim().length > 0
-              ),
-            }
-          : buildAssistantApiFilters(assistantFilters),
+        filters: resolvedFilters,
+        ...(appliedFilters ? { appliedFilters } : {}),
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {
