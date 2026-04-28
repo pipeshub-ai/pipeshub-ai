@@ -16,6 +16,7 @@ from app.utils.url_fetcher import fetch_url
 logger = logging.getLogger(__name__)
 
 HTTP_STATUS_OK = 200
+_MAX_ERROR_PREVIEW_CHARS = 500
 
 
 class FetchUrlArgs(BaseModel):
@@ -115,7 +116,7 @@ def create_fetch_url_tool(
         This tool Fetches and extracts main content from a URL for detailed analysis.
 
         Use this tool when you need the full content from a specific webpage to answer the query accurately. If multiple URLs are available, select the ones most likely to contain the required information and invoke the tool separately for each selected URL.
-        
+
         - **If tool fails for a URL**: check whether the context gathered so far is sufficient. If not, try other relevant URLs from the context before answering.
         Args:
             url: The URL to fetch content from (must be HTTP/HTTPS)
