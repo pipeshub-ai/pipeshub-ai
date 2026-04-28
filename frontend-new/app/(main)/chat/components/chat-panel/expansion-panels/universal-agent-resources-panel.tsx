@@ -221,14 +221,17 @@ const ACTIONS_PAGE_SIZE = 50;
  * Module-level actions cache — survives tab switches (Actions ↔ Connectors/Collections)
  * within the same page session so we never re-fetch on every remount.
  *
- * Reset to empty on the first page load so stale data from a previous user session is
- * always overwritten when the component mounts fresh.
+ * `lastFetchedAt` is set on each successful page-1 fetch.  When the component mounts
+ * and detects a stale cache (older than CACHE_TTL_MS) it re-fetches from page 1,
+ * preventing leftover data from a prior user/session from being served.
  */
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let _actionsPageCache: {
   toolsets: BuilderSidebarToolset[];
   page: number;
   hasMore: boolean;
-} = { toolsets: [], page: 0, hasMore: false };
+  lastFetchedAt: number;
+} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0 };
 
 /**
  * Build tool groups from authenticated my-toolsets.
@@ -342,10 +345,9 @@ export function UniversalAgentResourcesPanel({
   const showModelGate = modelsLoaded && !hasReasoningModel;
 
   // ── Client-side tool cap ──
-  // Backend enforces MAX_TOOLS_LIMIT = 128 (internal tools counted first).
-  // We expose a conservative client-side cap so the user sees a count before hitting
-  // the server guard. Internal tools are unknown on the client, so we cap at the full
-  // server limit and let the backend truncate if needed.
+  // Backend enforces MAX_TOOLS_LIMIT = 128 and rejects requests exceeding it
+  // with a 400. We mirror the same cap on the client so the user sees the limit
+  // in the UI before a failed request.
   const MAX_USER_TOOLS = 128;
   const selectedCount = useMemo(() => {
     if (selectedTools === null) return toolCatalog.length;
@@ -365,8 +367,7 @@ export function UniversalAgentResourcesPanel({
       isFetchingPageRef.current = true;
 
       if (page === 1) {
-        // Reset cache so a fresh session always overwrites stale module state.
-        _actionsPageCache = { toolsets: [], page: 0, hasMore: false };
+        _actionsPageCache = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0 };
         setToolsLoading(true);
       } else {
         setIsLoadingMore(true);
@@ -383,6 +384,7 @@ export function UniversalAgentResourcesPanel({
           toolsets: [..._actionsPageCache.toolsets, ...result.toolsets],
           page,
           hasMore: result.hasNext,
+          lastFetchedAt: page === 1 ? Date.now() : _actionsPageCache.lastFetchedAt,
         };
 
         // Rebuild from full accumulated list so instanceId-based discriminators are stable.
@@ -408,10 +410,13 @@ export function UniversalAgentResourcesPanel({
     [hydrateResources, setToolsLoading, setToolsError, t]
   );
 
-  // Initial load — skips re-fetch when data already exists in the store (tab switches).
+  // Initial load — skips re-fetch when fresh data already exists in the store
+  // (e.g. tab switches within the same session).  Refetches when the cache is
+  // older than CACHE_TTL_MS to avoid serving stale data from a prior session.
   useEffect(() => {
-    if (toolGroups.length > 0 || toolsLoading) {
-      // Data already in store from a previous load; restore pagination state from cache.
+    if (toolsLoading) return;
+    const cacheStale = Date.now() - _actionsPageCache.lastFetchedAt > CACHE_TTL_MS;
+    if (toolGroups.length > 0 && !cacheStale) {
       setHasNextPage(_actionsPageCache.hasMore);
       return;
     }
@@ -525,7 +530,8 @@ export function UniversalAgentResourcesPanel({
 
   const resetToDefaults = useCallback(() => {
     setSelectedTools(null);
-  }, [setSelectedTools]);
+    setFilters({ apps: [], kb: [] });
+  }, [setSelectedTools, setFilters]);
 
   // ── Filtered views ──
 

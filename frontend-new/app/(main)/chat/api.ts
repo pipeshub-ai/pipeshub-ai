@@ -22,6 +22,7 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
 } from './types';
+import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
@@ -183,10 +184,6 @@ export const ChatApi = {
 
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
-      const timezone =
-        typeof Intl !== 'undefined'
-          ? Intl.DateTimeFormat().resolvedOptions().timeZone
-          : 'UTC';
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
@@ -203,8 +200,8 @@ export const ChatApi = {
         modelName: request.modelName,
         modelFriendlyName: request.modelFriendlyName ?? request.modelName,
         chatMode: agentChatMode,
-        timezone,
-        currentTime: new Date().toISOString(),
+        timezone: getClientTimezone(),
+        currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
         // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
         filters: { apps, kb },
@@ -317,19 +314,14 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
-    const timezone =
-      typeof Intl !== 'undefined'
-        ? Intl.DateTimeFormat().resolvedOptions().timeZone
-        : 'UTC';
-
     const body: Record<string, unknown> = {
       modelKey: request.modelKey,
       modelName: request.modelName,
       modelFriendlyName: request.modelFriendlyName,
       chatMode: request.chatMode,
       filters: request.filters,
-      timezone,
-      currentTime: new Date().toISOString(),
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
     };
     if (request.agentStreamTools !== undefined) {
       body.tools = request.agentStreamTools;
@@ -409,18 +401,13 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
-    const agentRegenTimezone =
-      typeof Intl !== 'undefined'
-        ? Intl.DateTimeFormat().resolvedOptions().timeZone
-        : 'UTC';
-
     const agentRegenBody: Record<string, unknown> = {
       modelKey: model.modelKey,
       modelName: model.modelName,
       modelProvider: model.modelProvider,
       chatMode: model.chatMode,
-      timezone: agentRegenTimezone,
-      currentTime: new Date().toISOString(),
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;

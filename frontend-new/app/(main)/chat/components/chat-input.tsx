@@ -395,10 +395,11 @@ export function ChatInput({
         return colon >= 0 ? key.slice(colon + 1) : key;
       };
 
-      // Count resolved (stripped + deduped) tools
+      // Count resolved (stripped + deduped) tools — mirrors the wire format
+      // in runtime.ts where prefixed keys are stripped then deduped via Set.
       const resolvedCount =
         toolsSel === null
-          ? new Set(groups.flatMap((g) => g.fullNames)).size
+          ? new Set(groups.flatMap((g) => g.fullNames).map(stripPrefix)).size
           : new Set(toolsSel.map(stripPrefix)).size;
 
       if (resolvedCount > 128) {
@@ -415,14 +416,22 @@ export function ChatInput({
       // Key format differs by mode:
       //   universal agent  → `${instanceId}:${fullName}` (prefixed)
       //   URL-scoped agent → bare `fullName`
+      //
+      // When toolsSel === null (default "all tools") and the groups list is empty
+      // (panel hasn't loaded yet), skip the check — the user hasn't had a chance
+      // to curate, and blocking without an actionable path is confusing.
       const instanceCountBySlug = new Map<string, number>();
       if (toolsSel === null) {
-        // null = all tools selected → every group contributes
-        for (const group of groups) {
-          instanceCountBySlug.set(
-            group.toolsetSlug,
-            (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
-          );
+        if (groups.length === 0) {
+          // Groups not loaded yet — let the request through; the backend will
+          // use its own full set and handle any conflicts server-side.
+        } else {
+          for (const group of groups) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
         }
       } else {
         const selectedKeys = new Set(toolsSel);
@@ -444,10 +453,12 @@ export function ChatInput({
         .filter(([, n]) => n > 1)
         .map(([slug]) => slug);
       if (multiTypes.length > 0) {
+        const typeNames = multiTypes.join(', ');
         toast.error(
           t('chat.toolValidation.multipleInstances', {
+            types: typeNames,
             defaultValue:
-              'Multiple instances of the same action type cannot be used together. Please select only one instance per type.',
+              `Multiple instances of the same action type (${typeNames}) cannot be used together. Open the Actions panel and select only one instance per type.`,
           })
         );
         return;

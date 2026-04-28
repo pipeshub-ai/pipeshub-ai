@@ -384,14 +384,21 @@ export function CollectionsTab({
     }
   }, [setCollectionNamesCache, t]);
 
-  // When in 'collections' mode, auto-fetch KB children immediately on root list change
+  // When in 'collections' mode, auto-fetch KB children sequentially on root list change.
+  // Sequential processing avoids bursting N parallel API calls for workspaces with many roots.
   useEffect(() => {
     if (filterMode !== 'collections') return;
-    for (const row of collections) {
-      if (isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)) {
-        void loadChildren(row);
+    let cancelled = false;
+    const expandableRows = collections.filter(
+      (row) => isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)
+    );
+    (async () => {
+      for (const row of expandableRows) {
+        if (cancelled) break;
+        await loadChildren(row);
       }
-    }
+    })();
+    return () => { cancelled = true; };
   }, [collections, filterMode, loadChildren]);
 
   const loadMoreChildren = useCallback(

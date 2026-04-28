@@ -22,6 +22,7 @@ import {
   type ConversationMessage,
   type StreamChatRequest,
 } from './types';
+import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -224,17 +225,12 @@ export function buildExternalStoreConfig(
       const resolvedAgentKnowledge =
         isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-      const timezone =
-        typeof Intl !== 'undefined'
-          ? Intl.DateTimeFormat().resolvedOptions().timeZone
-          : 'UTC';
-
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
-        timezone,
-        currentTime: new Date().toISOString(),
+        timezone: getClientTimezone(),
+        currentTime: getClientCurrentTime(),
         filters: isAgent
           ? {
               apps: (resolvedAgentKnowledge?.apps ?? []).filter(
