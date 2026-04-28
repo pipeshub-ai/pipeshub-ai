@@ -9,11 +9,12 @@ import pytest
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import (
-    DatetimeOperator,
     Filter,
     FilterCollection,
-    FilterType,
     SyncFilterKey,
+)
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
     AppUser,
@@ -281,47 +282,50 @@ class TestExtractEmailFromHeaderExtended:
 
 
 # ===========================================================================
-# _pass_date_filter - extended
+# build_gmail_received_date_threads_query - extended
 # ===========================================================================
 class TestPassDateFilterExtended:
-    def test_between_start_and_end(self):
+    def test_is_between_builds_both_clauses(self):
         connector = _make_connector()
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000000000000  # epoch ms
-        mock_filter.get_datetime_end.return_value = 2000000000000
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1000000000000, "end": 2000000000000},
+            "type": "datetime",
+            "operator": "is_between",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:1000000000 before:2000000000"
 
-        mock_filters = MagicMock()
-        mock_filters.get.return_value = mock_filter
-        connector.sync_filters = mock_filters
-
-        msg = {"internalDate": "1500000000000"}
-        assert connector._pass_date_filter(msg) is True
-
-    def test_before_start_fails(self):
+    def test_is_after_builds_after_clause(self):
         connector = _make_connector()
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1500000000000
-        mock_filter.get_datetime_end.return_value = None
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1500000000000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:1500000000"
 
-        mock_filters = MagicMock()
-        mock_filters.get.return_value = mock_filter
-        connector.sync_filters = mock_filters
-
-        msg = {"internalDate": "1000000000000"}
-        assert connector._pass_date_filter(msg) is False
-
-    def test_after_end_fails(self):
+    def test_is_before_builds_before_clause(self):
         connector = _make_connector()
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 1500000000000
-
-        mock_filters = MagicMock()
-        mock_filters.get.return_value = mock_filter
-        connector.sync_filters = mock_filters
-
-        msg = {"internalDate": "2000000000000"}
-        assert connector._pass_date_filter(msg) is False
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": None, "end": 1500000000000},
+            "type": "datetime",
+            "operator": "is_before",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "before:1500000000"
 
 
 # ===========================================================================
@@ -396,18 +400,21 @@ class TestProcessGmailMessageExtended:
         assert result is not None
         assert ":OTHERS" in result.record.external_record_group_id
 
-    async def test_message_date_filtered_out(self):
+    async def test_process_gmail_message_does_not_skip_by_received_date_filter(self):
+        """RECEIVED_DATE applies to threads.list(q=...), not per-message in _process_gmail_message."""
         connector = _make_connector()
         mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 2000000000000  # future
+        mock_filter.get_datetime_start.return_value = 2000000000000  # would exclude msg if applied here
         mock_filter.get_datetime_end.return_value = None
         mock_filters = MagicMock()
         mock_filters.get.return_value = mock_filter
         connector.sync_filters = mock_filters
 
-        msg = _make_gmail_message(internal_date="1000000000000")
+        internal_ms = 1_000_000_000_000
+        msg = _make_gmail_message(internal_date=str(internal_ms))
         result = await connector._process_gmail_message("user@test.com", msg, "thread-1", None)
-        assert result is None
+        assert result is not None
+        assert result.record.source_created_at == internal_ms
 
     async def test_sent_message_group_id(self):
         connector = _make_connector()
@@ -445,6 +452,7 @@ class TestProcessGmailAttachmentExtended:
             message_id="msg-1",
             attachment_info=attachment_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -464,6 +472,7 @@ class TestProcessGmailAttachmentExtended:
             message_id="msg-1",
             attachment_info=attachment_info,
             parent_mail_permissions=[],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is None
 
@@ -484,6 +493,7 @@ class TestProcessGmailAttachmentExtended:
             parent_mail_permissions=[
                 Permission(email="user@test.com", type=PermissionType.OWNER, entity_type=EntityType.USER)
             ],
+            external_record_group_id="user@test.com:OTHERS",
         )
         assert result is not None
         assert result.record.record_name == "report.pdf"

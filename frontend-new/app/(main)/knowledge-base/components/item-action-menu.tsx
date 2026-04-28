@@ -29,6 +29,8 @@ export interface MenuAction {
    * per-row loading in a store (the menu item is replaced by a spinner).
    */
   isLoading?: boolean;
+  /** Render the item in a disabled state (not interactive). */
+  disabled?: boolean;
 }
 
 export interface ItemActionMenuProps {
@@ -83,7 +85,7 @@ export function ItemActionMenu({ actions, open, onOpenChange }: ItemActionMenuPr
             (action.color === 'red' ? 'var(--red-9)' : 'var(--slate-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
-          const isBlocked = isPending || (anyPending && pendingIndex !== i);
+          const isBlocked = isPending || (anyPending && pendingIndex !== i) || action.disabled === true;
 
           return (
             <React.Fragment key={i}>

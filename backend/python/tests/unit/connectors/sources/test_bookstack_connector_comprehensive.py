@@ -366,7 +366,9 @@ class TestProcessBookstackPageComprehensive:
         page = {
             "id": 1, "name": "Test Page", "book_id": 10, "chapter_id": 5,
             "book_slug": "test-book", "slug": "test-page",
-            "revision_count": 3, "updated_at": "2025-01-15T00:00:00Z",
+            "revision_count": 3,
+            "created_at": "2025-01-10T00:00:00Z",
+            "updated_at": "2025-01-15T00:00:00Z",
         }
         result = await connector._process_bookstack_page(page, {}, [])
         assert result is not None
@@ -383,7 +385,9 @@ class TestProcessBookstackPageComprehensive:
         page = {
             "id": 2, "name": "Root Page", "book_id": 10,
             "book_slug": "test-book", "slug": "root-page",
-            "revision_count": 1, "updated_at": "2025-01-15T00:00:00Z",
+            "revision_count": 1,
+            "created_at": "2025-01-10T00:00:00Z",
+            "updated_at": "2025-01-15T00:00:00Z",
         }
         result = await connector._process_bookstack_page(page, {}, [])
         assert result is not None
@@ -422,7 +426,9 @@ class TestProcessBookstackPageComprehensive:
         page = {
             "id": 1, "name": "New Name", "book_id": 10,
             "book_slug": "test-book", "slug": "test-page",
-            "revision_count": 3, "updated_at": "2025-01-15T00:00:00Z",
+            "revision_count": 3,
+            "created_at": "2025-01-10T00:00:00Z",
+            "updated_at": "2025-01-15T00:00:00Z",
         }
         result = await connector._process_bookstack_page(page, {}, [])
         assert result is not None

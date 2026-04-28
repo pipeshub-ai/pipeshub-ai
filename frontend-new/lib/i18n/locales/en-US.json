@@ -1270,6 +1270,7 @@
       },
       "validation": {
         "fieldRequired": "{{field}} is required",
+        "fieldMustBeTrue": "{{field}} must be true",
         "fixErrorsAbove": "Fix the highlighted fields above to continue."
       }
     },

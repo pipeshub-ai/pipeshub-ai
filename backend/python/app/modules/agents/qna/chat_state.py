@@ -12,10 +12,20 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import CitationRefMapper
 
+# Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
+DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
+
+
+def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
+    """True when the workspace supplied a persona distinct from the default placeholder."""
+    s = (system_prompt or "").strip()
+    return bool(s) and s != DEFAULT_AGENT_SYSTEM_PROMPT
+
 
 class Document(TypedDict):
     page_content: str
     metadata: dict[str, Any]
+
 
 class ChatState(TypedDict):
     logger: Logger
@@ -131,8 +141,9 @@ class ChatState(TypedDict):
     tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
-    # Service account flag: when True, knowledge retrieval bypasses per-user permissions
-    # and uses all records for the configured connectors/KBs
+    # True when the request uses a service identity JWT (e.g. Slack bot). Knowledge
+    # retrieval still applies normal graph permissions using the agent creator's userId
+    # (set in agent chat routes), not unscoped org-wide record access.
     is_service_account: bool
 
     # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs
@@ -370,7 +381,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     """
 
     # Get user-defined system prompt or use default
-    system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
+    system_prompt = chat_query.get("systemPrompt", DEFAULT_AGENT_SYSTEM_PROMPT)
     instructions = chat_query.get("instructions")
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")

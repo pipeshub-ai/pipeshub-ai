@@ -1014,6 +1014,18 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def reset_indexing_status_to_queued_for_record_ids(
+        self, record_ids: list[str]
+    ) -> None:
+        """
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
+        Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
+        for a single record. Used before reindex (API and batched sync). Skips missing records;
+        logs errors without raising.
+        """
+        pass
+
+    @abstractmethod
     async def get_documents_by_status(
         self,
         collection: str,
@@ -2166,31 +2178,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
-        """
-        pass
-
-    @abstractmethod
-    async def get_all_virtual_record_ids_for_knowledge(
-        self,
-        org_id: str,
-        connector_ids: list[str] | None = None,
-        kb_ids: list[str] | None = None,
-    ) -> dict[str, str]:
-        """
-        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
-        WITHOUT applying per-user permission filtering.
-
-        This is used exclusively for service account agents where the agent has "super entity"
-        access to its configured knowledge sources, regardless of which user is querying.
-
-        Args:
-            org_id: Organization ID to scope the query
-            connector_ids: List of connector/app IDs to include (non-KB connectors)
-            kb_ids: List of KB record group IDs to include
-
-        Returns:
-            Dict[str, str]: Mapping of virtualRecordId -> recordId
-            Returns empty dict if both connector_ids and kb_ids are empty/None.
         """
         pass
 

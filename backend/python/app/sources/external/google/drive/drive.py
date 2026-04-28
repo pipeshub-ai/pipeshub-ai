@@ -955,7 +955,8 @@ class GoogleDriveDataSource:
         supportsAllDrives: Optional[bool] = None,
         supportsTeamDrives: Optional[bool] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        fields: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Google Drive API:  Gets a file's metadata or content by ID. If you provide the URL parameter `alt=media`, then the response includes the file contents in the response body. Downloading content with `alt=media` only works if the file is stored in Drive. To download Google Docs, Sheets, and Slides use [`files.export`](/workspace/drive/api/reference/rest/v3/files/export) instead. For more information, see [Download & export files](/workspace/drive/api/guides/manage-downloads).
 
@@ -968,6 +969,7 @@ class GoogleDriveDataSource:
             supportsTeamDrives (bool, optional): Deprecated: Use `supportsAllDrives` instead.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
             includeLabels (str, optional): A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.
+            fields (str, optional): Partial response mask for the File resource (same syntax as files.list inner file fields).
 
         Returns:
             Dict[str, Any]: API response
@@ -985,6 +987,8 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.files().get(**kwargs) # type: ignore
         return request.execute()

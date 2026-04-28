@@ -87,14 +87,13 @@ const ServiceAccountConfirmDialog: React.FC<ServiceAccountConfirmDialogProps> = 
 
   const features = [
     { text: 'Dedicated credentials per toolset (not per-user)', positive: true },
-    { text: 'Full access to all configured knowledge bases, regardless of who is chatting', positive: true },
     { text: 'Cannot be reverted back to a regular agent', positive: false },
   ];
 
   const title = isConverting ? 'Convert to Service Account' : 'Enable Service Account';
   const description = isConverting
-    ? 'This agent will be permanently converted to a Service Account — an independent identity with its own credentials and elevated access.'
-    : 'This agent will be created as a Service Account — an independent identity with its own credentials and elevated access.';
+    ? 'This agent will be permanently converted to a Service Account — an independent identity with agent-level toolset credentials, shared with your whole organization.'
+    : 'This agent will be created as a Service Account — an independent identity with agent-level toolset credentials, shared with your whole organization.';
   const confirmLabel = isConverting ? 'Convert to Service Account' : 'Create Service Account Agent';
   const busyLabel = isConverting ? 'Converting…' : 'Creating Agent…';
   const nextStepsNote = isConverting
@@ -105,7 +104,7 @@ const ServiceAccountConfirmDialog: React.FC<ServiceAccountConfirmDialogProps> = 
     <Dialog
       open={open}
       onClose={creating ? undefined : onClose}
-      maxWidth="sm"
+      maxWidth="md"
       fullWidth
       PaperProps={{
         sx: {
@@ -155,6 +154,67 @@ const ServiceAccountConfirmDialog: React.FC<ServiceAccountConfirmDialogProps> = 
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           {description} Here&apos;s what that means:
         </Typography>
+
+        <Alert
+          severity="error"
+          variant="outlined"
+          icon={<Icon icon={alertCircleIcon} width={22} height={22} />}
+          sx={{
+            mb: 1.5,
+            color: 'error.dark',
+            borderColor: 'error.main',
+            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
+            '& .MuiAlert-message': { width: '100%' },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', mb: 0.5 }}>
+            Your permissions apply to this agent&apos;s attached knowledge only
+          </Typography>
+          <Box
+            component="ul"
+            sx={{
+              m: 0,
+              pl: 2.25,
+              listStyleType: 'disc',
+              color: 'error.dark',
+              typography: 'body2',
+              '& > li': { mb: 1, pl: 0.5, display: 'list-item', '&:last-child': { mb: 0 } },
+            }}
+          >
+            <Box component="li">
+              Retrieval is limited to the knowledge sources <strong>you configure on this agent</strong>{' '}
+              (connectors and collections attached in the builder) — not everything in the platform.
+            </Box>
+            <Box component="li">
+              Within those attached sources only, search uses <strong>your</strong> access as the creator.
+            </Box>
+            <Box component="li">
+              Anyone who uses this agent may see answers from content <strong>you</strong> are allowed to
+              see there, even when their own permissions would not include it.
+            </Box>
+          </Box>
+        </Alert>
+
+        <Alert
+          severity="error"
+          variant="outlined"
+          icon={<Icon icon={alertCircleIcon} width={22} height={22} />}
+          sx={{
+            mb: 2,
+            color: 'error.dark',
+            borderColor: 'error.main',
+            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
+            '& .MuiAlert-message': { width: '100%' },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', mb: 0.5 }}>
+            This service account is shared with everyone in your organization
+          </Typography>
+          <Typography variant="body2" sx={{ color: 'error.dark' }}>
+            The agent is available org-wide. All members of your organization can use this service
+            account agent once it is enabled.
+          </Typography>
+        </Alert>
 
         <List dense disablePadding>
           {features.map((f) => (
@@ -217,7 +277,7 @@ const ServiceAccountConfirmDialog: React.FC<ServiceAccountConfirmDialogProps> = 
         <Button
           onClick={onConfirm}
           disabled={creating || hasUserToolsets}
-          variant="contained"
+          variant="outlined"
           color="secondary"
           startIcon={
             creating ? (

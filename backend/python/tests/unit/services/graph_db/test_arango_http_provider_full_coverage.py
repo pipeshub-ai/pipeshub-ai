@@ -293,34 +293,6 @@ class TestReindexRecordGroupRecords:
         assert result["depth"] == 0
 
 
-class TestResetIndexingStatusToQueued:
-    @pytest.mark.asyncio
-    async def test_already_queued(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "QUEUED"})
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_already_empty(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "EMPTY"})
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_resets_to_queued(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "r1", "indexingStatus": "INDEXED"})
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider._reset_indexing_status_to_queued("r1")
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value=None)
-        await connected_provider._reset_indexing_status_to_queued("r1")
-
-
 class TestCheckRecordPermissions:
     @pytest.mark.asyncio
     async def test_has_permission(self, connected_provider):
@@ -769,7 +741,7 @@ class TestReindexSingleRecord:
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
-        connected_provider._reset_indexing_status_to_queued = AsyncMock()
+        connected_provider.reset_indexing_status_to_queued_for_record_ids = AsyncMock()
         result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
 
