@@ -996,7 +996,7 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="fetch_channels",
-        description="Fetch all conversations in the workspace — in Slack, channels and DMs share one data model: public channels (C…), private channels (G…), group DMs (mpim) and 1:1 DMs (im, D…) are ALL returned",
+        description="Fetch all conversations in the workspace (public channels, private channels, DMs, group DMs)",
         when_to_use=[
             "User wants to list all Slack channels/conversations",
             "User mentions 'Slack' + wants to see channels/DMs/conversations",
@@ -1019,7 +1019,7 @@ class Slack:
         category=ToolCategory.COMMUNICATION,
         llm_description=(
             "Returns ALL conversations the user can access. In Slack, 'channel' and 'DM' are the same data type — "
-            "differentiated by the 'is_im' / 'is_mpim' / 'is_private' flags and the id prefix (C/G/D). "
+            "differentiated by the 'is_im' / 'is_mpim' / 'is_private' flags and the id prefix (D/G/C). "
             "DM (im) entries have NO 'name' field — only 'id' (D…) and 'user' (the partner's U… ID); "
             "resolve that user ID via users_info / resolve_user to get a human-readable label."
         ),
@@ -1401,7 +1401,7 @@ class Slack:
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Summarize my DMs with Kaushal",
+            "Summarize my DMs with John Doe",
             "Show my personal chat with user@company.com",
             "What did I talk about with @john in Slack DMs?",
             "Get my direct messages with Alice"

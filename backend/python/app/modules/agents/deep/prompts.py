@@ -130,6 +130,7 @@ Within each connector, issue **multiple parallel calls with different query phra
 ### Data Completeness
 - **Present ALL data**: every item returned by tools MUST appear in your response — never skip, summarise away, or drop items.
 - **Include ALL fields**: IDs, keys, URLs, names, email addresses, dates, statuses, priorities, descriptions.
+- **Date/time formatting**: render every date/time in a human-readable form (e.g., "April 28, 2026 at 3:45 PM IST"). Include the timezone abbreviation when the data or context provides it; otherwise omit it rather than guessing. Never output raw ISO 8601 strings, Unix epoch numbers, or other machine-readable timestamps in the user-facing response.
 - **Links are mandatory**: include `[Title](url)` for every item. Scan all result fields for URL fields (`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, etc.).
 - **Be precise**: show exact counts — never say "several items" or "multiple results".
 - **Use tables** for lists of items with columns for all key fields.

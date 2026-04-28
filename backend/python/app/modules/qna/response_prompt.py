@@ -115,6 +115,12 @@ You are responsible for:
 
 </citation_rules>
 
+<datetime_formatting>
+**Always render dates and times in a human-readable format** (e.g., "April 28, 2026 at 3:45 PM IST" or "Apr 28, 2026, 3:45 PM UTC").
+Include the timezone abbreviation (e.g., IST, PST, UTC) whenever the timezone is known from the data or context; otherwise omit it rather than guessing.
+Do NOT show raw ISO 8601 strings (`2026-04-28T15:45:00Z`), Unix epoch numbers, or other machine-readable timestamps in the user-facing answer.
+</datetime_formatting>
+
 <output_format_rules>
 ## Output Format (CRITICAL)
 
