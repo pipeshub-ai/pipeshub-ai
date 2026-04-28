@@ -6804,7 +6804,11 @@ async def _generate_direct_response(
     system_content += (
         "\n\nWhen mentioning dates or times, always use a human-readable format "
         "(e.g., 'April 28, 2026 at 3:45 PM IST') — never raw ISO 8601 strings or Unix timestamps. "
-        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing."
+        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing. "
+        "Treat any numeric or decimal value in a time-related field "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, `posted_at`, `event_time`, `time`, `date`, etc.) "
+        "as a Unix epoch and convert it on the FIRST response — never pass through the raw number, "
+        "never label a column 'ts' / 'timestamp id', and never ask the user for the timestamp or format."
     )
 
     messages.append(SystemMessage(content=system_content))
@@ -6955,7 +6959,11 @@ async def _generate_fast_api_response(
         "- **No fabrication**: Only use data that is explicitly provided\n"
         "- **Human-readable dates/times**: render every date/time as e.g. 'April 28, 2026 at 3:45 PM IST'. "
         "Include the timezone abbreviation when the data or context provides it; otherwise omit it rather than guessing. "
-        "Never output raw ISO 8601 strings or Unix epoch numbers in the user-facing response\n"
+        "Never output raw ISO 8601 strings or Unix epoch numbers in the user-facing response. "
+        "Treat any numeric or decimal value in a time-related field "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, `posted_at`, `event_time`, `time`, `date`, etc.) "
+        "as a Unix epoch and convert it on the FIRST response, for EVERY row — never pass through the raw number, "
+        "never label a column 'ts' / 'timestamp id', and never ask the user for the timestamp or format\n"
         "- Output ONLY markdown — no JSON wrapper, no code fences around the whole response\n"
     )
 

@@ -612,7 +612,12 @@ def _build_simple_retrieval_messages(
         "DATE/TIME FORMATTING:\n"
         "- Always present dates and times in a human-readable format (e.g., 'April 28, 2026 at 3:45 PM IST').\n"
         "- Include the timezone abbreviation when it is known from the data or context; otherwise omit it rather than guessing.\n"
-        "- Do NOT show raw ISO 8601 strings, Unix epoch numbers, or machine-readable timestamps in the answer.\n\n"
+        "- Do NOT show raw ISO 8601 strings, Unix epoch numbers, or machine-readable timestamps in the answer.\n"
+        "- **Recognise epoch-style timestamps automatically.** Any numeric or decimal value in a time-related field "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, `posted_at`, `event_time`, `time`, `date`, etc.) is a Unix epoch "
+        "(seconds since 1970-01-01 UTC; decimals are sub-second precision). Convert it on the FIRST response, for EVERY row. "
+        "Do NOT pass through the raw number, do NOT label the column 'ts' / 'timestamp id' / 'epoch', "
+        "and do NOT ask the user for the timestamp or format — render their local timezone (or UTC if unknown).\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
@@ -1032,7 +1037,11 @@ async def _handle_direct_answer(
         "You are a helpful, friendly AI assistant. Respond naturally and concisely.\n\n"
         "When mentioning dates or times, always use a human-readable format "
         "(e.g., 'April 28, 2026 at 3:45 PM IST') — never raw ISO 8601 strings or Unix timestamps. "
-        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing."
+        "Include the timezone abbreviation when it is known; otherwise omit it rather than guessing. "
+        "Treat any numeric or decimal value in a time-related field "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, `posted_at`, `event_time`, `time`, `date`, etc.) "
+        "as a Unix epoch and convert it on the FIRST response — never pass through the raw number, "
+        "never label a column 'ts' / 'timestamp id', and never ask the user for the timestamp or format."
     )
 
     user_info = state.get("user_info") or {}
