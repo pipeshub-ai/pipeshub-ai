@@ -1124,7 +1124,7 @@ async def handle_json_mode(
                 confidence = None
                 reference_data = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url, web_records=web_records)
+            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url, web_records=web_records, virtual_record_id_to_result=virtual_record_id_to_result)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -1389,8 +1389,8 @@ async def stream_llm_response_with_tools(
                     # Extract the final messages and tools_executed status
                     final_messages = tool_event["data"]["messages"]
                     tools_were_called = tool_event["data"]["tools_executed"]
-                    web_records = tool_event["data"]["web_records"]
-                    records = tool_event["data"]["records"]
+                    web_records = tool_event["data"].get("web_records", [])
+                    records = tool_event["data"].get("records", [])
                 elif tool_event.get("event") in ["tool_call", "tool_success", "tool_error"]:
                     # First time we see an actual tool event, show the status message
                     if not tools_were_called:

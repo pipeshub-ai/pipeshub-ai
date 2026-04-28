@@ -1673,12 +1673,17 @@ Record blocks (sorted):\n\n"""
                                     "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
                                 })
 
+                        if isinstance(data, dict):
+                            table_summary = data.get("table_summary", "Not Available")
+                        else:
+                            table_summary = str(data or "Not Available")
+
                         if child_results:
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
                                 block_group_web_url="",
-                                table_summary="Not Available    ",
+                                table_summary=table_summary,
                                 table_rows=child_results,
                             )
                             content.append({
@@ -1923,7 +1928,9 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 table_summary,child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
                 fk_info = build_fk_info(result)
-                if child_results:
+                if not child_results:
+                    child_results = []
+                if child_results or fk_info:
                     for child in child_results:
                         child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
                         child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
@@ -2124,7 +2131,6 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
         return "", ""
         
     PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
-    # PATTERN = re.compile(r"(?<!\S)[A-Za-z]+(?:[ ][A-Za-z]+)+(?!\S)")
 
     # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
     all_matches = list(PATTERN.finditer(snippet))
@@ -2141,20 +2147,16 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
 
     words = first_text.split()
     start_text = " ".join(words[:FRAGMENT_WORD_COUNT])
-    start_text_end = best_match.start() + len(first_text.split()[0])  # not needed yet
+    start_text_end = best_match.start() + len(first_text.split()[0])
 
     # Compute exact end position of start_text in snippet
-    # It starts at best_match.start() + leading whitespace offset
     leading_spaces = len(best_match.group()) - len(best_match.group().lstrip())
     start_text_begin = best_match.start() + leading_spaces
     start_text_end = start_text_begin + len(start_text)
 
-    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
-    # Search backwards by scanning from start_text_end onward for the *last* match
+    # --- Find end_text: last matching segment after start_text_end ---
     remaining = snippet[start_text_end:]
 
-    # Find last match in remaining using finditer (but we only keep last)
-    # Alternatively, search from the end using a reverse approach
     last_text = None
     for m in PATTERN.finditer(remaining):
         stripped = m.group().strip()
@@ -2191,6 +2193,10 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     if not base_url or not text_snippet:
         return base_url
 
+    # Preserve URLs that already have a text fragment
+    if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
+        return base_url
+
     try:
         snippet = text_snippet.strip()
         if not snippet:
@@ -2207,6 +2213,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
             return base_url
 
         encoded_start = quote(start_text, safe="';:[]")
+        encoded_end = ""
 
         if end_text:
             encoded_end = quote(end_text, safe="';:[]")

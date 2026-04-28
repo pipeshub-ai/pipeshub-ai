@@ -464,6 +464,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
         "fetch_url",
         "get_current_datetime",
         "image_generator.",
+        "web_search",
     ]
 
     return any(p in full_name.lower() for p in internal_patterns)

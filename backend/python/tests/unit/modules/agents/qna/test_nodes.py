@@ -2713,40 +2713,44 @@ class TestRespondNodeDeeper:
 class TestBuildToolResultsContextDeeper:
     """Deeper tests for _build_tool_results_context()."""
 
-    def test_all_failed_shows_error(self):
+    @pytest.mark.asyncio
+    async def test_all_failed_shows_error(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
             {"tool_name": "jira.search", "status": "error", "result": "timeout"},
             {"tool_name": "slack.send", "status": "error", "result": "auth failed"},
         ]
-        result = _build_tool_results_context(tool_results, [])
+        result = await _build_tool_results_context(tool_results, [])
         assert "Tools Failed" in result
         assert "DO NOT fabricate" in result
 
-    def test_retrieval_only_has_citation_instructions(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_only_has_citation_instructions(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
             {"tool_name": "retrieval.search_internal_knowledge", "status": "success", "result": "data"},
         ]
         final_results = [{"virtual_record_id": "doc1", "text": "content"}]
-        result = _build_tool_results_context(tool_results, final_results)
+        result = await _build_tool_results_context(tool_results, final_results)
         assert "MANDATORY" in result
         assert "Cite key facts" in result
         assert "INTERNAL KNOWLEDGE" in result
 
-    def test_api_only_has_transform_instructions(self):
+    @pytest.mark.asyncio
+    async def test_api_only_has_transform_instructions(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
             {"tool_name": "jira.search_issues", "status": "success", "result": (True, {"items": [1, 2]})},
         ]
-        result = _build_tool_results_context(tool_results, [])
+        result = await _build_tool_results_context(tool_results, [])
         assert "API Tool Results" in result
         assert "API DATA" in result
 
-    def test_combined_retrieval_and_api_mode3(self):
+    @pytest.mark.asyncio
+    async def test_combined_retrieval_and_api_mode3(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
@@ -2754,35 +2758,38 @@ class TestBuildToolResultsContextDeeper:
             {"tool_name": "jira.search", "status": "success", "result": {"items": [1]}},
         ]
         final_results = [{"virtual_record_id": "doc1", "text": "content"}]
-        result = _build_tool_results_context(tool_results, final_results)
+        result = await _build_tool_results_context(tool_results, final_results)
         assert "MODE 3" in result
 
-    def test_has_retrieval_in_context_flag(self):
+    @pytest.mark.asyncio
+    async def test_has_retrieval_in_context_flag(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
             {"tool_name": "jira.search", "status": "success", "result": {"items": []}},
         ]
-        result = _build_tool_results_context(
+        result = await _build_tool_results_context(
             tool_results, [], has_retrieval_in_context=True
         )
         assert "Internal Knowledge in Context" in result
         assert "MODE 3" in result
 
-    def test_multiple_non_retrieval_tools_merge_instruction(self):
+    @pytest.mark.asyncio
+    async def test_multiple_non_retrieval_tools_merge_instruction(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
         tool_results = [
             {"tool_name": "jira.search", "status": "success", "result": {"items": [1]}},
             {"tool_name": "confluence.search", "status": "success", "result": {"results": [2]}},
         ]
-        result = _build_tool_results_context(tool_results, [])
+        result = await _build_tool_results_context(tool_results, [])
         assert "MULTIPLE tools" in result
 
-    def test_empty_results_gives_instructions_only(self):
+    @pytest.mark.asyncio
+    async def test_empty_results_gives_instructions_only(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
 
-        result = _build_tool_results_context([], [])
+        result = await _build_tool_results_context([], [])
         assert "RESPONSE INSTRUCTIONS" in result
         assert "API DATA" in result
 
@@ -11451,37 +11458,41 @@ class TestExtractUrlsForReferenceData:
 
 
 class TestBuildToolResultsContext:
-    def test_all_failed(self):
+    @pytest.mark.asyncio
+    async def test_all_failed(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
         results = [{"status": "error", "tool_name": "jira.search", "result": "timeout"}]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "Tools Failed" in ctx
 
-    def test_with_retrieval_and_api(self):
+    @pytest.mark.asyncio
+    async def test_with_retrieval_and_api(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
         results = [
             {"status": "success", "tool_name": "retrieval.search", "result": "knowledge"},
             {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
         ]
-        ctx = _build_tool_results_context(results, [{"text": "block"}])
+        ctx = await _build_tool_results_context(results, [{"text": "block"}])
         assert "Knowledge Available" in ctx
         assert "API Tool Results" in ctx
         assert "MODE 3" in ctx
 
-    def test_api_only(self):
+    @pytest.mark.asyncio
+    async def test_api_only(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
         results = [
             {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
         ]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "API Tool Results" in ctx
 
-    def test_retrieval_in_context_flag(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_in_context_flag(self):
         from app.modules.agents.qna.nodes import _build_tool_results_context
         results = [
             {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
         ]
-        ctx = _build_tool_results_context(results, [], has_retrieval_in_context=True)
+        ctx = await _build_tool_results_context(results, [], has_retrieval_in_context=True)
         assert "Internal Knowledge in Context" in ctx
 
 
@@ -11731,41 +11742,47 @@ class TestBuildWorkflowPatternsFullCoverage:
 
 
 class TestBuildToolResultsContextModes:
-    def test_all_failed(self):
+    @pytest.mark.asyncio
+    async def test_all_failed(self):
         results = [{"status": "error", "tool_name": "jira.search", "result": "timeout"}]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "Tools Failed" in ctx
         assert "DO NOT fabricate" in ctx
 
-    def test_retrieval_only_from_final_results(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_only_from_final_results(self):
         results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
-        ctx = _build_tool_results_context(results, [{"text": "block1"}])
+        ctx = await _build_tool_results_context(results, [{"text": "block1"}])
         assert "Internal Knowledge Available" in ctx
 
-    def test_retrieval_in_context_flag(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_in_context_flag(self):
         results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
-        ctx = _build_tool_results_context(results, [], has_retrieval_in_context=True)
+        ctx = await _build_tool_results_context(results, [], has_retrieval_in_context=True)
         assert "Internal Knowledge in Context" in ctx
 
-    def test_combined_mode(self):
+    @pytest.mark.asyncio
+    async def test_combined_mode(self):
         results = [
             {"status": "success", "tool_name": "retrieval", "result": "data"},
             {"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}},
         ]
-        ctx = _build_tool_results_context(results, [{"text": "block"}])
+        ctx = await _build_tool_results_context(results, [{"text": "block"}])
         assert "MODE 3" in ctx
 
-    def test_api_only(self):
+    @pytest.mark.asyncio
+    async def test_api_only(self):
         results = [{"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}}]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "API DATA" in ctx
 
-    def test_multiple_non_retrieval(self):
+    @pytest.mark.asyncio
+    async def test_multiple_non_retrieval(self):
         results = [
             {"status": "success", "tool_name": "jira.search", "result": {"key": "A"}},
             {"status": "success", "tool_name": "slack.send", "result": {"ok": True}},
         ]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "MULTIPLE tools" in ctx
 
 

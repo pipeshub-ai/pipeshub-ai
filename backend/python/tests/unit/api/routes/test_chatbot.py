@@ -22,7 +22,7 @@ class TestChatQueryModel:
         assert q.quickMode is False
         assert q.modelKey is None
         assert q.modelName is None
-        assert q.chatMode == "standard"
+        assert q.chatMode == "internal_search"
         assert q.mode == "json"
         assert q.conversationId is None
 
@@ -120,8 +120,8 @@ class TestGetModelConfigForMode:
     def test_unknown_mode_falls_back_to_standard(self):
         from app.api.routes.chatbot import get_model_config_for_mode
         cfg = get_model_config_for_mode("nonexistent")
-        standard = get_model_config_for_mode("standard")
-        assert cfg == standard
+        internal_search = get_model_config_for_mode("internal_search")
+        assert cfg == internal_search
 
     def test_all_modes_have_system_prompt(self):
         from app.api.routes.chatbot import get_model_config_for_mode

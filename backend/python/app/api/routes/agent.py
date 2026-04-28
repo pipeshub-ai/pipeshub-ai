@@ -3402,6 +3402,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         ]
         connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
         web_search_provider = _parse_web_search(agent.get("webSearch"))
+        web_search_tool_config = None
         if web_search_provider:
             web_search_tool_config = await _resolve_web_search_tool_config(
                 web_search_provider,
