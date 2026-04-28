@@ -825,9 +825,11 @@ class SharePointConnector(BaseConnector):
 
     async def _get_all_sites(self) -> List[Site]:
         """
-        Get SharePoint sites in sync scope: discovery (root, search, optional subsites),
-        then validation and SITE_IDS sync filter application.
-        Handles permission errors gracefully and continues with accessible sites.
+        Return SharePoint sites that belong in the sync scope.
+
+        Discovery walks the root site, the sites search API, and optionally subsites.
+        Results are validated and SITE_IDS sync filters are applied.
+        Permission failures during discovery are logged; reachable sites are still returned.
         """
         sites = []
 
@@ -3637,14 +3639,10 @@ class SharePointConnector(BaseConnector):
             sites = await self._get_all_sites()
 
             if not sites:
-                self.logger.warning(
-                    "⚠️ No SharePoint sites to sync — none discovered, all excluded by site filters, or check permissions"
-                )
                 return
 
             self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
 
-            # Create site record groups (site ID filters applied in _get_all_sites)
             site_record_groups_with_permissions = []
             for site in sites:
                 if not site.name and not site.display_name:
