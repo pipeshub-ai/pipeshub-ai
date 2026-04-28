@@ -2915,6 +2915,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
 
+        _MAX_TOOLS = 128
+        if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many tools: maximum {_MAX_TOOLS} tools are allowed per request.",
+            )
+
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         if agent_id == "agentIdPlaceholder":
@@ -2985,7 +2992,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
-        if chat_query.tools:
+        if chat_query.tools is not None:
             enabled_tools_set = set(chat_query.tools)
             filtered_toolsets = []
             for toolset in agent_toolsets:

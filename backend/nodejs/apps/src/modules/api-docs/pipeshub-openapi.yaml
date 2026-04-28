@@ -2751,6 +2751,17 @@ components:
             ISO 8601 datetime string from the client.
             Used to provide time-aware context to the AI.
           example: "2026-04-12T10:30:00Z"
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Optional list of tool identifiers (fully-qualified action names such as
+            "jira.create_issue") that the AI agent is permitted to invoke for this
+            request. When omitted the agent may use any configured tool. Applicable
+            only when chatMode is an agent mode (e.g. "agent:auto").
+          example: ["jira.create_issue", "confluence.search_content"]
 
     AddMessageRequest:
       type: object
@@ -2791,6 +2802,16 @@ components:
             ISO 8601 datetime string from the client.
             Used to provide time-aware context to the AI.
           example: "2026-04-12T10:30:00Z"
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Optional list of tool identifiers the agent may invoke for this
+            follow-up message. Semantics are identical to the create-conversation
+            tools field. Applicable only in agent chat modes.
+          example: ["jira.create_issue", "confluence.search_content"]
 
     Message:
       type: object
@@ -14270,6 +14291,25 @@ paths:
                   description: Friendly display name of the selected model
                 chatMode:
                   type: string
+                timezone:
+                  type: string
+                  minLength: 1
+                  description: IANA timezone identifier from the client.
+                  example: "America/New_York"
+                currentTime:
+                  type: string
+                  format: date-time
+                  description: ISO 8601 datetime string from the client.
+                  example: "2026-04-12T10:30:00Z"
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  description: |
+                    Optional list of tool identifiers the agent may invoke when
+                    regenerating. Applicable only in agent chat modes.
+                  example: ["jira.create_issue", "confluence.search_content"]
       responses:
         '200':
           description: Response regenerated successfully

@@ -22,6 +22,7 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
 } from './types';
+import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
@@ -183,10 +184,6 @@ export const ChatApi = {
 
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
-      const timezone =
-        typeof Intl !== 'undefined'
-          ? Intl.DateTimeFormat().resolvedOptions().timeZone
-          : 'UTC';
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
@@ -203,8 +200,8 @@ export const ChatApi = {
         modelName: request.modelName,
         modelFriendlyName: request.modelFriendlyName ?? request.modelName,
         chatMode: agentChatMode,
-        timezone,
-        currentTime: new Date().toISOString(),
+        timezone: getClientTimezone(),
+        currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
         // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
         filters: { apps, kb },
@@ -213,7 +210,13 @@ export const ChatApi = {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/conversations/stream`;
-      payload = request as unknown as Record<string, unknown>;
+      // Build payload explicitly: rename `agentStreamTools` → `tools` so the
+      // Node.js controller can read `req.body.tools` uniformly for both agent paths.
+      const { agentStreamTools, ...rest } = request;
+      payload = {
+        ...rest,
+        ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
+      };
     }
 
     // Track whether a complete event was received and the last SSE error
@@ -302,6 +305,8 @@ export const ChatApi = {
       modelFriendlyName: string;
       chatMode: StreamChatRequest['chatMode'];
       filters: StreamChatRequest['filters'];
+      /** Universal agent mode: explicit tool subset (null = all, [] = none). */
+      agentStreamTools?: string[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -309,15 +314,22 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
+    const body: Record<string, unknown> = {
+      modelKey: request.modelKey,
+      modelName: request.modelName,
+      modelFriendlyName: request.modelFriendlyName,
+      chatMode: request.chatMode,
+      filters: request.filters,
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
+    };
+    if (request.agentStreamTools !== undefined) {
+      body.tools = request.agentStreamTools;
+    }
+
     await streamSSERequest(
       endpoint,
-      {
-        modelKey: request.modelKey,
-        modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName,
-        chatMode: request.chatMode,
-        filters: request.filters,
-      } as unknown as Record<string, unknown>,
+      body,
       {
         onEvent: (event: SSEEvent) => {
           switch (event.event as SSEEventType) {
@@ -380,6 +392,8 @@ export const ChatApi = {
       modelName: string;
       modelProvider: string;
       chatMode: AgentStrategyApiSegment;
+      /** Explicit tool subset for this agent context (all tools when omitted). */
+      tools?: string[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -387,14 +401,21 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
+    const agentRegenBody: Record<string, unknown> = {
+      modelKey: model.modelKey,
+      modelName: model.modelName,
+      modelProvider: model.modelProvider,
+      chatMode: model.chatMode,
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
+    };
+    if (model.tools !== undefined) {
+      agentRegenBody.tools = model.tools;
+    }
+
     await streamSSERequest(
       endpoint,
-      {
-        modelKey: model.modelKey,
-        modelName: model.modelName,
-        modelProvider: model.modelProvider,
-        chatMode: model.chatMode,
-      },
+      agentRegenBody,
       {
         onEvent: (event: SSEEvent) => {
           switch (event.event as SSEEventType) {

@@ -111,6 +111,13 @@ export interface ChatSuggestion {
   icons: Array<'slack' | 'jira' | 'notion' | 'sheets' | 'confluence' | 'github'>;
 }
 
+/**
+ * Top-level UI mode toggle (Internal Search vs Chat/Web).
+ *
+ * This is **NOT** the `chatMode` field in stream request payloads — that is
+ * {@link StreamChatModePayload}. Code that handles `settings.mode` must not
+ * import or assign `StreamChatModePayload` values here.
+ */
 export type ChatMode = 'chat' | 'search';
 
 /**
@@ -481,6 +488,10 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
+  /** IANA timezone string (e.g. "America/New_York"). Sent on all turns for time-aware queries. */
+  timezone?: string;
+  /** ISO-8601 timestamp of when the request was built. */
+  currentTime?: string;
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

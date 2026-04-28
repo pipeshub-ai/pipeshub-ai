@@ -11,6 +11,7 @@ import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-pa
 import { QueryModePanel } from '@/chat/components/chat-panel/expansion-panels/query-mode-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
+import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
@@ -156,6 +157,10 @@ export function ChatInput({
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
+  const agentChatToolGroups = useChatStore((s) => s.agentChatToolGroups);
+  const universalAgentStreamTools = useChatStore((s) => s.universalAgentStreamTools);
+  const universalAgentToolsLoading = useChatStore((s) => s.universalAgentToolsLoading);
+  const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -209,6 +214,14 @@ export function ChatInput({
       (agentStreamToolsSel !== null &&
         agentToolCatalogLen > 0 &&
         (agentStreamToolsSel.length === 0 || agentStreamToolsSel.length < agentToolCatalogLen)));
+
+  /** Universal agent mode has an explicit tool selection (not null = "all tools"). */
+  const universalAgentResourcesCustomized =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentStreamTools !== null;
+
+  /** True when universal agent tool data is loading (disable send while loading). */
+  const isUniversalAgentLoading =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
@@ -370,6 +383,88 @@ export function ChatInput({
       return;
     }
 
+    // ── Agent tool validation ─────────────────────────────────
+    const isUrlAgent = Boolean(agentId);
+    const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
+    if (isUrlAgent || isUniversalAgentMode) {
+      const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
+      const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;
+
+      const stripPrefix = (key: string) => {
+        const colon = key.indexOf(':');
+        return colon >= 0 ? key.slice(colon + 1) : key;
+      };
+
+      // Count resolved (stripped + deduped) tools — mirrors the wire format
+      // in runtime.ts where prefixed keys are stripped then deduped via Set.
+      const resolvedCount =
+        toolsSel === null
+          ? new Set(groups.flatMap((g) => g.fullNames).map(stripPrefix)).size
+          : new Set(toolsSel.map(stripPrefix)).size;
+
+      if (resolvedCount > 128) {
+        toast.error(
+          t('chat.toolValidation.tooManyTools', {
+            defaultValue:
+              'Too many tools selected. Maximum 128 tools are allowed per request due to performance limits.',
+          })
+        );
+        return;
+      }
+
+      // Detect multiple selected instances of the same toolset type.
+      // Key format differs by mode:
+      //   universal agent  → `${instanceId}:${fullName}` (prefixed)
+      //   URL-scoped agent → bare `fullName`
+      //
+      // When toolsSel === null (default "all tools") and the groups list is empty
+      // (panel hasn't loaded yet), skip the check — the user hasn't had a chance
+      // to curate, and blocking without an actionable path is confusing.
+      const instanceCountBySlug = new Map<string, number>();
+      if (toolsSel === null) {
+        if (groups.length === 0) {
+          // Groups not loaded yet — let the request through; the backend will
+          // use its own full set and handle any conflicts server-side.
+        } else {
+          for (const group of groups) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
+        }
+      } else {
+        const selectedKeys = new Set(toolsSel);
+        for (const group of groups) {
+          const hasSelected = isUniversalAgentMode
+            // Universal: keys are `${instanceId}:${fullName}`
+            ? group.fullNames.some((fn) => selectedKeys.has(`${group.instanceId ?? ''}:${fn}`))
+            // URL-scoped: keys are bare fullNames
+            : group.fullNames.some((fn) => selectedKeys.has(fn));
+          if (hasSelected) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
+        }
+      }
+      const multiTypes = [...instanceCountBySlug.entries()]
+        .filter(([, n]) => n > 1)
+        .map(([slug]) => slug);
+      if (multiTypes.length > 0) {
+        const typeNames = multiTypes.join(', ');
+        toast.error(
+          t('chat.toolValidation.multipleInstances', {
+            types: typeNames,
+            defaultValue:
+              `Multiple instances of the same action type (${typeNames}) cannot be used together. Open the Actions panel and select only one instance per type.`,
+          })
+        );
+        return;
+      }
+    }
+
     // ── Normal send flow (unchanged) ──────────────────────────
     if ((message.trim() || uploadedFiles.length > 0) && onSend) {
       onSend(message, uploadedFiles.length > 0 ? uploadedFiles : undefined);
@@ -458,7 +553,7 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = hasContent || activeMessageAction !== null;
+  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -501,6 +596,18 @@ export function ChatInput({
       setIsAgentResourcesPanelOpen(false);
     }
   }, [isAgentChat]);
+
+  // Close the collections panel when switching away from agent queryMode so
+  // the user doesn't see a stale universal-agent panel under a different mode.
+  const prevQueryModeRef = useRef(settings.queryMode);
+  useEffect(() => {
+    const prev = prevQueryModeRef.current;
+    prevQueryModeRef.current = settings.queryMode;
+    if (prev === 'agent' && settings.queryMode !== 'agent' && isCollectionsPanelOpen) {
+      setIsCollectionsPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+  }, [settings.queryMode, isCollectionsPanelOpen, setExpansionViewMode]);
 
   if (!showFullUI) {
     return (
@@ -869,7 +976,17 @@ export function ChatInput({
         >
           <AgentScopedResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : !isAgentChat && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+        <ChatInputExpansionPanel
+          open={isCollectionsPanelOpen}
+          onClose={() => {
+            setIsCollectionsPanelOpen(false);
+            setExpansionViewMode('inline');
+          }}
+        >
+          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+        </ChatInputExpansionPanel>
+      ) : !isAgentChat && settings.queryMode !== 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1072,9 +1189,23 @@ export function ChatInput({
               <Flex align="center" gap="1">
                 {/* Apps — assistant: collections; agent: connectors / collections / actions */}
                 {!isAgentChat ? (
-                  <Tooltip content={t('chat.connectorsTooltip')} side="top">
+                  <Tooltip
+                    content={
+                      settings.queryMode === 'agent'
+                        ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                        : t('chat.connectorsTooltip')
+                    }
+                    side="top"
+                  >
                     <IconButton
-                      variant={isCollectionsPanelOpen || selectedKbCount > 0 ? 'soft' : 'ghost'}
+                      variant={
+                        isCollectionsPanelOpen ||
+                        (settings.queryMode === 'agent'
+                          ? universalAgentResourcesCustomized
+                          : selectedKbCount > 0)
+                          ? 'soft'
+                          : 'ghost'
+                      }
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
@@ -1289,6 +1420,8 @@ export function ChatInput({
     >
       {isAgentChat ? (
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+      ) : settings.queryMode === 'agent' ? (
+        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : (
         <ConnectorsCollectionsPanel
           apps={settings.filters?.apps ?? []}
