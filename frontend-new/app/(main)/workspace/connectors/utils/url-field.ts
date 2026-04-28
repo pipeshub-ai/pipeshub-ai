@@ -7,7 +7,7 @@ const HAS_HTTP_SCHEME = /^https?:\/\//i;
 
 /** `ftp:`, `javascript:`, etc. — must not prepend `https://` on blur. */
 function hasNonHttpAbsoluteScheme(s: string): boolean {
-  return /^[a-z][a-z0-9+-]*:/i.test(s);
+  return /^[a-z][a-z0-9.+-]*:/i.test(s);
 }
 
 /**

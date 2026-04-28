@@ -465,8 +465,9 @@ function TextInput({
           onBlur={() => {
             setIsFocused(false);
             if (!disabled && fieldType === 'URL') {
-              const next = normalizeUrlInputOnBlur(String(value ?? ''));
-              if (next !== String(value ?? '')) {
+              const current = String(value ?? '');
+              const next = normalizeUrlInputOnBlur(current);
+              if (next !== current) {
                 onChange(field.name, next);
               }
             }

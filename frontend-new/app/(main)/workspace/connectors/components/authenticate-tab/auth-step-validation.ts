@@ -49,10 +49,12 @@ function valueMissingForField(value: unknown, field: FieldTypeHint): boolean {
 }
 
 /**
- * Per-field error messages for empty required values (i18n keys in caller, or short labels).
+ * Per-field validation errors for the auth step: required missing values, CHECKBOX truth,
+ * and URL format when a URL field has non-empty input (required or optional).
+ * Message strings are i18n keys in the caller, or short labels.
  * Required CHECKBOX auth fields must be strictly `true` (not merely "present").
  */
-export function collectRequiredAuthFieldErrors(
+export function collectAuthFieldErrors(
   fields: AuthSchemaField[],
   formDataAuth: Record<string, unknown>,
   messageFor: (field: AuthSchemaField) => string,
