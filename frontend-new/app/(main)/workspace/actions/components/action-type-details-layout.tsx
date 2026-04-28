@@ -3,6 +3,7 @@
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Callout, Flex, Heading, SegmentedControl, Spinner, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { RegistryToolsetRow } from '@/app/(main)/toolsets/api';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
@@ -153,8 +154,8 @@ export function ActionTypeDetailsLayout({
               overflow: 'hidden',
             }}
           >
-            {registryRow?.iconPath ? (
-              <img src={registryRow.iconPath} alt="" width={32} height={32} style={{ objectFit: 'contain' }} />
+            {registryRow?.name ? (
+              <ConnectorIcon type={registryRow.name} size={32} />
             ) : (
               <MaterialIcon name="bolt" size={28} color="var(--gray-11)" />
             )}

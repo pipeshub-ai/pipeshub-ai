@@ -15,6 +15,7 @@ import {
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
@@ -501,18 +502,11 @@ export function ActionSetupPanel({
       </Flex>
     ) : null;
 
-  const panelIcon =
-    registryRow?.iconPath ? (
-      <img
-        src={registryRow.iconPath}
-        alt=""
-        width={20}
-        height={20}
-        style={{ objectFit: 'contain' }}
-      />
-    ) : (
-      <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
-    );
+  const panelIcon = toolsetType ? (
+    <ConnectorIcon type={toolsetType} size={20} />
+  ) : (
+    <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
+  );
 
   return (
     <WorkspaceRightPanel
@@ -538,6 +532,7 @@ export function ActionSetupPanel({
           {docLinks.length > 0 ? (
             <DocumentationSection
               links={docLinks}
+              connectorType={toolsetType || undefined}
               connectorIconPath={registryRow?.iconPath ?? '/icons/connectors/default.svg'}
             />
           ) : null}
