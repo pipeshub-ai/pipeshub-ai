@@ -206,6 +206,7 @@ export const ChatApi = {
         timezone,
         currentTime: new Date().toISOString(),
         tools: [...(request.agentStreamTools ?? [])],
+        mcpTools: [...(request.agentStreamMcpTools ?? [])],
         // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
         filters: { apps, kb },
       };

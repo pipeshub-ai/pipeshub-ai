@@ -182,6 +182,15 @@ export function buildExternalStoreConfig(
           ? [...toolCatalog]
           : [...toolsSel];
 
+      const mcpToolsSel = currentState.agentStreamMcpTools;
+      const mcpToolCatalog = currentState.agentMcpToolCatalogNames;
+      /** Agent streams only: store `null` = all MCP tools → full catalog; else explicit list. */
+      const streamMcpTools = !effectiveAgentId
+        ? []
+        : mcpToolsSel === null
+          ? [...mcpToolCatalog]
+          : [...mcpToolsSel];
+
       // Resolve the model for the CURRENT context (agent or assistant) so the
       // submitted payload matches exactly what the chat input pill shows.
       const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
@@ -217,6 +226,7 @@ export function buildExternalStoreConfig(
           ? {
               agentId: effectiveAgentId,
               agentStreamTools: streamTools,
+              agentStreamMcpTools: streamMcpTools,
             }
           : {}),
       };

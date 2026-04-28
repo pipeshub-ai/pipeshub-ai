@@ -5072,6 +5072,7 @@ export const unshareAgent =
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
         tools: req.body.tools || [],
+        mcpTools: req.body.mcpTools || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -6009,6 +6010,8 @@ export const addMessageStreamToAgentConversation =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        tools: req.body.tools || [],
+        mcpTools: req.body.mcpTools || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,

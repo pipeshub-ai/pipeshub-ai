@@ -24,7 +24,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
     required_env=["GITHUB_PERSONAL_ACCESS_TOKEN"],
     optional_env=[],
     redirect_uri="mcp-servers/oauth/callback/github",
-    icon_path="/assets/icons/mcp-servers/github.svg",
+    icon_path="/assets/icons/connectors/github.svg",
     documentation_url="https://github.com/modelcontextprotocol/servers/tree/main/src/github",
     tags=["development", "git", "version-control", "code", "issues", "pull-requests"],
     auth=AuthHint(

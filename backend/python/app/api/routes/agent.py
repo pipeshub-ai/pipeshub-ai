@@ -68,6 +68,7 @@ class ChatQuery(BaseModel):
     systemPrompt: str | None = None
     instructions: str | None = None
     tools: list[str] | None = None
+    mcpTools: list[str] | None = None
     chatMode: str | None = "auto"
     modelKey: str | None = None
     modelName: str | None = None
@@ -3474,9 +3475,29 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             agent_toolsets = configured_toolsets
 
         # ============================================================================
+        # FILTER MCP SERVERS BY FRONTEND SELECTION
+        # ============================================================================
+        # If the frontend sends an explicit mcpTools list, restrict each server's
+        # tools to that selection (parallel to how chat_query.tools filters toolsets).
+        agent_mcp_servers_from_graph = agent.get("mcpServers", [])
+        if chat_query.mcpTools is not None:
+            enabled_mcp_tools_set = set(chat_query.mcpTools)
+            filtered_mcp_servers = []
+            for _server in agent_mcp_servers_from_graph:
+                _server_copy = dict(_server)
+                _filtered_tools = [
+                    tool for tool in _server.get("tools", [])
+                    if tool.get("namespacedName") in enabled_mcp_tools_set
+                ]
+                if _filtered_tools:
+                    _server_copy["tools"] = _filtered_tools
+                    filtered_mcp_servers.append(_server_copy)
+            agent_mcp_servers_from_graph = filtered_mcp_servers
+
+        # ============================================================================
         # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
         # ============================================================================
-        agent_mcp_servers = agent.get("mcpServers", [])
+        agent_mcp_servers = agent_mcp_servers_from_graph
         mcp_server_configs: dict = {}
 
         logger.info(

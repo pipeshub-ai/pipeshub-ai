@@ -17,6 +17,8 @@ import { buildChatHref } from '@/chat/build-chat-url';
 import {
   AgentsApi,
   buildAgentChatToolGroups,
+  buildAgentChatMcpServerGroups,
+  extractAgentMcpToolNamespacedNames,
   extractAgentKnowledgeDefaults,
   extractAgentKnowledgeConnectors,
   extractAgentKnowledgeCollectionRows,
@@ -351,6 +353,8 @@ function ChatContent() {
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
           const toolGroups = buildAgentChatToolGroups(agent);
+          const mcpServerGroups = buildAgentChatMcpServerGroups(agent);
+          const mcpToolCatalogNames = extractAgentMcpToolNamespacedNames(agent);
           store.hydrateAgentChatResources({
             toolCatalogFullNames: toolFullNames,
             toolGroups,
@@ -358,6 +362,8 @@ function ChatContent() {
             kbIds,
             knowledgeCollectionRows: collectionRows,
             knowledgeDefaults: knowledgeDefaultsForStore,
+            mcpToolCatalogNames,
+            mcpServerGroups,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
         } catch (error) {

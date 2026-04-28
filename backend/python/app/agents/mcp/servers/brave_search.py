@@ -30,7 +30,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
         "BRAVE_MCP_ENABLED_TOOLS",
         "BRAVE_MCP_DISABLED_TOOLS",
     ],
-    icon_path="/assets/icons/mcp-servers/brave.svg",
+    icon_path="/assets/icons/connectors/brave.svg",
     documentation_url="https://github.com/brave/brave-search-mcp-server",
     tags=["search", "web-search", "news", "images", "videos", "local-search"],
     auth=AuthHint(

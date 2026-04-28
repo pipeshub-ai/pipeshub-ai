@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { MCPServerTemplate } from '../types';
@@ -26,6 +27,7 @@ export function McpCatalogCard({
   onAdd,
 }: McpCatalogCardProps) {
   const [isHovered, setIsHovered] = useState(false);
+  const [iconError, setIconError] = useState(false);
 
   return (
     <Flex
@@ -59,14 +61,15 @@ export function McpCatalogCard({
               flexShrink: 0,
             }}
           >
-            {template.iconPath ? (
-              <img
+            {template.iconPath && !iconError ? (
+              <Image
                 src={template.iconPath}
                 alt={template.displayName}
-                style={{ width: 20, height: 20, objectFit: 'contain' }}
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = 'none';
-                }}
+                width={20}
+                height={20}
+                unoptimized
+                onError={() => setIconError(true)}
+                style={{ objectFit: 'contain' }}
               />
             ) : (
               <MaterialIcon name="dns" size={20} color="var(--gray-10)" />

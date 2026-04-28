@@ -170,13 +170,65 @@ def extend_tools_data_with_mcp_servers(
 
 
 def _merge_mcp_tool_domains(state: dict[str, Any], domains: dict[str, list[str]]) -> None:
-    """Group MCP namespaced tools under domain key ``mcp`` for Available Actions."""
+    """Group MCP namespaced tools under domain key ``mcp`` (split per server later)."""
     seen: set[str] = set()
     for _srv, ns_name, _desc in iter_mcp_tools_from_servers(state.get("agent_mcp_servers")):
         if ns_name in seen:
             continue
         seen.add(ns_name)
         domains.setdefault("mcp", []).append(ns_name)
+
+
+def _split_mcp_domain_for_actions(state: dict[str, Any], domains: dict[str, list[str]]) -> None:
+    """Turn aggregate ``mcp`` into ``mcp_exa`` / ``mcp_jira`` / … for Available Actions.
+
+    Runtime tools are bucketed as domain ``mcp`` by ``derive_tool_domain``. When
+    ``agent_mcp_servers`` lists tools per server, regroup under one domain key
+    per MCP instance (same slug as ``namespaced_mcp_tool_name`` / server type).
+    """
+    from app.agents.constants.mcp_server_constants import normalize_mcp_server_name
+
+    mcp_actions = domains.pop("mcp", None)
+    if not mcp_actions:
+        return
+
+    grouped: dict[str, list[str]] = {}
+    grouped_spaced: set[str] = set()
+
+    for server in state.get("agent_mcp_servers") or []:
+        if not isinstance(server, dict):
+            continue
+        raw = (server.get("type") or server.get("name") or "").strip()
+        srv_key = normalize_mcp_server_name(raw) if raw else "server"
+        domain_key = f"mcp_{srv_key}"
+        tools_list = server.get("tools") or []
+        for tool_data in tools_list:
+            if not isinstance(tool_data, dict):
+                continue
+            if not (tool_data.get("name") or "").strip():
+                continue
+            ns = namespaced_mcp_tool_name(server, tool_data)
+            spaced = ns.replace("_", " ")
+            if spaced not in grouped.setdefault(domain_key, []):
+                grouped[domain_key].append(spaced)
+            grouped_spaced.add(spaced)
+
+    if not grouped:
+        domains["mcp"] = [a.replace("_", " ") for a in mcp_actions]
+        return
+
+    for domain_key, acts in grouped.items():
+        bucket = domains.setdefault(domain_key, [])
+        for a in acts:
+            if a not in bucket:
+                bucket.append(a)
+
+    for action in mcp_actions:
+        spaced = action.replace("_", " ")
+        if spaced not in grouped_spaced:
+            tail = domains.setdefault("mcp", [])
+            if spaced not in tail:
+                tail.append(spaced)
 
 
 def _build_mcp_servers_section(state: dict[str, Any], parts: list[str]) -> None:
@@ -708,7 +760,7 @@ def build_capability_summary(state: dict[str, Any]) -> str:
     has_knowledge = state.get("has_knowledge", False)
 
     _build_knowledge_section(state=state, has_knowledge=has_knowledge, parts=parts)
-    _build_mcp_servers_section(state, parts)
+    # _build_mcp_servers_section(state, parts)
     _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
 
     parts.append(
@@ -828,8 +880,9 @@ def _build_actions_section(
 ) -> None:
     """Append available actions section to parts.
 
-    Shows all tools the runtime loads — service connectors, MCP tools (grouped
-    under ``mcp``), and built-ins (calculator, coding_sandbox, etc.), deduped
+    Shows all tools the runtime loads — service connectors, MCP tools (one
+    line per MCP server when metadata is present), and built-ins (calculator,
+    coding_sandbox, etc.), deduped
     by name. Notes for non-obvious built-in tools are derived from
     tool.description — no hardcoding required.
     """
@@ -859,7 +912,7 @@ def _build_actions_section(
     parts.append("")
 
 
-def _extract_domain_note(description: str, max_chars: int = 130) -> str:
+def _extract_domain_note(description: str) -> str:
     """
     Extract a concise capability note from a tool's description string.
 
@@ -874,6 +927,11 @@ def _extract_domain_note(description: str, max_chars: int = 130) -> str:
     if not description:
         return ""
 
+    for stop_marker in ("\n**WHEN TO USE**", "\n**WHEN NOT TO USE**", "\n\n"):
+        cut = description.find(stop_marker)
+        if cut > 0:
+            description = description[:cut]
+
     for marker in ("Use this to ", "Use ONLY for ", "Useful for "):
         idx = description.find(marker)
         if idx == -1:
@@ -884,7 +942,6 @@ def _extract_domain_note(description: str, max_chars: int = 130) -> str:
             s = rest.find(sep)
             if 0 < s < end:
                 end = s
-        end = min(end, max_chars)
         note = rest[:end].strip().rstrip(".")
         if note:
             return note
@@ -892,10 +949,10 @@ def _extract_domain_note(description: str, max_chars: int = 130) -> str:
     # First sentence fallback
     for sep in (". ", ".\n"):
         idx = description.find(sep)
-        if 0 < idx <= max_chars:
+        if idx > 0:
             return description[:idx].strip()
 
-    return description[:max_chars].strip()
+    return description.strip()
 
 
 def _get_all_tool_domains(
@@ -950,6 +1007,7 @@ def _get_all_tool_domains(
                 if note:
                     domain_notes[domain] = note
 
+        _split_mcp_domain_for_actions(state, domains)
         return domains, domain_notes
 
     # Fallback: state["tools"] flat list with deduplication (no notes available)
@@ -986,4 +1044,5 @@ def _get_all_tool_domains(
                         domains.setdefault(ts_name, []).append(act_d)
 
     _merge_mcp_tool_domains(state, domains)
+    _split_mcp_domain_for_actions(state, domains)
     return domains, {}

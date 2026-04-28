@@ -24,7 +24,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
     required_env=[],
     optional_env=[],
     redirect_uri="mcp-servers/oauth/callback/jira",
-    icon_path="/assets/icons/mcp-servers/jira.svg",
+    icon_path="/assets/icons/connectors/jira.svg",
     documentation_url="https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server",
     tags=["atlassian", "project-management", "issue-tracking"],
     auth=AuthHint(

@@ -481,6 +481,11 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
+  /**
+   * Agent streams only — JSON `mcpTools`: every enabled MCP tool `namespacedName`
+   * (absent/null = all MCP tools; `[]` = none; non-empty = explicit subset).
+   */
+  agentStreamMcpTools?: string[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */
@@ -566,6 +571,11 @@ export interface ChatSlot {
    * relying on the global `agentStreamTools` (which tracks the current URL agent only).
    */
   agentStreamTools: string[] | null;
+  /**
+   * MCP tool namespacedNames for agent SSE, captured when the thread is scoped to an agent.
+   * Parallel to `agentStreamTools` but for MCP server tools.
+   */
+  agentStreamMcpTools: string[] | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */

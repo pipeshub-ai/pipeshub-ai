@@ -181,6 +181,17 @@ export interface AgentChatToolGroupRow {
   toolDescriptions?: Record<string, string>;
 }
 
+/** MCP server groups for agent chat MCP Servers tab (parallel to AgentChatToolGroupRow). */
+export interface AgentChatMcpServerGroupRow {
+  label: string;
+  serverSlug: string;
+  /** Stable id for UI keys — same server type may appear as multiple instances. */
+  instanceId?: string;
+  /** All `namespacedName` strings for tools in this server (used for selection keys). */
+  namespacedNames: string[];
+  toolDescriptions?: Record<string, string>;
+}
+
 export function buildAgentChatToolGroups(agent: AgentDetail | null | undefined): AgentChatToolGroupRow[] {
   if (!agent?.toolsets?.length) return [];
   const groups: AgentChatToolGroupRow[] = [];
@@ -212,6 +223,63 @@ export function buildAgentChatToolGroups(agent: AgentDetail | null | undefined):
     });
   }
   return groups;
+}
+
+/**
+ * Build MCP server groups for the agent chat MCP Servers tab.
+ * Parallel to `buildAgentChatToolGroups` but operates on `agent.mcpServers`.
+ */
+export function buildAgentChatMcpServerGroups(
+  agent: AgentDetail | null | undefined
+): AgentChatMcpServerGroupRow[] {
+  if (!agent?.mcpServers?.length) return [];
+  const groups: AgentChatMcpServerGroupRow[] = [];
+  for (const server of agent.mcpServers) {
+    const namespacedNames = (server.tools || [])
+      .map((t) => (typeof t.namespacedName === 'string' ? t.namespacedName.trim() : ''))
+      .filter(Boolean);
+    if (namespacedNames.length === 0) continue;
+
+    const toolDescriptions: Record<string, string> = {};
+    for (const t of server.tools || []) {
+      const nn = typeof t.namespacedName === 'string' ? t.namespacedName.trim() : '';
+      if (!nn) continue;
+      const d = typeof t.description === 'string' ? t.description.trim() : '';
+      if (d) toolDescriptions[nn] = d;
+    }
+
+    const instanceLabel = typeof server.instanceName === 'string' ? server.instanceName.trim() : '';
+    const productLabel = (server.displayName || server.name || 'MCP Server').trim();
+    const instanceId = typeof server.instanceId === 'string' ? server.instanceId.trim() : '';
+    groups.push({
+      label: instanceLabel || productLabel,
+      serverSlug: (typeof server.name === 'string' ? server.name : '').trim(),
+      ...(instanceId ? { instanceId } : {}),
+      namespacedNames,
+      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+    });
+  }
+  return groups;
+}
+
+/**
+ * Collect all `namespacedName` strings from MCP server tools for stream payloads.
+ * Parallel to `extractAgentToolFullNames` but for MCP.
+ */
+export function extractAgentMcpToolNamespacedNames(
+  agent: AgentDetail | null | undefined
+): string[] {
+  if (!agent?.mcpServers?.length) return [];
+  const names: string[] = [];
+  for (const server of agent.mcpServers) {
+    if (!server?.tools?.length) continue;
+    for (const t of server.tools) {
+      if (typeof t.namespacedName === 'string' && t.namespacedName.trim()) {
+        names.push(t.namespacedName.trim());
+      }
+    }
+  }
+  return names;
 }
 
 /** Connector instance ids (non–knowledge-base) from the agent graph `knowledge[]` entry. */

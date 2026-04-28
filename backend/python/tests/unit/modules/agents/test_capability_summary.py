@@ -363,3 +363,61 @@ class TestGenericRoutingLanguage:
         """With only 1 source there is no all-vs-specific split."""
         result = build_connector_routing_rules([_C_JIRA], call_format="planner")
         assert "Call format" in result
+
+
+# ===========================================================================
+# MCP Available Actions — per-server domain keys
+# ===========================================================================
+
+
+class TestSplitMcpDomainForActions:
+    """``_split_mcp_domain_for_actions`` regroups flat ``mcp`` into ``mcp_exa``, etc."""
+
+    def test_groups_into_per_server_domains(self):
+        from app.modules.agents.capability_summary import _split_mcp_domain_for_actions
+
+        state = {
+            "agent_mcp_servers": [
+                {
+                    "type": "exa",
+                    "tools": [{"name": "web_search_exa"}, {"name": "web_fetch_exa"}],
+                },
+                {"type": "jira", "tools": [{"name": "getJiraIssue"}]},
+            ],
+        }
+        domains = {
+            "mcp": [
+                "mcp exa web search exa",
+                "mcp exa web fetch exa",
+                "mcp jira getJiraIssue",
+            ],
+        }
+        _split_mcp_domain_for_actions(state, domains)
+
+        assert "mcp" not in domains
+        assert domains["mcp_exa"] == [
+            "mcp exa web search exa",
+            "mcp exa web fetch exa",
+        ]
+        assert domains["mcp_jira"] == ["mcp jira getJiraIssue"]
+
+    def test_no_metadata_keeps_single_mcp_bucket_spaced(self):
+        from app.modules.agents.capability_summary import _split_mcp_domain_for_actions
+
+        state: dict = {"agent_mcp_servers": []}
+        domains = {"mcp": ["mcp_foo_bar"]}
+        _split_mcp_domain_for_actions(state, domains)
+        assert domains == {"mcp": ["mcp foo bar"]}
+
+    def test_unmatched_tools_remain_under_mcp(self):
+        from app.modules.agents.capability_summary import _split_mcp_domain_for_actions
+
+        state = {
+            "agent_mcp_servers": [
+                {"type": "exa", "tools": [{"name": "web_search_exa"}]},
+            ],
+        }
+        domains = {"mcp": ["mcp exa web search exa", "mcp slack some tool"]}
+        _split_mcp_domain_for_actions(state, domains)
+        assert domains["mcp_exa"] == ["mcp exa web search exa"]
+        assert domains["mcp"] == ["mcp slack some tool"]

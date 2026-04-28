@@ -23,7 +23,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
     supported_auth_types=["API_TOKEN"],
     required_env=["OPENAPI_MCP_HEADERS"],
     optional_env=[],
-    icon_path="/assets/icons/mcp-servers/notion.svg",
+    icon_path="/assets/icons/connectors/notion.svg",
     documentation_url="https://github.com/makenotion/notion-mcp-server",
     tags=["productivity", "notes", "databases", "wiki", "collaboration"],
     auth=AuthHint(

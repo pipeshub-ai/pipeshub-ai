@@ -13,11 +13,11 @@ import { CollectionRow } from './connectors-collections/collection-row';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
-const TAB_VALUES = ['connectors', 'collections', 'actions'] as const;
+const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcpServers'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 /** Figma segmented control track (`7523:16159` / Settings spec): fixed width, 32px height, 4px radius */
-const FIGMA_TABLIST_WIDTH = 246;
+const FIGMA_TABLIST_WIDTH = 340;
 const FIGMA_TABLIST_HEIGHT = 32;
 const FIGMA_TABLIST_RADIUS = 4;
 
@@ -231,6 +231,10 @@ export function AgentScopedResourcesPanel({
   const setScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const setTools = useChatStore((s) => s.setAgentStreamTools);
 
+  const mcpServerGroups = useChatStore((s) => s.agentChatMcpServerGroups);
+  const selectedMcpTools = useChatStore((s) => s.agentStreamMcpTools);
+  const setMcpTools = useChatStore((s) => s.setAgentStreamMcpTools);
+
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
   const tryNormalizeKnowledgeScope = useCallback(
@@ -360,7 +364,101 @@ export function AgentScopedResourcesPanel({
   const resetToAgentDefaults = useCallback(() => {
     setScope(null);
     setTools(null);
-  }, [setScope, setTools]);
+    setMcpTools(null);
+  }, [setScope, setTools, setMcpTools]);
+
+  const isMcpToolOn = useCallback(
+    (namespacedName: string) => {
+      if (selectedMcpTools === null) return true;
+      return selectedMcpTools.includes(namespacedName);
+    },
+    [selectedMcpTools]
+  );
+
+  const toggleMcpTool = useCallback(
+    (namespacedName: string) => {
+      const cat = useChatStore.getState().agentMcpToolCatalogNames;
+      const cur = useChatStore.getState().agentStreamMcpTools;
+
+      if (cur === null) {
+        const next = cat.filter((x) => x !== namespacedName);
+        if (next.length === 0) {
+          setMcpTools([]);
+        } else if (cat.length > 0 && setsEqualAsSets(next, cat)) {
+          setMcpTools(null);
+        } else {
+          setMcpTools(next);
+        }
+        return;
+      }
+
+      let next = [...cur];
+      if (next.includes(namespacedName)) {
+        next = next.filter((x) => x !== namespacedName);
+      } else {
+        next.push(namespacedName);
+      }
+      if (next.length === 0) {
+        setMcpTools([]);
+        return;
+      }
+      if (cat.length > 0 && setsEqualAsSets(next, cat)) {
+        setMcpTools(null);
+      } else {
+        setMcpTools(next);
+      }
+    },
+    [setMcpTools]
+  );
+
+  const mcpGroupCheckState = useCallback(
+    (namespacedNames: string[]): boolean | 'indeterminate' => {
+      const on = namespacedNames.filter((nn) => isMcpToolOn(nn)).length;
+      if (on === 0) return false;
+      if (on === namespacedNames.length) return true;
+      return 'indeterminate';
+    },
+    [isMcpToolOn]
+  );
+
+  const setMcpGroupToolsEnabled = useCallback(
+    (namespacedNames: string[], enabled: boolean) => {
+      const cat = useChatStore.getState().agentMcpToolCatalogNames;
+      const explicit = useChatStore.getState().agentStreamMcpTools;
+
+      if (explicit === null) {
+        if (!enabled) {
+          const next = cat.filter((nn) => !namespacedNames.includes(nn));
+          if (next.length === 0) {
+            setMcpTools([]);
+          } else if (cat.length > 0 && setsEqualAsSets(next, cat)) {
+            setMcpTools(null);
+          } else {
+            setMcpTools(next);
+          }
+        }
+        return;
+      }
+
+      const nextSet = new Set(explicit);
+      if (enabled) {
+        for (const nn of namespacedNames) nextSet.add(nn);
+      } else {
+        for (const nn of namespacedNames) nextSet.delete(nn);
+      }
+      const arr = Array.from(nextSet);
+      if (arr.length === 0) {
+        setMcpTools([]);
+        return;
+      }
+      if (cat.length > 0 && setsEqualAsSets(arr, cat)) {
+        setMcpTools(null);
+      } else {
+        setMcpTools(arr);
+      }
+    },
+    [setMcpTools]
+  );
 
   const filteredConnectors = useMemo(() => {
     if (!search.trim()) return connectors;
@@ -392,10 +490,29 @@ export function AgentScopedResourcesPanel({
       .filter((g) => g.fullNames.length > 0);
   }, [toolGroups, search]);
 
+  const filteredMcpServerGroups = useMemo(() => {
+    return mcpServerGroups
+      .map((g) => ({
+        ...g,
+        namespacedNames: g.namespacedNames.filter((nn) => {
+          if (!search.trim()) return true;
+          const q = search.toLowerCase();
+          const desc = (g.toolDescriptions?.[nn] ?? '').toLowerCase();
+          return (
+            nn.toLowerCase().includes(q) ||
+            g.label.toLowerCase().includes(q) ||
+            desc.includes(q)
+          );
+        }),
+      }))
+      .filter((g) => g.namespacedNames.length > 0);
+  }, [mcpServerGroups, search]);
+
   const tabPlaceholders = [
     t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
     t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
     t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
+    t('chat.agentResources.searchMcpServers', { defaultValue: 'Search MCP tools' }),
   ];
 
   const tabIndex = TAB_VALUES.indexOf(tab);
@@ -406,6 +523,7 @@ export function AgentScopedResourcesPanel({
       connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
       collections: t('nav.collections', { defaultValue: 'Collections' }),
       actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
+      mcpServers: t('chat.agentResources.mcpServersTab', { defaultValue: 'MCP' }),
     }),
     [t]
   );
@@ -709,6 +827,181 @@ export function AgentScopedResourcesPanel({
                         href="/workspace/actions"
                         aria-label={t('chat.agentResources.browseWorkspaceActionsAria', {
                           defaultValue: 'Open workspace actions to add or manage integrations',
+                        })}
+                      >
+                        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+                      </Link>
+                    </IconButton>
+                  </Flex>
+                </Flex>
+              </>
+            )}
+          </>
+        )}
+
+        {tab === 'mcpServers' && (
+          <>
+            {filteredMcpServerGroups.length === 0 ? (
+              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+                {mcpServerGroups.length === 0
+                  ? t('chat.agentResources.noMcpServers', {
+                      defaultValue: 'No MCP servers configured for this agent.',
+                    })
+                  : t('chat.agentResources.noMcpServerMatches', {
+                      defaultValue: 'No MCP tools match your search.',
+                    })}
+              </Text>
+            ) : (
+              <>
+                {filteredMcpServerGroups.map((group) => {
+                  const groupKey = group.instanceId
+                    ? `mcp:${group.instanceId}`
+                    : `mcp:${group.serverSlug || 'mcp'}:${group.label}:${group.namespacedNames[0] ?? ''}`;
+                  const expanded = Boolean(expandedGroups[groupKey]);
+                  const checkState = mcpGroupCheckState(group.namespacedNames);
+
+                  return (
+                    <Flex key={groupKey} direction="column" gap="1">
+                      <Flex
+                        align="center"
+                        justify="between"
+                        gap="2"
+                        style={{
+                          ...OLIVE_ROW,
+                          padding: 'var(--space-2)',
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => toggleGroupExpanded(groupKey)}
+                      >
+                        <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            role="presentation"
+                            style={CHECKBOX_ALIGN}
+                          >
+                            <Checkbox
+                              size="1"
+                              checked={checkState}
+                              onCheckedChange={(v) => {
+                                setMcpGroupToolsEnabled(group.namespacedNames, v === true);
+                              }}
+                            />
+                          </div>
+                          <MaterialIcon name="storage" size={18} color="var(--gray-11)" style={{ flexShrink: 0 }} />
+                          <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                            {group.label}
+                          </Text>
+                        </Flex>
+                        <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                          <Badge size="1" variant="soft" color="green" highContrast>
+                            {t('chat.agentResources.actionsCount', {
+                              count: group.namespacedNames.length,
+                            })}
+                          </Badge>
+                          <IconButton
+                            type="button"
+                            size="1"
+                            variant="ghost"
+                            color="gray"
+                            aria-expanded={expanded}
+                            aria-label={expanded ? t('common.collapse') : t('common.expand')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleGroupExpanded(groupKey);
+                            }}
+                          >
+                            <MaterialIcon
+                              name="chevron_right"
+                              size={18}
+                              color="var(--slate-11)"
+                              style={{
+                                transform: expanded ? 'rotate(90deg)' : undefined,
+                                transition: 'transform 0.15s ease',
+                              }}
+                            />
+                          </IconButton>
+                        </Flex>
+                      </Flex>
+
+                      {expanded &&
+                        group.namespacedNames.map((namespacedName) => {
+                          const shortRaw = namespacedName.includes('.')
+                            ? namespacedName.slice(namespacedName.lastIndexOf('.') + 1)
+                            : namespacedName;
+                          const short = humanizeUnderscores(shortRaw);
+                          const desc = group.toolDescriptions?.[namespacedName];
+                          return (
+                            <Flex
+                              key={namespacedName}
+                              align="center"
+                              gap="2"
+                              onClick={() => toggleMcpTool(namespacedName)}
+                              style={{
+                                ...OLIVE_ROW,
+                                marginLeft: 'var(--space-3)',
+                                padding: 'var(--space-2) var(--space-3)',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <span style={CHECKBOX_ALIGN}>
+                                <Checkbox
+                                  size="1"
+                                  checked={isMcpToolOn(namespacedName)}
+                                  onCheckedChange={() => toggleMcpTool(namespacedName)}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </span>
+                              <MaterialIcon name="build" size={16} color="var(--gray-9)" style={{ flexShrink: 0 }} />
+                              <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
+                                <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                                  {short}
+                                </Text>
+                                {desc ? (
+                                  <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                                    {desc}
+                                  </Text>
+                                ) : (
+                                  <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                                    {namespacedName}
+                                  </Text>
+                                )}
+                              </Flex>
+                            </Flex>
+                          );
+                        })}
+                    </Flex>
+                  );
+                })}
+
+                <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
+                  <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                    {t('chat.agentResources.configureMoreMcpServers', {
+                      defaultValue: 'Configure more MCP servers',
+                    })}
+                  </Text>
+                  <Flex
+                    align="center"
+                    justify="between"
+                    gap="2"
+                    style={{
+                      ...OLIVE_ROW,
+                      padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+                    }}
+                  >
+                    <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                      <MaterialIcon name="storage" size={18} color="var(--gray-11)" />
+                      <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                        {t('chat.agentResources.browseWorkspaceMcpServers', {
+                          defaultValue: 'Browse workspace MCP servers',
+                        })}
+                      </Text>
+                    </Flex>
+                    <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
+                      <Link
+                        href="/workspace/mcp-servers"
+                        aria-label={t('chat.agentResources.browseWorkspaceMcpServersAria', {
+                          defaultValue: 'Open workspace MCP servers to add or manage integrations',
                         })}
                       >
                         <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />

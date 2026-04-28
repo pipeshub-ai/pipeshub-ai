@@ -94,6 +94,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     convId,
     threadAgentId: null,
     agentStreamTools: null,
+    agentStreamMcpTools: null,
     isTemp: isNew,
     isInitialized: isNew,      // new chats have nothing to load
     hasLoaded: false,
@@ -183,6 +184,21 @@ interface ChatState {
     toolsetSlug: string;
     instanceId?: string;
     iconPath?: string;
+  }>;
+  /**
+   * Selected MCP tool `namespacedName`s for the next agent stream. `null` = all MCP tools
+   * (runtime expands to full catalog). `[]` = none. Non-empty = explicit subset.
+   */
+  agentStreamMcpTools: string[] | null;
+  /** Every MCP tool namespacedName from the loaded agent — drives the MCP Servers tab. */
+  agentMcpToolCatalogNames: string[];
+  /** MCP server groups for the MCP Servers tab UI. */
+  agentChatMcpServerGroups: Array<{
+    label: string;
+    serverSlug: string;
+    instanceId?: string;
+    namespacedNames: string[];
+    toolDescriptions?: Record<string, string>;
   }>;
   /** Default knowledge scope derived from the agent graph (used to reset UI). */
   agentKnowledgeDefaults: { apps: string[]; kb: string[] };
@@ -287,6 +303,7 @@ interface ChatState {
   setAgentMoreChatsPagination: (p: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null) => void;
   appendAgentConversations: (convs: Conversation[]) => void;
   setAgentStreamTools: (tools: string[] | null) => void;
+  setAgentStreamMcpTools: (tools: string[] | null) => void;
   /** Reset catalog + knowledge UI when GET /agents/:id succeeds (or null to clear). */
   hydrateAgentChatResources: (payload: {
     toolCatalogFullNames: string[];
@@ -303,6 +320,14 @@ interface ChatState {
     kbIds: string[];
     knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
     knowledgeDefaults: { apps: string[]; kb: string[] };
+    mcpToolCatalogNames: string[];
+    mcpServerGroups: Array<{
+      label: string;
+      serverSlug: string;
+      instanceId?: string;
+      namespacedNames: string[];
+      toolDescriptions?: Record<string, string>;
+    }>;
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
@@ -388,6 +413,15 @@ const initialState = {
     toolsetSlug: string;
     instanceId?: string;
     iconPath?: string;
+  }>,
+  agentStreamMcpTools: null as string[] | null,
+  agentMcpToolCatalogNames: [] as string[],
+  agentChatMcpServerGroups: [] as Array<{
+    label: string;
+    serverSlug: string;
+    instanceId?: string;
+    namespacedNames: string[];
+    toolDescriptions?: Record<string, string>;
   }>,
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
@@ -614,6 +648,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentChatKbIds: [],
           agentKnowledgeCollectionRows: [],
           agentChatToolGroups: [],
+          agentStreamMcpTools: null,
+          agentMcpToolCatalogNames: [],
+          agentChatMcpServerGroups: [],
           agentKnowledgeDefaults: { apps: [], kb: [] },
           agentKnowledgeScope: null,
           agentContextDisplayName: null,
@@ -637,6 +674,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentChatKbIds: [],
         agentKnowledgeCollectionRows: [],
         agentChatToolGroups: [],
+        agentStreamMcpTools: null,
+        agentMcpToolCatalogNames: [],
+        agentChatMcpServerGroups: [],
         agentKnowledgeDefaults: { apps: [], kb: [] },
         agentKnowledgeScope: null,
         agentContextDisplayName: null,
@@ -698,6 +738,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentStreamTools: (tools) => set({ agentStreamTools: tools }),
 
+  setAgentStreamMcpTools: (tools) => set({ agentStreamMcpTools: tools }),
+
   hydrateAgentChatResources: (payload) =>
     set((state) =>
       payload
@@ -710,6 +752,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: payload.knowledgeDefaults,
             agentKnowledgeScope: null,
             agentStreamTools: null,
+            agentMcpToolCatalogNames: payload.mcpToolCatalogNames,
+            agentChatMcpServerGroups: payload.mcpServerGroups,
+            agentStreamMcpTools: null,
             collectionNamesCache: (() => {
               const patch: Record<string, string> = {};
               for (const r of payload.knowledgeCollectionRows) {
@@ -727,6 +772,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: { apps: [], kb: [] },
             agentKnowledgeScope: null,
             agentStreamTools: null,
+            agentMcpToolCatalogNames: [],
+            agentChatMcpServerGroups: [],
+            agentStreamMcpTools: null,
           }
     ),
 

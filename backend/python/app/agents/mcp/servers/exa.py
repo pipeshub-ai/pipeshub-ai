@@ -22,7 +22,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
     supported_auth_types=["API_TOKEN"],
     required_env=[],
     optional_env=[],
-    icon_path="/assets/icons/mcp-servers/exa.svg",
+    icon_path="/assets/icons/connectors/exa.svg",
     documentation_url="https://exa.ai/docs/reference/exa-mcp",
     tags=["search", "web-search", "research"],
     auth=AuthHint(

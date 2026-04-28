@@ -24,7 +24,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPTransport
     required_env=[],
     optional_env=[],
     redirect_uri="mcp-servers/oauth/callback/slack",
-    icon_path="/assets/icons/mcp-servers/slack.svg",
+    icon_path="/assets/icons/connectors/slack.svg",
     documentation_url="https://docs.slack.dev/ai/mcp-server",
     tags=["messaging", "communication", "collaboration"],
     auth=AuthHint(

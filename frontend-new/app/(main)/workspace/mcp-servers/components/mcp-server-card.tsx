@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { MCPServerInstance } from '../types';
@@ -21,6 +22,7 @@ interface McpServerCardProps {
 export function McpServerCard({ server, onManage }: McpServerCardProps) {
   const [isHovered, setIsHovered] = useState(false);
 
+  const [iconError, setIconError] = useState(false);
   const isAuthenticated = server.isAuthenticated ?? false;
   const toolCount = server.toolCount ?? server.tools?.length ?? 0;
 
@@ -55,14 +57,15 @@ export function McpServerCard({ server, onManage }: McpServerCardProps) {
               flexShrink: 0,
             }}
           >
-            {server.iconPath ? (
-              <img
+            {server.iconPath && !iconError ? (
+              <Image
                 src={server.iconPath}
                 alt={server.displayName}
-                style={{ width: 20, height: 20, objectFit: 'contain' }}
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = 'none';
-                }}
+                width={20}
+                height={20}
+                unoptimized
+                onError={() => setIconError(true)}
+                style={{ objectFit: 'contain' }}
               />
             ) : (
               <MaterialIcon name="dns" size={20} color="var(--gray-10)" />
