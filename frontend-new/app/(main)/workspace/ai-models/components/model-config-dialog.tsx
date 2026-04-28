@@ -192,6 +192,7 @@ export function ModelConfigDialog({
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,
+          modelName: provider.providerId === 'default' ? provider.modelName : undefined,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
           isReasoning: (topLevel.isReasoning as boolean) ?? false,
@@ -391,9 +392,29 @@ function ModelConfigFormBody({
             </Callout.Text>
           </Callout.Root>
         ) : null}
-        <Text size="2" style={{ color: 'var(--gray-10)', padding: 8 }}>
-          {t('workspace.aiModels.configNoConfigRequired')}
-        </Text>
+        {provider.modelName && (
+          <Callout.Root color="blue" size="1" variant="surface">
+            <Callout.Icon>
+              <MaterialIcon name="check_circle" size={16} />
+            </Callout.Icon>
+            <Callout.Text>
+              <Text size="2" style={{ color: 'var(--gray-12)' }}>
+                {t('workspace.aiModels.configDefaultModelNotice', { modelName: provider.modelName })}
+              </Text>
+            </Callout.Text>
+          </Callout.Root>
+        ) }
+          <Callout.Root color="gray" size="1" variant="surface">
+            <Callout.Icon>
+              <MaterialIcon name="info" size={16} />
+            </Callout.Icon>
+            <Callout.Text>
+              <Text size="2" style={{ color: 'var(--gray-11)' }}>
+                {t('workspace.aiModels.configNoConfigRequired')}
+              </Text>
+            </Callout.Text>
+          </Callout.Root>
+        
         {error && (
           <Text size="2" style={{ color: 'var(--red-11)', padding: '4px 0' }}>
             {error}

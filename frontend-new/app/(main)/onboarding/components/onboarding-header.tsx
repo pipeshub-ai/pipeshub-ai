@@ -39,7 +39,7 @@ export function OnboardingHeader({
           maxWidth: '1228px',
           width: '100%',
           margin: '0 auto',
-          padding: '20px 0',
+          padding: '12px 0',
           minHeight: '80px',
         }}
       >

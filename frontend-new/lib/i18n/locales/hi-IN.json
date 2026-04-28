@@ -1041,6 +1041,7 @@
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",
       "configSaveErrorFallback": "मॉडल कॉन्फ़िगरेशन सहेजा नहीं जा सका",
       "configNoConfigRequired": "इस प्रदाता के लिए कोई कॉन्फ़िगरेशन आवश्यक नहीं।",
+      "configDefaultModelNotice": "\"{{modelName}}\" सिस्टम द्वारा डिफ़ॉल्ट रूप से उपयोग किया जाएगा।",
       "configSectionModelConfiguration": "मॉडल कॉन्फ़िगरेशन",
       "configProviderType": "प्रदाता प्रकार",
       "configSectionCompatibilities": "मॉडल अनुकूलता",
@@ -1426,6 +1427,10 @@
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      },
+      "xmlUpload": {
+        "parseError": "इस फ़ाइल से SAML मेटाडेटा पार्स नहीं किया जा सका। जाँच लें कि यह एक मान्य IdP मेटाडेटा XML है।",
+        "readError": "फ़ाइल पढ़ने में विफल।"
       }
     },
     "connectors": {

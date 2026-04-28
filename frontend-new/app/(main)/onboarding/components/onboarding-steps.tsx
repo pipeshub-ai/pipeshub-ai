@@ -40,8 +40,8 @@ export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) 
             key={step.id}
             style={{
               flex: 1,
-              paddingTop: '12px',
-              paddingBottom: '16px',
+              paddingTop: '8px',
+              paddingBottom: '8px',
               paddingLeft: '16px',
               paddingRight: '16px',
               position: 'relative',

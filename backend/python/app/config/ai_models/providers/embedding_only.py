@@ -16,6 +16,7 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, model_field
     .with_capabilities([ModelCapability.EMBEDDING]) \
     .with_icon("/assets/icons/ai-models/huggingface-color.svg") \
     .with_color("#FFD21E") \
+    .with_model_name("BAAI/bge-large-en-v1.5") \
     .build_decorator()
 class DefaultEmbeddingProvider:
     """No fields — system-provided embedding model."""

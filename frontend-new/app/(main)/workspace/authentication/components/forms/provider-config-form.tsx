@@ -18,6 +18,7 @@ import { InputField } from './input-field';
 import { PasswordInputField } from './password-input-field';
 import { TextareaField } from './textarea-field';
 import { JitField } from './jit-field';
+import { XmlUploadField } from './xml-upload-field';
 
 // ============================================================
 // Public ref type
@@ -168,6 +169,18 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
                 providerName={field.providerName}
                 checked={Boolean(values.enableJit)}
                 onCheckedChange={(val) => setBool('enableJit', val)}
+              />
+            );
+          }
+
+          if (field.type === 'xml-upload') {
+            return (
+              <XmlUploadField
+                key={field.key}
+                field={field}
+                onPopulate={(parsed) => {
+                  setValues((prev) => ({ ...prev, ...parsed }));
+                }}
               />
             );
           }
