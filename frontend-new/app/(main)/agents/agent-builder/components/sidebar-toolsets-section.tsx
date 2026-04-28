@@ -387,6 +387,7 @@ export function AgentBuilderToolsetsSection(props: {
               <Box key={toolsetType} mb="2">
                 <SidebarCategoryRow
                   groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
+                  groupConnectorType={(first.toolsetType || toolsetType) as string}
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
                   isExpanded={isTypeExpanded}
@@ -433,6 +434,7 @@ export function AgentBuilderToolsetsSection(props: {
                       <SidebarCategoryRow
                         key={ts.instanceId || ts.displayName}
                         groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
+                        groupConnectorType={ts.toolsetType}
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
                         isExpanded={isInstanceExpanded}
