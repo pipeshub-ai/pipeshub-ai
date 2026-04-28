@@ -724,6 +724,8 @@
       "configTab": {
         "additionalSettings": "Additional Settings",
         "additionalSettingsDescription": "Configure connector-specific sync options",
+        "nonEditableUrlFieldTooltip": "Die Website-URL kann nach dem Festlegen nicht mehr geändert werden.",
+        "nonEditableLockedFieldTooltip": "Dieser Wert kann nach dem Festlegen nicht mehr geändert werden.",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",

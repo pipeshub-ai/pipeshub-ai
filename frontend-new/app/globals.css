@@ -948,3 +948,15 @@ li > blockquote {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
 }
+
+/*
+ * Radix Tooltip hover must hit the Trigger element. Disabled native controls do not
+ * bubble pointer events; letting the wrapper receive hover fixes tooltips on locked fields.
+ */
+.ph-disabled-field-tooltip-wrap input:disabled,
+.ph-disabled-field-tooltip-wrap textarea:disabled,
+.ph-disabled-field-tooltip-wrap select:disabled,
+.ph-disabled-field-tooltip-wrap button:disabled,
+.ph-disabled-field-tooltip-wrap [data-disabled] {
+  pointer-events: none !important;
+}

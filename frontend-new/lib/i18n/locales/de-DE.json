@@ -1504,6 +1504,8 @@
       "configTab": {
         "additionalSettings": "Zusätzliche Einstellungen",
         "additionalSettingsDescription": "Konnektorspezifische Synchronisierungsoptionen konfigurieren",
+        "nonEditableUrlFieldTooltip": "Die Website-URL kann nach dem Festlegen nicht mehr geändert werden.",
+        "nonEditableLockedFieldTooltip": "Dieser Wert kann nach dem Festlegen nicht mehr geändert werden.",
         "importDate": "Importstartdatum",
         "importDateDescription": "Wählen Sie das Datum, ab dem Nachrichten importiert werden",
         "importAllTime": "Alle Daten importieren",

@@ -1,5 +1,6 @@
 import { CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME } from '../constants';
 import type { FieldValidation, SyncCustomField } from '../types';
+import { getUrlValidationError } from './url-field';
 
 /**
  * Validates a single sync custom field (same rules as legacy
@@ -19,11 +20,7 @@ export function validateSyncCustomField(field: SyncCustomField, value: unknown):
   }
 
   const validation: FieldValidation | undefined = field.validation;
-  if (!validation) {
-    return '';
-  }
-
-  const { minLength, maxLength, format } = validation;
+  const { minLength, maxLength, format } = validation ?? {};
 
   if (minLength != null && value != null && value !== '') {
     const len = typeof value === 'string' ? value.length : String(value).length;
@@ -46,26 +43,20 @@ export function validateSyncCustomField(field: SyncCustomField, value: unknown):
     }
   }
 
-  if (format && value) {
+  if (format === 'email' && value) {
     const asString = typeof value === 'string' ? value : String(value);
-    switch (format) {
-      case 'email': {
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(asString)) {
-          return `${field.displayName} must be a valid email address`;
-        }
-        break;
-      }
-      case 'url': {
-        try {
-          void new URL(asString);
-        } catch {
-          return `${field.displayName} must be a valid URL`;
-        }
-        break;
-      }
-      default:
-        break;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(asString)) {
+      return `${field.displayName} must be a valid email address`;
+    }
+  }
+
+  const needsUrlValidation = field.fieldType === 'URL' || format === 'url';
+  if (needsUrlValidation && value != null && value !== '') {
+    const asString = typeof value === 'string' ? value : String(value);
+    if (asString.trim()) {
+      const urlErr = getUrlValidationError(field.displayName, asString);
+      if (urlErr) return urlErr;
     }
   }
 
