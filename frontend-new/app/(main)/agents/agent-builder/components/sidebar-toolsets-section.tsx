@@ -9,9 +9,11 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
+  findMergeTargetToolsetNode,
   getToolsetSidebarStatus,
   groupToolsetsByType,
   normalizeToolsetTypeKey,
+  type ToolsetTypeKeyFlowNode,
 } from '../sidebar-toolset-utils';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
@@ -42,8 +44,7 @@ function getToolsetPaletteRowState(
     configureIconColor: string;
     configureTooltip: string;
   },
-  activeInstanceIdSet: Set<string>,
-  activeTypeKeysNoInstanceSet: Set<string>,
+  activeToolsetTypeKeys: Set<string>,
   structureLocked: boolean,
   orgCredentialUiLocked: boolean,
   isServiceAccount: boolean,
@@ -53,10 +54,7 @@ function getToolsetPaletteRowState(
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
   const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const instanceId = ts.instanceId?.trim();
-  const dup = instanceId
-    ? activeInstanceIdSet.has(instanceId)
-    : activeTypeKeysNoInstanceSet.has(normalizedType);
+  const dup = activeToolsetTypeKeys.has(normalizedType);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -89,18 +87,27 @@ function ToolDragRow(props: {
   needsConfiguration: boolean;
   /** Viewer without edit: block dragging tools onto the canvas. */
   structureLocked?: boolean;
-  onBlocked?: () => void;
+  /** Same type already on canvas and this row would not merge (different instance). */
+  duplicateTypeDragBlocked: boolean;
+  onDragBlocked?: () => void;
 }) {
-  const { tool, toolset, needsConfiguration, structureLocked = false, onBlocked } = props;
+  const {
+    tool,
+    toolset,
+    needsConfiguration,
+    structureLocked = false,
+    duplicateTypeDragBlocked,
+    onDragBlocked,
+  } = props;
   const payload = buildToolDragPayload(tool, toolset);
-  const blocked = needsConfiguration || structureLocked;
+  const blocked = needsConfiguration || structureLocked || duplicateTypeDragBlocked;
   return (
     <Box
       draggable={!blocked}
       onDragStart={(e) => {
         if (blocked) {
           e.preventDefault();
-          onBlocked?.();
+          onDragBlocked?.();
           return;
         }
         applyToolDrag(e, payload);
@@ -154,8 +161,9 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  activeToolsetInstanceIds: string[];
-  activeToolsetTypeKeysWithoutInstance: string[];
+  activeToolsetTypeKeys: Set<string>;
+  /** Flow nodes for merge vs duplicate-type checks on single-tool drags (same shape as canvas). */
+  toolsetMergeCheckNodes: ToolsetTypeKeyFlowNode[];
   isServiceAccount: boolean;
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
@@ -171,8 +179,8 @@ export function AgentBuilderToolsetsSection(props: {
     toolsets,
     loading,
     refreshToolsets,
-    activeToolsetInstanceIds,
-    activeToolsetTypeKeysWithoutInstance,
+    activeToolsetTypeKeys,
+    toolsetMergeCheckNodes,
     isServiceAccount,
     agentKey,
     onManageAgentToolsetCredentials,
@@ -188,14 +196,6 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeInstanceIdSet = useMemo(
-    () => new Set(activeToolsetInstanceIds.filter(Boolean)),
-    [activeToolsetInstanceIds]
-  );
-  const activeTypeKeysNoInstanceSet = useMemo(
-    () => new Set(activeToolsetTypeKeysWithoutInstance.map(normalizeToolsetTypeKey).filter(Boolean)),
-    [activeToolsetTypeKeysWithoutInstance]
-  );
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
     setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
@@ -409,8 +409,7 @@ export function AgentBuilderToolsetsSection(props: {
                     } = getToolsetPaletteRowState(
                       ts,
                       ui,
-                      activeInstanceIdSet,
-                      activeTypeKeysNoInstanceSet,
+                      activeToolsetTypeKeys,
                       structureLocked,
                       orgCredentialUiLocked,
                       isServiceAccount,
@@ -418,6 +417,17 @@ export function AgentBuilderToolsetsSection(props: {
                       () => handleDuplicateDrag(ts),
                       () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
                     );
+
+                    const toolsetNameForMerge = ts.toolsetType || ts.name || '';
+                    const dupType = activeToolsetTypeKeys.has(
+                      normalizeToolsetTypeKey(toolsetNameForMerge)
+                    );
+                    const mergeTarget = findMergeTargetToolsetNode(
+                      toolsetMergeCheckNodes,
+                      toolsetNameForMerge,
+                      ts.instanceId
+                    );
+                    const duplicateTypeDragBlocked = dupType && !mergeTarget;
 
                     return (
                       <SidebarCategoryRow
@@ -448,11 +458,12 @@ export function AgentBuilderToolsetsSection(props: {
                             toolset={ts}
                             needsConfiguration={needsConfiguration}
                             structureLocked={structureLocked}
-                            onBlocked={
-                              structureLocked
-                                ? notifyStructureDragBlocked
-                                : () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                            }
+                            duplicateTypeDragBlocked={duplicateTypeDragBlocked}
+                            onDragBlocked={() => {
+                              if (structureLocked) notifyStructureDragBlocked();
+                              else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
+                              else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
+                            }}
                           />
                         ))}
                       </SidebarCategoryRow>

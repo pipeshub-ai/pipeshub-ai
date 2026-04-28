@@ -2,7 +2,12 @@ import type { Edge, Node } from '@xyflow/react';
 import type { TFunction } from 'i18next';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { FlowNodeData, NodeTemplate } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import { normalizeDisplayName, normalizePaletteLabel } from '../display-utils';
+import {
+  collectActiveToolsetTypeKeysFromNodes,
+  findMergeTargetToolsetNode,
+  normalizeToolsetTypeKey,
+} from '../sidebar-toolset-utils';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -33,31 +38,33 @@ function mergeToolsByKey(a: NormalizedSidebarTool[], b: NormalizedSidebarTool[])
   return Array.from(map.values());
 }
 
-/**
- * Find an existing toolset node to merge into. Must key off `config.instanceId` when present —
- * otherwise two Gmail (etc.) instances incorrectly merge into the first node and the wrong
- * instanceId is sent on create/save.
- */
+/** @see findMergeTargetToolsetNode — same merge target as sidebar single-tool drag gate. */
 function findExistingToolsetNodeForMerge(
   nodes: Node<FlowNodeData>[],
   toolsetName: string,
   instanceIdRaw: string | undefined
 ): Node<FlowNodeData> | undefined {
-  const instanceId = instanceIdRaw?.trim();
-  if (instanceId) {
-    return nodes.find(
-      (n) =>
-        String(n.data?.type ?? '').startsWith('toolset-') &&
-        String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim() ===
-          instanceId
+  return findMergeTargetToolsetNode(nodes, toolsetName, instanceIdRaw) as Node<FlowNodeData> | undefined;
+}
+
+/** If the canvas already has this toolset type, notify and return true (caller should return). */
+function rejectIfDuplicateToolsetType(
+  nodes: Node<FlowNodeData>[],
+  toolsetName: string,
+  fallbackName: string,
+  t: TFunction,
+  onError?: (message: string) => void
+): boolean {
+  const droppedToolsetTypeKey = normalizeToolsetTypeKey(toolsetName);
+  if (droppedToolsetTypeKey && collectActiveToolsetTypeKeysFromNodes(nodes).has(droppedToolsetTypeKey)) {
+    onError?.(
+      t('agentBuilder.toolsetDuplicateNotify', {
+        name: normalizePaletteLabel(toolsetName || fallbackName || ''),
+      })
     );
+    return true;
   }
-  return nodes.find(
-    (n) =>
-      String(n.data?.type ?? '').startsWith('toolset-') &&
-      (n.data?.config?.toolsetName as string | undefined) === toolsetName &&
-      !String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim()
-  );
+  return false;
 }
 
 /** Call from onDrop with event + deps */
@@ -211,6 +218,8 @@ export function handleFlowCanvasDrop(
       return;
     }
 
+    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetDisplayName || '', t, onError)) return;
+
     const resolvedSelectedNames =
       selectedTools.length > 0
         ? selectedTools.map((sel) => {
@@ -337,6 +346,8 @@ export function handleFlowCanvasDrop(
       }
       return;
     }
+
+    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetDisplayName || '', t, onError)) return;
 
     const tsId = `toolset-${toolsetName}-${Date.now()}`;
     const tsTypeSingle = `toolset-${toolsetName}`;
