@@ -825,8 +825,11 @@ class SharePointConnector(BaseConnector):
 
     async def _get_all_sites(self) -> List[Site]:
         """
-        Get all SharePoint sites in the tenant including root and subsites.
-        Handles permission errors gracefully and continues with accessible sites.
+        Return SharePoint sites that belong in the sync scope.
+
+        Discovery walks the root site, the sites search API, and optionally subsites.
+        Results are validated and SITE_IDS sync filters are applied.
+        Permission failures during discovery are logged; reachable sites are still returned.
         """
         sites = []
 
@@ -932,15 +935,26 @@ class SharePointConnector(BaseConnector):
             if subsite_count > 0:
                 self.logger.info(f"Found {subsite_count} additional subsites")
 
-            # Validate and filter sites
+            # Validate sites, apply SITE_IDS sync filters, and build in-scope list
+            pre_scope_count = len(sites)
             valid_sites = []
             for site in sites:
-                if self._validate_site_id(site.id):
-                    valid_sites.append(site)
-                else:
+                if not self._validate_site_id(site.id):
                     self.logger.warning(f"⚠️ Invalid site ID format, skipping: '{site.id}' ({site.display_name or site.name})")
+                    continue
+                if not self._pass_site_ids_filters(site.id):
+                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
+                    continue
+                valid_sites.append(site)
 
-            self.logger.info(f"Total valid SharePoint sites discovered: {len(valid_sites)}")
+            self.logger.info(
+                f"SharePoint sites in sync scope: {len(valid_sites)} "
+                f"(from {pre_scope_count} discovered before validation and site ID filters)"
+            )
+            if pre_scope_count > 0 and len(valid_sites) == 0:
+                self.logger.warning(
+                    "⚠️ No sites remain after validation and site ID filters — check filters and permissions"
+                )
             return valid_sites
 
         except Exception as e:
@@ -3625,31 +3639,12 @@ class SharePointConnector(BaseConnector):
             sites = await self._get_all_sites()
 
             if not sites:
-                self.logger.warning("⚠️ No SharePoint sites found - check permissions")
                 return
 
-            self.logger.info(f"📁 Found {len(sites)} SharePoint sites")
+            self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
 
-            # Filter sites based on sync filters BEFORE processing
-            filtered_sites = []
-            for site in sites:
-                if not self._pass_site_ids_filters(site.id):
-                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
-                    continue
-                filtered_sites.append(site)
-
-            self.logger.info(f"📁 {len(filtered_sites)} sites to sync after applying filters (excluded {len(sites) - len(filtered_sites)})")
-
-            if not filtered_sites:
-                self.logger.warning("⚠️ No SharePoint sites to sync after applying filters")
-                return
-
-            # Create site record groups (only for filtered sites)
             site_record_groups_with_permissions = []
-            for site in filtered_sites:  # Use filtered_sites instead of sites
-                if not self._validate_site_id(site.id):
-                    self.logger.warning(f"Invalid site ID format: '{site.id}'")
-                    continue
+            for site in sites:
                 if not site.name and not site.display_name:
                     self.logger.warning(f"Site name is empty: '{site.id}'")
                     continue

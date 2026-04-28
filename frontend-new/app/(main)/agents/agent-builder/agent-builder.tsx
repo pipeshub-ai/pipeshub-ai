@@ -35,7 +35,10 @@ import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-contex
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { toast } from '@/lib/store/toast-store';
-import { normalizeToolsetTypeKey } from './sidebar-toolset-utils';
+import {
+  collectActiveToolsetTypeKeysFromNodes,
+  type ToolsetTypeKeyFlowNode,
+} from './sidebar-toolset-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -407,34 +410,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     void router.replace(rest ? `${path}?${rest}` : path);
   }, [editingKey, router, setSuccess]);
 
-  /** Configured toolset instances already on the canvas (same type, different instance = allowed). */
-  const activeToolsetInstanceIds = useMemo(
-    () =>
-      nodes
-        .filter((n) => String(n.data?.type ?? '').startsWith('toolset-'))
-        .map((n) => String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim())
-        .filter(Boolean),
-    [nodes]
-  );
-
-  /** Legacy / non-instance nodes: block a second palette row that has no instanceId when this type is already placed. */
-  const activeToolsetTypeKeysWithoutInstance = useMemo(
-    () =>
-      nodes
-        .filter((n) => {
-          if (!String(n.data?.type ?? '').startsWith('toolset-')) return false;
-          const id = String((n.data?.config as Record<string, unknown> | undefined)?.instanceId ?? '').trim();
-          return !id;
-        })
-        .map((n) => {
-          const cfg = (n.data?.config || {}) as Record<string, unknown>;
-          const name =
-            (cfg.toolsetName as string) || String(n.data?.type || '').replace(/^toolset-/, '');
-          return normalizeToolsetTypeKey(String(name));
-        })
-        .filter(Boolean),
-    [nodes]
-  );
+  /** Logical toolset types already on the canvas (legacy: at most one per type). */
+  const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
 
   const saveRef = useRef(false);
 
@@ -732,8 +709,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             nodeTemplates={nodeTemplates}
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
-            activeToolsetInstanceIds={activeToolsetInstanceIds}
-            activeToolsetTypeKeysWithoutInstance={activeToolsetTypeKeysWithoutInstance}
+            activeToolsetTypeKeys={activeToolsetTypeKeys}
+            toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}

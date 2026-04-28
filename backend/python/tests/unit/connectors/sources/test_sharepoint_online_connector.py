@@ -21,8 +21,10 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
+    Filter,
     FilterCollection,
-    FilterOperator,
+    FilterType,
+    MultiselectOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -2682,19 +2684,44 @@ class TestRunSync:
 
     @pytest.mark.asyncio
     async def test_site_filter_excludes(self):
+        """SITE_IDS sync filter runs inside _get_all_sites; excluded scope yields no record groups."""
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
-        c._pass_site_ids_filters = MagicMock(return_value=False)
 
-        site = _make_site()
-        c._get_all_sites = AsyncMock(return_value=[site])
+        # Real _get_all_sites path: discover one root site, then drop it via SITE_IDS IN (other ids only)
+        c.client = MagicMock()
+        c.rate_limiter = AsyncMock()
+        c.rate_limiter.__aenter__ = AsyncMock()
+        c.rate_limiter.__aexit__ = AsyncMock()
+        c.enable_subsite_discovery = False
+
+        discovered_site_id = "host.com," + "a" * 36 + "," + "b" * 36
+        inclusion_list_other_only = "host.com," + "c" * 36 + "," + "d" * 36
+        root_site = _make_site(site_id=discovered_site_id, display_name="Root")
+        search_empty = MagicMock()
+        search_empty.value = []
+        search_empty.odata_next_link = None
+        c._safe_api_call = AsyncMock(side_effect=[root_site, search_empty])
+
+        site_ids_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.SITE_IDS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=[inclusion_list_other_only],
+                )
+            ]
+        )
 
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
-            mock_filters.return_value = (FilterCollection(), FilterCollection())
+            mock_filters.return_value = (site_ids_filters, FilterCollection())
             await c.run_sync()
+
+        c.data_entities_processor.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_site_with_no_name_skipped(self):

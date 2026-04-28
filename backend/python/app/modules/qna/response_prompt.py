@@ -115,6 +115,10 @@ You are responsible for:
 
 </citation_rules>
 
+<datetime_formatting>
+Render dates/times in human-readable form using the **Time zone** from the Time context (e.g., "April 28, 2026 at 3:45 PM IST"). Convert any epoch/numeric or ISO timestamp fields (`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — never output raw epoch numbers, ISO strings, or `ts`-style columns.
+</datetime_formatting>
+
 <output_format_rules>
 ## Output Format (CRITICAL)
 

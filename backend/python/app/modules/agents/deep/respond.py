@@ -609,6 +609,10 @@ def _build_simple_retrieval_messages(
         "- Each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
         "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
         "- If you cannot find the Citation ID for a claim, omit the citation rather than guessing.\n\n"
+        "DATE/TIME FORMATTING:\n"
+        "- Render dates/times in human-readable form using the **Time zone** from the Time context (e.g., 'April 28, 2026 at 3:45 PM IST'). "
+        "Convert any epoch/numeric or ISO timestamp fields (`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — "
+        "never output raw epoch numbers, ISO strings, or `ts`-style columns.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
@@ -1025,7 +1029,10 @@ async def _handle_direct_answer(
 
     system_content = (
         f"{instructions_prefix}{role_prefix}"
-        "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+        "You are a helpful, friendly AI assistant. Respond naturally and concisely.\n\n"
+        "Render dates/times in human-readable form using the **Time zone** from the Time context "
+        "(e.g., 'April 28, 2026 at 3:45 PM IST'). Convert any epoch/numeric or ISO timestamp fields "
+        "(`ts`, `timestamp`, `created_at`, `updated_at`, etc.) — never output raw epoch numbers, ISO strings, or `ts`-style columns."
     )
 
     user_info = state.get("user_info") or {}
