@@ -40,6 +40,24 @@ function toOverride(m: AvailableLlmModel): ModelOverride {
   };
 }
 
+/** Clear toolbar selection when it no longer exists in `models` (falls back to default). */
+function clearSelectedModelIfNotInList(
+  ctxKey: string,
+  models: AvailableLlmModel[],
+): void {
+  const s = useChatStore.getState();
+  const current = s.settings.selectedModels[ctxKey];
+  if (!current) {
+    return;
+  }
+  const stillValid = models.some(
+    (m) => m.modelKey === current.modelKey && m.modelName === current.modelName,
+  );
+  if (!stillValid) {
+    s.setSelectedModelForCtx(ctxKey, null);
+  }
+}
+
 export interface FetchModelsOptions {
   /** Bypass the freshness window and the in-flight dedupe, forcing a refetch. */
   force?: boolean;
@@ -55,7 +73,9 @@ export interface FetchModelsOptions {
  *   - Writes the list into `settings.availableModels[ctxKey]`
  *   - Writes the API default into `settings.defaultModels[ctxKey]`
  *   - If the user's `settings.selectedModels[ctxKey]` no longer exists in the
- *     fresh list, it is cleared (falls back to default).
+ *     cached or freshly fetched list, it is cleared (falls back to default).
+ *     Re-validation also runs on cache hits so hydration from conversation
+ *     cannot leave a removed model selected.
  *
  * Fetches for the same ctxKey are deduped and reused while in flight, and the
  * cached result is reused for `FRESHNESS_MS` afterwards.
@@ -68,6 +88,7 @@ export async function fetchModelsForContext(
   const cached = store.settings.availableModels[ctxKey];
 
   if (!opts.force && cached && Date.now() - cached.fetchedAt < FRESHNESS_MS) {
+    clearSelectedModelIfNotInList(ctxKey, cached.models);
     return cached.models;
   }
 
@@ -100,15 +121,7 @@ export async function fetchModelsForContext(
     // Invalidate a stale user selection that's no longer in the list for
     // this context (e.g. admin removed the model, or the context was never
     // compatible to begin with — pill falls back to the default).
-    const current = s.settings.selectedModels[ctxKey];
-    if (current) {
-      const stillValid = models.some(
-        (m) => m.modelKey === current.modelKey && m.modelName === current.modelName,
-      );
-      if (!stillValid) {
-        s.setSelectedModelForCtx(ctxKey, null);
-      }
-    }
+    clearSelectedModelIfNotInList(ctxKey, models);
 
     return models;
   })();

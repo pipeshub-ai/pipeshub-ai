@@ -100,6 +100,19 @@ function buildModelOverrideFromInfoAndCatalog(
   return modelInfoToOverride(modelInfo);
 }
 
+/** When the catalog is already loaded, detect conversation models removed from the org/agent list. */
+function isConversationModelInCatalog(
+  modelInfo: ModelInfo,
+  models: AvailableLlmModel[] | undefined,
+): boolean {
+  const k = modelInfo.modelKey?.trim();
+  const n = modelInfo.modelName?.trim();
+  if (!k || !n || !models?.length) {
+    return true;
+  }
+  return models.some((m) => m.modelKey === k && m.modelName === n);
+}
+
 function mapApiSegmentToAgentStrategy(
   seg: string
 ): AgentStrategy {
@@ -168,6 +181,9 @@ async function refreshSelectedModelFromCatalog(
       models.some((m) => m.modelKey === k && m.modelName === n);
 
     if (!valid) {
+      // Conversation still references a model that was removed from the org/agent
+      // list — clear selection so the toolbar shows the default from the catalog.
+      useChatStore.getState().setSelectedModelForCtx(ctxKey, null);
       return;
     }
 
@@ -205,7 +221,11 @@ export function applyConversationModelInfoToStore(
 
   const cached = store.settings.availableModels[ctxKey]?.models;
   const ovr = buildModelOverrideFromInfoAndCatalog(modelInfo, cached);
-  store.setSelectedModelForCtx(ctxKey, ovr);
+  if (isConversationModelInCatalog(modelInfo, cached)) {
+    store.setSelectedModelForCtx(ctxKey, ovr);
+  } else {
+    store.setSelectedModelForCtx(ctxKey, null);
+  }
 
   void refreshSelectedModelFromCatalog(modelInfo, ctxKey);
 }
