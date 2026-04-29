@@ -776,6 +776,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Instanzname",
+        "renameSuccess": "Connector umbenannt",
+        "renameErrorGeneric": "Fehler beim Umbenennen des Connectors",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",
