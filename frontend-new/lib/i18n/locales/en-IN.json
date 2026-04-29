@@ -1541,6 +1541,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Instance Name",
+        "renameSuccess": "Connector renamed",
+        "renameErrorGeneric": "Failed to rename connector",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

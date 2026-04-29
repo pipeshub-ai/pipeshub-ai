@@ -1554,6 +1554,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "इंस्टेंस का नाम",
+        "renameSuccess": "कनेक्टर का नाम बदला गया",
+        "renameErrorGeneric": "कनेक्टर का नाम बदलने में विफल",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

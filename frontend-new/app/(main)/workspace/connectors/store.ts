@@ -181,6 +181,8 @@ interface ConnectorsState {
   setConnectorTypeInfo: (connector: Connector | null) => void;
   setShowConfigSuccessDialog: (show: boolean) => void;
   setNewlyConfiguredConnectorId: (id: string | null) => void;
+  /** Update the name of a connector instance in all relevant store slices. */
+  renameConnectorInstance: (connectorId: string, newName: string) => void;
 }
 
 // ========================================
@@ -774,6 +776,25 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setNewlyConfiguredConnectorId: (id) =>
         set((s) => {
           s.newlyConfiguredConnectorId = id;
+        }),
+
+      renameConnectorInstance: (connectorId, newName) =>
+        set((s) => {
+          if (!connectorId) return;
+          const acIdx = s.activeConnectors.findIndex((c) => c._key === connectorId);
+          if (acIdx >= 0) {
+            s.activeConnectors[acIdx].name = newName;
+          }
+          const inIdx = s.instances.findIndex((i) => i._key === connectorId);
+          if (inIdx >= 0) {
+            s.instances[inIdx].name = newName;
+          }
+          if (s.selectedInstance?._key === connectorId) {
+            s.selectedInstance.name = newName;
+          }
+          if (s.panelConnector?._key === connectorId) {
+            s.panelConnector.name = newName;
+          }
         }),
 
       reset: () => set(() => ({ ...initialState })),

@@ -17,6 +17,7 @@ import {
   ReindexFailedButton,
   ManualIndexButton,
 } from './primitives';
+import { InlineEditableName } from '../inline-editable-name';
 import {
   deriveSyncStatusState,
   getSyncStrategyLabel,
@@ -219,14 +220,16 @@ export function InstanceCard({
             )}
           </Flex>
 
-          {/* Instance display name (user-chosen when created), not creator name */}
-          <Text
-            size="2"
-            weight="medium"
-            style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          >
-            {instance.name?.trim() || instance.type}
-          </Text>
+          {/* Instance display name — inline editable */}
+          <Flex style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+            <InlineEditableName
+              connectorId={instance._key}
+              name={instance.name?.trim() || instance.type}
+              textSize="2"
+              textWeight="medium"
+              truncate
+            />
+          </Flex>
 
           {/* Sync status pill */}
           <SyncStatusPill
