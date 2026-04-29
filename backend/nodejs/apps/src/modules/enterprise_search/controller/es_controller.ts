@@ -3186,7 +3186,6 @@ export const updateFeedback = async (
     const query = {
       _id: conversationId,
       orgId,
-      userId,
       isDeleted: false,
       $or: [
         { initiator: userId },
