@@ -102,7 +102,7 @@ export function loadHistoricalMessages(
               citationMaps: buildCitationMapsFromApi(msg.citations || []),
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
-              feedbackInfo: msg.feedback?.[0] || undefined,
+              // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }
         : msg.messageType === 'user_query' && msg.appliedFilters

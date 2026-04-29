@@ -265,7 +265,63 @@ export const regenerateAgentAnswersParamsSchema =
     }),
   });
 
-export const updateFeedbackParamsSchema = regenerateAnswersParamsSchema;
+export const FEEDBACK_CATEGORIES = [
+  'incorrect_information',
+  'missing_information',
+  'irrelevant_information',
+  'unclear_explanation',
+  'poor_citations',
+  'excellent_answer',
+  'helpful_citations',
+  'well_explained',
+  'other',
+] as const;
+
+const feedbackBodySchema = z.object({
+  isHelpful: z.boolean().optional(),
+  ratings: z
+    .record(z.string(), z.number().min(1).max(5))
+    .optional(),
+  categories: z.array(z.enum(FEEDBACK_CATEGORIES)).optional(),
+  comments: z
+    .object({
+      positive: z.string().optional(),
+      negative: z.string().optional(),
+      suggestions: z.string().optional(),
+    })
+    .optional(),
+  metrics: z
+    .object({
+      userInteractionTime: z.number().optional(),
+      feedbackSessionId: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const updateFeedbackParamsSchema = z.object({
+  params: z.object({
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+    messageId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+  }),
+  body: feedbackBodySchema,
+});
+
+export const updateAgentFeedbackParamsSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, { message: 'Agent key is required' }),
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+    messageId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+  }),
+  body: feedbackBodySchema,
+});
 
 /**
  * Schema for getting an enterprise search document by ID.

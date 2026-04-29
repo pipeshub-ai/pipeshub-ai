@@ -24,6 +24,16 @@ import {
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 
+export interface FeedbackPayload {
+  isHelpful: boolean;
+  categories?: string[];
+  comments?: {
+    positive?: string;
+    negative?: string;
+    suggestions?: string;
+  };
+}
+
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
   onStatus?: (data: SSEStatusEvent) => void;
@@ -482,6 +492,37 @@ export const ChatApi = {
       }
     );
     return data;
+  },
+
+  /**
+   * Submit feedback (thumbs up / thumbs down) for a bot response message.
+   * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/feedback
+   */
+  async submitFeedback(
+    conversationId: string,
+    messageId: string,
+    feedback: FeedbackPayload
+  ): Promise<void> {
+    await apiClient.post(
+      `/api/v1/conversations/${conversationId}/message/${messageId}/feedback`,
+      feedback
+    );
+  },
+
+  /**
+   * Submit feedback for a bot response in an agent conversation.
+   * Endpoint: POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/feedback
+   */
+  async submitAgentFeedback(
+    agentId: string,
+    conversationId: string,
+    messageId: string,
+    feedback: FeedbackPayload
+  ): Promise<void> {
+    await apiClient.post(
+      `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/feedback`,
+      feedback
+    );
   },
 
   // Rename a conversation
