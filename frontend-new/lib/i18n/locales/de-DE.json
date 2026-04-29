@@ -1038,6 +1038,7 @@
       "configFillRequiredTooltip": "Alle Pflichtfelder ausfüllen",
       "configSaveErrorFallback": "Modellkonfiguration konnte nicht gespeichert werden",
       "configNoConfigRequired": "Für diesen Anbieter ist keine Konfiguration erforderlich.",
+      "configDefaultModelNotice": "\"{{modelName}}\" wird vom System standardmäßig verwendet.",
       "configSectionModelConfiguration": "Modellkonfiguration",
       "configProviderType": "Anbietertyp",
       "configSectionCompatibilities": "Modellkompatibilitäten",
@@ -1428,6 +1429,10 @@
       "jit": {
         "title": "Just-In-Time-(JIT)-Bereitstellung aktivieren",
         "description": "Erstellt automatisch Benutzerkonten, wenn sich diese zum ersten Mal mit {{providerName}} anmelden"
+      },
+      "xmlUpload": {
+        "parseError": "SAML-Metadaten konnten aus dieser Datei nicht gelesen werden. Prüfen Sie, ob es sich um eine gültige IdP-Metadaten-XML handelt.",
+        "readError": "Datei konnte nicht gelesen werden."
       }
     },
     "connectors": {

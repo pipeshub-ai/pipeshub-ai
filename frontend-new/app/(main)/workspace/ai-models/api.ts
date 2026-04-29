@@ -49,16 +49,18 @@ export const AIModelsApi = {
   addProvider: async (payload: {
     modelType: string;
     provider: string;
-    configuration: Record<string, unknown> | {model:"default"};
+    modelName?: string;
+    configuration: Record<string, unknown>;
     isMultimodal?: boolean;
     isReasoning?: boolean;
     isDefault?: boolean;
     contextLength?: number | null;
   }) => {
+    const { modelName, ...rest } = payload;
     const body =
-      payload.provider === 'default'
-        ? { ...payload, configuration: { model: 'default' as const } }
-        : payload;
+      payload.provider === 'default' && modelName
+        ? { ...rest, configuration: { model: modelName } }
+        : rest;
     const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
     return data;
   },

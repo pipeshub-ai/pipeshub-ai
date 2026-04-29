@@ -27,6 +27,7 @@ export interface AIModelProvider {
   description: string;
   /** Optional operational warning (e.g. performance); shown in configure UI when set. */
   notice?: string;
+  modelName?: string;
   capabilities: string[];
   iconPath: string;
   color: string;

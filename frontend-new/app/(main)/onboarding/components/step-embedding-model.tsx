@@ -227,7 +227,7 @@ export function StepEmbeddingModel({
         <Box
           style={{
             flexShrink: 0,
-            padding: '24px 24px 16px',
+            padding: '12px 16px 12px',
             borderBottom: '1px solid var(--gray-4)',
           }}
         >
@@ -243,7 +243,7 @@ export function StepEmbeddingModel({
           </Text>
         </Box>
 
-        <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
+        <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px' }}>
           <Flex direction="column" gap="5">
             {!isLoading && embedCount === 0 && (
               <Text size="2" style={{ color: 'var(--gray-11)', display: 'block' }}>

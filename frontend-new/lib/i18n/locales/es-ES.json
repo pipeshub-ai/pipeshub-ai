@@ -1040,6 +1040,7 @@
       "configFillRequiredTooltip": "Rellene todos los campos obligatorios",
       "configSaveErrorFallback": "No se pudo guardar la configuración del modelo",
       "configNoConfigRequired": "No se requiere configuración para este proveedor.",
+      "configDefaultModelNotice": "\"{{modelName}}\" será utilizado por el sistema de forma predeterminada.",
       "configSectionModelConfiguration": "Configuración del modelo",
       "configProviderType": "Tipo de proveedor",
       "configSectionCompatibilities": "Compatibilidades del modelo",
@@ -1425,6 +1426,10 @@
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      },
+      "xmlUpload": {
+        "parseError": "No se pudieron analizar los metadatos SAML de este archivo. Comprueba que se trata de un XML de metadatos de IdP válido.",
+        "readError": "No se pudo leer el archivo."
       }
     },
     "connectors": {

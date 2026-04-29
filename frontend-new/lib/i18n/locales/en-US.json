@@ -1035,6 +1035,7 @@
       "configFillRequiredTooltip": "Fill in all required fields",
       "configSaveErrorFallback": "Failed to save model configuration",
       "configNoConfigRequired": "No configuration required for this provider.",
+      "configDefaultModelNotice": "\"{{modelName}}\" will be used by the system by default.",
       "configSectionModelConfiguration": "Model Configuration",
       "configProviderType": "Provider Type",
       "configSectionCompatibilities": "Model Compatibilities",
@@ -1430,6 +1431,10 @@
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      },
+      "xmlUpload": {
+        "parseError": "Could not parse SAML metadata from this file. Check that it is a valid IdP metadata XML.",
+        "readError": "Failed to read the file."
       }
     },
     "connectors": {

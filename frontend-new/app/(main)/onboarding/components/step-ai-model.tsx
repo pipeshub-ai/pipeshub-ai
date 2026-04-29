@@ -175,7 +175,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
         <Box
           style={{
             flexShrink: 0,
-            padding: '24px 24px 16px',
+            padding: '12px 16px 12px',
             borderBottom: '1px solid var(--gray-4)',
           }}
         >
