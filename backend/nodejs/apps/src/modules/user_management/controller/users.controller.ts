@@ -132,9 +132,8 @@ export class UserController {
       const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
       const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
 
-      if (hasLoggedInFilter && isBlockedFilter) {
-        // Both active: e.g. "Active + Blocked" or "Pending + Blocked"
-        // Get blocked user IDs, then $or: [hasLoggedIn match, blocked IDs match]
+      if (isBlockedFilter) {
+        // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
         const blockedCreds = await UserCredentials.find({
           orgId, isBlocked: true, isDeleted: false,
         }).select('userId').lean().exec();
@@ -143,37 +142,32 @@ export class UserController {
           .map((c) => new mongoose.Types.ObjectId(c.userId!));
 
         if (String(isBlocked) === 'true') {
-          const statusConditions: Record<string, any>[] = [
-            { hasLoggedIn: String(hasLoggedIn) === 'true' },
-          ];
+          const statusConditions: Record<string, any>[] = [];
+          if (hasLoggedInFilter) {
+            statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
+          }
           if (blockedIds.length > 0) {
             statusConditions.push({ _id: { $in: blockedIds } });
           }
-          // Merge with any existing $or (search) using $and
-          if (filter.$or) {
-            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-            delete filter.$or;
-          } else {
-            filter.$or = statusConditions;
+          if (statusConditions.length > 0) {
+            // Merge with any existing $or (search) using $and
+            if (filter.$or) {
+              filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+              delete filter.$or;
+            } else {
+              filter.$or = statusConditions;
+            }
           }
         } else {
-          filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-          filter._id = { ...filter._id, $nin: blockedIds };
+          if (hasLoggedInFilter) {
+            filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+          }
+          if (blockedIds.length > 0) {
+            filter._id = { ...filter._id, $nin: blockedIds };
+          }
         }
       } else if (hasLoggedInFilter) {
         filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-      } else if (isBlockedFilter) {
-        const blockedCreds = await UserCredentials.find({
-          orgId, isBlocked: true, isDeleted: false,
-        }).select('userId').lean().exec();
-        const blockedIds = blockedCreds
-          .filter((c) => c.userId)
-          .map((c) => new mongoose.Types.ObjectId(c.userId!));
-        if (String(isBlocked) === 'true') {
-          filter._id = { ...filter._id, $in: blockedIds };
-        } else {
-          filter._id = { ...filter._id, $nin: blockedIds };
-        }
       }
 
       // groupIds filter: restrict to users belonging to any of the specified groups

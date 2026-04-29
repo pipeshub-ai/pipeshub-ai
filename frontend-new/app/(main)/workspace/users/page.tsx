@@ -210,19 +210,20 @@ function UsersPageContent() {
         const hasPending = selected.has('Pending');
         const hasBlocked = selected.has('Blocked');
 
-        // "Active + Pending" means "all non-blocked users", so do not send hasLoggedIn.
-        if (hasActive && hasPending && !hasBlocked) {
-          params.isBlocked = 'false';
-        } else if (hasActive && !hasPending && !hasBlocked) {
-          params.hasLoggedIn = 'true';
-          params.isBlocked = 'false';
-        } else if (hasPending && !hasActive && !hasBlocked) {
-          params.hasLoggedIn = 'false';
-          params.isBlocked = 'false';
+        if (hasActive && hasPending && hasBlocked) {
+          // All selected => no status filters.
         } else {
-          if (hasActive) params.hasLoggedIn = 'true';
-          else if (hasPending) params.hasLoggedIn = 'false';
-          if (hasBlocked) params.isBlocked = 'true';
+          // Active xor Pending => filter by login state; both => include both.
+          if (hasActive !== hasPending) {
+            params.hasLoggedIn = hasActive ? 'true' : 'false';
+          }
+          // If blocked is selected, include blocked users (OR logic in backend);
+          // otherwise constrain to non-blocked when any non-blocked status is selected.
+          if (hasBlocked) {
+            params.isBlocked = 'true';
+          } else if (hasActive || hasPending) {
+            params.isBlocked = 'false';
+          }
         }
       }
       // Group filter → comma-separated group IDs
