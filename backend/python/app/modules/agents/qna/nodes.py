@@ -239,7 +239,16 @@ class ToolResultExtractor:
             if "error" in result and result["error"] not in (None, "", "null"):
                 return False
 
-        # String format - check for error indicators
+        # String format - try JSON parse first to avoid false negatives from content
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                return ToolResultExtractor.extract_success_status(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Plain string fallback - check for error indicators
+        # NOTE: only reaches here for non-JSON strings; JSON results are handled above
         result_str = str(result).lower()
         error_indicators = [
             "error:", '"error": "', "'error': '",

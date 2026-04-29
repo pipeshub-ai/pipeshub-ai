@@ -726,13 +726,13 @@ async def _resolve_default_web_search_config(
         (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
         None,
     )
+
+    # When providers exist but none carries isDefault=true, the Node.js layer has
+    # set DuckDuckGo as the active default (it clears all isDefault flags rather
+    # than inserting a DuckDuckGo entry into the array).
     if not default_provider:
-        default_provider = next(
-            (p for p in providers if isinstance(p, dict) and p.get("provider")),
-            None,
-        )
-    if not default_provider:
-        return None
+        logger.debug("No explicit default web search provider; falling back to duckduckgo")
+        return {"provider": "duckduckgo", "configuration": {}}
 
     provider = str(default_provider.get("provider", "")).strip().lower()
     if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:

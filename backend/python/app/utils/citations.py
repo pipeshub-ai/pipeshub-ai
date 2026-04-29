@@ -26,7 +26,7 @@ _MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)'
 _TINY_WEB_REF_PATTERN = re.compile(r'^https?://(ref\d+)\.xyz/?$')
 
 # URLs with length <= this are shown to the LLM verbatim; longer URLs are aliased as https://refN.xyz.
-TINY_URL_THRESHOLD = 40
+TINY_URL_THRESHOLD = 0
 
 # Matches a markdown link [text](target) immediately followed by a parenthesized URL or
 # bare ref that duplicates the same citation.  LLMs emit this when they see both the full

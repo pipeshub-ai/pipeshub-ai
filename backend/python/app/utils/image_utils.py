@@ -86,7 +86,7 @@ async def _fetch_image_as_base64(img_url: str) -> tuple[str, str] | None:
             profile="chrome120",
         )
         if result.status_code != HTTP_STATUS_OK or not result.content:
-            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content}")
+            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content[:100]}")
             return None
         b64 = base64.b64encode(result.content).decode("utf-8")
 

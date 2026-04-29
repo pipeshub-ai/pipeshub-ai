@@ -540,7 +540,6 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
                 stream_usage=True,
-                use_responses_api=True, # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.COHERE.value:
@@ -630,7 +629,6 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 api_key=configuration["apiKey"],
                 organization=configuration.get("organizationId"),
                 stream_usage=True,  # Enable token usage tracking for Opik
-                use_responses_api=True,
             )
 
     elif provider == LLMProvider.XAI.value:
