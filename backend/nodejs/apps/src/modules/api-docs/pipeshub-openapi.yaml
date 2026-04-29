@@ -3000,13 +3000,14 @@ components:
             enum:
               - incorrect_information
               - missing_information
-              - outdated_information
-              - irrelevant_response
-              - too_verbose
-              - too_brief
-              - formatting_issues
-              - citation_issues
-          description: Categories of issues identified
+              - irrelevant_information
+              - unclear_explanation
+              - poor_citations
+              - excellent_answer
+              - helpful_citations
+              - well_explained
+              - other
+          description: Categories of issues or positive attributes identified
         comments:
           type: object
           properties:
@@ -16129,6 +16130,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversation'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent, conversation, or message not found
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Submit feedback on an agent response
+      description: |
+        Provide feedback on an AI-generated response in an agent conversation.<br><br>
+        <b>Overview:</b><br>
+        Feedback helps improve AI response quality over time. You can indicate
+        helpfulness, select issue categories, and provide free-text comments.<br><br>
+        <b>Feedback Options:</b><br>
+        <ul>
+        <li><b>isHelpful:</b> Overall thumbs up/down</li>
+        <li><b>ratings:</b> 1-5 scale for accuracy, relevance, completeness, clarity</li>
+        <li><b>categories:</b> Issue categories (incorrect info, missing info, etc.)</li>
+        <li><b>comments:</b> Free-text positive/negative feedback and suggestions</li>
+        </ul>
+        <b>Restrictions:</b><br>
+        Feedback can only be submitted on <code>bot_response</code> messages,
+        not on user queries or system messages.
+      operationId: updateAgentMessageFeedback
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageFeedback'
+      responses:
+        '200':
+          description: Feedback submitted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  messageId:
+                    type: string
+                    format: objectId
+                  feedback:
+                    $ref: '#/components/schemas/MessageFeedback'
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: |
+            Invalid feedback. Possible reasons:<br>
+            <ul>
+            <li>Ratings must be 1-5</li>
+            <li>Cannot add feedback to user_query messages</li>
+            </ul>
         '401':
           description: Unauthorized
         '404':

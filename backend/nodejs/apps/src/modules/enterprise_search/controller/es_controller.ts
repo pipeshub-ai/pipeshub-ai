@@ -7201,6 +7201,10 @@ export const updateAgentFeedback = async (
       duration: Date.now() - startTime,
     });
     next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 
