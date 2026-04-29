@@ -1223,9 +1223,9 @@ class TestGetMessageContent:
         result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        # When child_results is empty and there is no FK info, the table block
-        # is not rendered by build_message_content_array.
-        assert "Only summary" not in combined
+        # Table blocks are rendered even when child_results is empty; the
+        # summary text is still included via the table_prompt template.
+        assert "Only summary" in combined
 
     def test_json_mode_table_row_block(self):
         flattened = [
@@ -3687,7 +3687,7 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
-        """Standard mode: table with empty child_results and no FK info is not rendered."""
+        """Table with empty child_results and no FK info is still rendered with its summary."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3700,8 +3700,8 @@ class TestGetMessageContentDeeper:
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
-        # With empty child_results and no FK info the table branch is skipped
-        assert "Table Summary" not in combined
+        # Table summary is rendered via table_prompt even when child_results is empty
+        assert "Table Summary" in combined
 
     def test_standard_mode_table_row_type(self):
         """Lines 1312-1316: Standard mode with table_row block type."""
@@ -4993,8 +4993,8 @@ class TestGetMessageContentFKRelations:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
-        # With empty child_results and no FK info the table branch is skipped
-        assert "Table summary" not in combined
+        # Table summary is still rendered even with empty child_results and no FK info
+        assert "Table summary" in combined
 
     def test_empty_children_with_fk_relations_renders_summary_and_fk(self):
         # FK_ENRICHMENT blocks: child_results is [] by construction; DDL and
