@@ -55,6 +55,7 @@ import {
   streamChatInternal,
   addMessageStreamInternal,
   updateAgentConversationTitle,
+  updateAgentFeedback,
   archiveAgentConversation,
   unarchiveAgentConversation,
   listAllArchivesAgentConversation,
@@ -82,6 +83,7 @@ import {
   regenerateAgentAnswersParamsSchema,
   agentConversationTitleParamsSchema,
   agentConversationParamsSchema,
+  updateAgentFeedbackParamsSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -598,7 +600,19 @@ export function createAgentConversationalRouter(container: Container): Router {
       ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
       regenerateAgentAnswers(appConfig),
     );
-  
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/feedback
+   * @desc Submit feedback for an agent conversation message
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/feedback',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentFeedbackParamsSchema),
+    updateAgentFeedback,
+  );
 
   router.get(
     '/:agentKey/conversations',

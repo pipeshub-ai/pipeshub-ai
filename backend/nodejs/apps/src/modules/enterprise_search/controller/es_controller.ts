@@ -7082,6 +7082,128 @@ export const updateAgentConversationTitle = async (
   }
 };
 
+export const updateAgentFeedback = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { agentKey, conversationId, messageId } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation feedback', {
+      requestId,
+      message: 'Attempting to update agent conversation feedback',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performUpdateFeedback(session?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne({
+        _id: conversationId,
+        orgId,
+        userId,
+        agentKey,
+        isDeleted: false,
+      });
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      const messageIndex = conversation.messages.findIndex(
+        (msg: IMessageDocument) => msg._id?.toString() === messageId,
+      );
+
+      if (messageIndex === -1) {
+        throw new NotFoundError('Message not found');
+      }
+
+      if (conversation.messages[messageIndex]?.messageType === 'user_query') {
+        throw new BadRequestError('Feedback is not allowed for user queries');
+      }
+
+      const feedbackEntry = {
+        ...req.body,
+        feedbackProvider: userId,
+        timestamp: Date.now(),
+        metrics: {
+          timeToFeedback:
+            Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
+          userInteractionTime: req.body.metrics?.userInteractionTime,
+          feedbackSessionId: req.body.metrics?.feedbackSessionId,
+          userAgent: req.headers['user-agent'],
+        },
+      };
+
+      const updatePath = `messages.${messageIndex}.feedback`;
+      const updateObject = {
+        $push: { [updatePath]: feedbackEntry },
+      };
+
+      const updatedConversation = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        updateObject,
+        {
+          new: true,
+          session,
+          runValidators: true,
+        },
+      );
+
+      if (!updatedConversation) {
+        throw new InternalServerError('Failed to update agent feedback');
+      }
+      return { updatedConversation, feedbackEntry };
+    }
+
+    let updatedConversation, feedbackEntry;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      ({ updatedConversation, feedbackEntry } = await session.withTransaction(
+        () => performUpdateFeedback(session),
+      ));
+    } else {
+      ({ updatedConversation, feedbackEntry } = await performUpdateFeedback());
+    }
+
+    logger.debug('Agent feedback updated successfully', {
+      requestId,
+      conversationId,
+      messageId,
+      duration: Date.now() - startTime,
+    });
+
+    const response = {
+      conversationId: updatedConversation._id,
+      messageId,
+      feedback: feedbackEntry,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    res.status(200).json(response);
+  } catch (error: any) {
+    logger.error('Error updating agent conversation feedback', {
+      requestId,
+      message: 'Error updating agent conversation feedback',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};
+
 export const getAvailableTools =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
