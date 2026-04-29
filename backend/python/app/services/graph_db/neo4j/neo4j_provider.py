@@ -3570,7 +3570,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return False
 
-    async def get_user_apps(self, user_id: str) -> list:
+    async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """Get all apps associated with a user: direct User->App and via User->Team->App."""
         try:
             query = """
@@ -3584,7 +3584,8 @@ class Neo4jProvider(IGraphDBProvider):
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"user_id": user_id}
+                parameters={"user_id": user_id},
+                txn_id=transaction,
             )
 
             apps = []
@@ -13336,13 +13337,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Build filter clause
             filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
 
-            # Get user accessible apps
-            user_apps_query = """
-            MATCH (u:User {id: $user_key})-[:USER_APP_RELATION]->(app:App)
-            RETURN collect(app.id) AS app_ids
-            """
-            user_apps_result = await self.client.execute_query(user_apps_query, parameters={"user_key": user_key}, txn_id=transaction)
-            user_accessible_app_ids = user_apps_result[0].get("app_ids", []) if user_apps_result else []
+            user_accessible_app_ids = await self.get_user_app_ids(user_key, transaction=transaction)
             params["user_accessible_app_ids"] = user_accessible_app_ids
 
             # Build children intersection cypher (only for kb/recordGroup/record/folder parents)
@@ -14272,33 +14267,22 @@ class Neo4jProvider(IGraphDBProvider):
         Returns connector apps the user has access to. Excludes the Collection app (type='KB').
         """
         try:
-            query = """
-            MATCH (u:User {id: $user_key})
-
-            // Get apps via USER_APP_RELATION (exclude Collection app so it is not in connector filter)
-            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app:App)
-            WHERE app.type <> 'KB'
-
-            WITH collect(DISTINCT app) AS all_apps_raw
-
-            // Filter nulls and transform using list comprehensions
-            WITH
-                [app IN all_apps_raw WHERE app IS NOT NULL AND app.id IS NOT NULL |
-                    {id: app.id, name: app.name, type: app.type}
-                ] AS apps
-
-            RETURN {apps: apps} AS result
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"user_key": user_key},
-                txn_id=transaction
-            )
-            if results and results[0].get("result"):
-                return results[0]["result"]
-            return {"apps": []}
+            apps_raw = await self.get_user_apps(user_key, transaction=transaction)
+            apps = [
+                {
+                    "id": app.get("_key") or app.get("id"),
+                    "name": app.get("name"),
+                    "type": app.get("type"),
+                }
+                for app in apps_raw
+                if app
+                and (app.get("type") or "") != "KB"
+                and (app.get("_key") or app.get("id"))
+            ]
+            apps.sort(key=lambda a: (a.get("name") or "").lower())
+            return {"apps": apps}
         except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub filter options failed: {str(e)}")
+            self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
             return {"apps": []}
 
     def _get_app_children_cypher(self) -> str:
