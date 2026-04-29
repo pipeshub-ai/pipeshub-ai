@@ -90,6 +90,30 @@ export function resolveNodeHeaderIconUrl(data: FlowNodeData): string | undefined
   return undefined;
 }
 
+/**
+ * Connector type slug for nodes whose icon comes from a connector brand SVG —
+ * `app-*` (non-group) and `toolset-*`. Used to render `ConnectorIcon`, which
+ * applies dark-mode inversion for brand SVGs that `ThemeableAssetIcon` can't
+ * theme (it only handles `currentColor` SVGs; brand SVGs fall through to a
+ * plain `<img>`). Returns `null` for LLM, KB, and other node kinds.
+ */
+export function resolveNodeConnectorType(data: FlowNodeData): string | null {
+  const cfg = (data.config || {}) as Record<string, unknown>;
+  const type = data.type;
+  console.log('resolveNodeConnectorType', type);
+  console.log("config", cfg);
+
+  if (isAppConnectorNodeType(type)) {
+    const fromCfg = typeof cfg.connectorType === 'string' ? cfg.connectorType.trim() : '';
+    return fromCfg || type.slice('app-'.length) || null;
+  }
+  if (type.startsWith('toolset-')) {
+    const fromCfg = typeof cfg.toolsetName === 'string' ? cfg.toolsetName.trim() : '';
+    return fromCfg || type.slice('toolset-'.length) || null;
+  }
+  return null;
+}
+
 export function normalizeDisplayName(name: string): string {
   return name
     .split('_')

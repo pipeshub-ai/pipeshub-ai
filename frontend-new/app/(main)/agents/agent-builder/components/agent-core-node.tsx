@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@xyflow/react';
 import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import type { FlowNodeData } from '../types';
 import {
@@ -12,6 +13,7 @@ import {
   AGENT_LLM_FALLBACK_ICON,
   AGENT_TOOLSET_FALLBACK_ICON,
   normalizeDisplayName,
+  resolveNodeConnectorType,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL } from '../flow-theme';
@@ -109,6 +111,7 @@ function ConnectionChip({
   onClick,
   iconSrc,
   iconFallbackSrc = AGENT_KNOWLEDGE_FALLBACK_ICON,
+  connectorType,
 }: {
   label: string;
   variant?: 'default' | 'more';
@@ -118,6 +121,8 @@ function ConnectionChip({
   iconSrc?: string;
   /** Replacement if the image fails to load (knowledge vs toolsets use different neutrals). */
   iconFallbackSrc?: string;
+  /** When set, render `ConnectorIcon` (theme-aware brand SVG handling) instead of `ThemeableAssetIcon`. */
+  connectorType?: string | null;
 }) {
   const isMore = variant === 'more';
   const surfaceStyle: React.CSSProperties = {
@@ -137,7 +142,9 @@ function ConnectionChip({
   };
 
   const iconEl =
-    iconSrc && variant === 'default' ? (
+    variant === 'default' && connectorType ? (
+      <ConnectorIcon type={connectorType} size={14} color="var(--agent-flow-text)" />
+    ) : iconSrc && variant === 'default' ? (
       <ThemeableAssetIcon
         {...themeableAssetIconPresets.flowNodeWell}
         src={iconSrc}
@@ -226,6 +233,7 @@ function ConnectedChips({
           label={labelOf(n)}
           iconSrc={iconSrcFor?.(n)}
           iconFallbackSrc={iconFallback}
+          connectorType={resolveNodeConnectorType(n)}
         />
       ))}
       {overflow > 0 ? (
