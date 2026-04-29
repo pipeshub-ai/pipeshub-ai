@@ -32,6 +32,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -247,7 +248,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/azurefiles.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.AZURE_FILES.value))
         .add_documentation_link(DocumentationLink(
             "Azure Files Setup",
             "https://learn.microsoft.com/en-us/azure/storage/files/storage-files-introduction",

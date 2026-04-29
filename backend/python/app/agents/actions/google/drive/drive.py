@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -124,12 +125,12 @@ class GetSharedDrivesInput(BaseModel):
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/drive.svg",
+            icon_path=IconPaths.connector_icon("drive"),
             app_group="Google Workspace",
             app_description="Drive OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/drive.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("drive"))
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",

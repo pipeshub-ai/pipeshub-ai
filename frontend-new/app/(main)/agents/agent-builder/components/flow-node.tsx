@@ -4,11 +4,13 @@ import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_TOOLSET_FALLBACK_ICON,
   formattedProvider,
   normalizeDisplayName,
+  resolveNodeConnectorType,
   resolveNodeHeaderIconErrorFallback,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
@@ -132,6 +134,7 @@ export const FlowNode = React.memo(function FlowNode({
   const materialIconName =
     trimmedIcon && !trimmedIcon.startsWith('/') && !trimmedIcon.startsWith('http') ? trimmedIcon : 'widgets';
   const headerIconErrorFallback = resolveNodeHeaderIconErrorFallback(data);
+  const headerConnectorType = resolveNodeConnectorType(data);
 
   let groupBody: React.ReactNode = null;
   if (data.type === 'app-group') {
@@ -243,7 +246,9 @@ export const FlowNode = React.memo(function FlowNode({
                 style={{ flexShrink: 0, lineHeight: 0 }}
                 aria-hidden
               >
-                {isIconUrl ? (
+                {headerConnectorType ? (
+                  <ConnectorIcon type={headerConnectorType} size={22} color={chrome.iconColor} />
+                ) : isIconUrl ? (
                   <ThemeableAssetIcon
                     {...themeableAssetIconPresets.flowNodeHeader}
                     src={headerIconUrl}

@@ -11,6 +11,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -100,13 +101,13 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/docs.svg",
+            icon_path=IconPaths.connector_icon("docs"),
             app_group="Google Workspace",
             app_description="Docs OAuth application for agent integration"
         )
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/docs.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("docs")))\
     .build_decorator()
 class GoogleDocs:
     """Docs tool exposed to the agents using DocsDataSource"""

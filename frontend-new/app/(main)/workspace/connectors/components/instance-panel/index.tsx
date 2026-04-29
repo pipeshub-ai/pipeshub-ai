@@ -4,7 +4,7 @@ import React, { useState, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import { AlertDialog, Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { getConnectorIconPath } from '@/lib/utils/connector-icon-utils';
+import { ConnectorIcon } from '@/app/components/ui';
 import {
   WorkspaceRightPanel,
   useWorkspaceDrawerNestedModalHost,
@@ -40,7 +40,6 @@ export function InstanceManagementPanel() {
     removeConnectorInstance,
   } = useConnectorsStore();
 
-  const [iconError, setIconError] = useState(false);
   const [triggerHovered, setTriggerHovered] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -136,30 +135,17 @@ export function InstanceManagementPanel() {
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
   const instanceStat = instanceId ? instanceStats[instanceId] : undefined;
 
-  const iconSrc = getConnectorIconPath(selectedInstance.iconPath);
   const lastSyncedLabel = selectedInstance.lastSynced
     ? `Synced ${selectedInstance.lastSynced}`
     : undefined;
 
-  // Connector icon used as panel header icon
   const connectorIcon = (
     <Flex
       align="center"
       justify="center"
       style={{ width: 20, height: 20, flexShrink: 0 }}
     >
-      {iconError ? (
-        <MaterialIcon name="hub" size={16} color="var(--gray-9)" />
-      ) : (
-        <img
-          src={iconSrc}
-          alt={selectedInstance.name}
-          width={16}
-          height={16}
-          onError={() => setIconError(true)}
-          style={{ display: 'block', objectFit: 'contain' }}
-        />
-      )}
+      <ConnectorIcon type={selectedInstance.type} size={16} />
     </Flex>
   );
 

@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -177,7 +178,7 @@ class WebApp(App):
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/web.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.WEB.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Web Connector Guide",

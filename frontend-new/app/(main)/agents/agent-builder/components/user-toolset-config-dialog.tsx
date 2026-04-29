@@ -15,6 +15,7 @@ import {
   Text,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField } from '@/app/(main)/workspace/connectors/types';
@@ -75,9 +76,6 @@ export function UserToolsetConfigDialog({
   const displayName = instanceLabel || productName;
   const subtitle =
     instanceLabel && productName && instanceLabel !== productName ? productName : null;
-  const iconPath = toolset.iconPath || '';
-  const [iconBroken, setIconBroken] = useState(false);
-
   const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
   const [schemaLoading, setSchemaLoading] = useState(true);
   const [formData, setFormData] = useState<Record<string, unknown>>({});
@@ -96,10 +94,6 @@ export function UserToolsetConfigDialog({
   useEffect(() => {
     setIsAuthenticated(toolset.isAuthenticated ?? false);
   }, [toolset.isAuthenticated]);
-
-  useEffect(() => {
-    setIconBroken(false);
-  }, [iconPath]);
 
   const authConfig = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
 
@@ -335,18 +329,10 @@ export function UserToolsetConfigDialog({
               flexShrink: 0,
             }}
           >
-            {iconPath && !iconBroken ? (
-              <img
-                src={iconPath}
-                alt=""
-                width={32}
-                height={32}
-                style={{ objectFit: 'contain' }}
-                onError={() => setIconBroken(true)}
-              />
-            ) : (
-              <MaterialIcon name="extension" size={28} color="var(--slate-11)" />
-            )}
+            <ConnectorIcon
+              type={toolset.toolsetType || toolset.name}
+              size={32}
+            />
           </Box>
           <Box style={{ minWidth: 0, flex: 1 }}>
             {embedded ? (

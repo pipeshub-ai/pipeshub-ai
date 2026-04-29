@@ -32,7 +32,7 @@ from app.connectors.core.registry.connector_builder import (
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/slack.svg")
+        .with_icon("/icons/connectors/slack.svg")
         .add_documentation_link(DocumentationLink(
             "Slack Bot Token Setup",
             "https://api.slack.com/authentication/basics",
@@ -88,7 +88,7 @@ class SlackConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/calendar.svg",
+            icon_path="/icons/connectors/calendar.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Calendar API",
             app_categories=["Calendar"],
@@ -100,7 +100,7 @@ class SlackConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/calendar.svg")
+        .with_icon("/icons/connectors/calendar.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Calendar API Setup",
@@ -163,7 +163,7 @@ class CalendarConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/meet.svg",
+            icon_path="/icons/connectors/meet.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Meet API and Calendar integration",
             app_categories=["Meet"],
@@ -175,7 +175,7 @@ class CalendarConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/meet.svg")
+        .with_icon("/icons/connectors/meet.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Meet API Setup",
@@ -238,7 +238,7 @@ class MeetConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/docs.svg",
+            icon_path="/icons/connectors/docs.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Docs API and Drive integration",
             app_categories=["Docs"],
@@ -250,7 +250,7 @@ class MeetConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/docs.svg")
+        .with_icon("/icons/connectors/docs.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Docs API Setup",
@@ -304,7 +304,7 @@ class DocsConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/sheets.svg",
+            icon_path="/icons/connectors/sheets.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Sheets API",
             app_categories=["Sheets"],
@@ -316,7 +316,7 @@ class DocsConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/sheets.svg")
+        .with_icon("/icons/connectors/sheets.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Sheets API Setup",
@@ -380,7 +380,7 @@ class SheetsConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/forms.svg",
+            icon_path="/icons/connectors/forms.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Forms API and Drive integration",
             app_categories=["Forms"],
@@ -392,7 +392,7 @@ class SheetsConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/forms.svg")
+        .with_icon("/icons/connectors/forms.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Forms API Setup",
@@ -452,7 +452,7 @@ class FormsConnector:
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/slides.svg",
+            icon_path="/icons/connectors/slides.svg",
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Slides API and Drive integration",
             app_categories=["Slides"],
@@ -464,7 +464,7 @@ class FormsConnector:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/slides.svg")
+        .with_icon("/icons/connectors/slides.svg")
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Slides API Setup",
@@ -514,7 +514,7 @@ class SlidesConnector:
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/airtable.svg")
+        .with_icon("/icons/connectors/airtable.svg")
         .add_documentation_link(DocumentationLink(
             "Airtable API Token Setup",
             "https://api.airtable.com/authentication/basics",
@@ -562,7 +562,7 @@ class AirtableConnector:
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/linear.svg")
+        .with_icon("/icons/connectors/linear.svg")
         .add_documentation_link(DocumentationLink(
             "Linear API Token Setup",
             "https://linear.app/developers/docs/authentication",
@@ -625,7 +625,7 @@ class LinearConnector:
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/zendesk.svg")
+        .with_icon("/icons/connectors/zendesk.svg")
         .add_documentation_link(DocumentationLink(
             "Zendesk API Token Setup",
             "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/",

@@ -4,6 +4,8 @@ import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
+import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { getConnectorIconPath } from '@/lib/utils/connector-icon-utils';
 import type { DocumentationLink } from '../../types';
 
@@ -13,13 +15,17 @@ import type { DocumentationLink } from '../../types';
 
 export function DocumentationSection({
   links,
+  /** Same as connector config panel header — includes dark-mode invert for logos like Linear. */
+  connectorType,
+  /** When `connectorType` is omitted (e.g. workspace actions), vendor rows use this asset path. */
   connectorIconPath,
 }: {
   links: DocumentationLink[];
-  connectorIconPath: string;
+  connectorType?: string;
+  connectorIconPath?: string;
 }) {
   const { t } = useTranslation();
-  const iconSrc = getConnectorIconPath(connectorIconPath);
+  const iconSrc = connectorIconPath ? getConnectorIconPath(connectorIconPath) : undefined;
 
   return (
     <Flex direction="column" gap="3">
@@ -37,6 +43,7 @@ export function DocumentationSection({
           <DocumentationLinkRow
             key={idx}
             link={link}
+            connectorType={connectorType}
             connectorIconSrc={iconSrc}
           />
         ))}
@@ -53,15 +60,16 @@ const PIPESHUB_ICON_PATH = '/logo/pipes-hub.svg';
 
 function DocumentationLinkRow({
   link,
+  connectorType,
   connectorIconSrc,
 }: {
   link: DocumentationLink;
-  connectorIconSrc: string;
+  connectorType?: string;
+  connectorIconSrc?: string;
 }) {
   const [isHovered, setIsHovered] = useState(false);
-  const [iconError, setIconError] = useState(false);
 
-  const iconSrc = link.type?.toLowerCase() === 'pipeshub' ? PIPESHUB_ICON_PATH : connectorIconSrc;
+  const isPipeshub = link.type?.toLowerCase() === 'pipeshub';
 
   const handleClick = useCallback(() => {
     window.open(link.url, '_blank', 'noopener,noreferrer');
@@ -84,17 +92,24 @@ function DocumentationLinkRow({
       }}
     >
       <Flex align="center" gap="2">
-        {iconError ? (
-          <MaterialIcon name="hub" size={16} color="var(--gray-9)" />
-        ) : (
-          <img
-            src={iconSrc}
-            alt=""
-            width={16}
-            height={16}
-            onError={() => setIconError(true)}
-            style={{ display: 'block', objectFit: 'contain' }}
+        {isPipeshub ? (
+          <ThemeableAssetIcon
+            src={PIPESHUB_ICON_PATH}
+            size={16}
+            color="var(--gray-11)"
+            variant="flat"
           />
+        ) : connectorType ? (
+          <ConnectorIcon type={connectorType} size={16} />
+        ) : connectorIconSrc ? (
+          <ThemeableAssetIcon
+            src={connectorIconSrc}
+            size={16}
+            color="var(--gray-11)"
+            variant="flat"
+          />
+        ) : (
+          <ConnectorIcon type="generic" size={16} />
         )}
         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
           {link.title}

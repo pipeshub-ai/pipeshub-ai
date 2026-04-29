@@ -19,7 +19,7 @@ def AIModelProvider(
     description: str = "",
     notice: str = "",
     capabilities: list[ModelCapability] | None = None,
-    icon_path: str = "/assets/icons/ai-models/default.svg",
+    icon_path: str = "/icons/ai-models/default.svg",
     color: str = "#888888",
     is_popular: bool = False,
     fields: dict[str, list[AIModelField]] | None = None,
@@ -71,7 +71,7 @@ class AIModelProviderBuilder:
         self._description = ""
         self._notice = ""
         self._capabilities: list[ModelCapability] = []
-        self._icon_path = "/assets/icons/ai-models/default.svg"
+        self._icon_path = "/icons/ai-models/default.svg"
         self._color = "#888888"
         self._is_popular = False
         self._model_name: str | None = None

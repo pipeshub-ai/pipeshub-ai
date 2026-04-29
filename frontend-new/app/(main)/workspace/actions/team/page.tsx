@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
@@ -395,17 +396,10 @@ function TeamActionsPageContent() {
             }}
             title={t('workspace.actions.configPanelTitle')}
             icon={
-              configureToolset.iconPath ? (
-                <img
-                  src={configureToolset.iconPath}
-                  alt=""
-                  width={20}
-                  height={20}
-                  style={{ objectFit: 'contain' }}
-                />
-              ) : (
-                <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
-              )
+              <ConnectorIcon
+                type={configureToolset.toolsetType || configureToolset.name}
+                size={20}
+              />
             }
             hideFooter
             headerActions={
@@ -446,17 +440,10 @@ function TeamActionsPageContent() {
             }}
             title={t('workspace.actions.manage.panelTitle')}
             icon={
-              manageInstance.iconPath ? (
-                <img
-                  src={manageInstance.iconPath}
-                  alt=""
-                  width={20}
-                  height={20}
-                  style={{ objectFit: 'contain' }}
-                />
-              ) : (
-                <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
-              )
+              <ConnectorIcon
+                type={manageInstance.toolsetType || manageInstance.name}
+                size={20}
+              />
             }
             hideFooter
             headerActions={

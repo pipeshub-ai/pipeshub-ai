@@ -33,7 +33,7 @@ def _make_oauth_config(
     auth_fields=None,
     token_access_type=None,
     additional_params=None,
-    icon_path="/assets/icons/connectors/test.svg",
+    icon_path="/icons/connectors/test.svg",
     app_group="TestGroup",
     app_description="A test connector",
     app_categories=None,
@@ -139,7 +139,7 @@ class TestGetMetadata:
 
     def test_defaults_when_no_config(self):
         metadata = self.registry.get_metadata("Unknown")
-        assert metadata["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert metadata["iconPath"] == "/icons/connectors/default.svg"
         assert metadata["appGroup"] == ""
         assert metadata["appDescription"] == ""
         assert metadata["appCategories"] == []

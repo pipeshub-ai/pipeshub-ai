@@ -132,7 +132,7 @@ class TestToolsetConfigBuilder:
         builder = ToolsetConfigBuilder()
         config = builder.build()
 
-        assert config["iconPath"] == "/assets/icons/toolsets/default.svg"
+        assert config["iconPath"] == "/icons/toolsets/default.svg"
         assert config["auth"]["supportedAuthTypes"] == ["API_TOKEN"]
         assert config["tools"] == []
         assert config["documentationLinks"] == []
@@ -215,7 +215,7 @@ class TestToolsetConfigBuilder:
 
         # Second build should have defaults
         config2 = builder.build()
-        assert config2["iconPath"] == "/assets/icons/toolsets/default.svg"
+        assert config2["iconPath"] == "/icons/toolsets/default.svg"
 
     def test_with_oauth_urls(self):
         builder = ToolsetConfigBuilder()
@@ -821,7 +821,7 @@ class TestBuildDecorator:
         oauth_config.redirect_uri = "https://example.com/callback"
         oauth_config.scopes = scopes
         oauth_config.auth_fields = []
-        oauth_config.icon_path = "/assets/icons/test.svg"
+        oauth_config.icon_path = "/icons/test.svg"
         oauth_config.app_group = "test_group"
         oauth_config.app_description = "Test desc"
         oauth_config.app_categories = ["app"]
@@ -856,7 +856,7 @@ class TestBuildDecorator:
         oauth_config.redirect_uri = "https://example.com/callback"
         oauth_config.scopes = scopes
         oauth_config.auth_fields = []
-        oauth_config.icon_path = "/assets/icons/connectors/default.svg"
+        oauth_config.icon_path = "/icons/connectors/default.svg"
         oauth_config.app_group = ""
         oauth_config.app_description = ""
         oauth_config.app_categories = []
@@ -1353,7 +1353,7 @@ class TestBuildDecoratorCoverage:
         oauth_config.redirect_uri = "https://example.com/callback"
         oauth_config.scopes = scopes
         oauth_config.auth_fields = []
-        oauth_config.icon_path = "/assets/icons/test.svg"
+        oauth_config.icon_path = "/icons/test.svg"
         oauth_config.app_group = "test_group"
         oauth_config.app_description = "Test desc"
         oauth_config.app_categories = ["app"]
@@ -1388,7 +1388,7 @@ class TestBuildDecoratorCoverage:
         oauth_config.redirect_uri = "https://example.com/callback"
         oauth_config.scopes = scopes
         oauth_config.auth_fields = []
-        oauth_config.icon_path = "/assets/icons/connectors/default.svg"
+        oauth_config.icon_path = "/icons/connectors/default.svg"
         oauth_config.app_group = ""
         oauth_config.app_description = ""
         oauth_config.app_categories = []

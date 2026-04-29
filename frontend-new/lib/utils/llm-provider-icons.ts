@@ -1,12 +1,12 @@
-/** Static LLM provider artwork under `public/assets/icons/ai-models/`. */
-export const AGENT_LLM_ICONS_BASE = '/assets/icons/ai-models';
+/** Static LLM provider artwork under `public/icons/ai-models/`. */
+export const AGENT_LLM_ICONS_BASE = '/icons/ai-models';
 
 /** When provider is unknown or the asset fails to load. */
 export const AGENT_LLM_FALLBACK_ICON = `${AGENT_LLM_ICONS_BASE}/default.svg`;
 
 /**
  * Maps API `provider` ids (see onboarding / model catalog) to filenames under
- * `public/assets/icons/ai-models/`.
+ * `public/icons/ai-models/`.
  */
 const LLM_PROVIDER_ICON_FILE: Record<string, string> = {
   openAI: 'openai.svg',

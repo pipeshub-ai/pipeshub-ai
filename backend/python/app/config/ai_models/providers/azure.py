@@ -56,7 +56,7 @@ _AZURE_AI_ENDPOINT_EMB = AIModelField(
 @AIModelProviderBuilder("Azure AI", "azureAI") \
     .with_description("Access Azure AI Foundry models including GPT-4o, DeepSeek R1, Cohere, and more") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/azure-color.svg") \
+    .with_icon("/icons/ai-models/azure-color.svg") \
     .with_color("#0078D4") \
     .popular() \
     .add_field(_AZURE_AI_ENDPOINT_LLM, ModelCapability.TEXT_GENERATION) \
@@ -93,7 +93,7 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
 @AIModelProviderBuilder("Azure OpenAI", "azureOpenAI") \
     .with_description("Enterprise-grade OpenAI models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/azure-color.svg") \
+    .with_icon("/icons/ai-models/azure-color.svg") \
     .with_color("#0078D4") \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \

@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -126,7 +127,7 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Dropbox App Console"),
                 CommonFields.client_secret("Dropbox App Console")
             ],
-            icon_path="/assets/icons/connectors/dropbox.svg",
+            icon_path=IconPaths.connector_icon("dropbox"),
             app_group="Storage",
             app_description="Dropbox OAuth application for agent integration"
         ),
@@ -135,7 +136,8 @@ tools: List[ToolDefinition] = [
         ])
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/dropbox.svg"))\
+    .configure(lambda builder: builder
+               .with_icon(IconPaths.connector_icon("dropbox")))\
     .build_decorator()
 class Dropbox:
     """Dropbox tool exposed to the agents"""

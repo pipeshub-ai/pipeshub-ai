@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -108,7 +109,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/minio.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.MINIO.value))
         .add_documentation_link(DocumentationLink(
             "MinIO Documentation",
             "https://min.io/docs/minio/linux/index.html",

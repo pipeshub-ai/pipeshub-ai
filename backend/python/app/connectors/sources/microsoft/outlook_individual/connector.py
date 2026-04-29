@@ -145,7 +145,7 @@ from app.utils.time_conversion import (
                 CommonFields.client_id("Azure AD App Registration"),
                 CommonFields.client_secret("Azure AD App Registration")
             ],
-            icon_path=IconPaths.connector_icon("outlook"),
+            icon_path=IconPaths.connector_icon(Connectors.OUTLOOK.value),
             app_group="Microsoft 365",
             app_description="OAuth application for accessing Outlook mailbox API",
             app_categories=["Email"],
@@ -156,7 +156,7 @@ from app.utils.time_conversion import (
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon(IconPaths.connector_icon("outlook"))
+        .with_icon(IconPaths.connector_icon(Connectors.OUTLOOK.value))
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
             OutlookDocs.AZURE_AD_SETUP_URL,

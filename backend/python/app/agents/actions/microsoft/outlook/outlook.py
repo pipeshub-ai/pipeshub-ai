@@ -9,7 +9,7 @@ from urllib.parse import unquote
 
 from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from pydantic import BaseModel, Field
-
+from app.connectors.core.constants import IconPaths
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -471,7 +471,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
             app_description="Microsoft Outlook OAuth application for agent integration",
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("outlook"))
         .add_documentation_link(DocumentationLink(
             title="Create an Azure App Registration",
             url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
