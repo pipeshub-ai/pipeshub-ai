@@ -206,9 +206,24 @@ function UsersPageContent() {
       // Status filter → hasLoggedIn and/or isBlocked flags
       if (filters.statuses?.length) {
         const selected = new Set(filters.statuses);
-        if (selected.has('Active')) params.hasLoggedIn = 'true';
-        else if (selected.has('Pending')) params.hasLoggedIn = 'false';
-        if (selected.has('Blocked')) params.isBlocked = 'true';
+        const hasActive = selected.has('Active');
+        const hasPending = selected.has('Pending');
+        const hasBlocked = selected.has('Blocked');
+
+        // "Active + Pending" means "all non-blocked users", so do not send hasLoggedIn.
+        if (hasActive && hasPending && !hasBlocked) {
+          params.isBlocked = 'false';
+        } else if (hasActive && !hasPending && !hasBlocked) {
+          params.hasLoggedIn = 'true';
+          params.isBlocked = 'false';
+        } else if (hasPending && !hasActive && !hasBlocked) {
+          params.hasLoggedIn = 'false';
+          params.isBlocked = 'false';
+        } else {
+          if (hasActive) params.hasLoggedIn = 'true';
+          else if (hasPending) params.hasLoggedIn = 'false';
+          if (hasBlocked) params.isBlocked = 'true';
+        }
       }
       // Group filter → comma-separated group IDs
       if (filters.groups?.length) {

@@ -122,6 +122,90 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(blockedUsers)).to.be.true;
     });
+
+    it('should apply hasLoggedIn=true and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'true',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439021' },
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(true);
+      expect(filter._id.$nin).to.be.an('array').with.length(2);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439021');
+      expect(filter._id.$nin[1].toString()).to.equal('507f1f77bcf86cd799439022');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should apply hasLoggedIn=false and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'false',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ userId: '507f1f77bcf86cd799439023' }]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(false);
+      expect(filter._id.$nin).to.be.an('array').with.length(1);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439023');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
   });
 
   describe('getAllUsersWithGroups', () => {

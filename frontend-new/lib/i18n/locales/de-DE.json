@@ -736,7 +736,7 @@
         "cancel": "Abbrechen",
         "send": "Einladung senden",
         "successTitle": "Einladungen gesendet",
-        "successDescription": "{{count}} Einladung(en) erfolgreich gesendet.",
+        "successDescription": "Einladung erfolgreich gesendet.",
         "invalidEmail": "Ungültige E-Mail-Adresse",
         "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut."
       }

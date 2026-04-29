@@ -132,7 +132,7 @@ export class UserController {
       const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
       const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
 
-      if (hasLoggedInFilter && isBlockedFilter && String(isBlocked) === 'true') {
+      if (hasLoggedInFilter && isBlockedFilter) {
         // Both active: e.g. "Active + Blocked" or "Pending + Blocked"
         // Get blocked user IDs, then $or: [hasLoggedIn match, blocked IDs match]
         const blockedCreds = await UserCredentials.find({
@@ -142,18 +142,23 @@ export class UserController {
           .filter((c) => c.userId)
           .map((c) => new mongoose.Types.ObjectId(c.userId!));
 
-        const statusConditions: Record<string, any>[] = [
-          { hasLoggedIn: String(hasLoggedIn) === 'true' },
-        ];
-        if (blockedIds.length > 0) {
-          statusConditions.push({ _id: { $in: blockedIds } });
-        }
-        // Merge with any existing $or (search) using $and
-        if (filter.$or) {
-          filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-          delete filter.$or;
+        if (String(isBlocked) === 'true') {
+          const statusConditions: Record<string, any>[] = [
+            { hasLoggedIn: String(hasLoggedIn) === 'true' },
+          ];
+          if (blockedIds.length > 0) {
+            statusConditions.push({ _id: { $in: blockedIds } });
+          }
+          // Merge with any existing $or (search) using $and
+          if (filter.$or) {
+            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+            delete filter.$or;
+          } else {
+            filter.$or = statusConditions;
+          }
         } else {
-          filter.$or = statusConditions;
+          filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+          filter._id = { ...filter._id, $nin: blockedIds };
         }
       } else if (hasLoggedInFilter) {
         filter.hasLoggedIn = String(hasLoggedIn) === 'true';

@@ -208,17 +208,10 @@ export function InviteUsersSidebar({
         // ── Create mode: send new invite ──
         await UsersApi.inviteUsers(validEmails, inviteGroupIds.length > 0 ? inviteGroupIds : undefined);
 
-        const emailDisplay =
-          validEmails.length === 1
-            ? validEmails[0]
-            : `${validEmails.length} users`;
         addToast({
           variant: 'success',
           title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-          description: t(
-            'workspace.users.invite.successDescription',
-            { email: emailDisplay, defaultValue: `${emailDisplay} has been invited` }
-          ),
+          description: 'Invitation sent successfully',
           duration: 3000,
         });
       }

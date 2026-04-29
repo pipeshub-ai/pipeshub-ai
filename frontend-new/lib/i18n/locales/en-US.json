@@ -733,7 +733,7 @@
         "cancel": "Cancel",
         "send": "Send Invite",
         "successTitle": "Invite sent!",
-        "successDescription": "{{email}} has been invited",
+        "successDescription": "Invitation sent successfully",
         "invalidEmail": "Invalid email address",
         "errorGeneric": "Failed to send invite"
       }
