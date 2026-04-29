@@ -271,7 +271,34 @@
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",
       "editComingSoonTitle": "Demnächst verfügbar",
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt"
-    }
+    },
+    "thankYouForFeedback": "Vielen Dank für Ihr Feedback",
+    "feedbackHelpsImprove": "Ihr Feedback hilft uns, uns zu verbessern",
+    "feedbackError": "Feedback konnte nicht gesendet werden",
+    "feedbackLikeTitle": "Was hat Ihnen an dieser Antwort gefallen? (optional)",
+    "feedbackDislikeTitle": "Was hat Ihnen an dieser Antwort nicht gefallen?",
+    "feedbackOtherPlaceholder": "Spezifische Details hinzufügen...",
+    "feedbackDislikeOtherPlaceholder": "Bitte beschreiben Sie das Problem...",
+    "feedbackSubmit": "Absenden",
+    "feedbackCategoryExcellentAnswer": "Ausgezeichnete Antwort",
+    "feedbackCategoryWellExplained": "Gut erklärt",
+    "feedbackCategoryHelpfulCitations": "Hilfreiche Zitate",
+    "feedbackCategoryIncorrectInfo": "Falsche Informationen",
+    "feedbackCategoryMissingInfo": "Fehlende Informationen",
+    "feedbackCategoryIrrelevantInfo": "Irrelevante Informationen",
+    "feedbackCategoryUnclearExplanation": "Unklare Erklärung",
+    "feedbackCategoryPoorCitations": "Schlechte Quellenangaben",
+    "feedbackCategoryOther": "Sonstiges...",
+    "like": "Hilfreich",
+    "dislike": "Nicht hilfreich",
+    "copy": "Kopieren",
+    "regenerate": "Neu generieren",
+    "readAloud": "Vorlesen",
+    "stopReading": "Vorlesen beenden",
+    "ttsNotSupported": "Text-to-Speech wird in diesem Browser nicht unterstützt",
+    "ttsFailed": "Vorlesen fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "copiedAsMarkdown": "Als Markdown kopiert",
+    "copiedAsText": "Als Text kopiert"
   },
   "filePreview": {
     "fileInformation": "Dateiinformationen"
@@ -776,6 +803,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Instanzname",
+        "renameSuccess": "Connector umbenannt",
+        "renameErrorGeneric": "Fehler beim Umbenennen des Connectors",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

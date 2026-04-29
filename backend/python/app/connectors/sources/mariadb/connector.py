@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     RecordRelations,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -194,7 +195,7 @@ class SyncStats:
         ]),
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/mariadb.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.MARIADB.value))
         .add_documentation_link(DocumentationLink(
             "MariaDB Setup",
             "https://mariadb.com/docs/",

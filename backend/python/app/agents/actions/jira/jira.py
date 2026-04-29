@@ -15,6 +15,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -311,7 +312,7 @@ class GetCommentsInput(BaseModel):
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/jira.svg",
+            icon_path=IconPaths.connector_icon("jira"),
             app_group="Project Management",
             app_description="JIRA OAuth application for agent integration"
         ),
@@ -351,7 +352,7 @@ class GetCommentsInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("jira"))
         .add_documentation_link(DocumentationLink(
             "Jira Cloud API Setup",
             "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",

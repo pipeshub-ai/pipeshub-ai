@@ -19,7 +19,7 @@ from .common_fields import (
 @AIModelProviderBuilder("Bedrock", "bedrock") \
     .with_description("AWS Bedrock models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/bedrock-color.svg") \
+    .with_icon("/icons/ai-models/bedrock-color.svg") \
     .with_color("#0078D4") \
     .add_field(AWS_ACCESS_KEY_ID, ModelCapability.TEXT_GENERATION) \
     .add_field(AWS_SECRET_KEY, ModelCapability.TEXT_GENERATION) \

@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -120,7 +121,7 @@ class SearchContentInput(BaseModel):
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/confluence.svg",
+            icon_path=IconPaths.connector_icon("confluence"),
             app_group="Documentation",
             app_description="Confluence OAuth application for agent integration"
         ),
@@ -160,7 +161,8 @@ class SearchContentInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg")
+    .configure(lambda builder: builder
+        .with_icon(IconPaths.connector_icon("confluence"))
         .add_documentation_link(DocumentationLink(
             "Confluence Cloud OAuth Setup",
             "https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/",

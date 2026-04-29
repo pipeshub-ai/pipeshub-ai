@@ -69,7 +69,6 @@ interface ChatResponseProps {
   confidence?: ConfidenceLevel;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
-  feedbackInfo?: FeedbackInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFiltersData;
@@ -102,7 +101,6 @@ export const ChatResponse = React.memo(function ChatResponse({
   confidence,
   isStreaming = false,
   modelInfo,
-  feedbackInfo,
   collections,
   appliedFilters,
   messageId,
@@ -133,7 +131,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const prevCRRef = useRef<Record<string, unknown>>({});
   const currentCRVals: Record<string, unknown> = {
     question, answer, citationMaps, citationCallbacks, confidence,
-    isStreaming, modelInfo, feedbackInfo, collections, appliedFilters, messageId,
+    isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
     streamingCitationMaps, createdAt,
   };
@@ -506,7 +504,6 @@ export const ChatResponse = React.memo(function ChatResponse({
           content={displayContent}
           citationMaps={effectiveCitationMaps}
           modelInfo={modelInfo}
-          feedbackInfo={feedbackInfo}
           isStreaming={isStreaming}
           messageId={messageId}
           question={question}

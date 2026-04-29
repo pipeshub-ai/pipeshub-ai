@@ -9,7 +9,7 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, mode
 @AIModelProviderBuilder("Cohere", "cohere") \
     .with_description("Command models for text generation and embeddings") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/cohere-color.svg") \
+    .with_icon("/icons/ai-models/cohere-color.svg") \
     .with_color("#39C5BB") \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g. command-a-03-2025"), ModelCapability.TEXT_GENERATION) \

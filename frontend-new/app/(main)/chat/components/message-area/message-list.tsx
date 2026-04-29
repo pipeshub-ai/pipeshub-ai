@@ -36,9 +36,6 @@ function extractTextContent(content: readonly { type: string; text?: string }[])
     .join('');
 }
 
-interface FeedbackInfo {
-  value?: 'like' | 'dislike';
-}
 
 interface MessagePair {
   key: string;
@@ -50,7 +47,6 @@ interface MessagePair {
   confidence?: ConfidenceLevel;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
-  feedbackInfo?: FeedbackInfo;
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFilters;
@@ -204,13 +200,11 @@ export function MessageList() {
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
-          feedbackInfo?: FeedbackInfo;
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
-          feedbackInfo?: FeedbackInfo;
         } | undefined;
 
         // Find preceding user message
@@ -252,6 +246,7 @@ export function MessageList() {
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
           modelInfo: metadata?.modelInfo,
           feedbackInfo: metadata?.feedbackInfo,
+          // Use streaming collections for the temp message; user metadata for the final message
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
@@ -900,7 +895,6 @@ export function MessageList() {
                   confidence={pair.confidence}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
-                  feedbackInfo={pair.feedbackInfo}
                   collections={pair.collections}
                   appliedFilters={pair.appliedFilters}
                   messageId={pair.messageId}

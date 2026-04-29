@@ -603,7 +603,7 @@ class ConnectorRegistry:
             'appCategories': metadata.get('appCategories', []),
             'iconPath': connector_config.get(
                 'iconPath',
-                '/assets/icons/connectors/default.svg'
+                '/icons/connectors/default.svg'
             ),
             'supportsRealtime': connector_config.get('supportsRealtime', False),
             'supportsSync': connector_config.get('supportsSync', False),

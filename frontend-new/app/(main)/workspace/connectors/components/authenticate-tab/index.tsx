@@ -364,10 +364,7 @@ export function AuthenticateTab() {
   return (
     <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
       {docLinks.length > 0 && (
-        <DocumentationSection
-          links={docLinks}
-          connectorIconPath={panelConnector.iconPath}
-        />
+        <DocumentationSection links={docLinks} connectorType={panelConnector.type} />
       )}
 
       {showAuthTypeSelector && (

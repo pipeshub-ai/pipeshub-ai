@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import type { ActionCatalogItem } from '../types';
 
 export type ActionCardCta = 'setup' | 'configure' | 'authenticate' | 'unavailable';
@@ -28,7 +29,6 @@ export function ActionCard({
 }: ActionCardProps) {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
-  const [iconBroken, setIconBroken] = useState(false);
 
   const isMergedType = item.rowKind === 'byToolsetType';
   const authenticatedCount = isMergedType ? item.instances.filter((i) => i.isAuthenticated).length : 0;
@@ -74,16 +74,8 @@ export function ActionCard({
               flexShrink: 0,
             }}
           >
-            {!iconBroken && item.iconPath ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={item.iconPath}
-                alt=""
-                width={16}
-                height={16}
-                style={{ objectFit: 'contain' }}
-                onError={() => setIconBroken(true)}
-              />
+            {item.toolsetType ? (
+              <ConnectorIcon type={item.toolsetType} size={16} />
             ) : (
               <MaterialIcon name="extension" size={16} color="var(--gray-11)" />
             )}

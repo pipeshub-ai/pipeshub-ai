@@ -220,7 +220,7 @@ class ToolsetRegistry:
             return icon
 
         # Default
-        return '/assets/icons/toolsets/default.svg'
+        return '/icons/toolsets/default.svg'
 
     def _normalize_toolset_name(self, name: str) -> str:
         """Normalize toolset name (lowercase, no spaces/underscores)"""

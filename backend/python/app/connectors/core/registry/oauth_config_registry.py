@@ -70,7 +70,7 @@ class OAuthConfigRegistry:
 
         # Return defaults if no OAuth config found
         return {
-            "iconPath": "/assets/icons/connectors/default.svg",
+            "iconPath": "/icons/connectors/default.svg",
             "appGroup": "",
             "appDescription": "",
             "appCategories": []
@@ -454,7 +454,7 @@ class OAuthConfigRegistry:
                     config_info = {
                         "_id": config.get("_id"),
                         "oauthInstanceName": config.get("oauthInstanceName"),
-                        "iconPath": config.get("iconPath", "/assets/icons/connectors/default.svg"),
+                        "iconPath": config.get("iconPath", "/icons/connectors/default.svg"),
                         "appGroup": config.get("appGroup", ""),
                         "appDescription": config.get("appDescription", ""),
                         "appCategories": config.get("appCategories", []),

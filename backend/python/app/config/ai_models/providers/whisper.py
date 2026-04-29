@@ -65,7 +65,7 @@ WHISPER_MODEL_DIR = AIModelField(
     .with_description("Self-hosted OpenAI Whisper STT running locally via faster-whisper.") \
     .with_notice("Requires the 'faster-whisper' optional dependency. Models are downloaded on first use.") \
     .with_capabilities([ModelCapability.STT]) \
-    .with_icon("/assets/icons/ai-models/whisper.svg") \
+    .with_icon("/icons/ai-models/whisper.svg") \
     .with_color("#7C3AED") \
     .add_field(WHISPER_MODEL, ModelCapability.STT) \
     .add_field(WHISPER_DEVICE, ModelCapability.STT) \
