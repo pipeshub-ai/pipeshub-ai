@@ -47,6 +47,7 @@ interface MessagePair {
   confidence?: ConfidenceLevel;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
+  feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFilters;
@@ -200,11 +201,13 @@ export function MessageList() {
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } | undefined;
 
         // Find preceding user message

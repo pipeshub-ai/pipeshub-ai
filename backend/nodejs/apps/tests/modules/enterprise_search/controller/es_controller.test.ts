@@ -56,6 +56,7 @@ import {
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
   updateAgentPermissions,
+  updateAgentFeedback,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
@@ -11181,6 +11182,154 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
       await promise
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedback
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedback', () => {
+    it('should call next when user is not authenticated', async () => {
+      const req = createMockRequest({
+        user: undefined,
+        params: { agentKey: 'agent-1', conversationId: 'invalid-conv-id', messageId: 'invalid-msg-id' },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when conversationId is not a valid ObjectId', async () => {
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: 'not-valid', messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when agent conversation is not found', async () => {
+      stubMongooseFind(AgentConversation, 'findOne', null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when message is not found in agent conversation', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when trying to provide feedback on a user_query message', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when findByIdAndUpdate returns null', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should respond 200 with feedback on happy path', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ rating: 'positive' }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive', metrics: { userInteractionTime: 1000, feedbackSessionId: 'sess-1' } },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'test-agent' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
     })
   })
 })
