@@ -16,6 +16,7 @@ import {
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
+import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { DocumentationSection } from '@/app/(main)/workspace/connectors/components/authenticate-tab/documentation-section';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
@@ -503,7 +504,7 @@ export function ActionSetupPanel({
     ) : null;
 
   const panelIcon = toolsetType ? (
-    <ConnectorIcon type={toolsetType} size={20} />
+    <ConnectorIcon type={resolveConnectorType(toolsetType)} size={20} />
   ) : (
     <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
   );

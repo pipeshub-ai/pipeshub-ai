@@ -123,7 +123,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'minio': { svg: svg('minio'), fallback: 'cloud' },
   'azure-blob': { svg: svg('azureblob'), fallback: 'cloud' },
   'azure-files': { svg: svg('azurefiles'), fallback: 'folder_shared' },
-  'azure-fileshares': { svg: svg('azure-files'), fallback: 'folder_shared' },
+  'azure-fileshares': { svg: svg('azurefiles'), fallback: 'folder_shared' },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
   // Document & Knowledge
   'notion': { svg: svg('notion'), fallback: 'description', needDarkModeInvert: true },
@@ -193,6 +193,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['azure-files', 'azure-files'],
   ['amazon-s3', 'amazon-s3'], ['aws-s3', 'amazon-s3'], ['s3', 'amazon-s3'],
   ['azure-fileshare', 'azure-fileshares'], ['azure-blob', 'azure-blob'],
+  ['azure-storage', 'azure-blob'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking
