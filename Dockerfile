@@ -52,14 +52,9 @@ RUN npm config set legacy-peer-deps true && \
 
 COPY frontend/ ./
 
-# Force Next.js static export regardless of what next.config.mjs ships with,
-# so the resulting assets can be served directly from disk.
-RUN if grep -q "output: 'export'" next.config.mjs; then \
-        sed -i "s|//[[:space:]]*output: 'export',|output: 'export',|" next.config.mjs; \
-    else \
-        sed -i "s|const nextConfig = {|const nextConfig = { output: 'export',|" next.config.mjs; \
-    fi && \
-    npm run build && \
+# Force static export for container builds by setting the env flag that
+# `frontend-new/next.config.mjs` already uses to enable `output: 'export'`.
+RUN ELECTRON_STATIC=1 npm run build && \
     mkdir -p /out && \
     cp -a out/. /out/
 
