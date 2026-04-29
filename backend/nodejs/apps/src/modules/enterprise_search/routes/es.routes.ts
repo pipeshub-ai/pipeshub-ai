@@ -608,7 +608,7 @@ export function createAgentConversationalRouter(container: Container): Router {
   router.post(
     '/:agentKey/conversations/:conversationId/message/:messageId/feedback',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateAgentFeedbackParamsSchema),
     updateAgentFeedback,

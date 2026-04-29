@@ -265,12 +265,24 @@ export const regenerateAgentAnswersParamsSchema =
     }),
   });
 
+export const FEEDBACK_CATEGORIES = [
+  'incorrect_information',
+  'missing_information',
+  'irrelevant_information',
+  'unclear_explanation',
+  'poor_citations',
+  'excellent_answer',
+  'helpful_citations',
+  'well_explained',
+  'other',
+] as const;
+
 const feedbackBodySchema = z.object({
   isHelpful: z.boolean().optional(),
   ratings: z
     .record(z.string(), z.number().min(1).max(5))
     .optional(),
-  categories: z.array(z.string()).optional(),
+  categories: z.array(z.enum(FEEDBACK_CATEGORIES)).optional(),
   comments: z
     .object({
       positive: z.string().optional(),

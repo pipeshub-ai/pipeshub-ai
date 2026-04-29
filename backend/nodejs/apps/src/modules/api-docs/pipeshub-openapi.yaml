@@ -16158,7 +16158,7 @@ paths:
       operationId: updateAgentMessageFeedback
       security:
         - bearerAuth: []
-        - oauth2: [agent:write]
+        - oauth2: [agent:execute]
       parameters:
         - name: agentKey
           in: path

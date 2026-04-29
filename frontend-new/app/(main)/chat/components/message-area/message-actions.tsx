@@ -46,10 +46,6 @@ const DISLIKE_CATEGORIES: FeedbackCategory[] = [
 
 const OTHER_VALUE = 'other';
 
-interface FeedbackInfo {
-  value?: FeedbackValue;
-}
-
 interface MessageActionsProps {
   /** The raw markdown content of the message */
   content: string;
@@ -57,8 +53,6 @@ interface MessageActionsProps {
   citationMaps?: CitationMaps;
   /** Model info for displaying mode + model labels */
   modelInfo?: ModelInfo;
-  /** Feedback state from API — not displayed but kept for prop compatibility */
-  feedbackInfo?: FeedbackInfo;
   /** Whether the message is currently streaming */
   isStreaming?: boolean;
   /** Backend _id of the bot_response (used for regenerate) */
@@ -215,14 +209,10 @@ export function MessageActions({
       switchingRef.current = false;
       return;
     }
-    if (feedbackGiven !== 'like' && messageId) {
-      setFeedbackGiven('like');
-      submitFeedbackToApi(messageId, { isHelpful: true })
-        .then(() => toast.success(t('chat.thankYouForFeedback'), { description: t('chat.feedbackHelpsImprove') }))
-        .catch(() => {});
-    }
+    setLikeShowOther(false);
+    setLikeComment('');
     setLikeOpen(false);
-  }, [feedbackGiven, messageId, t]);
+  }, []);
 
   // ── Thumbs down ──
   const handleDislikeClick = useCallback(() => {
@@ -276,14 +266,10 @@ export function MessageActions({
       switchingRef.current = false;
       return;
     }
-    if (feedbackGiven !== 'dislike' && messageId) {
-      setFeedbackGiven('dislike');
-      submitFeedbackToApi(messageId, { isHelpful: false })
-        .then(() => toast.success(t('chat.thankYouForFeedback'), { description: t('chat.feedbackHelpsImprove') }))
-        .catch(() => {});
-    }
+    setDislikeShowOther(false);
+    setDislikeComment('');
     setDislikeOpen(false);
-  }, [feedbackGiven, messageId, t]);
+  }, []);
 
   const handleRegenerate = useCallback(() => {
     if (!messageId) return;
