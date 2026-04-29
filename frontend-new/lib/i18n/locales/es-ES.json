@@ -1553,6 +1553,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Nombre de la instancia",
+        "renameSuccess": "Conector renombrado",
+        "renameErrorGeneric": "Error al renombrar el conector",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

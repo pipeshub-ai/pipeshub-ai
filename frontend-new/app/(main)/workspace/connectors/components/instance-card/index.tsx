@@ -221,15 +221,14 @@ export function InstanceCard({
           </Flex>
 
           {/* Instance display name — inline editable */}
-          <Flex style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-            <InlineEditableName
-              connectorId={instance._key}
-              name={instance.name?.trim() || instance.type}
-              textSize="2"
-              textWeight="medium"
-              truncate
-            />
-          </Flex>
+          <InlineEditableName
+            connectorId={instance._key}
+            name={instance.name?.trim() || instance.type}
+            textSize="2"
+            textWeight="medium"
+            truncate
+            style={{ flex: 1, overflow: 'hidden' }}
+          />
 
           {/* Sync status pill */}
           <SyncStatusPill

@@ -53,6 +53,7 @@ export function InstanceManagementPanel() {
     const scope: ConnectorScope = pathname.includes('/connectors/personal')
       ? 'personal'
       : 'team';
+    // Open the connector configuration panel (reuse the setup panel)
     closeInstancePanel();
     openPanel(selectedInstance, selectedInstance._key, scope);
   }, [selectedInstance, closeInstancePanel, openPanel, pathname]);
@@ -140,6 +141,7 @@ export function InstanceManagementPanel() {
     ? `Synced ${selectedInstance.lastSynced}`
     : undefined;
 
+  // Connector icon used as panel header icon
   const connectorIcon = (
     <Flex
       align="center"
@@ -170,6 +172,8 @@ export function InstanceManagementPanel() {
     </Flex>
   ) : undefined;
 
+  // When there are multiple instances of this connector type, render an
+  // instance-switcher dropdown instead of a plain title string.
   const instancePendingDelete =
     pendingDeleteId == null
       ? selectedInstance

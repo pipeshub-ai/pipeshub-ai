@@ -780,7 +780,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       renameConnectorInstance: (connectorId, newName) =>
         set((s) => {
-          if (!connectorId) return;
+          if (!connectorId || !newName?.trim()) return;
           const acIdx = s.activeConnectors.findIndex((c) => c._key === connectorId);
           if (acIdx >= 0) {
             s.activeConnectors[acIdx].name = newName;

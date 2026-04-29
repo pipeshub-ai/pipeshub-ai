@@ -1,9 +1,10 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useInlineRename } from '../utils/use-inline-rename';
+import { useInlineRename, INLINE_RENAME_MAX_LENGTH } from '../utils/use-inline-rename';
 
 interface InlineEditableNameProps {
   connectorId: string;
@@ -16,10 +17,10 @@ interface InlineEditableNameProps {
   textWeight?: 'regular' | 'medium' | 'bold';
   /** Edit icon size in px. Defaults to 14. */
   iconSize?: number;
-  /** Max width constraint for the input. Defaults to '100%'. */
-  maxWidth?: string;
   /** Whether to truncate the display text. Defaults to false. */
   truncate?: boolean;
+  /** Additional inline styles on the root container. */
+  style?: React.CSSProperties;
 }
 
 export function InlineEditableName({
@@ -29,9 +30,10 @@ export function InlineEditableName({
   textSize = '2',
   textWeight = 'regular',
   iconSize = 14,
-  maxWidth = '100%',
   truncate = false,
+  style,
 }: InlineEditableNameProps) {
+  const { t } = useTranslation();
   const {
     isEditing,
     editValue,
@@ -46,7 +48,7 @@ export function InlineEditableName({
   } = useInlineRename({ connectorId, currentName: name });
 
   return (
-    <Flex align="center" style={{ position: 'relative', maxWidth, minWidth: 0 }}>
+    <Flex align="center" style={{ position: 'relative', minWidth: 0, ...style }}>
       {/* Hidden span for measuring text width */}
       <span
         ref={measureRef}
@@ -63,7 +65,9 @@ export function InlineEditableName({
       {isEditing ? (
         <input
           ref={inputRef}
+          aria-label={t('workspace.connectors.settingsTab.instanceName')}
           value={editValue}
+          maxLength={INLINE_RENAME_MAX_LENGTH}
           onChange={handleChange}
           onBlur={() => void saveRename()}
           onKeyDown={handleKeyDown}
