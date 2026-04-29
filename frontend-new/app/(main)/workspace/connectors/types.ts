@@ -38,7 +38,7 @@ export interface Connector {
   createdBy?: string;
   updatedBy?: string;
   authType?: string;
-  connectorInfo?: Record<string, unknown> | null;
+  connectorInfo?: string | Record<string, unknown> | null;
   config?: Record<string, unknown>;
   /**
    * Transient operational status from the backend.

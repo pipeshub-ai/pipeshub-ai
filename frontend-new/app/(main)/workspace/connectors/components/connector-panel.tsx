@@ -3,14 +3,16 @@
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
-import React, { useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   WorkspaceRightPanel,
   useWorkspaceRightPanelBodyRefresh,
+  useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { AuthenticateTab } from './authenticate-tab';
 import { AuthorizeTab } from './authorize-tab';
@@ -33,6 +35,10 @@ import {
   collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
+import {
+  hasAnySyncFiltersSelected,
+  isManualIndexingEnabled,
+} from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
@@ -102,6 +108,11 @@ export function ConnectorPanel() {
     oauthAuthorizeUiEpoch,
     selectedScope,
   } = useConnectorsStore();
+
+  const [syncSaveConfirmOpen, setSyncSaveConfirmOpen] = useState(false);
+  const [syncSaveConfirmKind, setSyncSaveConfirmKind] = useState<'manual' | 'wide_sync'>('wide_sync');
+
+  const connectorPanelNestedModalHost = useWorkspaceDrawerNestedModalHost(isPanelOpen);
 
   const isCreateMode = !panelConnectorId;
   const isLoading = isLoadingSchema || isLoadingConfig;
@@ -549,7 +560,7 @@ export function ConnectorPanel() {
     selectedScope,
   ]);
 
-  const handleSaveConfig = useCallback(async () => {
+  const performSaveConfig = useCallback(async () => {
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -651,6 +662,60 @@ export function ConnectorPanel() {
     t,
   ]);
 
+  const handleSaveConfig = useCallback(() => {
+    const currentConnectorId =
+      panelConnectorId || useConnectorsStore.getState().panelConnectorId;
+
+    if (!currentConnectorId) {
+      setSaveError('No connector ID found. Please complete authentication first.');
+      return;
+    }
+
+    setSaveError(null);
+
+    const syncCustomFields = connectorSchema?.sync?.customFields ?? [];
+    const trimmedCustomValues = trimConnectorConfig(
+      formData.sync.customValues
+    ) as Record<string, unknown>;
+    const syncFieldErrors = collectSyncCustomFieldErrors(syncCustomFields, trimmedCustomValues);
+
+    const syncErrorPatch: Record<string, string | null | undefined> = {};
+    for (const f of syncCustomFields) {
+      syncErrorPatch[f.name] = syncFieldErrors[f.name] ?? '';
+    }
+    mergeFormErrors(syncErrorPatch);
+
+    if (Object.keys(syncFieldErrors).length > 0) {
+      return;
+    }
+
+    const syncFields = connectorSchema?.filters?.sync?.schema?.fields;
+    const manualOn = isManualIndexingEnabled(formData.filters.indexing);
+    const hasSync = hasAnySyncFiltersSelected(syncFields, formData.filters.sync);
+
+    if (manualOn || !hasSync) {
+      setSyncSaveConfirmKind(manualOn ? 'manual' : 'wide_sync');
+      setSyncSaveConfirmOpen(true);
+      return;
+    }
+
+    void performSaveConfig();
+  }, [
+    panelConnectorId,
+    connectorSchema,
+    formData.sync.customValues,
+    formData.filters.sync,
+    formData.filters.indexing,
+    mergeFormErrors,
+    performSaveConfig,
+    setSaveError,
+  ]);
+
+  const handleConfirmSyncSave = useCallback(() => {
+    setSyncSaveConfirmOpen(false);
+    void performSaveConfig();
+  }, [performSaveConfig]);
+
   const isAuthReady =
     authState === 'success' || isNoneAuthType(selectedAuthType);
 
@@ -735,6 +800,7 @@ export function ConnectorPanel() {
   ) : undefined;
 
   return (
+    <>
     <WorkspaceRightPanel
       open={isPanelOpen}
       onOpenChange={(open) => {
@@ -849,6 +915,22 @@ export function ConnectorPanel() {
         </Flex>
       )}
     </WorkspaceRightPanel>
+    <ConfirmationDialog
+      open={syncSaveConfirmOpen}
+      onOpenChange={setSyncSaveConfirmOpen}
+      container={connectorPanelNestedModalHost}
+      title={t('workspace.connectors.syncSaveConfirm.title')}
+      message={
+        syncSaveConfirmKind === 'manual'
+          ? t('workspace.connectors.syncSaveConfirm.manualMessage')
+          : t('workspace.connectors.syncSaveConfirm.wideSyncMessage')
+      }
+      confirmLabel={t('workspace.connectors.syncSaveConfirm.confirm')}
+      cancelLabel={t('workspace.connectors.syncSaveConfirm.cancel')}
+      confirmVariant="primary"
+      onConfirm={handleConfirmSyncSave}
+    />
+    </>
   );
 }
 

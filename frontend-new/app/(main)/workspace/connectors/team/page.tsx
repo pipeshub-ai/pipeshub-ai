@@ -20,6 +20,7 @@ import {
   ConfigSuccessDialog,
 } from '../components';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
+import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
 
 // ========================================
@@ -321,12 +322,7 @@ function TeamConnectorsPageContent() {
   }, [connectorTypeInfo, registryConnectors, openPanel]);
 
   const handleOpenDocs = useCallback(() => {
-    // Try config.documentationLinks first, then fall back to connectorInfo
-    const configObj = connectorTypeInfo?.config as Record<string, unknown> | undefined;
-    const docLinks = configObj?.documentationLinks as { url?: string }[] | undefined;
-    const docUrl =
-      docLinks?.[0]?.url ??
-      (connectorTypeInfo?.connectorInfo?.documentationUrl as string | undefined);
+    const docUrl = getConnectorDocumentationUrl(connectorTypeInfo);
     if (docUrl) {
       window.open(docUrl, '_blank', 'noopener,noreferrer');
     }

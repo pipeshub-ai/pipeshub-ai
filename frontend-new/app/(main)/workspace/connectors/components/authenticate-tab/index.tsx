@@ -23,6 +23,7 @@ import {
   readAuthValueFromFlatRecord,
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
+import { getConnectorInfoText } from '../../utils/connector-metadata';
 import { useTranslation } from 'react-i18next';
 
 export function AuthenticateTab() {
@@ -35,6 +36,7 @@ export function AuthenticateTab() {
     panelConnector,
     panelConnectorId,
     connectorConfig,
+    registryConnectors,
     selectedAuthType,
     isAuthTypeImmutable: _isAuthTypeImmutable,
     formData,
@@ -47,6 +49,13 @@ export function AuthenticateTab() {
   const { t } = useTranslation();
 
   const isCreateMode = !panelConnectorId;
+
+  const connectorInfoText = useMemo(() => {
+    const ty = panelConnector?.type;
+    if (!ty) return null;
+    const fromRegistry = registryConnectors.find((c) => c.type === ty);
+    return getConnectorInfoText(fromRegistry ?? panelConnector);
+  }, [registryConnectors, panelConnector]);
 
   const currentSchemaFields = useMemo(
     () => resolveAuthFields(connectorSchema?.auth, selectedAuthType),
@@ -363,6 +372,31 @@ export function AuthenticateTab() {
 
   return (
     <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
+      {connectorInfoText ? (
+        <Box
+          style={{
+            padding: 'var(--space-4)',
+            borderRadius: 'var(--radius-3)',
+            border: '1px solid var(--accent-a6)',
+            backgroundColor: 'var(--accent-a2)',
+          }}
+        >
+          <Flex align="start" gap="3">
+            <MaterialIcon name="info" size={20} color="var(--accent-11)" style={{ flexShrink: 0 }} />
+            <Text
+              size="2"
+              style={{
+                color: 'var(--gray-12)',
+                lineHeight: 1.6,
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {connectorInfoText}
+            </Text>
+          </Flex>
+        </Box>
+      ) : null}
+
       {docLinks.length > 0 && (
         <DocumentationSection links={docLinks} connectorType={panelConnector.type} />
       )}

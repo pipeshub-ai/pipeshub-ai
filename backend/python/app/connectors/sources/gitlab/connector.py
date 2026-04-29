@@ -52,6 +52,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.sources.gitlab.common.apps import GitLabApp
 from app.models.blocks import (
     Block,
@@ -204,6 +205,7 @@ class GitlabLiterals(str, Enum):
             )
         ]
     )
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
     .configure(
         lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.GITLAB.value))
