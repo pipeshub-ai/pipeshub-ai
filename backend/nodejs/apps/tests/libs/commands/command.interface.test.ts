@@ -208,12 +208,14 @@ describe('command.interface', () => {
       expect(result).to.have.property('x-is-admin', 'true')
     })
 
-    it('should keep x-oauth-user-id header', () => {
+    it('should strip x-oauth-user-id header (not an allowed forward header)', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({
         'x-oauth-user-id': 'user-abc',
+        authorization: 'Bearer tok',
       })
-      expect(result).to.have.property('x-oauth-user-id', 'user-abc')
+      expect(result).to.not.have.property('x-oauth-user-id')
+      expect(result).to.have.property('authorization', 'Bearer tok')
     })
 
     it('should remove headers that are not in the allowed set', () => {

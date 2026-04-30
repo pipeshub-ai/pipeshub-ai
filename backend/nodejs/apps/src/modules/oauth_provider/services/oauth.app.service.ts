@@ -37,21 +37,13 @@ export class OAuthAppService {
     private scopeValidatorService: ScopeValidatorService,
   ) {}
 
-  private buildAppFilter(
-    orgId: string,
-    userId: string,
-    isAdmin: boolean,
-  ): Record<string, unknown> {
-    const filter: Record<string, unknown> = {
+  /** Every org member (including org admins) only sees OAuth apps they created. */
+  private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
+    return {
       orgId: new Types.ObjectId(orgId),
       isDeleted: false,
+      createdBy: new Types.ObjectId(userId),
     }
-
-    if (!isAdmin) {
-      filter.createdBy = new Types.ObjectId(userId)
-    }
-
-    return filter
   }
 
   /**
@@ -122,11 +114,11 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -165,14 +157,14 @@ export class OAuthAppService {
   async listApps(
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
     query: ListAppsQuery,
   ): Promise<PaginatedResponse<OAuthAppResponse>> {
     const page = query.page || 1
     const limit = query.limit || 20
     const skip = (page - 1) * limit
 
-    const filter: Record<string, unknown> = this.buildAppFilter(orgId, userId, isAdmin)
+    const filter: Record<string, unknown> = this.buildAppFilter(orgId, userId)
 
     if (query.status) {
       filter.status = { $eq: query.status }
@@ -219,7 +211,7 @@ export class OAuthAppService {
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -285,11 +277,11 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
   ): Promise<void> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -297,6 +289,7 @@ export class OAuthAppService {
     }
 
     app.isDeleted = true
+    app.deletedBy = new Types.ObjectId(userId)
     app.status = OAuthAppStatus.REVOKED
     await app.save()
 
@@ -314,11 +307,11 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
   ): Promise<OAuthAppWithSecret> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -347,11 +340,11 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -380,11 +373,11 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    isAdmin: boolean,
+    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId, isAdmin),
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {

@@ -122,10 +122,10 @@ async def isJwtTokenValid(request: Request) -> dict:
                 payload["isOAuth"] = True
                 payload["oauthScopes"] = payload.get("scope", "").split(" ")
                 payload["oauthClientId"] = payload.get("client_id")
-                # For client_credentials grants, use the resolved userId from header
-                oauth_user_id = request.headers.get("x-oauth-user-id")
-                if oauth_user_id:
-                    payload["userId"] = oauth_user_id
+                uid = payload.get("userId")
+                cid = payload.get("client_id")
+                if uid is not None and cid is not None and uid == cid:
+                    raise credentials_exception
 
             return payload
 

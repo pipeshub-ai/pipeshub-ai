@@ -101,6 +101,7 @@ describe('OAuthTokenService - branch coverage', () => {
         clientId: 'client-1',
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
+        createdBy: new Types.ObjectId(),
       } as any
 
       const result = await service.generateTokens(app, null, VALID_ORG_ID, ['offline_access'], true)
@@ -124,20 +125,21 @@ describe('OAuthTokenService - branch coverage', () => {
       expect(result.refreshToken).to.be.undefined
     })
 
-    it('should use clientId as userId when userId is null (client_credentials)', async () => {
+    it('should use app creator as JWT userId when userId is null (client_credentials)', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
 
+      const creator = new Types.ObjectId()
       const app = {
         clientId: 'client-1',
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
+        createdBy: creator,
       } as any
 
       const result = await service.generateTokens(app, null, VALID_ORG_ID, ['user:read'], false)
 
-      // Verify the token payload has userId = clientId
       const decoded = jwt.decode(result.accessToken) as any
-      expect(decoded.userId).to.equal('client-1')
+      expect(decoded.userId).to.equal(creator.toString())
     })
 
     it('should include fullName and accountType when provided', async () => {

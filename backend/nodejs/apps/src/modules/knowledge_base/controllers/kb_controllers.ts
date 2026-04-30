@@ -2818,9 +2818,6 @@ export const getRecordBuffer =
         Authorization: req.headers.authorization as string,
         'Content-Type': 'application/json',
       };
-      if (req.headers['x-oauth-user-id']) {
-        headers['x-oauth-user-id'] = req.headers['x-oauth-user-id'] as string;
-      }
 
       // Make request to FastAPI backend
       const response = await axios.get(

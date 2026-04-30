@@ -195,6 +195,60 @@ describe('OAuthAppService', () => {
         expect(error).to.be.instanceOf(InvalidRedirectUriError)
       }
     })
+
+    it('should call getAllowedScopeNamesForRole(true) when creating as org admin', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(),
+        slug: 't',
+        clientId: 'cid',
+        name: 'T',
+        redirectUris: ['https://example.com/cb'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        allowedScopes: ['org:read'],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, true, {
+        name: 'T',
+        allowedScopes: ['org:read'],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      expect(mockScopeValidatorService.getAllowedScopeNamesForRole.calledWith(true)).to.be.true
+    })
+
+    it('should call getAllowedScopeNamesForRole(false) when creating as non-admin member', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(),
+        slug: 't',
+        clientId: 'cid',
+        name: 'T',
+        redirectUris: ['https://example.com/cb'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        allowedScopes: ['org:read'],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, false, {
+        name: 'T',
+        allowedScopes: ['org:read'],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      expect(mockScopeValidatorService.getAllowedScopeNamesForRole.calledWith(false)).to.be.true
+    })
   })
 
   describe('getAppById', () => {
@@ -228,6 +282,28 @@ describe('OAuthAppService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
       }
+    })
+
+    it('should include createdBy in findOne filter for non-admin', async () => {
+      const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
+      try {
+        await service.getAppById(fakeAppId, fakeOrgId, fakeUserId, false)
+      } catch {
+        // expected NotFoundError
+      }
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+
+    it('should include createdBy in findOne filter for org admin (creator-only visibility)', async () => {
+      const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
+      try {
+        await service.getAppById(fakeAppId, fakeOrgId, fakeUserId, true)
+      } catch {
+        // expected NotFoundError
+      }
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
 
@@ -347,6 +423,41 @@ describe('OAuthAppService', () => {
       expect(result.pagination.page).to.equal(1)
       expect(result.pagination.limit).to.equal(20)
     })
+
+    it('should restrict listApps to apps created by the user when not org admin', async () => {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
+      const countStub = sinon.stub(OAuthApp, 'countDocuments').resolves(0)
+
+      await service.listApps(fakeOrgId, fakeUserId, false, {})
+
+      const expectedCreatedBy = new Types.ObjectId(fakeUserId)
+      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      const countFilter = countStub.firstCall.args[0] as Record<string, unknown>
+      expect(findFilter.createdBy).to.deep.equal(expectedCreatedBy)
+      expect(countFilter.createdBy).to.deep.equal(expectedCreatedBy)
+    })
+
+    it('should set createdBy on listApps filter when caller is org admin (same as members)', async () => {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
+      sinon.stub(OAuthApp, 'countDocuments').resolves(0)
+
+      await service.listApps(fakeOrgId, fakeUserId, true, {})
+
+      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(findFilter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
   })
 
   describe('updateApp', () => {
@@ -407,6 +518,54 @@ describe('OAuthAppService', () => {
       await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, true, { allowedScopes: ['org:read'] })
       expect(mockScopeValidatorService.validateRequestedScopes.calledOnce).to.be.true
     })
+
+    it('should pass isAdmin to scope allow-list when updating allowedScopes', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        slug: 'test',
+        clientId: 'cid',
+        name: 'Test',
+        redirectUris: [],
+        allowedGrantTypes: [],
+        allowedScopes: [],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+
+      await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { allowedScopes: ['org:read'] })
+      expect(mockScopeValidatorService.getAllowedScopeNamesForRole.calledWith(false)).to.be.true
+    })
+
+    it('should apply createdBy to findOne when non-admin updates an app', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        slug: 'test',
+        clientId: 'cid',
+        name: 'Test',
+        redirectUris: [],
+        allowedGrantTypes: [],
+        allowedScopes: [],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        save: sinon.stub().resolves(),
+      }
+      const findStub = sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+
+      await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { name: 'X' })
+
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
   })
 
   describe('deleteApp', () => {
@@ -421,6 +580,7 @@ describe('OAuthAppService', () => {
 
       await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(mockApp.isDeleted).to.be.true
+      expect(mockApp.deletedBy).to.deep.equal(new Types.ObjectId(fakeUserId))
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
       expect(mockApp.save.calledOnce).to.be.true
     })

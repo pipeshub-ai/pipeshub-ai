@@ -74,12 +74,19 @@ tags:
       OAuth apps allow third-party applications to access PipesHub APIs on behalf of users
       or organizations. Each app receives a client ID and secret for authentication.
 
+      **Who can see which apps**
+      - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
+
+      **Scopes**
+      - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
+      - **Org admins** may register apps that request additional **admin-only** scopes; non-admins cannot select those scopes when creating or updating an app.
+
       **App Types:**
       - **Confidential clients**: Server-side apps that can securely store secrets
       - **Public clients**: Browser/mobile apps that cannot securely store secrets (use PKCE)
 
       **App Lifecycle:**
-      - Create apps with name, redirect URIs, and allowed scopes
+      - Create apps with name, redirect URIs, allowed scopes, and optional URLs (homepage, privacy, terms)
       - Regenerate secrets if compromised
       - Suspend/activate apps to control access
       - Revoke all tokens for emergency access removal
@@ -1418,10 +1425,6 @@ components:
           type: string
           enum: [active, suspended, revoked]
           description: App status
-        logoUrl:
-          type: string
-          format: uri
-          description: App logo URL
         homepageUrl:
           type: string
           format: uri
@@ -5979,6 +5982,8 @@ paths:
         Initiates the authorization code flow. Users are redirected here by OAuth clients
         to authorize access to their account.
         <br><br>
+        **Only the user who registered the OAuth application** (the app creator) may complete consent for that `client_id`; other signed-in users receive `access_denied`.
+        <br><br>
         <b>Flow:</b><br>
         1. Client redirects user to this endpoint with required parameters<br>
         2. If not logged in, user is redirected to PipesHub login<br>
@@ -6129,6 +6134,8 @@ paths:
         - `authorization_code`: Exchange auth code for tokens (user-based)<br>
         - `client_credentials`: Get tokens for machine-to-machine auth<br>
         - `refresh_token`: Get new access token using refresh token
+        <br><br>
+        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client), not an arbitrary header-supplied user.
         <br><br>
         <b>Client Authentication:</b><br>
         Can be provided via:<br>
@@ -6484,13 +6491,15 @@ paths:
         - OAuth Apps
       summary: List OAuth apps
       description: |
-        List all OAuth apps registered for the organization.
+        List OAuth apps visible to the signed-in user for the organization.
+        <br><br>
+        Returns only apps **created by** the signed-in user (including when that user is an org admin).
         <br><br>
         Returns a paginated list of apps with their configuration (excluding secrets).
         <br><br>
         <b>Filters:</b><br>
         - `status` - Filter by app status (active, suspended, revoked)<br>
-        - `search` - Search by app name
+        - `search` - Search by app name or description
       operationId: listOAuthApps
       security:
         - bearerAuth: []
@@ -6520,7 +6529,7 @@ paths:
           in: query
           schema:
             type: string
-          description: Search by app name
+          description: Search by app name or description (case-insensitive)
       responses:
         '200':
           description: List of OAuth apps
@@ -6531,7 +6540,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — insufficient workspace permission to list OAuth apps
         '429':
           description: Rate limit exceeded
 
@@ -6540,13 +6549,13 @@ paths:
         - OAuth Apps
       summary: Create OAuth app
       description: |
-        Create a new OAuth app for the organization.
+        Create a new OAuth app for the organization (any authenticated org member may create apps).
         <br><br>
         <b>Important:</b> The client secret is only returned once during creation.
         Store it securely - it cannot be retrieved later. If lost, you'll need to
         regenerate it.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        <b>Scopes:</b> `allowedScopes` must be a subset of scopes returned by `GET /oauth-clients/scopes` for your role (org admins may include additional admin-only scopes).
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: createOAuthApp
@@ -6571,7 +6580,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — insufficient workspace permission to create OAuth apps
         '429':
           description: Rate limit exceeded
 
@@ -6581,10 +6590,11 @@ paths:
         - OAuth Apps
       summary: List available scopes
       description: |
-        List all available OAuth scopes that can be requested by apps.
+        List OAuth scopes that the signed-in user may register on new or updated apps, grouped by category.
         <br><br>
-        Returns scope names, descriptions, and categories for display
-        in app configuration UI.
+        The set is **role-aware**: org admins see additional admin-only scopes; non-admins see the member scope set.
+        <br><br>
+        Returns scope names, descriptions, categories, and consent flags for the developer-settings UI.
       operationId: listOAuthScopes
       security:
         - bearerAuth: []
@@ -6615,7 +6625,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — insufficient permission to list OAuth scopes in this workspace
         '429':
           description: Rate limit exceeded
 
@@ -6625,7 +6635,7 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Get details of a specific OAuth app.
+        Get details of a specific OAuth app you may access (**org admin** or **creator** of the app).
         <br><br>
         Returns app configuration without the client secret.
       operationId: getOAuthApp
@@ -6649,9 +6659,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6660,9 +6670,9 @@ paths:
         - OAuth Apps
       summary: Update OAuth app
       description: |
-        Update an OAuth app's configuration.
+        Update an OAuth app's configuration (**org admin** or **creator**).
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        <b>Scopes:</b> When changing `allowedScopes`, values must remain allowed for your role (same rules as `GET /oauth-clients/scopes`).
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
         <br><br>
@@ -6698,9 +6708,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6709,12 +6719,10 @@ paths:
         - OAuth Apps
       summary: Delete OAuth app
       description: |
-        Delete (soft delete) an OAuth app.
+        Delete (soft delete) an OAuth app (**org admin** or **creator**).
         <br><br>
         This marks the app as deleted and revokes all its tokens.
         The app cannot be restored after deletion.
-        <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: deleteOAuthApp
@@ -6742,9 +6750,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6761,7 +6769,7 @@ paths:
         <br><br>
         <b>Important:</b> The new secret is only returned once. Store it securely.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        Caller must be **org admin** or **creator** of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: regenerateOAuthAppSecret
@@ -6785,9 +6793,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6802,7 +6810,7 @@ paths:
         Existing tokens remain valid until they expire, but no new tokens can
         be obtained. Use this for temporary access suspension.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        Caller must be **org admin** or **creator** of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: suspendOAuthApp
@@ -6826,9 +6834,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6840,7 +6848,7 @@ paths:
       description: |
         Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        Caller must be **org admin** or **creator** of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: activateOAuthApp
@@ -6864,9 +6872,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6880,7 +6888,7 @@ paths:
         <br><br>
         Useful for monitoring app usage and identifying tokens to revoke.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        Caller must be **org admin** or **creator** of the app.
       operationId: listOAuthAppTokens
       security:
         - bearerAuth: []
@@ -6904,9 +6912,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6920,7 +6928,7 @@ paths:
         <br><br>
         Use this for emergency access removal or when rotating credentials.
         <br><br>
-        <b>Admin Only:</b> Requires admin privileges.
+        Caller must be **org admin** or **creator** of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: revokeAllOAuthAppTokens
@@ -6951,9 +6959,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Admin privileges required
+          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
         '404':
-          description: OAuth app not found
+          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
         '429':
           description: Rate limit exceeded
 

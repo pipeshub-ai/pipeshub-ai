@@ -9,7 +9,6 @@ import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema'
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
-import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 
 // ---------------------------------------------------------------------------
@@ -362,7 +361,7 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
-    it('should resolve userId from createdBy for client_credentials token', async () => {
+    it('should reject deprecated OAuth JWTs where userId equals client_id', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -370,83 +369,13 @@ describe('AuthMiddleware', () => {
       })
 
       mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'client123', // same as client_id -> client_credentials
+        userId: 'client123',
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
         createdBy: 'real-owner-id',
       })
 
-      const userQuery = createMockQuery({ email: 'owner@example.com', fullName: 'Owner' })
-      sinon.stub(Users, 'findOne').returns(userQuery)
-
-      const orgQuery = createMockQuery({ accountType: 'enterprise' })
-      sinon.stub(Org, 'findOne').returns(orgQuery)
-
-      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await authMiddleware.authenticate(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
-      expect(req.user.userId).to.equal('real-owner-id')
-      expect(req.headers['x-oauth-user-id']).to.equal('real-owner-id')
-    })
-
-    it('should fallback to OAuthApp lookup when createdBy is not in payload', async () => {
-      sinon.stub(jwt, 'decode').returns({
-        tokenType: 'oauth',
-        client_id: 'client123',
-        iss: 'https://example.com',
-      })
-
-      mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'client123',
-        orgId: 'org1',
-        client_id: 'client123',
-        scope: 'kb:read',
-        // no createdBy
-      })
-
-      const appQuery = createMockQuery({ createdBy: { toString: () => 'app-owner-id' } })
-      sinon.stub(OAuthApp, 'findOne').returns(appQuery)
-
-      const userQuery = createMockQuery({ email: 'appowner@example.com', fullName: 'App Owner' })
-      sinon.stub(Users, 'findOne').returns(userQuery)
-
-      const orgQuery = createMockQuery({ accountType: 'business' })
-      sinon.stub(Org, 'findOne').returns(orgQuery)
-
-      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await authMiddleware.authenticate(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
-      expect(req.user.userId).to.equal('app-owner-id')
-    })
-
-    it('should throw UnauthorizedError when OAuthApp not found for client_credentials', async () => {
-      sinon.stub(jwt, 'decode').returns({
-        tokenType: 'oauth',
-        client_id: 'client123',
-        iss: 'https://example.com',
-      })
-
-      mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'client123',
-        orgId: 'org1',
-        client_id: 'client123',
-        scope: 'kb:read',
-      })
-
-      const appQuery = createMockQuery(null) // app not found
-      sinon.stub(OAuthApp, 'findOne').returns(appQuery)
-
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -456,10 +385,10 @@ describe('AuthMiddleware', () => {
       expect(next.calledOnce).to.be.true
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(UnauthorizedError)
-      expect(error.message).to.equal('Failed to look up OAuth app owner')
+      expect(error.message).to.equal('Invalid or expired token')
     })
 
-    it('should throw UnauthorizedError when OAuthApp DB lookup fails', async () => {
+    it('should throw UnauthorizedError when Org lookup fails for OAuth token', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -467,41 +396,10 @@ describe('AuthMiddleware', () => {
       })
 
       mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'client123',
+        userId: 'owner-id',
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
-      })
-
-      const appQuery = createMockQuery(null)
-      appQuery.exec.rejects(new Error('DB failure'))
-      sinon.stub(OAuthApp, 'findOne').returns(appQuery)
-
-      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await authMiddleware.authenticate(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const error = next.firstCall.args[0]
-      expect(error).to.be.instanceOf(UnauthorizedError)
-      expect(error.message).to.equal('Failed to look up OAuth app owner')
-    })
-
-    it('should throw UnauthorizedError when Org lookup fails for client_credentials', async () => {
-      sinon.stub(jwt, 'decode').returns({
-        tokenType: 'oauth',
-        client_id: 'client123',
-        iss: 'https://example.com',
-      })
-
-      mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'client123',
-        orgId: 'org1',
-        client_id: 'client123',
-        scope: 'kb:read',
-        createdBy: 'owner-id',
         // accountType not set
       })
 

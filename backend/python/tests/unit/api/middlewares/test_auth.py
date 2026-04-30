@@ -363,10 +363,10 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_client_credentials_with_user_id_header(
+    async def test_oauth_deprecated_user_id_equals_client_id_raises_401(
         self, mock_jwt_decode, mock_get_config
     ):
-        """Client credentials grant uses x-oauth-user-id header for userId."""
+        """Deprecated OAuth JWTs used client_id as userId; reject (re-issue after revocation)."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -375,20 +375,17 @@ class TestIsJwtTokenValid:
         mock_get_config.return_value = mock_config_service
 
         mock_jwt_decode.return_value = {
-            "userId": "original-user",
+            "userId": "client-xyz",
             "tokenType": "oauth",
             "scope": "admin",
             "client_id": "client-xyz",
+            "createdBy": "owner-from-jwt",
         }
 
-        request = _make_fake_request(
-            authorization="Bearer oauth.jwt.token",
-            extra_headers={"x-oauth-user-id": "resolved-user-42"},
-        )
-        result = await isJwtTokenValid(request)
-
-        assert result["isOAuth"] is True
-        assert result["userId"] == "resolved-user-42"
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        with pytest.raises(HTTPException) as exc_info:
+            await isJwtTokenValid(request)
+        assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
@@ -453,7 +450,7 @@ class TestIsJwtTokenValid:
     async def test_oauth_token_without_x_oauth_user_id_header(
         self, mock_jwt_decode, mock_get_config
     ):
-        """OAuth token without x-oauth-user-id header keeps original userId."""
+        """OAuth token keeps JWT userId when subject is not legacy client_id shape."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",

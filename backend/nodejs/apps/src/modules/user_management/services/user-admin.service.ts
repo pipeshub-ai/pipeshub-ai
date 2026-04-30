@@ -1,4 +1,4 @@
-import { UserGroups } from '../schema/userGroup.schema';
+import { UserGroups, type UserGroup } from '../schema/userGroup.schema';
 
 export const isUserOrgAdmin = async (
   userId: string,
@@ -10,5 +10,5 @@ export const isUserOrgAdmin = async (
     isDeleted: false,
   }).select('type');
 
-  return groups.some((userGroup: any) => userGroup.type === 'admin');
+  return groups.some((userGroup: UserGroup) => userGroup.type === 'admin');
 };

@@ -33,6 +33,8 @@ export interface IOAuthApp extends Document {
   accessTokenLifetime: number
   refreshTokenLifetime: number
   isDeleted: boolean
+  /** User who performed the soft-delete (audit). */
+  deletedBy?: Types.ObjectId
   createdAt: Date
   updatedAt: Date
 }
@@ -107,6 +109,7 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     accessTokenLifetime: { type: Number, default: 3600 },
     refreshTokenLifetime: { type: Number, default: 2592000 },
     isDeleted: { type: Boolean, default: false },
+    deletedBy: { type: Schema.Types.ObjectId, ref: 'users' },
   },
   { timestamps: true },
 )
