@@ -3453,6 +3453,18 @@ components:
               items:
                 type: object
                 additionalProperties: true
+        webSearch:
+          type: object
+          nullable: true
+          description: Web search provider attached to this agent. Null when none is configured.
+          properties:
+            provider:
+              type: string
+              description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+          required:
+            - provider
+          example:
+            provider: "serper"
 
     AgentTemplate:
       type: object
@@ -15578,6 +15590,26 @@ paths:
                       items:
                         type: object
                         additionalProperties: true
+                webSearch:
+                  type: object
+                  nullable: true
+                  description: Web search provider to attach to the agent
+                  properties:
+                    provider:
+                      type: string
+                      description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+                    providerKey:
+                      type: string
+                      description: Stored provider document key (empty string for providers that don't require one)
+                    providerLabel:
+                      type: string
+                      description: Human-readable provider label (e.g. "DuckDuckGo")
+                  required:
+                    - provider
+                  example:
+                    provider: "duckduckgo"
+                    providerKey: ""
+                    providerLabel: "DuckDuckGo"
                 isPublic:
                   type: boolean
                   default: false
@@ -15806,6 +15838,26 @@ paths:
                       items:
                         type: object
                         additionalProperties: true
+                webSearch:
+                  type: object
+                  nullable: true
+                  description: Web search provider to attach to the agent
+                  properties:
+                    provider:
+                      type: string
+                      description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+                    providerKey:
+                      type: string
+                      description: Stored provider document key (empty string for providers that don't require one)
+                    providerLabel:
+                      type: string
+                      description: Human-readable provider label (e.g. "DuckDuckGo")
+                  required:
+                    - provider
+                  example:
+                    provider: "duckduckgo"
+                    providerKey: ""
+                    providerLabel: "DuckDuckGo"
                 isPublic:
                   type: boolean
                 shareWithOrg:

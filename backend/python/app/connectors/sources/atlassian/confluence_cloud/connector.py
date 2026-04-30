@@ -51,6 +51,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -176,7 +177,11 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             ),
         ])
     ])\
-    .with_info("⚠️ Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public.")\
+    .with_info(
+        "Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public."
+        + "\n\n"
+        + CONNECTOR_EMAIL_IDENTITY_INFO
+    )\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.CONFLUENCE.value))
         .with_realtime_support(False)

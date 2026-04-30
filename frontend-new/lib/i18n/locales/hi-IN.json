@@ -992,6 +992,7 @@
         "redirectPlaceholder": "https://yourapp.com/callback",
         "removeRedirectAria": "रीडायरेक्ट URI हटाएँ",
         "addRedirectUri": "रीडायरेक्ट URI जोड़ें",
+        "redirectUriLimitNote": "अधिकतम 10 रीडायरेक्ट URIs की अनुमति है।",
         "homepageLabel": "होम पेज URL",
         "privacyLabel": "गोपनीयता नीति URL",
         "termsLabel": "सेवा की शर्तें URL",
@@ -1075,6 +1076,7 @@
       "actionEdit": "संपादित करें",
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
       "actionDelete": "हटाएँ",
+      "moreOptions": "अधिक विकल्प",
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1496,6 +1498,13 @@
         "later": "I'll do it later",
         "startSync": "Start Syncing Now"
       },
+      "syncSaveConfirm": {
+        "title": "Start sync process?",
+        "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
+        "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
+        "confirm": "Start sync",
+        "cancel": "Cancel"
+      },
       "selectRecords": {
         "title": "Select Records",
         "loading": "Loading records…",
@@ -1664,6 +1673,7 @@
       "deleting": "Deleting...",
       "saving": "Saving...",
       "deleteConfirm": "Confirm Delete",
+      "confirmDelete": "हटाना पुष्टि करें",
       "deleteBot": "बॉट हटाएं",
       "typeLabels": {
         "slack": "Slack Bot",
@@ -1672,14 +1682,17 @@
         "github": "GitHub Bot"
       },
       "form": {
-        "editTitle": "Edit Slack Bot",
-        "newTitle": "New Slack Bot",
-        "namePlaceholder": "e.g. My Slack Bot",
-        "botToken": "Bot Token",
-        "signingSecret": "Signing Secret",
-        "signingSecretPlaceholder": "Enter signing secret",
-        "agent": "Agent",
-        "agentPlaceholder": "Select an agent"
+        "editTitle": "स्लैक बॉट संपादित करें",
+        "newTitle": "नया स्लैक बॉट",
+        "namePlaceholder": "उदा. मेरा स्लैक बॉट",
+        "botToken": "बॉट टोकन",
+        "signingSecret": "साइनिंग सीक्रेट",
+        "signingSecretPlaceholder": "साइनिंग सीक्रेट दर्ज करें",
+        "agent": "एजेंट",
+        "agentPlaceholder": "एक एजेंट चुनें",
+        "typeNameToConfirm": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
+        "deleteBotBodyLine1": "क्या आप वाकई {{name}} को हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
+        "deleteBotBodyLine2": "इस बॉट से जुड़ी सभी कॉन्फ़िगरेशन और क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।"
       }
     },
     "mail": {

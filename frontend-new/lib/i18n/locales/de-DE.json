@@ -989,6 +989,7 @@
         "redirectPlaceholder": "https://ihreapp.de/callback",
         "removeRedirectAria": "Redirect-URI entfernen",
         "addRedirectUri": "Redirect-URI hinzufügen",
+        "redirectUriLimitNote": "Maximal 10 Redirect-URIs erlaubt.",
         "homepageLabel": "Homepage-URL",
         "privacyLabel": "Datenschutzrichtlinien-URL",
         "termsLabel": "Nutzungsbedingungen-URL",
@@ -1072,6 +1073,7 @@
       "actionEdit": "Bearbeiten",
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
+      "moreOptions": "Weitere Optionen",
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1498,6 +1500,13 @@
         "later": "Ich mache das später",
         "startSync": "Jetzt Synchronisierung starten"
       },
+      "syncSaveConfirm": {
+        "title": "Synchronisationsprozess starten?",
+        "manualMessage": "Sie haben die manuelle Indexierung für diesen Connector aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
+        "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
+        "confirm": "Synchronisation starten",
+        "cancel": "Abbrechen"
+      },
       "selectRecords": {
         "title": "Datensätze auswählen",
         "loading": "Datensätze werden geladen…",
@@ -1666,6 +1675,7 @@
       "deleting": "Wird gelöscht...",
       "saving": "Wird gespeichert...",
       "deleteConfirm": "Löschen bestätigen",
+      "confirmDelete": "Löschen bestätigen",
       "deleteBot": "Bot löschen",
       "typeLabels": {
         "slack": "Slack-Bot",
@@ -1681,7 +1691,10 @@
         "signingSecret": "Signing Secret",
         "signingSecretPlaceholder": "Signing Secret eingeben",
         "agent": "Agent",
-        "agentPlaceholder": "Agent auswählen"
+        "agentPlaceholder": "Agent auswählen",
+        "typeNameToConfirm": "Geben Sie \"{{name}}\" ein, um zu bestätigen",
+        "deleteBotBodyLine1": "Möchten Sie {{name}} wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+        "deleteBotBodyLine2": "Alle Konfigurationen und Anmeldedaten dieses Bots werden dauerhaft entfernt."
       }
     },
     "mail": {

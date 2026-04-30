@@ -2,9 +2,10 @@
 
 import type { TFunction } from 'i18next';
 import React, { useMemo, useState } from 'react';
-import { Button, Flex, Text } from '@radix-ui/themes';
+import { Flex, Popover, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
@@ -176,6 +177,7 @@ function ConfiguredModelRow({
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
   const modelName =
     model.modelFriendlyName ||
     (model.configuration?.model as string) ||
@@ -248,94 +250,128 @@ function ConfiguredModelRow({
       </Flex>
 
       {!isBuiltinPlaceholder ? (
-        <Flex
-          align="center"
-          gap="1"
-          justify="end"
-          width={{ initial: '100%', sm: 'auto' }}
-          style={{
-            flexShrink: 0,
-          }}
-        >
-          
-          {!model.isDefault && (
-            <Button
-              variant="outline"
-              color="gray"
-              size="1"
-              loading={settingDefault}
-              disabled={settingDefault}
-              style={{ cursor: settingDefault ? 'default' : 'pointer', gap: 4 }}
-              onClick={async () => {
-                setSettingDefault(true);
-                try {
-                  await onSetDefault(mt, model.modelKey);
-                } finally {
-                  setSettingDefault(false);
-                }
+        <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <Popover.Trigger>
+            <button
+              type="button"
+              title={t('workspace.aiModels.moreOptions')}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                appearance: 'none',
+                margin: 0,
+                padding: 6,
+                border: 'none',
+                outline: 'none',
+                background: popoverOpen ? 'var(--gray-a3)' : 'transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 'var(--radius-2)',
+                flexShrink: 0,
               }}
             >
-              <MaterialIcon name="star_outline" size={14} color="var(--gray-11)" />
-              {t('workspace.aiModels.actionSetDefault')}
-            </Button>
-          )}
-          <IconBtn
-            icon="edit"
-            title={t('workspace.aiModels.actionEdit')}
-            disabled={!provider}
-            onClick={() => {
-              if (provider) onEdit(provider, capReg, model);
-            }}
-          />
-          <IconBtn
-            icon="delete"
-            title={t('workspace.aiModels.actionDelete')}
-            color="var(--red-9)"
-            onClick={() => onDelete(mt, model.modelKey, modelName)}
-          />
-        </Flex>
+              <MaterialIcon name="more_vert" size={18} color="var(--gray-11)" />
+            </button>
+          </Popover.Trigger>
+          <Popover.Content
+            side="bottom"
+            align="end"
+            style={{ padding: 4, minWidth: 160 }}
+          >
+            <Flex direction="column">
+              <PopoverMenuItem
+                icon="edit"
+                label={t('workspace.aiModels.actionEdit')}
+                disabled={!provider || settingDefault}
+                onClick={() => {
+                  setPopoverOpen(false);
+                  if (provider) onEdit(provider, capReg, model);
+                }}
+              />
+              {!model.isDefault && (
+                <PopoverMenuItem
+                  icon="star_outline"
+                  label={t('workspace.aiModels.actionSetDefault')}
+                  loading={settingDefault}
+                  onClick={async () => {
+                    setSettingDefault(true);
+                    try {
+                      await onSetDefault(mt, model.modelKey);
+                    } finally {
+                      setSettingDefault(false);
+                      setPopoverOpen(false);
+                    }
+                  }}
+                />
+              )}
+              <PopoverMenuItem
+                icon="delete"
+                label={t('workspace.aiModels.actionDelete')}
+                color="var(--red-9)"
+                disabled={!provider || settingDefault}
+                onClick={() => {
+                  setPopoverOpen(false);
+                  onDelete(mt, model.modelKey, modelName);
+                }}
+              />
+            </Flex>
+          </Popover.Content>
+        </Popover.Root>
       ) : null}
     </Flex>
   );
 }
 
-function IconBtn({
+function PopoverMenuItem({
   icon,
-  title,
+  label,
   onClick,
   color,
   disabled,
+  loading,
 }: {
   icon: string;
-  title: string;
-  onClick: () => void;
+  label: string;
+  onClick: () => void | Promise<void>;  
   color?: string;
   disabled?: boolean;
+  loading?: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      title={title}
-      disabled={disabled}
+      disabled={disabled || loading}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
       }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         appearance: 'none',
-        margin: 0,
-        padding: 8,
         border: 'none',
         outline: 'none',
-        background: 'transparent',
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        background: hovered && !disabled && !loading ? 'var(--gray-a3)' : 'transparent',
+        cursor: disabled || loading ? 'default' : 'pointer',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        opacity: disabled ? 0.35 : 1,
+        gap: 8,
+        padding: '7px 10px',
+        borderRadius: 'var(--radius-2)',
+        width: '100%',
+        opacity: disabled ? 0.4 : 1,
       }}
     >
-      <MaterialIcon name={icon} size={18} color={color ?? 'var(--gray-11)'} />
+      {loading ? (
+        <Spinner size={16} color={color ?? 'var(--gray-11)'} />
+      ) : (
+        <MaterialIcon name={icon} size={16} color={color ?? 'var(--gray-11)'} />
+      )}
+      <Text size="2" style={{ color: color ?? 'var(--gray-12)' }}>
+        {label}
+      </Text>
     </button>
   );
 }

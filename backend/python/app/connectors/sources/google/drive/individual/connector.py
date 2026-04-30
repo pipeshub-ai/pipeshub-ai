@@ -41,6 +41,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -115,6 +116,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             }
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.GOOGLE_DRIVE.value))
         .with_realtime_support(True)

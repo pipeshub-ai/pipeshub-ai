@@ -102,3 +102,10 @@ class ConnectorStateKeys:
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
+
+
+CONNECTOR_EMAIL_IDENTITY_INFO = (
+    "This connector identifies users by email. Each person should sign in to the platform "
+    "with the same address they use in the connected app, so only their own data and access "
+    "rules apply. Different emails can mean missing content."
+)

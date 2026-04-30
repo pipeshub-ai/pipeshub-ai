@@ -50,6 +50,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -186,6 +187,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
             token_access_type="offline"
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.DROPBOX.value))
         .with_realtime_support(True)
