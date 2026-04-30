@@ -283,7 +283,7 @@ function ConfiguredModelRow({
               <PopoverMenuItem
                 icon="edit"
                 label={t('workspace.aiModels.actionEdit')}
-                disabled={!provider}
+                disabled={!provider || settingDefault}
                 onClick={() => {
                   setPopoverOpen(false);
                   if (provider) onEdit(provider, capReg, model);
@@ -309,6 +309,7 @@ function ConfiguredModelRow({
                 icon="delete"
                 label={t('workspace.aiModels.actionDelete')}
                 color="var(--red-9)"
+                disabled={!provider || settingDefault}
                 onClick={() => {
                   setPopoverOpen(false);
                   onDelete(mt, model.modelKey, modelName);
