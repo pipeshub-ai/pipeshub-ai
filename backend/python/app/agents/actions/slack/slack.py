@@ -129,7 +129,7 @@ def _slack_ts_to_iso(ts: Any) -> Optional[str]:  # noqa: ANN401
     return dt.isoformat().replace("+00:00", "Z")
 
 _EPOCH_FIELDS_ON_MESSAGE = ("ts", "thread_ts", "latest_reply", "last_read")
-_EPOCH_FIELDS_ON_CONVERSATION = ("created", "last_read", "unread_count_display")
+_EPOCH_FIELDS_ON_CONVERSATION = ("created", "last_read")
 _EPOCH_FIELDS_ON_FILE = ("created", "timestamp", "updated")
 _EPOCH_FIELDS_ON_PIN_ITEM = ("created",)
 _EPOCH_FIELDS_ON_SCHEDULED = ("post_at", "date_created")
@@ -169,7 +169,7 @@ class GetChannelHistoryInput(BaseModel):
             "Start of time range as an ISO 8601 date or datetime string. "
             "Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z', "
             "'2026-04-30T14:30:00+05:30'. Naive datetimes are interpreted as UTC. "
-            "Pair with 'latest' for an explicit end"
+            "Pair with 'latest' for an explicit end bound, "
             "otherwise omit 'latest' to mean 'up to now'."
         ),
     )
@@ -227,7 +227,7 @@ class GetDmHistoryInput(BaseModel):
             "Start of time range as an ISO 8601 date or datetime string. "
             "Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z', "
             "'2026-04-30T14:30:00+05:30'. Naive datetimes are interpreted as UTC. "
-            "Pair with 'latest' for an explicit end"
+            "Pair with 'latest' for an explicit end bound, "
             "otherwise omit 'latest' to mean 'up to now'."
         ),
     )
@@ -486,7 +486,7 @@ class GetThreadRepliesInput(BaseModel):
         default=None,
         description=(
             "End of time range (inclusive of newer replies) as an ISO 8601 "
-            "date or datetime string. Same format as 'oldest'."
+            "date or datetime string. Same format as 'oldest'. "
             "Omit to fetch up to the current time."
         ),
     )
@@ -611,6 +611,10 @@ class Slack:
 
         self._user_cache: Dict[str, Dict[str, Optional[str]]] = {}
         self._channel_cache: Dict[str, str] = {}
+        # Shared across user + channel resolvers so a parallel
+        # _enrich_messages gather can't double the effective burst against
+        # Slack's per-method tier limits.
+        self._lookup_sem = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
 
     def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         """Handle Slack API response and convert to standardized format.
@@ -1684,7 +1688,7 @@ class Slack:
             "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' (and "
             "optionally 'latest') to ISO 8601 dates or datetimes — for example "
             "'2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes are treated as "
-            "UTC."
+            "UTC. "
             "Use for any 'DM' / 'personal chat' / '1:1 with X' request;"
         ),
     )
@@ -3195,81 +3199,16 @@ class Slack:
                 # File-typed reaction: collect uploader + reaction users
                 file_obj = enriched.get('file')
                 if isinstance(file_obj, dict):
-                    ids: set = set()
-                    fu = file_obj.get('user')
-                    if _is_user_id(fu):
-                        ids.add(fu)
-                    for r in (file_obj.get('reactions') or []):
-                        if isinstance(r, dict):
-                            for u in (r.get('users') or []):
-                                if _is_user_id(u):
-                                    ids.add(u)
-                    if ids:
-                        resolved = await self._resolve_user_ids(ids)
-                        id_to_name = {
-                            uid: info['display_name']
-                            for uid, info in resolved.items()
-                            if info.get('display_name')
-                        }
-                        new_file = dict(file_obj)
-                        if isinstance(fu, str) and fu in id_to_name:
-                            new_file['user_display_name'] = id_to_name[fu]
-                        new_reactions = []
-                        for r in (new_file.get('reactions') or []):
-                            if isinstance(r, dict):
-                                new_r = dict(r)
-                                user_list = new_r.get('users')
-                                if isinstance(user_list, list):
-                                    new_r['user_display_names'] = [
-                                        id_to_name.get(u, u) for u in user_list if isinstance(u, str)
-                                    ]
-                                new_reactions.append(new_r)
-                            else:
-                                new_reactions.append(r)
-                        if new_file.get('reactions') is not None:
-                            new_file['reactions'] = new_reactions
-                        enriched['file'] = new_file
+                    enriched['file'] = await self._enrich_reactable(file_obj)
                 # File-comment reaction: comment has user + reactions
                 comment = enriched.get('file_comment') or enriched.get('comment')
                 if isinstance(comment, dict):
-                    ids2: set = set()
-                    cu = comment.get('user')
-                    if _is_user_id(cu):
-                        ids2.add(cu)
-                    for r in (comment.get('reactions') or []):
-                        if isinstance(r, dict):
-                            for u in (r.get('users') or []):
-                                if _is_user_id(u):
-                                    ids2.add(u)
-                    if ids2:
-                        resolved2 = await self._resolve_user_ids(ids2)
-                        id_to_name2 = {
-                            uid: info['display_name']
-                            for uid, info in resolved2.items()
-                            if info.get('display_name')
-                        }
-                        new_comment = dict(comment)
-                        if isinstance(cu, str) and cu in id_to_name2:
-                            new_comment['user_display_name'] = id_to_name2[cu]
-                        new_comment_reactions = []
-                        for r in (new_comment.get('reactions') or []):
-                            if isinstance(r, dict):
-                                new_r = dict(r)
-                                user_list = new_r.get('users')
-                                if isinstance(user_list, list):
-                                    new_r['user_display_names'] = [
-                                        id_to_name2.get(u, u) for u in user_list if isinstance(u, str)
-                                    ]
-                                new_comment_reactions.append(new_r)
-                            else:
-                                new_comment_reactions.append(r)
-                        if new_comment.get('reactions') is not None:
-                            new_comment['reactions'] = new_comment_reactions
-                        # Write back under whichever key it was loaded from
-                        if 'file_comment' in enriched:
-                            enriched['file_comment'] = new_comment
-                        else:
-                            enriched['comment'] = new_comment
+                    new_comment = await self._enrich_reactable(comment)
+                    # Write back under whichever key it was loaded from
+                    if 'file_comment' in enriched:
+                        enriched['file_comment'] = new_comment
+                    else:
+                        enriched['comment'] = new_comment
                 return (True, SlackResponse(success=True, data=enriched).to_json())
             except Exception as enrichment_err:
                 logger.debug(f"Reactions enrichment failed: {enrichment_err}")
@@ -3766,10 +3705,8 @@ class Slack:
         missing = [uid for uid in user_ids if uid not in self._user_cache]
 
         if missing:
-            sem = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
-
-            async def _fetch_one(uid: str) -> Tuple[str, Dict[str, Optional[str]]]:
-                async with sem:
+            async def _fetch_one(uid: str) -> Tuple[str, Optional[Dict[str, Optional[str]]]]:
+                async with self._lookup_sem:
                     try:
                         uresp = await self.client.users_info(user=uid)
                         u = self._handle_slack_response(uresp)
@@ -3789,14 +3726,21 @@ class Slack:
                             }
                     except Exception as e:
                         logger.debug(f"users_info failed for {uid}: {e}")
-                # Fallback so callers always get a usable label
-                return uid, {'display_name': uid, 'real_name': None, 'email': None}
+
+                return uid, None
 
             results = await asyncio.gather(*(_fetch_one(uid) for uid in missing))
             for uid, info in results:
-                self._user_cache[uid] = info
+                if info is not None:
+                    self._user_cache[uid] = info
 
-        return {uid: self._user_cache[uid] for uid in user_ids if uid in self._user_cache}
+        # Fall back at read time so callers always get a usable label,
+        # but the next call gets a chance to actually resolve the ID.
+        fallback = {'display_name': None, 'real_name': None, 'email': None}
+        return {
+            uid: self._user_cache.get(uid, {**fallback, 'display_name': uid})
+            for uid in user_ids
+        }
 
     async def _resolve_channel_ids(self, channel_ids: set) -> Dict[str, str]:
         """Bulk-resolve Slack channel IDs (C…/G…/D…) to display names.
@@ -3810,10 +3754,8 @@ class Slack:
             return {}
         missing = [cid for cid in channel_ids if cid not in self._channel_cache]
         if missing:
-            sem = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
-
-            async def _fetch_one(cid: str) -> Tuple[str, str]:
-                async with sem:
+            async def _fetch_one(cid: str) -> Tuple[str, Optional[str]]:
+                async with self._lookup_sem:
                     try:
                         cresp = await self.client.conversations_info(channel=cid)
                         c = self._handle_slack_response(cresp)
@@ -3826,12 +3768,13 @@ class Slack:
                             return cid, name or cid
                     except Exception as e:
                         logger.debug(f"conversations_info failed for {cid}: {e}")
-                return cid, cid
+                return cid, None
 
             results = await asyncio.gather(*(_fetch_one(cid) for cid in missing))
             for cid, name in results:
-                self._channel_cache[cid] = name
-        return {cid: self._channel_cache[cid] for cid in channel_ids if cid in self._channel_cache}
+                if name is not None:
+                    self._channel_cache[cid] = name
+        return {cid: self._channel_cache.get(cid, cid) for cid in channel_ids}
 
     # ------------------------------------------------------------------
     # Enrichment helpers — collect + resolve + apply, by response shape
@@ -4064,6 +4007,49 @@ class Slack:
             new_msg['room'] = new_room
 
         return new_msg
+
+    async def _enrich_reactable(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich a `{user, reactions[].users[]}`-shaped item (file / file_comment).
+
+        Returns a copy with `user_display_name` injected on the top-level user
+        and `user_display_names` arrays added to each reaction. If the item
+        carries no resolvable user IDs, returns it unchanged.
+        """
+        ids: set = set()
+        u = obj.get('user')
+        if _is_user_id(u):
+            ids.add(u)
+        for r in (obj.get('reactions') or []):
+            if isinstance(r, dict):
+                for ru in (r.get('users') or []):
+                    if _is_user_id(ru):
+                        ids.add(ru)
+        if not ids:
+            return obj
+        resolved = await self._resolve_user_ids(ids)
+        id_to_name = {
+            uid: info['display_name']
+            for uid, info in resolved.items()
+            if info.get('display_name')
+        }
+        new_obj = dict(obj)
+        if isinstance(u, str) and u in id_to_name:
+            new_obj['user_display_name'] = id_to_name[u]
+        new_reactions = []
+        for r in (new_obj.get('reactions') or []):
+            if isinstance(r, dict):
+                new_r = dict(r)
+                user_list = new_r.get('users')
+                if isinstance(user_list, list):
+                    new_r['user_display_names'] = [
+                        id_to_name.get(ru, ru) for ru in user_list if isinstance(ru, str)
+                    ]
+                new_reactions.append(new_r)
+            else:
+                new_reactions.append(r)
+        if new_obj.get('reactions') is not None:
+            new_obj['reactions'] = new_reactions
+        return new_obj
 
     async def _enrich_messages(self, messages: Optional[List[Any]]) -> List[Any]:
         """Resolve user + channel IDs across a list of Slack messages and return enriched copies."""
