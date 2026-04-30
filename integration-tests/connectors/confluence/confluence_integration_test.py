@@ -33,17 +33,22 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.sources.external.confluence.confluence import ConfluenceDataSource  # type: ignore[import-not-found]  # noqa: E402
-from app.models.entities import RecordGroupType, RecordType  # type: ignore[import-not-found]  # noqa: E402
+from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
+    RecordGroupType,
+    RecordType,
+)
+from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]  # noqa: E402
+    ConfluenceDataSource,
+)
+from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from helper.graph_provider_utils import (  # noqa: E402
+    wait_for_sync_completion,
+    wait_until_graph_condition,
+)
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
 )
-from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import (  # noqa: E402
-    wait_until_graph_condition,
-    wait_for_sync_completion,
-)
-from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 
 logger = logging.getLogger("confluence-lifecycle-test")
 
@@ -358,12 +363,8 @@ class TestConfluenceIncrementalSync:
         page_data = resp.json()
         page_id = str(page_data["id"])
         
-        # Wait for Confluence to register timestamps
-        pipeshub_client.wait(5)
-        
-        # Trigger incremental sync
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         
         # Wait for sync completion
@@ -437,7 +438,7 @@ class TestConfluenceIncrementalSync:
             }
         )
         
-        # Trigger sync
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         
@@ -604,13 +605,9 @@ class TestConfluenceReindex:
             }
         )
         
-        
-        # Trigger reindex
+        pipeshub_client.wait(15)
         result = pipeshub_client.reindex_record(record_key)
         assert result.get("success") or result.get("status") == "success"
-        
-        # Wait for reindex to process
-        pipeshub_client.wait(10)
         
         # Verify version changed
         record_after = await connector_assertions.assert_record_updated(
@@ -749,6 +746,7 @@ class TestConfluenceConnector:
             }
         )
 
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -802,6 +800,7 @@ class TestConfluenceConnector:
             }
         )
 
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -840,6 +839,7 @@ class TestConfluenceConnector:
             }
         )
         
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -888,6 +888,7 @@ class TestConfluenceConnector:
         )
         parent_page = parent_resp.json()
 
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -905,10 +906,8 @@ class TestConfluenceConnector:
 
         await confluence_datasource.move_page(page_id, str(parent_page["id"]))
 
-        pipeshub_client.wait(5)
-        
+        pipeshub_client.wait(15)
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         # Wait for move sync

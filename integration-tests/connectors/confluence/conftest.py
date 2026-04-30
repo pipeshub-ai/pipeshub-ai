@@ -187,7 +187,9 @@ async def confluence_connector(
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
-    
+
+    pipeshub_client.wait(15)
+
     pipeshub_client.toggle_sync(connector_id, enable=True)
     
     # Wait for sync completion
