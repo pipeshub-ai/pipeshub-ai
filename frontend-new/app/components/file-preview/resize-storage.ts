@@ -5,8 +5,25 @@ export const CITATIONS_WIDTH_BROADCAST = 'ph-filePreview-citations-width' as con
 
 export const PANEL_MIN_PX = 360;
 export const PANEL_MAX_PX = 1680;
-export const DEFAULT_PANEL_NO_CITATIONS_PX = 600;
-export const DEFAULT_PANEL_WITH_CITATIONS_PX = 860;
+export const DEFAULT_PANEL_NO_CITATIONS_PX = 600; // static fallback for SSR
+export const DEFAULT_PANEL_WITH_CITATIONS_PX = 860; // static fallback for SSR
+
+/** Default panel width as a fraction of viewport width (no citations). */
+const DEFAULT_PANEL_VW = 0.58;
+/** Default panel width as a fraction of viewport width (with citations). */
+const DEFAULT_PANEL_WITH_CITATIONS_VW = 0.75;
+
+function defaultPanelPx(hasCitations: boolean): number {
+  if (typeof window === 'undefined') {
+    return hasCitations ? DEFAULT_PANEL_WITH_CITATIONS_PX : DEFAULT_PANEL_NO_CITATIONS_PX;
+  }
+  const fraction = hasCitations ? DEFAULT_PANEL_WITH_CITATIONS_VW : DEFAULT_PANEL_VW;
+  return clamp(
+    Math.round(window.innerWidth * fraction),
+    PANEL_MIN_PX,
+    Math.min(PANEL_MAX_PX, viewportMaxPanelPx()),
+  );
+}
 
 export const CITATIONS_MIN_PX = 200;
 export const CITATIONS_MAX_PX = 520;
@@ -22,7 +39,7 @@ export function viewportMaxPanelPx(): number {
 }
 
 export function readSavedPanelWidthPx(hasCitations: boolean): number {
-  const fallback = hasCitations ? DEFAULT_PANEL_WITH_CITATIONS_PX : DEFAULT_PANEL_NO_CITATIONS_PX;
+  const fallback = defaultPanelPx(hasCitations);
   if (typeof window === 'undefined') return fallback;
   try {
     const raw = localStorage.getItem(PANEL_WIDTH_LS_KEY);
