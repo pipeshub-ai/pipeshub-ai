@@ -12215,6 +12215,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
             record.setdefault("lastSyncTimestamp", timestamp)
             record.setdefault("isVLMOcrProcessed", False)
+            record.setdefault("indexingStatus", "NOT_STARTED")
             record.setdefault("extractionStatus", "NOT_STARTED")  # Files need extraction, unlike folders
             record.setdefault("isLatestVersion", True)
             record.setdefault("isDirty", False)
