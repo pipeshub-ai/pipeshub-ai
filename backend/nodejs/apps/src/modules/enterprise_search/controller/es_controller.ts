@@ -5134,13 +5134,12 @@ export const unshareAgent =
       (res as any).flush?.();
 
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         quickMode: req.body.quickMode || false,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
-        tools: req.body.tools || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -5149,6 +5148,10 @@ export const unshareAgent =
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
       };
+
+      if (req.body.tools !== undefined) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       logger.info('aiPayload', aiPayload);
 
@@ -5727,13 +5730,9 @@ export const createAgentConversation =
             filters: req.body.filters,
           },
         });
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
+        
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
             // New fields for multi-model support
@@ -5742,7 +5741,16 @@ export const createAgentConversation =
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
-          },
+        };
+        if (req.body.tools !== undefined) {
+          aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+        }
+
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiPayload
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -6074,7 +6082,7 @@ export const addMessageStreamToAgentConversation =
       );
 
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -6087,6 +6095,9 @@ export const addMessageStreamToAgentConversation =
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
       };
+      if (req.body.tools !== undefined) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
