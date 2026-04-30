@@ -15,6 +15,7 @@ import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
+import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -946,6 +947,11 @@ export function MessageList() {
         }}
         aria-hidden="true"
       />
+
+      {/* Single inline-citation popover host for the whole message list. It's
+          driven by the zustand store so only one popover is ever rendered,
+          even when the answer contains many citation badges. */}
+      <InlineCitationPopoverHost />
     </Box>
   );
 }

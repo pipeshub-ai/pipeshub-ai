@@ -72,6 +72,28 @@ export interface FetchConversationsOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Normalise an app/KB filter list and return a `{ filters }` spread fragment.
+ *
+ * Filters out any non-string or blank IDs, then only returns the key when at
+ * least one valid ID remains — so the backend never receives `filters: { apps:
+ * [], kb: [] }` and applies an unintended "no scope" constraint.
+ */
+function buildFiltersPayload(
+  apps: unknown[] | null | undefined,
+  kb: unknown[] | null | undefined,
+): Record<string, unknown> {
+  const validApps = (apps ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.trim().length > 0,
+  );
+  const validKb = (kb ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.trim().length > 0,
+  );
+  return validApps.length > 0 || validKb.length > 0
+    ? { filters: { apps: validApps, kb: validKb } }
+    : {};
+}
+
 // Chat API endpoints
 export const ChatApi = {
   // Fetch one page of conversations for a single source (owned or shared).
@@ -198,12 +220,6 @@ export const ChatApi = {
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
       const f = request.filters;
-      const apps = (f?.apps ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      const kb = (f?.kb ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
       payload = {
         query: request.query,
         modelKey: request.modelKey,
@@ -213,20 +229,23 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
-        filters: { apps, kb },
-        ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+        ...buildFiltersPayload(f?.apps, f?.kb),
       };
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/conversations/stream`;
-      // Build payload explicitly: rename `agentStreamTools` → `tools` so the
-      // Node.js controller can read `req.body.tools` uniformly for both agent paths.
-      const { agentStreamTools, ...rest } = request;
+      // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
+      // uniformly for both agent and non-agent paths) and validate filters.
+      const { agentStreamTools, filters: reqFilters, ...rest } = request as unknown as Record<string, unknown> & {
+        agentStreamTools?: string[];
+        filters?: { apps?: string[]; kb?: string[] };
+      };
       payload = {
         ...rest,
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
-      };
+        ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+      } as Record<string, unknown>;
     }
 
     // Track whether a complete event was received and the last SSE error
@@ -329,7 +348,7 @@ export const ChatApi = {
       modelName: request.modelName,
       modelFriendlyName: request.modelFriendlyName,
       chatMode: request.chatMode,
-      filters: request.filters,
+      ...buildFiltersPayload(request.filters?.apps, request.filters?.kb),
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
     };
