@@ -38,6 +38,7 @@ describe('OAuthAppService', () => {
     }
     mockScopeValidatorService = {
       validateRequestedScopes: sinon.stub(),
+      getAllowedScopeNamesForRole: sinon.stub().returns(['org:read', 'user:read']),
     }
     service = new OAuthAppService(
       mockLogger,
@@ -71,7 +72,7 @@ describe('OAuthAppService', () => {
 
       sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
-      const result = await service.createApp(fakeOrgId, fakeUserId, {
+      const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test App',
         description: 'A test app',
         allowedScopes: ['org:read'],
@@ -104,7 +105,7 @@ describe('OAuthAppService', () => {
 
       const createStub = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
-      await service.createApp(fakeOrgId, fakeUserId, {
+      await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test',
         allowedScopes: ['org:read'],
         redirectUris: ['https://example.com/cb'],
@@ -117,7 +118,7 @@ describe('OAuthAppService', () => {
 
     it('should throw BadRequestError for invalid grant type', async () => {
       try {
-        await service.createApp(fakeOrgId, fakeUserId, {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
           name: 'Test',
           allowedScopes: ['org:read'],
           allowedGrantTypes: ['invalid_grant' as any],
@@ -131,7 +132,7 @@ describe('OAuthAppService', () => {
 
     it('should throw InvalidRedirectUriError for non-HTTPS redirect URI', async () => {
       try {
-        await service.createApp(fakeOrgId, fakeUserId, {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
           name: 'Test',
           allowedScopes: ['org:read'],
           redirectUris: ['http://example.com/callback'],
@@ -160,7 +161,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
-      const result = await service.createApp(fakeOrgId, fakeUserId, {
+      const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test',
         allowedScopes: ['org:read'],
         redirectUris: ['http://localhost:3000/callback'],
@@ -171,7 +172,7 @@ describe('OAuthAppService', () => {
 
     it('should throw InvalidRedirectUriError for URI with fragment', async () => {
       try {
-        await service.createApp(fakeOrgId, fakeUserId, {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
           name: 'Test',
           allowedScopes: ['org:read'],
           redirectUris: ['https://example.com/callback#fragment'],
@@ -184,7 +185,7 @@ describe('OAuthAppService', () => {
 
     it('should throw InvalidRedirectUriError for invalid URL', async () => {
       try {
-        await service.createApp(fakeOrgId, fakeUserId, {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
           name: 'Test',
           allowedScopes: ['org:read'],
           redirectUris: ['not-a-valid-url'],
@@ -215,14 +216,14 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      const result = await service.getAppById(fakeAppId, fakeOrgId)
+      const result = await service.getAppById(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(result.name).to.equal('Test')
     })
 
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
-        await service.getAppById(fakeAppId, fakeOrgId)
+        await service.getAppById(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -296,7 +297,7 @@ describe('OAuthAppService', () => {
       sinon.stub(OAuthApp, 'find').returns(chainable as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(1)
 
-      const result = await service.listApps(fakeOrgId, { page: 1, limit: 10 })
+      const result = await service.listApps(fakeOrgId, fakeUserId, true, { page: 1, limit: 10 })
       expect(result.data).to.have.lengthOf(1)
       expect(result.pagination.total).to.equal(1)
       expect(result.pagination.page).to.equal(1)
@@ -312,7 +313,7 @@ describe('OAuthAppService', () => {
       const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      await service.listApps(fakeOrgId, { status: OAuthAppStatus.ACTIVE })
+      await service.listApps(fakeOrgId, fakeUserId, true, { status: OAuthAppStatus.ACTIVE })
       const filter = findStub.firstCall.args[0] as any
       expect(filter.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
     })
@@ -327,7 +328,7 @@ describe('OAuthAppService', () => {
       const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      await service.listApps(fakeOrgId, { search: 'test' })
+      await service.listApps(fakeOrgId, fakeUserId, true, { search: 'test' })
       const filter = findStub.firstCall.args[0] as any
       expect(filter.$or).to.be.an('array')
     })
@@ -342,7 +343,7 @@ describe('OAuthAppService', () => {
       sinon.stub(OAuthApp, 'find').returns(chainable as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      const result = await service.listApps(fakeOrgId, {})
+      const result = await service.listApps(fakeOrgId, fakeUserId, true, {})
       expect(result.pagination.page).to.equal(1)
       expect(result.pagination.limit).to.equal(20)
     })
@@ -352,7 +353,7 @@ describe('OAuthAppService', () => {
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
-        await service.updateApp(fakeAppId, fakeOrgId, { name: 'Updated' })
+        await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, true, { name: 'Updated' })
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -379,7 +380,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      const result = await service.updateApp(fakeAppId, fakeOrgId, { name: 'New Name' })
+      const result = await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, true, { name: 'New Name' })
       expect(mockApp.name).to.equal('New Name')
       expect(mockApp.save.calledOnce).to.be.true
     })
@@ -403,7 +404,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      await service.updateApp(fakeAppId, fakeOrgId, { allowedScopes: ['org:read'] })
+      await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, true, { allowedScopes: ['org:read'] })
       expect(mockScopeValidatorService.validateRequestedScopes.calledOnce).to.be.true
     })
   })
@@ -418,7 +419,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+      await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(mockApp.isDeleted).to.be.true
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
       expect(mockApp.save.calledOnce).to.be.true
@@ -427,7 +428,7 @@ describe('OAuthAppService', () => {
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
-        await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+        await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -456,7 +457,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      const result = await service.regenerateSecret(fakeAppId, fakeOrgId)
+      const result = await service.regenerateSecret(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(result).to.have.property('clientSecret')
       expect(mockEncryptionService.encrypt.called).to.be.true
       expect(mockApp.save.calledOnce).to.be.true
@@ -465,7 +466,7 @@ describe('OAuthAppService', () => {
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
-        await service.regenerateSecret(fakeAppId, fakeOrgId)
+        await service.regenerateSecret(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -493,7 +494,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      await service.suspendApp(fakeAppId, fakeOrgId)
+      await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(mockApp.status).to.equal(OAuthAppStatus.SUSPENDED)
     })
 
@@ -503,7 +504,7 @@ describe('OAuthAppService', () => {
         status: OAuthAppStatus.SUSPENDED,
       } as any)
       try {
-        await service.suspendApp(fakeAppId, fakeOrgId)
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
@@ -531,7 +532,7 @@ describe('OAuthAppService', () => {
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
-      await service.activateApp(fakeAppId, fakeOrgId)
+      await service.activateApp(fakeAppId, fakeOrgId, fakeUserId, true)
       expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
@@ -541,7 +542,7 @@ describe('OAuthAppService', () => {
         status: OAuthAppStatus.REVOKED,
       } as any)
       try {
-        await service.activateApp(fakeAppId, fakeOrgId)
+        await service.activateApp(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
@@ -554,7 +555,7 @@ describe('OAuthAppService', () => {
         status: OAuthAppStatus.ACTIVE,
       } as any)
       try {
-        await service.activateApp(fakeAppId, fakeOrgId)
+        await service.activateApp(fakeAppId, fakeOrgId, fakeUserId, true)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)

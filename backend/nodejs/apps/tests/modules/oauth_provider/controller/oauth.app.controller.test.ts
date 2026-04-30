@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { OAuthAppController } from '../../../../src/modules/oauth_provider/controller/oauth.app.controller'
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service'
 
 describe('OAuthAppController', () => {
   let controller: OAuthAppController
@@ -14,6 +15,7 @@ describe('OAuthAppController', () => {
   let mockNext: any
 
   beforeEach(() => {
+    sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
     mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
       listApps: sinon.stub(),
@@ -31,6 +33,7 @@ describe('OAuthAppController', () => {
     }
     mockScopeValidatorService = {
       getScopesGroupedByCategory: sinon.stub().returns({}),
+      getScopesGroupedByCategoryForRole: sinon.stub().returns({}),
     }
     controller = new OAuthAppController(
       mockLogger,
@@ -58,8 +61,9 @@ describe('OAuthAppController', () => {
       mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
       await controller.listApps(mockReq, mockRes, mockNext)
       const callArgs = mockOAuthAppService.listApps.firstCall.args
-      expect(callArgs[1].page).to.equal(2)
-      expect(callArgs[1].limit).to.equal(10)
+      const query = callArgs[3] as { page?: number; limit?: number }
+      expect(query.page).to.equal(2)
+      expect(query.limit).to.equal(10)
     })
 
     it('should call next on error', async () => {
