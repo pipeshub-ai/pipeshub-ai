@@ -1,22 +1,19 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useContext } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { WorkspaceRightPanel, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components/destructive-typed-confirmation-dialog';
 import { toast } from '@/lib/store/toast-store';
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
 
 const DEFAULT_ASSISTANT_ID = '__default_assistant__';
-
-// ========================================
-// Bot type registry
-// ========================================
 
 // ========================================
 // Component
@@ -39,10 +36,38 @@ export function BotConfigPanel() {
     ? slackBotConfigs.find((c) => c.id === editingBotId) ?? null
     : null;
 
-  const _isEditMode = !!editingBotId;
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Determine panel title and footer based on view
   const isPanelTypeSelector = panelView === 'type-selector';
+
+  const handleSaved = useCallback(async () => {
+    try {
+      const configs = await BotsApi.getSlackBotConfigs();
+      setConfigs(configs);
+    } catch {
+      // Silently fail refresh — data was already saved
+    }
+    closePanel();
+  }, [setConfigs, closePanel]);
+
+  const handleDelete = useCallback(async () => {
+    if (!editingConfig || isDeleting) return;
+
+    setIsDeleting(true);
+    try {
+      await BotsApi.deleteSlackBotConfig(editingConfig.id);
+      toast.success(t('workspace.bots.toasts.deleted'), {
+        description: t('workspace.bots.toasts.deletedDescription', { name: editingConfig.name }),
+      });
+      await handleSaved();
+    } catch {
+      toast.error(t('workspace.bots.toasts.deleteError'));
+    } finally {
+      setIsDeleting(false);
+      setShowDeleteDialog(false);
+    }
+  }, [editingConfig, isDeleting, handleSaved, t]);
 
   const headerIcon = (
     <MaterialIcon name="smart_toy" size={20} color="var(--slate-12)" />
@@ -62,39 +87,57 @@ export function BotConfigPanel() {
   );
 
   return (
-    <WorkspaceRightPanel
-      open={panelOpen}
-      onOpenChange={(open) => { if (!open) closePanel(); }}
-      title={t('workspace.bots.configPanelTitle')}
-      icon={headerIcon}
-      headerActions={documentationAction}
-      hideFooter
-    >
-      {isPanelTypeSelector ? (
-        <TypeSelectorView
-          onSelectType={(type) => {
-            if (type === 'slack') {
-              setPanelView('slack-form');
-            }
-          }}
-        />
-      ) : (
-        <SlackBotFormView
-          editingConfig={editingConfig}
-          agents={agents}
-          onClose={closePanel}
-          onSaved={async () => {
-            try {
-              const configs = await BotsApi.getSlackBotConfigs();
-              setConfigs(configs);
-            } catch {
-              // Silently fail refresh — data was already saved
-            }
-            closePanel();
-          }}
-        />
-      )}
-    </WorkspaceRightPanel>
+    <>
+      <WorkspaceRightPanel
+        open={panelOpen}
+        onOpenChange={(open) => { if (!open) closePanel(); }}
+        title={t('workspace.bots.configPanelTitle')}
+        icon={headerIcon}
+        headerActions={documentationAction}
+        hideFooter
+      >
+        {isPanelTypeSelector ? (
+          <TypeSelectorView
+            onSelectType={(type) => {
+              if (type === 'slack') {
+                setPanelView('slack-form');
+              }
+            }}
+          />
+        ) : (
+          <SlackBotFormView
+            editingConfig={editingConfig}
+            agents={agents}
+            onClose={closePanel}
+            onSaved={handleSaved}
+            onRequestDelete={() => setShowDeleteDialog(true)}
+          />
+        )}
+      </WorkspaceRightPanel>
+
+      <DestructiveTypedConfirmationDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        heading={t('workspace.bots.configPanel.deleteBot')}
+        body={
+          <>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t('workspace.bots.form.deleteBotBodyLine1', { name: editingConfig?.name })}
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t('workspace.bots.form.deleteBotBodyLine2')}
+            </Text>
+          </>
+        }
+        confirmationKeyword={editingConfig?.name ?? ''}
+        confirmInputLabel={t('workspace.bots.form.typeNameToConfirm', { name: editingConfig?.name })}
+        primaryButtonText={t('workspace.bots.configPanel.deleteBot')}
+        cancelLabel={t('action.cancel')}
+        onConfirm={handleDelete}
+        isLoading={isDeleting}
+        confirmLoadingLabel={t('workspace.bots.deleting')}
+      />
+    </>
   );
 }
 
@@ -196,10 +239,12 @@ interface SlackBotFormViewProps {
   agents: { id: string; name: string }[];
   onClose: () => void;
   onSaved: () => void;
+  onRequestDelete: () => void;
 }
 
-function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotFormViewProps) {
+function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDelete }: SlackBotFormViewProps) {
   const { t } = useTranslation();
+  const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isEditMode = !!editingConfig;
 
   const [name, setName] = useState('');
@@ -209,8 +254,6 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
   const [showBotToken, setShowBotToken] = useState(false);
   const [showSigningSecret, setShowSigningSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Pre-fill when editing
   useEffect(() => {
@@ -263,24 +306,6 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
       setIsSaving(false);
     }
   }, [isValid, isSaving, name, botToken, signingSecret, agentId, isEditMode, editingConfig, onSaved]);
-
-  const handleDelete = useCallback(async () => {
-    if (!editingConfig || isDeleting) return;
-
-    setIsDeleting(true);
-    try {
-      await BotsApi.deleteSlackBotConfig(editingConfig.id);
-      toast.success(t('workspace.bots.toasts.deleted'), {
-        description: t('workspace.bots.toasts.deletedDescription', { name: editingConfig.name }),
-      });
-      onSaved();
-    } catch {
-      toast.error(t('workspace.bots.toasts.deleteError'));
-    } finally {
-      setIsDeleting(false);
-      setShowDeleteConfirm(false);
-    }
-  }, [editingConfig, isDeleting, onSaved]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -366,8 +391,11 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
             value={agentId}
             onValueChange={setAgentId}
           >
-            <Select.Trigger placeholder={t('workspace.bots.form.agentPlaceholder')} />
-            <Select.Content>
+            <Select.Trigger style={{ width: '100%', height: 32 }} placeholder={t('workspace.bots.form.agentPlaceholder')} />
+            <Select.Content
+              position="popper"
+              container={panelBodyPortal ?? undefined}
+            >
               <Select.Item value={DEFAULT_ASSISTANT_ID}>{t('workspace.bots.defaultAssistant')}</Select.Item>
               {agents.map((agent) => (
                 <Select.Item key={agent.id} value={agent.id}>
@@ -389,46 +417,16 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
               borderTop: '1px solid var(--olive-3)',
             }}
           >
-            {showDeleteConfirm ? (
-              <Flex direction="column" gap="2">
-                <Text size="2" style={{ color: 'var(--red-a11)' }}>
-                  {t('workspace.bots.deleteConfirm')}
-                </Text>
-                <Flex gap="2">
-                  <LoadingButton
-                    variant="solid"
-                    color="red"
-                    size="2"
-                    onClick={handleDelete}
-                    loading={isDeleting}
-                    loadingLabel={t('workspace.bots.deleting')}
-                  >
-                    {t('workspace.bots.confirmDelete')}
-                  </LoadingButton>
-                  <Button
-                    variant="outline"
-                    color="gray"
-                    size="2"
-                    onClick={() => setShowDeleteConfirm(false)}
-                    disabled={isDeleting}
-                    style={{ cursor: isDeleting ? 'not-allowed' : 'pointer' }}
-                  >
-                    {t('action.cancel')}
-                  </Button>
-                </Flex>
-              </Flex>
-            ) : (
-              <Button
-                variant="outline"
-                color="red"
-                size="2"
-                onClick={() => setShowDeleteConfirm(true)}
-                style={{ cursor: 'pointer', alignSelf: 'flex-start' }}
-              >
-                <MaterialIcon name="delete" size={16} color="var(--red-a11)" />
-                {t('workspace.bots.deleteBot')}
-              </Button>
-            )}
+            <Button
+              variant="outline"
+              color="red"
+              size="2"
+              onClick={onRequestDelete}
+              style={{ cursor: 'pointer', alignSelf: 'flex-start' }}
+            >
+              <MaterialIcon name="delete" size={16} color="var(--red-a11)" />
+              {t('workspace.bots.configPanel.deleteBot')}
+            </Button>
           </Flex>
         )}
       </Flex>

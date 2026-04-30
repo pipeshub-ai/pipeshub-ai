@@ -989,6 +989,7 @@
         "redirectPlaceholder": "https://ihreapp.de/callback",
         "removeRedirectAria": "Redirect-URI entfernen",
         "addRedirectUri": "Redirect-URI hinzufügen",
+        "redirectUriLimitNote": "Maximal 10 Redirect-URIs erlaubt.",
         "homepageLabel": "Homepage-URL",
         "privacyLabel": "Datenschutzrichtlinien-URL",
         "termsLabel": "Nutzungsbedingungen-URL",
@@ -1072,6 +1073,7 @@
       "actionEdit": "Bearbeiten",
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
+      "moreOptions": "Weitere Optionen",
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1666,6 +1668,7 @@
       "deleting": "Wird gelöscht...",
       "saving": "Wird gespeichert...",
       "deleteConfirm": "Löschen bestätigen",
+      "confirmDelete": "Löschen bestätigen",
       "deleteBot": "Bot löschen",
       "typeLabels": {
         "slack": "Slack-Bot",
@@ -1681,7 +1684,10 @@
         "signingSecret": "Signing Secret",
         "signingSecretPlaceholder": "Signing Secret eingeben",
         "agent": "Agent",
-        "agentPlaceholder": "Agent auswählen"
+        "agentPlaceholder": "Agent auswählen",
+        "typeNameToConfirm": "Geben Sie \"{{name}}\" ein, um zu bestätigen",
+        "deleteBotBodyLine1": "Möchten Sie {{name}} wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+        "deleteBotBodyLine2": "Alle Konfigurationen und Anmeldedaten dieses Bots werden dauerhaft entfernt."
       }
     },
     "mail": {

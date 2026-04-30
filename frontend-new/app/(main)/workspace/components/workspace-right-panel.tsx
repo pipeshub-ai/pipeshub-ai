@@ -134,7 +134,6 @@ export function useWorkspaceDrawerNestedModalHost(enabled: boolean): HTMLElement
     Object.assign(el.style, {
       position: 'fixed',
       inset: '0',
-      zIndex: String(WORKSPACE_DRAWER_MODAL_LAYER_Z_INDEX),
       pointerEvents: 'none',
     });
     document.body.appendChild(el);
@@ -249,7 +248,6 @@ export function WorkspaceRightPanel({
         style={{
           position: 'fixed',
           inset: 0,
-          zIndex: Z_BACKDROP,
           backgroundColor: 'rgba(8, 10, 12, 0.45)',
         }}
       />
@@ -267,7 +265,6 @@ export function WorkspaceRightPanel({
           width: '37.5rem',
           maxWidth: '100vw',
           maxHeight: 'calc(100vh - 20px)',
-          zIndex: Z_PANEL,
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',

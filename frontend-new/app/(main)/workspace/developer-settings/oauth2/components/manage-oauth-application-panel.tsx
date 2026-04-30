@@ -58,6 +58,8 @@ const CARD_STYLE: React.CSSProperties = {
   padding: 'var(--space-4)',
 };
 
+const MAX_REDIRECT_URIS = 10;
+
 
 function optionalUrlOrEmpty(s: string): string | undefined {
   const t = s.trim();
@@ -1114,16 +1116,25 @@ export function ManageOAuthApplicationPanel({
                         </Flex>
                       ))}
                     </Flex>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="2"
-                    style={{ marginTop: 'var(--space-2)', cursor: 'pointer' }}
-                    onClick={() => setRedirectUris([...redirectUris, ''])}
-                  >
+                  {redirectUris.length >= MAX_REDIRECT_URIS ? (
+                    <Text
+                      size="1"
+                      style={{ color: 'var(--amber-11)', marginTop: 'var(--space-2)' }}
+                    >
+                      {t('workspace.oauth2.create.redirectUriLimitNote')}
+                    </Text>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="2"
+                      style={{ marginTop: 'var(--space-2)', cursor: 'pointer' }}
+                      onClick={() => setRedirectUris([...redirectUris, ''])}
+                    >
                       <MaterialIcon name="add" size={16} color="var(--accent-11)" />
                       {t('workspace.oauth2.create.addRedirectUri')}
                     </Button>
+                  )}
                   </Box>
                 )}
 
