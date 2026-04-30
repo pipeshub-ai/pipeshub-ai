@@ -15009,11 +15009,15 @@ class TestGetKnowledgeHubParentNode:
 class TestGetKnowledgeHubFilterOptions:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
+        # get_knowledge_hub_filter_options uses get_user_apps; execute_aql returns app docs (not {apps: ...})
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"apps": [{"id": "a1", "name": "App", "type": "GOOGLE_DRIVE"}]}]
+            return_value=[
+                {"_key": "a1", "name": "App", "type": "GOOGLE_DRIVE"},
+            ]
         )
         result = await connected_provider.get_knowledge_hub_filter_options("uk1", "org1")
         assert len(result["apps"]) == 1
+        assert result["apps"][0] == {"id": "a1", "name": "App", "type": "GOOGLE_DRIVE"}
 
     @pytest.mark.asyncio
     async def test_empty(self, connected_provider):
