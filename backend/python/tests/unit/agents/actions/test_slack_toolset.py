@@ -3802,12 +3802,18 @@ class TestEnrichReactable:
     @pytest.mark.asyncio
     async def test_reaction_user_lists_resolved(self):
         slack = _build_slack()
-        slack.client.users_info = AsyncMock(side_effect=[
-            _ok({"user": {"id": "U1", "name": "alice",
-                          "profile": {"display_name": "alice"}}}),
-            _ok({"user": {"id": "U2", "name": "bob",
-                          "profile": {"display_name": "bob"}}}),
-        ])
+        # Dispatch by `user=` kwarg — `_resolve_user_ids` iterates a set, so
+        # call order is not the insertion order; a positional side_effect list
+        # would bind responses to the wrong IDs.
+        responses = {
+            "U1AAAAAAA": _ok({"user": {"id": "U1", "name": "alice",
+                                       "profile": {"display_name": "alice"}}}),
+            "U2BBBBBBB": _ok({"user": {"id": "U2", "name": "bob",
+                                       "profile": {"display_name": "bob"}}}),
+        }
+        slack.client.users_info = AsyncMock(
+            side_effect=lambda *, user, **_: responses[user]
+        )
         out = await slack._enrich_reactable({
             "reactions": [
                 {"name": "tada", "users": ["U1AAAAAAA", "U2BBBBBBB"]}
@@ -4114,12 +4120,18 @@ class TestEnrichUsergroups:
     @pytest.mark.asyncio
     async def test_resolves_by_fields_and_users(self):
         slack = _build_slack()
-        slack.client.users_info = AsyncMock(side_effect=[
-            _ok({"user": {"id": "U1", "name": "alice",
-                          "profile": {"display_name": "alice", "email": "a@x.com"}}}),
-            _ok({"user": {"id": "U2", "name": "bob",
-                          "profile": {"display_name": "bob"}}}),
-        ])
+        # Dispatch by `user=` kwarg — set-based fan-out doesn't preserve
+        # insertion order, so a positional side_effect list is order-fragile.
+        responses = {
+            "U1AAAAAAA": _ok({"user": {"id": "U1", "name": "alice",
+                                       "profile": {"display_name": "alice",
+                                                   "email": "a@x.com"}}}),
+            "U2BBBBBBB": _ok({"user": {"id": "U2", "name": "bob",
+                                       "profile": {"display_name": "bob"}}}),
+        }
+        slack.client.users_info = AsyncMock(
+            side_effect=lambda *, user, **_: responses[user]
+        )
         groups = [{
             "id": "S1",
             "created_by": "U1AAAAAAA",
@@ -4463,12 +4475,17 @@ class TestGetReactionsEnrichment:
                 ],
             },
         }))
-        slack.client.users_info = AsyncMock(side_effect=[
-            _ok({"user": {"id": "U1", "name": "alice",
-                          "profile": {"display_name": "alice"}}}),
-            _ok({"user": {"id": "U2", "name": "bob",
-                          "profile": {"display_name": "bob"}}}),
-        ])
+        # Dispatch by `user=` kwarg — set-based fan-out doesn't preserve
+        # insertion order, so a positional side_effect list is order-fragile.
+        responses = {
+            "U1AAAAAAA": _ok({"user": {"id": "U1", "name": "alice",
+                                       "profile": {"display_name": "alice"}}}),
+            "U2BBBBBBB": _ok({"user": {"id": "U2", "name": "bob",
+                                       "profile": {"display_name": "bob"}}}),
+        }
+        slack.client.users_info = AsyncMock(
+            side_effect=lambda *, user, **_: responses[user]
+        )
         with patch.object(
             slack, "_resolve_channel", AsyncMock(return_value="C1")
         ):
