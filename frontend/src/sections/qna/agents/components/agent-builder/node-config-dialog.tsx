@@ -248,6 +248,251 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
           }
         }
 
+        // Special handling for Condition Check configuration
+        if (node?.data.type === 'conditional-check') {
+          if (key === 'mode') {
+            return (
+              <Grid item xs={12} key={key}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
+                  Check Mode
+                </Typography>
+                <FormControl fullWidth>
+                  <Select
+                    value={String(value || 'contains')}
+                    onChange={(e) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        [key]: e.target.value,
+                        regexPattern: prev.regexPattern ?? '',
+                        jsonPath: prev.jsonPath ?? '',
+                        minLength: prev.minLength ?? 0,
+                        maxLength: prev.maxLength ?? 0,
+                      }))
+                    }
+                    sx={{
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    }}
+                  >
+                    <MenuItem value="contains">Contains text</MenuItem>
+                    <MenuItem value="not_contains">Does not contain text</MenuItem>
+                    <MenuItem value="equals">Equals text</MenuItem>
+                    <MenuItem value="not_equals">Not equals text</MenuItem>
+                    <MenuItem value="starts_with">Starts with</MenuItem>
+                    <MenuItem value="ends_with">Ends with</MenuItem>
+                    <MenuItem value="regex">Regex match</MenuItem>
+                    <MenuItem value="min_length">Minimum length</MenuItem>
+                    <MenuItem value="max_length">Maximum length</MenuItem>
+                    <MenuItem value="is_empty">Is empty</MenuItem>
+                    <MenuItem value="not_empty">Is not empty</MenuItem>
+                    <MenuItem value="json_path_equals">JSON path equals</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            );
+          }
+
+          if (key === 'expectedValue') {
+            const mode = String(config?.mode || 'contains');
+            if (['is_empty', 'not_empty', 'min_length', 'max_length'].includes(mode)) {
+              return null;
+            }
+            return (
+              <Grid item xs={12} key={key}>
+                <TextField
+                  fullWidth
+                  label="Expected Value"
+                  value={String(value ?? '')}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                  helperText="Value used by the selected check mode"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'regexPattern') {
+            if (String(config?.mode || 'contains') !== 'regex') return null;
+            return (
+              <Grid item xs={12} key={key}>
+                <TextField
+                  fullWidth
+                  label="Regex Pattern"
+                  value={String(value ?? '')}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder="e.g. score:\\s*(9|10)"
+                  helperText="Regular expression applied to the agent response"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'jsonPath') {
+            if (String(config?.mode || 'contains') !== 'json_path_equals') return null;
+            return (
+              <Grid item xs={12} key={key}>
+                <TextField
+                  fullWidth
+                  label="JSON Path"
+                  value={String(value ?? '')}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder="e.g. answer.status"
+                  helperText="Dot notation path inside response JSON payload"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'minLength') {
+            if (String(config?.mode || 'contains') !== 'min_length') return null;
+            return (
+              <Grid item xs={12} key={key}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Minimum Length"
+                  value={Number(value ?? 0)}
+                  onChange={(e) =>
+                    setConfig((prev) => ({ ...prev, [key]: Number.parseInt(e.target.value, 10) || 0 }))
+                  }
+                  inputProps={{ min: 0 }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'maxLength') {
+            if (String(config?.mode || 'contains') !== 'max_length') return null;
+            return (
+              <Grid item xs={12} key={key}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Maximum Length"
+                  value={Number(value ?? 0)}
+                  onChange={(e) =>
+                    setConfig((prev) => ({ ...prev, [key]: Number.parseInt(e.target.value, 10) || 0 }))
+                  }
+                  inputProps={{ min: 0 }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'caseSensitive') {
+            const mode = String(config?.mode || 'contains');
+            if (['min_length', 'max_length', 'is_empty', 'not_empty'].includes(mode)) {
+              return null;
+            }
+            return (
+              <Grid item xs={12} key={key}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={Boolean(value)}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        Case Sensitive Match
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        If disabled, text checks ignore uppercase/lowercase differences
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </Grid>
+            );
+          }
+
+          if (key === 'passOnEmpty') {
+            return (
+              <Grid item xs={12} key={key}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={Boolean(value)}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        Pass When Empty
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Route to pass when no valid value/rule is available
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </Grid>
+            );
+          }
+        }
+
         // Special handling for Tool approval configuration with full user/group selection
         if (node?.data.type.startsWith('tool-') && !node?.data.type.startsWith('tool-group-')) {
           if (key === 'approvalConfig') {
@@ -1057,10 +1302,10 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
         }
 
         return null;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       },
       [
         node?.data.type,
+        config?.mode,
         users,
         // groups,
         getAvatarColor,

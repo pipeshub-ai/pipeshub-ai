@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Badge, Dialog, Button, TextField, Select, Switch } from '@radix-ui/themes';
+import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
@@ -103,10 +104,337 @@ export const FlowNode = React.memo(function FlowNode({
   readOnly,
 }: FlowNodeProps) {
   const { t } = useTranslation();
+  const { setNodes } = useReactFlow();
   const chrome = useMemo(() => getFlowNodeChrome(data.type), [data.type]);
+  const [conditionOpen, setConditionOpen] = useState(false);
+  const [conditionConfig, setConditionConfig] = useState<Record<string, unknown>>({});
+
+  const conditionMode = String(data.config?.mode ?? 'contains');
+  const modeLabel = useMemo(() => {
+    const modeLabels: Record<string, string> = {
+      contains: 'Contains',
+      not_contains: 'Not Contains',
+      equals: 'Equals',
+      not_equals: 'Not Equals',
+      starts_with: 'Starts With',
+      ends_with: 'Ends With',
+      regex: 'Regex',
+      min_length: 'Min Length',
+      max_length: 'Max Length',
+      is_empty: 'Is Empty',
+      not_empty: 'Not Empty',
+      json_path_equals: 'JSON Path',
+    };
+    return modeLabels[conditionMode] ?? conditionMode ?? 'Contains';
+  }, [conditionMode]);
+
+  const openConditionEditor = useCallback(() => {
+    setConditionConfig({
+      mode: String(data.config?.mode ?? 'contains'),
+      expectedValue: String(data.config?.expectedValue ?? ''),
+      regexPattern: String(data.config?.regexPattern ?? ''),
+      jsonPath: String(data.config?.jsonPath ?? ''),
+      minLength: Number(data.config?.minLength ?? 0),
+      maxLength: Number(data.config?.maxLength ?? 0),
+      caseSensitive: Boolean(data.config?.caseSensitive ?? false),
+      passOnEmpty: Boolean(data.config?.passOnEmpty ?? false),
+    });
+    setConditionOpen(true);
+  }, [data.config]);
+
+  const saveConditionConfig = useCallback(() => {
+    const nextMode = String(conditionConfig.mode ?? 'contains');
+    const nextConfig: Record<string, unknown> = {
+      ...data.config,
+      mode: nextMode,
+      expectedValue: String(conditionConfig.expectedValue ?? ''),
+      regexPattern: String(conditionConfig.regexPattern ?? ''),
+      jsonPath: String(conditionConfig.jsonPath ?? ''),
+      minLength: Math.max(0, Number(conditionConfig.minLength ?? 0) || 0),
+      maxLength: Math.max(0, Number(conditionConfig.maxLength ?? 0) || 0),
+      caseSensitive: Boolean(conditionConfig.caseSensitive ?? false),
+      passOnEmpty: Boolean(conditionConfig.passOnEmpty ?? false),
+    };
+
+    setNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: nextConfig,
+              },
+            }
+          : node
+      )
+    );
+    setConditionOpen(false);
+  }, [conditionConfig, data.config, id, setNodes]);
+
+  const showExpectedValue = !['is_empty', 'not_empty', 'min_length', 'max_length'].includes(
+    String(conditionConfig.mode ?? conditionMode)
+  );
+  const showRegexPattern = String(conditionConfig.mode ?? conditionMode) === 'regex';
+  const showJsonPath = String(conditionConfig.mode ?? conditionMode) === 'json_path_equals';
+  const showMinLength = String(conditionConfig.mode ?? conditionMode) === 'min_length';
+  const showMaxLength = String(conditionConfig.mode ?? conditionMode) === 'max_length';
+  const showCaseSensitive = ['contains', 'not_contains', 'equals', 'not_equals', 'starts_with', 'ends_with'].includes(
+    String(conditionConfig.mode ?? conditionMode)
+  );
 
   if (data.type === 'agent-core') {
     return <AgentCoreNode id={id} data={data} selected={selected} readOnly={readOnly} />;
+  }
+
+  if (data.type === 'conditional-check') {
+    return (
+      <>
+        <div className="flow-node-card">
+          <NodeCardShell
+            selected={selected}
+            body={
+              <Flex align="center" gap="2" wrap="wrap">
+                <Badge size="1" variant="soft" color="gray" highContrast>
+                  {`Mode: ${modeLabel}`}
+                </Badge>
+                {String(data.config?.passOnEmpty ?? false) === 'true' || data.config?.passOnEmpty === true ? (
+                  <Badge size="1" variant="surface" color="gray">
+                    Pass on empty
+                  </Badge>
+                ) : null}
+              </Flex>
+            }
+            header={
+              <Flex align="center" justify="between" gap="2" px="3" py="2">
+                <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+                  <Flex
+                    align="center"
+                    justify="center"
+                    style={{
+                      flexShrink: 0,
+                      lineHeight: 0,
+                      width: 32,
+                      height: 32,
+                      borderRadius: 'var(--radius-2)',
+                      background: 'var(--gray-a2)',
+                      border: '1px solid var(--gray-6)',
+                    }}
+                    aria-hidden
+                  >
+                    <MaterialIcon name="rule" size={22} color={chrome.iconColor} />
+                  </Flex>
+                  <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                    <Text
+                      weight="medium"
+                      style={{
+                        wordBreak: 'break-word',
+                        color: 'var(--agent-flow-text)',
+                        lineHeight: '20px',
+                        fontSize: 14,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      Condition Check
+                    </Text>
+                    <Text
+                      size="1"
+                      style={{
+                        display: 'block',
+                        color: 'var(--agent-flow-text-muted)',
+                        lineHeight: '16px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {`Mode: ${modeLabel}`}
+                    </Text>
+                  </Flex>
+                </Flex>
+                <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                  {!readOnly ? (
+                    <IconButton
+                      size="1"
+                      variant="soft"
+                      color="gray"
+                      onClick={openConditionEditor}
+                      aria-label="Edit condition"
+                    >
+                      <MaterialIcon name="edit" size={16} color="var(--agent-flow-text)" />
+                    </IconButton>
+                  ) : null}
+                  {!readOnly && onDelete ? (
+                    <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                      <IconButton
+                        size="1"
+                        variant="ghost"
+                        color="gray"
+                        onClick={() => onDelete(id)}
+                        aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                      >
+                        <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                      </IconButton>
+                    </span>
+                  ) : null}
+                </Flex>
+              </Flex>
+            }
+          >
+            <NodeHandles data={data} />
+          </NodeCardShell>
+        </div>
+
+        <Dialog.Root open={conditionOpen} onOpenChange={setConditionOpen}>
+          <Dialog.Content style={{ maxWidth: 560 }}>
+            <Dialog.Title>Condition Check</Dialog.Title>
+            <Flex direction="column" gap="3" mt="2">
+              <Box>
+                <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                  Mode
+                </Text>
+                <Select.Root
+                  value={String(conditionConfig.mode ?? conditionMode)}
+                  onValueChange={(value) => setConditionConfig((prev) => ({ ...prev, mode: value }))}
+                  size="2"
+                >
+                  <Select.Trigger style={{ width: '100%' }} />
+                  <Select.Content>
+                    <Select.Item value="contains">Contains text</Select.Item>
+                    <Select.Item value="not_contains">Does not contain text</Select.Item>
+                    <Select.Item value="equals">Equals text</Select.Item>
+                    <Select.Item value="not_equals">Not equals text</Select.Item>
+                    <Select.Item value="starts_with">Starts with</Select.Item>
+                    <Select.Item value="ends_with">Ends with</Select.Item>
+                    <Select.Item value="regex">Regex match</Select.Item>
+                    <Select.Item value="min_length">Minimum length</Select.Item>
+                    <Select.Item value="max_length">Maximum length</Select.Item>
+                    <Select.Item value="is_empty">Is empty</Select.Item>
+                    <Select.Item value="not_empty">Is not empty</Select.Item>
+                    <Select.Item value="json_path_equals">JSON path equals</Select.Item>
+                  </Select.Content>
+                </Select.Root>
+              </Box>
+
+              {showExpectedValue ? (
+                <Box>
+                  <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                    Expected value
+                  </Text>
+                  <TextField.Root
+                    size="2"
+                    value={String(conditionConfig.expectedValue ?? '')}
+                    onChange={(e) =>
+                      setConditionConfig((prev) => ({ ...prev, expectedValue: e.target.value }))
+                    }
+                    placeholder="Enter value"
+                  />
+                </Box>
+              ) : null}
+
+              {showRegexPattern ? (
+                <Box>
+                  <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                    Regex pattern
+                  </Text>
+                  <TextField.Root
+                    size="2"
+                    value={String(conditionConfig.regexPattern ?? '')}
+                    onChange={(e) =>
+                      setConditionConfig((prev) => ({ ...prev, regexPattern: e.target.value }))
+                    }
+                    placeholder="score:\\s*(9|10)"
+                  />
+                </Box>
+              ) : null}
+
+              {showJsonPath ? (
+                <Box>
+                  <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                    JSON path
+                  </Text>
+                  <TextField.Root
+                    size="2"
+                    value={String(conditionConfig.jsonPath ?? '')}
+                    onChange={(e) =>
+                      setConditionConfig((prev) => ({ ...prev, jsonPath: e.target.value }))
+                    }
+                    placeholder="answer.status"
+                  />
+                </Box>
+              ) : null}
+
+              {showMinLength ? (
+                <Box>
+                  <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                    Minimum length
+                  </Text>
+                  <TextField.Root
+                    type="number"
+                    min={0}
+                    size="2"
+                    value={String(conditionConfig.minLength ?? 0)}
+                    onChange={(e) =>
+                      setConditionConfig((prev) => ({ ...prev, minLength: Number(e.target.value) || 0 }))
+                    }
+                  />
+                </Box>
+              ) : null}
+
+              {showMaxLength ? (
+                <Box>
+                  <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                    Maximum length
+                  </Text>
+                  <TextField.Root
+                    type="number"
+                    min={0}
+                    size="2"
+                    value={String(conditionConfig.maxLength ?? 0)}
+                    onChange={(e) =>
+                      setConditionConfig((prev) => ({ ...prev, maxLength: Number(e.target.value) || 0 }))
+                    }
+                  />
+                </Box>
+              ) : null}
+
+              {showCaseSensitive ? (
+                <Flex align="center" justify="between">
+                  <Text size="2">Case sensitive</Text>
+                  <Switch
+                    checked={Boolean(conditionConfig.caseSensitive ?? false)}
+                    onCheckedChange={(value) =>
+                      setConditionConfig((prev) => ({ ...prev, caseSensitive: value === true }))
+                    }
+                  />
+                </Flex>
+              ) : null}
+
+              <Flex align="center" justify="between">
+                <Text size="2">Pass on empty</Text>
+                <Switch
+                  checked={Boolean(conditionConfig.passOnEmpty ?? false)}
+                  onCheckedChange={(value) =>
+                    setConditionConfig((prev) => ({ ...prev, passOnEmpty: value === true }))
+                  }
+                />
+              </Flex>
+
+              <Flex gap="2" justify="end">
+                <Dialog.Close>
+                  <Button variant="soft" color="gray">
+                    {t('action.cancel')}
+                  </Button>
+                </Dialog.Close>
+                <Button onClick={saveConditionConfig}>{t('action.save')}</Button>
+              </Flex>
+            </Flex>
+          </Dialog.Content>
+        </Dialog.Root>
+      </>
+    );
   }
 
   if (data.type.startsWith('toolset-')) {

@@ -84,6 +84,12 @@ def _ensure_module(name: str) -> None:
     """Insert a MagicMock into sys.modules for *name* if it is not importable."""
     if name in sys.modules:
         return
+    # Temporarily remove our mock finder so that previously-mocked packages
+    # (e.g. torch) don't interfere with the import probe.  This ensures each
+    # package is tested for importability independently.
+    _finder_active = _mock_finder in sys.meta_path
+    if _finder_active:
+        sys.meta_path.remove(_mock_finder)
     try:
         __import__(name)
     except (ImportError, ModuleNotFoundError, RuntimeError, OSError, AttributeError):
@@ -91,6 +97,10 @@ def _ensure_module(name: str) -> None:
         to_remove = [k for k in sys.modules if k == name or k.startswith(name + ".")]
         for k in to_remove:
             del sys.modules[k]
+        # Re-insert the finder before registering mocks so load_module works
+        if _finder_active and _mock_finder not in sys.meta_path:
+            sys.meta_path.insert(0, _mock_finder)
+            _finder_active = False  # already re-inserted
         # Register this exact dotted name (and, to make ``import X.Y`` work,
         # every parent package that was not already importable) so the
         # meta-path finder can intercept subsequent imports. We intentionally
@@ -105,6 +115,9 @@ def _ensure_module(name: str) -> None:
             except Exception:  # pragma: no cover - defensive
                 _MOCK_PACKAGE_NAMES.add(dotted)
                 _mock_finder.load_module(dotted)
+    finally:
+        if _finder_active and _mock_finder not in sys.meta_path:
+            sys.meta_path.insert(0, _mock_finder)
 
 
 # Only mock packages that may genuinely be absent in the test environment.

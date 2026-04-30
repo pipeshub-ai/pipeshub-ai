@@ -23,6 +23,25 @@ interface KnowledgeDataInternal {
   category: 'knowledge' | 'action';
 }
 
+function pickRootAgentNode(
+  nodes: { id: string; data: { type?: string; config?: Record<string, unknown> } }[],
+  edges: { source: string; target: string }[]
+) {
+  const agents = nodes.filter((n) => n.data?.type === 'agent-core');
+  if (agents.length === 0) return undefined;
+  if (agents.length === 1) return agents[0];
+
+  const incoming = new Set<string>();
+  for (const edge of edges) {
+    const source = nodes.find((n) => n.id === edge.source);
+    const target = nodes.find((n) => n.id === edge.target);
+    if (source?.data?.type === 'agent-core' && target?.data?.type === 'agent-core') {
+      incoming.add(target.id);
+    }
+  }
+  return agents.find((a) => !incoming.has(a.id)) || agents[0];
+}
+
 export function extractAgentConfigFromFlow(
   agentName: string,
   nodes: { id: string; data: { type?: string; label?: string; config?: Record<string, unknown> } }[],
@@ -295,7 +314,7 @@ export function extractAgentConfigFromFlow(
     }
   }
 
-  const agentCoreNode = nodes.find((n) => n.data?.type === 'agent-core');
+  const agentCoreNode = pickRootAgentNode(nodes, edges);
   const coreCfg = agentCoreNode?.data?.config ?? {};
 
   let webSearch: AgentWebSearchAttachment | null = null;

@@ -478,8 +478,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Ensuring ArangoDB schema (collections, graph, departments)...")
 
-            # 1. Create all collections (node + edge)
+            # 1. Create all collections (node + edge) and enforce schema for existing/new collections
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
+            collection_schemas = {name: schema for name, schema in (NODE_COLLECTIONS + EDGE_COLLECTIONS)}
+
             for col in CollectionNames:
                 name = col.value
                 is_edge = name in edge_collection_names
@@ -488,6 +490,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
+
+                schema = collection_schemas.get(name)
+                if schema and not await self.http_client.update_collection_schema(name, schema):
+                    self.logger.warning(f"Failed to ensure schema for collection '{name}', continuing")
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -692,6 +698,79 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
+
+    def _create_typed_record_from_arango(
+        self, record_dict: dict, type_doc: dict | None
+    ) -> Record:
+        """
+        Build a typed Record (FileRecord, MailRecord, etc.) from Arango record + type doc.
+        Matches BaseArangoService._create_typed_record_from_arango for same return type.
+        """
+        record_type = record_dict.get("recordType")
+
+        translated_record = self._translate_node_from_arango(record_dict)
+        record_candidates = self._record_payload_candidates(translated_record, record_dict)
+
+        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            return self._build_base_record(record_candidates)
+
+        collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+        translated_type_doc = self._translate_node_from_arango(type_doc)
+        type_doc_candidates = self._record_payload_candidates(translated_type_doc, type_doc)
+
+        factory_by_collection = {
+            CollectionNames.ARTIFACTS.value: ArtifactRecord,
+            CollectionNames.FILES.value: FileRecord,
+            CollectionNames.MAILS.value: MailRecord,
+            CollectionNames.WEBPAGES.value: WebpageRecord,
+            CollectionNames.TICKETS.value: TicketRecord,
+            CollectionNames.COMMENTS.value: CommentRecord,
+            CollectionNames.LINKS.value: LinkRecord,
+            CollectionNames.PROJECTS.value: ProjectRecord,
+            CollectionNames.MEETINGS.value: MeetingRecord,
+            CollectionNames.PRODUCTS.value: ProductRecord,
+            CollectionNames.DEALS.value: DealRecord,
+            CollectionNames.SQL_TABLES.value: SQLTableRecord,
+            CollectionNames.SQL_VIEWS.value: SQLViewRecord,
+        }
+        record_factory = factory_by_collection.get(collection)
+        if record_factory is None:
+            return self._build_base_record(record_candidates)
+
+        last_error: Exception | None = None
+        for typed_candidate in type_doc_candidates:
+            for record_candidate in record_candidates:
+                try:
+                    return record_factory.from_arango_record(typed_candidate, record_candidate)
+                except Exception as exc:  # noqa: PERF203
+                    last_error = exc
+
+        if last_error is not None:
+            self.logger.warning(
+                "Failed to create typed record for %s, falling back to base Record: %s",
+                record_type,
+                str(last_error),
+            )
+
+        return self._build_base_record(record_candidates)
+
+    def _record_payload_candidates(self, translated_doc: dict, raw_doc: dict) -> list[dict]:
+        if translated_doc == raw_doc:
+            return [translated_doc]
+        return [translated_doc, raw_doc]
+
+    def _build_base_record(self, record_candidates: list[dict]) -> Record:
+        last_error: Exception | None = None
+        for record_candidate in record_candidates:
+            try:
+                return Record.from_arango_base_record(record_candidate)
+            except Exception as exc:  # noqa: PERF203
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+
+        raise ValueError("Unable to construct base record from empty candidate list")
 
     async def get_record_by_id(
         self,
@@ -3439,71 +3518,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
             return []
-
-    def _create_typed_record_from_arango(self, record_dict: dict, type_doc: dict | None) -> Record:
-        """
-        Factory method to create properly typed Record instances from ArangoDB data.
-        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
-
-        Args:
-            record_dict: Dictionary from records collection
-            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
-
-        Returns:
-            Properly typed Record instance (FileRecord, MailRecord, etc.)
-
-        Raises:
-            ValueError: If type doc is missing, record type is unknown, or typed construction fails
-                (same behavior as the Neo4j provider typed record factory)
-        """
-        record_type = record_dict.get("recordType")
-
-        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            raise ValueError(
-                f"No type collection or no type doc, record type:{record_type} or type doc:{type_doc}"
-            )
-
-        try:
-            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
-
-            type_doc_data = self._translate_node_from_arango(type_doc)
-            record_data = self._translate_node_from_arango(record_dict)
-
-            if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.PROJECTS.value:
-                return ProjectRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.PRODUCTS.value:
-                return ProductRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.LINKS.value:
-                return LinkRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.MEETINGS.value:
-                return MeetingRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.DEALS.value:
-                return DealRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.ARTIFACTS.value:
-                return ArtifactRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.SQL_TABLES.value:
-                return SQLTableRecord.from_arango_record(type_doc_data, record_data)
-            elif collection == CollectionNames.SQL_VIEWS.value:
-                return SQLViewRecord.from_arango_record(type_doc_data, record_data)
-            else:
-                raise ValueError(f"Invalid record type: {record_type}")
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to create typed record for {record_type}: {str(e)}"
-            )
-            raise ValueError(
-                f"Failed to create typed record for {record_type}"
-            ) from e
 
     async def get_record_by_conversation_index(
         self,
@@ -19056,7 +19070,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "webSearch"]
+            allowed_fields = [
+                "name",
+                "description",
+                "startMessage",
+                "systemPrompt",
+                "instructions",
+                "tags",
+                "isActive",
+                "isServiceAccount", "webSearch",
+                "flow",
+                "flowSchemaVersion",
+                "orchestrationMode",
+            ]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

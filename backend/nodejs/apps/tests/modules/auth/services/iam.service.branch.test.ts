@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import axios, { AxiosError } from 'axios'
+import nock from 'nock'
 import { IamService } from '../../../../src/modules/auth/services/iam.service'
 import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 
@@ -16,11 +17,14 @@ describe('IamService - branch coverage', () => {
   } as any
 
   beforeEach(() => {
+    nock.disableNetConnect()
     iamService = new IamService(mockConfig, mockLogger)
   })
 
   afterEach(() => {
     sinon.restore()
+    nock.cleanAll()
+    nock.enableNetConnect()
   })
 
   // =========================================================================

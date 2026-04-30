@@ -744,9 +744,33 @@ li > blockquote {
 }
 
 /* Handle: connected state — subtle fill, slightly stronger border */
-.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-connected="true"] {
+.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-connected="true"]:not([data-handle-kind^="conditional-"]) {
   background: var(--gray-a3) !important;
   border-color: var(--gray-9) !important;
+}
+
+.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-handle-kind="conditional-pass"] {
+  background: #58b78a !important;
+  border-color: rgba(88, 183, 138, 0.42) !important;
+}
+
+.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-handle-kind="conditional-fail"] {
+  background: #d98989 !important;
+  border-color: rgba(217, 137, 137, 0.42) !important;
+}
+
+.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-connected="true"][data-handle-kind="conditional-pass"] {
+  box-shadow:
+    0 0 0 1px var(--color-panel-solid),
+    0 0 0 3px rgba(88, 183, 138, 0.25),
+    0 1px 2px var(--gray-a6) !important;
+}
+
+.agent-builder-flow .react-flow__handle.agent-builder-node-handle[data-connected="true"][data-handle-kind="conditional-fail"] {
+  box-shadow:
+    0 0 0 1px var(--color-panel-solid),
+    0 0 0 3px rgba(217, 137, 137, 0.24),
+    0 1px 2px var(--gray-a6) !important;
 }
 
 /* Delete control on generic flow nodes: hidden until hover/focus within the card */

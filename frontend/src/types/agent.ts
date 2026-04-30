@@ -321,6 +321,8 @@ export interface AgentFormData {
     nodes: any[];
     edges: any[];
   };
+  flowSchemaVersion?: number;
+  orchestrationMode?: 'single' | 'linear' | 'conditional';
   // New graph-based fields
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];

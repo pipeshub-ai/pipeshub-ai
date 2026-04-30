@@ -16,7 +16,12 @@ from uuid import uuid4
 
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
 from fastapi.responses import StreamingResponse
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from html_to_markdown import convert as _html_convert  # type: ignore[import-untyped]
+
+def html_to_markdown(html: str) -> str:
+    """Wrap html_to_markdown.convert to return a plain string."""
+    result = _html_convert(html)
+    return result.content if hasattr(result, 'content') else str(result)
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (

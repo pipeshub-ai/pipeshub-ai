@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -101,8 +102,9 @@ class TestCreateLogger:
         logger.handlers.clear()
 
     def test_logger_has_handlers(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_handlers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_handlers")
         assert len(logger.handlers) >= 2  # file + console
         handler_types = [type(h) for h in logger.handlers]
         assert logging.FileHandler in handler_types
@@ -160,8 +162,9 @@ class TestCreateLogger:
         logger1.handlers.clear()
 
     def test_file_handler_uses_utf8(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_utf8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_utf8")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert file_handlers[0].encoding == "utf-8"
@@ -179,8 +182,9 @@ class TestCreateLogger:
         logger.handlers.clear()
 
     def test_file_handler_path(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_path")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_path")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert "test_service_path.log" in file_handlers[0].baseFilename

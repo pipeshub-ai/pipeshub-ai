@@ -19,7 +19,12 @@ import logging
 from pathlib import Path
 from typing import Final, Optional, Union
 from bs4 import BeautifulSoup
-from html_to_markdown import convert
+from html_to_markdown import convert as _html_convert
+
+def convert(html: str) -> str:
+    """Wrap html_to_markdown.convert to return a plain string."""
+    result = _html_convert(html)
+    return result.content if hasattr(result, 'content') else str(result)
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
