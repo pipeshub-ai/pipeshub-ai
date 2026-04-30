@@ -8,6 +8,7 @@ Covers:
 * All decorated tool methods (success, failure, exception paths)
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,9 @@ import pytest
 
 from app.agents.actions.slack.config import SlackResponse
 from app.agents.actions.slack.slack import (
+    SLACK_MENTION_RE,
+    USER_ID_PREFIXES,
+    USER_LOOKUP_CONCURRENCY,
     AddReactionInput,
     AmbiguousUserError,
     CreateChannelInput,
@@ -65,6 +69,11 @@ def _build_slack() -> Slack:
     set per-method AsyncMock return values."""
     slack = Slack.__new__(Slack)
     slack.client = MagicMock()
+    # Match `Slack.__init__`: the resolution helpers expect these caches and
+    # the shared lookup semaphore to exist on the instance.
+    slack._user_cache = {}
+    slack._channel_cache = {}
+    slack._lookup_sem = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
     return slack
 
 
@@ -1453,14 +1462,18 @@ class TestGetChannelHistory:
         slack.client.conversations_history = AsyncMock(
             return_value=_ok({"messages": []})
         )
+        # ISO 8601 dates are converted to Slack epoch-string format before
+        # being forwarded to conversations_history.
+        oldest_iso = "2023-11-14T22:13:20Z"   # 1700000000
+        latest_iso = "2023-11-15T12:06:40Z"   # 1700050000
         with patch.object(
             slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
         ):
             await slack.get_channel_history(
                 "C1234ABCD",
                 limit=5,
-                oldest="1700000000.000000",
-                latest="1700050000.000000",
+                oldest=oldest_iso,
+                latest=latest_iso,
                 inclusive=True,
             )
         slack.client.conversations_history.assert_awaited_once_with(
@@ -2219,7 +2232,10 @@ class TestScheduleMessage:
         with patch.object(
             slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
         ):
-            ok, _ = await slack.schedule_message("#general", "**hi**", "1234567890")
+            # ISO 8601 datetime gets converted to int epoch seconds.
+            ok, _ = await slack.schedule_message(
+                "#general", "**hi**", "2009-02-13T23:31:30Z"  # 1234567890
+            )
         assert ok is True
         kwargs = slack.client.chat_schedule_message.await_args.kwargs
         assert kwargs["post_at"] == 1234567890
@@ -2234,8 +2250,8 @@ class TestScheduleMessage:
         ):
             ok, payload = await slack.schedule_message("C1234ABCD", "hi", "not-a-number")
         assert ok is False
-        # int("not-a-number") raises ValueError → wrapped as error
-        assert "invalid literal" in json.loads(payload)["error"]
+        # `not-a-number` fails ISO 8601 parsing → SlackDateError surfaced.
+        assert "Invalid date" in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -2914,14 +2930,16 @@ class TestGetThreadReplies:
         slack.client.conversations_replies = AsyncMock(
             return_value=_ok({"messages": []})
         )
-        await slack.get_thread_replies(
-            "C1",
-            "1.0",
-            limit=15,
-            oldest="1700000000.000000",
-            latest="1700050000.000000",
-            inclusive=True,
-        )
+        # ISO 8601 dates get converted to Slack epoch-string format.
+        with patch.object(slack, "_resolve_channel", AsyncMock(return_value="C1")):
+            await slack.get_thread_replies(
+                "C1",
+                "1.0",
+                limit=15,
+                oldest="2023-11-14T22:13:20Z",  # 1700000000
+                latest="2023-11-15T12:06:40Z",  # 1700050000
+                inclusive=True,
+            )
         kwargs = slack.client.conversations_replies.await_args.kwargs
         assert kwargs == {
             "channel": "C1",
@@ -2938,7 +2956,8 @@ class TestGetThreadReplies:
         slack.client.conversations_replies = AsyncMock(
             return_value=_ok({"messages": []})
         )
-        await slack.get_thread_replies("C1", "1.0", limit=5)
+        with patch.object(slack, "_resolve_channel", AsyncMock(return_value="C1")):
+            await slack.get_thread_replies("C1", "1.0", limit=5)
         kwargs = slack.client.conversations_replies.await_args.kwargs
         assert "oldest" not in kwargs
         assert "latest" not in kwargs
@@ -2999,3 +3018,1720 @@ class TestUploadFileToChannel:
             )
         assert ok is False
         assert "boom" in json.loads(payload)["error"]
+
+
+# ===========================================================================
+# Module-level helpers introduced for ID-resolution / date enrichment
+# ===========================================================================
+
+from app.agents.actions.slack.slack import (  # noqa: E402
+    SlackDateError,
+    _add_iso_date_sibling,
+    _is_user_id,
+    _iso_to_slack_post_at,
+    _iso_to_slack_ts,
+    _slack_ts_to_iso,
+)
+
+
+class TestIsUserId:
+    def test_u_prefix_accepted(self):
+        assert _is_user_id("U123ABC456") is True
+
+    def test_w_prefix_accepted_for_enterprise_grid(self):
+        # Per https://docs.slack.dev/reference/methods/reactions.get
+        assert _is_user_id("W0ABCDE123") is True
+
+    def test_b_prefix_rejected_bot_ids_must_not_hit_users_info(self):
+        assert _is_user_id("B01ABCD23") is False
+
+    def test_channel_prefixes_rejected(self):
+        for cid in ("C1234ABCD", "G1234ABCD", "D1234ABCD"):
+            assert _is_user_id(cid) is False
+
+    def test_short_string_rejected(self):
+        assert _is_user_id("U123") is False
+
+    def test_non_string_returns_false(self):
+        for value in (None, 123, 12.5, ["U123ABC456"], {"id": "U123ABC456"}):
+            assert _is_user_id(value) is False
+
+    def test_lowercase_prefix_rejected(self):
+        assert _is_user_id("u123ABC456") is False
+
+    def test_user_id_prefixes_constant(self):
+        assert USER_ID_PREFIXES == ('U', 'W')
+
+
+class TestSlackMentionRe:
+    def test_matches_u_and_w_prefix(self):
+        text = "ping <@U0ABC1234> and <@W0XYZ9876>"
+        assert SLACK_MENTION_RE.findall(text) == ["U0ABC1234", "W0XYZ9876"]
+
+    def test_does_not_match_bot_or_channel_ids(self):
+        text = "<@B01> <@C123> <@D9>"
+        assert SLACK_MENTION_RE.findall(text) == []
+
+
+class TestSlackDateError:
+    def test_subclass_of_value_error(self):
+        # SlackDateError extends ValueError so callers can catch broadly.
+        assert issubclass(SlackDateError, ValueError)
+
+
+class TestIsoToSlackTs:
+    def test_none_returns_none(self):
+        assert _iso_to_slack_ts(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert _iso_to_slack_ts("") is None
+        assert _iso_to_slack_ts("   ") is None
+
+    def test_date_only_treated_as_midnight_utc(self):
+        # 2023-11-14 00:00:00 UTC == epoch 1699920000
+        assert _iso_to_slack_ts("2023-11-14") == "1699920000.000000"
+
+    def test_naive_datetime_treated_as_utc(self):
+        # 2023-11-14T22:13:20 UTC == 1700000000
+        assert _iso_to_slack_ts("2023-11-14T22:13:20") == "1700000000.000000"
+
+    def test_uppercase_z_suffix_normalized(self):
+        assert _iso_to_slack_ts("2023-11-14T22:13:20Z") == "1700000000.000000"
+
+    def test_lowercase_z_suffix_normalized(self):
+        assert _iso_to_slack_ts("2023-11-14T22:13:20z") == "1700000000.000000"
+
+    def test_explicit_offset_respected(self):
+        # 22:13:20 +05:30 == 16:43:20 UTC; 2023-11-14T16:43:20Z == 1699980200
+        result = _iso_to_slack_ts("2023-11-14T22:13:20+05:30")
+        assert result == "1699980200.000000"
+
+    def test_invalid_input_raises_slack_date_error(self):
+        with pytest.raises(SlackDateError) as exc_info:
+            _iso_to_slack_ts("not-a-date")
+        assert "Invalid date 'not-a-date'" in str(exc_info.value)
+
+    def test_raw_epoch_string_rejected(self):
+        # Must NOT silently treat raw epoch as valid — that would mask a
+        # caller bug given the new ISO contract.
+        with pytest.raises(SlackDateError):
+            _iso_to_slack_ts("1700000000.000000")
+
+    def test_strips_surrounding_whitespace(self):
+        assert _iso_to_slack_ts("  2023-11-14  ") == "1699920000.000000"
+
+
+class TestIsoToSlackPostAt:
+    def test_none_returns_none(self):
+        assert _iso_to_slack_post_at(None) is None
+
+    def test_empty_returns_none(self):
+        assert _iso_to_slack_post_at("") is None
+
+    def test_returns_int_seconds_no_fractional(self):
+        # Slack's chat.scheduleMessage rejects fractional seconds.
+        result = _iso_to_slack_post_at("2023-11-14T22:13:20Z")
+        assert result == 1700000000
+        assert isinstance(result, int)
+
+    def test_invalid_propagates_slack_date_error(self):
+        with pytest.raises(SlackDateError):
+            _iso_to_slack_post_at("not-a-date")
+
+
+class TestSlackTsToIso:
+    def test_none_returns_none(self):
+        assert _slack_ts_to_iso(None) is None
+
+    def test_string_epoch_converted(self):
+        assert _slack_ts_to_iso("1700000000.000000") == "2023-11-14T22:13:20Z"
+
+    def test_int_epoch_converted(self):
+        assert _slack_ts_to_iso(1700000000) == "2023-11-14T22:13:20Z"
+
+    def test_float_epoch_converted(self):
+        assert _slack_ts_to_iso(1700000000.0) == "2023-11-14T22:13:20Z"
+
+    def test_zero_returns_none(self):
+        # Slack uses 0 as a sentinel for "no value" (e.g. last_read on
+        # never-read channels). Treat as missing rather than 1970-01-01.
+        assert _slack_ts_to_iso(0) is None
+
+    def test_negative_returns_none(self):
+        assert _slack_ts_to_iso(-1) is None
+
+    def test_non_numeric_string_returns_none(self):
+        assert _slack_ts_to_iso("abc") is None
+
+    def test_non_numeric_object_returns_none(self):
+        assert _slack_ts_to_iso(object()) is None
+
+    def test_overflow_returns_none(self):
+        # Year 50000 — out of range for fromtimestamp on most platforms.
+        assert _slack_ts_to_iso(10**15) is None
+
+
+class TestAddIsoDateSibling:
+    def test_missing_field_is_noop(self):
+        d = {"a": 1}
+        _add_iso_date_sibling(d, "ts")
+        assert d == {"a": 1}
+
+    def test_unparseable_value_is_noop(self):
+        d = {"ts": "not-a-number"}
+        _add_iso_date_sibling(d, "ts")
+        assert "ts_date" not in d
+
+    def test_zero_value_is_noop(self):
+        d = {"last_read": "0"}
+        _add_iso_date_sibling(d, "last_read")
+        assert "last_read_date" not in d
+
+    def test_valid_epoch_adds_sibling(self):
+        d = {"ts": "1700000000.000000"}
+        _add_iso_date_sibling(d, "ts")
+        assert d["ts"] == "1700000000.000000"  # original preserved
+        assert d["ts_date"] == "2023-11-14T22:13:20Z"
+
+    def test_existing_sibling_not_overwritten(self):
+        # Idempotent: re-running enrichment must not clobber a manually-set
+        # sibling, otherwise repeated calls would lose precision.
+        d = {"ts": "1700000000.000000", "ts_date": "manual"}
+        _add_iso_date_sibling(d, "ts")
+        assert d["ts_date"] == "manual"
+
+
+# ===========================================================================
+# _resolve_user_ids — bulk user-ID resolution with cache + fallback
+# ===========================================================================
+
+class TestResolveUserIds:
+    @pytest.mark.asyncio
+    async def test_empty_set_short_circuits_no_api_call(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        result = await slack._resolve_user_ids(set())
+        assert result == {}
+        slack.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_populates_display_name_real_name_email(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {
+                "id": "U1",
+                "name": "alice",
+                "real_name": "Alice One",
+                "profile": {"display_name": "alice_d", "email": "a@x.com"},
+            }
+        }))
+        result = await slack._resolve_user_ids({"U123ABC456"})
+        assert result == {
+            "U123ABC456": {
+                "display_name": "alice_d",
+                "real_name": "Alice One",
+                "email": "a@x.com",
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_display_name_falls_back_through_chain(self):
+        slack = _build_slack()
+        # No display_name in profile, no real_name → fallback to user.name
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "bob", "profile": {}}
+        }))
+        result = await slack._resolve_user_ids({"U123ABC456"})
+        assert result["U123ABC456"]["display_name"] == "bob"
+
+    @pytest.mark.asyncio
+    async def test_display_name_falls_back_to_id_when_all_missing(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"profile": {}}
+        }))
+        result = await slack._resolve_user_ids({"U123ABC456"})
+        assert result["U123ABC456"]["display_name"] == "U123ABC456"
+
+    @pytest.mark.asyncio
+    async def test_failure_falls_back_to_id(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=RuntimeError("net"))
+        result = await slack._resolve_user_ids({"U123ABC456"})
+        # Still returns an entry so callers don't need a None-check.
+        assert result == {
+            "U123ABC456": {"display_name": "U123ABC456", "real_name": None, "email": None}
+        }
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_api_call(self):
+        slack = _build_slack()
+        slack._user_cache["U123ABC456"] = {
+            "display_name": "cached", "real_name": None, "email": None,
+        }
+        slack.client.users_info = AsyncMock()
+        result = await slack._resolve_user_ids({"U123ABC456"})
+        slack.client.users_info.assert_not_awaited()
+        assert result["U123ABC456"]["display_name"] == "cached"
+
+    @pytest.mark.asyncio
+    async def test_only_misses_fetched(self):
+        slack = _build_slack()
+        slack._user_cache["U1AAAAAAA"] = {
+            "display_name": "cached", "real_name": None, "email": None,
+        }
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U2", "name": "fetched", "profile": {}}
+        }))
+        result = await slack._resolve_user_ids({"U1AAAAAAA", "U2BBBBBBB"})
+        # Only the cache miss triggered a fetch.
+        assert slack.client.users_info.await_count == 1
+        slack.client.users_info.assert_awaited_with(user="U2BBBBBBB")
+        assert result["U1AAAAAAA"]["display_name"] == "cached"
+        assert result["U2BBBBBBB"]["display_name"] == "fetched"
+
+    @pytest.mark.asyncio
+    async def test_failure_does_not_poison_cache(self):
+        # Negative results must NOT be cached — otherwise a transient
+        # users_info failure would permanently surface the raw ID as the
+        # display name. The next call must get a fresh chance to resolve.
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=[
+            RuntimeError("transient"),
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice"}}}),
+        ])
+        first = await slack._resolve_user_ids({"U123ABC456"})
+        assert first["U123ABC456"]["display_name"] == "U123ABC456"
+        # Cache should still be empty — the failure was not memoised.
+        assert "U123ABC456" not in slack._user_cache
+
+        second = await slack._resolve_user_ids({"U123ABC456"})
+        assert second["U123ABC456"]["display_name"] == "alice"
+        assert slack.client.users_info.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_success_populates_cache_for_subsequent_calls(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        await slack._resolve_user_ids({"U123ABC456"})
+        # Second call hits the cache, not the API.
+        await slack._resolve_user_ids({"U123ABC456"})
+        assert slack.client.users_info.await_count == 1
+        assert slack._user_cache["U123ABC456"]["display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_uses_instance_lookup_semaphore(self):
+        # The semaphore must come from the instance attribute so a parallel
+        # _enrich_messages gather doesn't double the burst by spinning up
+        # one semaphore per call site.
+        slack = _build_slack()
+        # Replace with a 1-permit semaphore to make contention observable.
+        slack._lookup_sem = asyncio.Semaphore(1)
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        result = await slack._resolve_user_ids({"U1AAAAAAA", "U2BBBBBBB"})
+        # Both resolved through the shared semaphore.
+        assert slack.client.users_info.await_count == 2
+        assert {k for k in result} == {"U1AAAAAAA", "U2BBBBBBB"}
+
+
+# ===========================================================================
+# _resolve_channel_ids — bulk channel-ID resolution
+# ===========================================================================
+
+class TestResolveChannelIds:
+    @pytest.mark.asyncio
+    async def test_empty_set_short_circuits(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock()
+        result = await slack._resolve_channel_ids(set())
+        assert result == {}
+        slack.client.conversations_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_named_channel_resolved(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general"}
+        }))
+        result = await slack._resolve_channel_ids({"C1234ABCD"})
+        assert result == {"C1234ABCD": "general"}
+
+    @pytest.mark.asyncio
+    async def test_im_without_name_uses_dm_partner_label(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "D1", "is_im": True, "user": "U9"}
+        }))
+        result = await slack._resolve_channel_ids({"D1234ABCD"})
+        assert result == {"D1234ABCD": "DM:U9"}
+
+    @pytest.mark.asyncio
+    async def test_im_without_name_or_partner_falls_back_to_id(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "D1", "is_im": True}
+        }))
+        result = await slack._resolve_channel_ids({"D1234ABCD"})
+        assert result == {"D1234ABCD": "D1234ABCD"}
+
+    @pytest.mark.asyncio
+    async def test_failure_falls_back_to_id(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(side_effect=RuntimeError("nope"))
+        result = await slack._resolve_channel_ids({"C1234ABCD"})
+        assert result == {"C1234ABCD": "C1234ABCD"}
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_api_call(self):
+        slack = _build_slack()
+        slack._channel_cache["C1234ABCD"] = "cached-name"
+        slack.client.conversations_info = AsyncMock()
+        result = await slack._resolve_channel_ids({"C1234ABCD"})
+        slack.client.conversations_info.assert_not_awaited()
+        assert result["C1234ABCD"] == "cached-name"
+
+    @pytest.mark.asyncio
+    async def test_failure_does_not_poison_cache(self):
+        # Same retry semantics as _resolve_user_ids — a failed
+        # conversations_info must not bake the raw ID into the cache.
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(side_effect=[
+            RuntimeError("transient"),
+            _ok({"channel": {"id": "C1", "name": "general"}}),
+        ])
+        first = await slack._resolve_channel_ids({"C1234ABCD"})
+        assert first["C1234ABCD"] == "C1234ABCD"
+        assert "C1234ABCD" not in slack._channel_cache
+
+        second = await slack._resolve_channel_ids({"C1234ABCD"})
+        assert second["C1234ABCD"] == "general"
+        assert slack.client.conversations_info.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_success_populates_cache_for_subsequent_calls(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general"}
+        }))
+        await slack._resolve_channel_ids({"C1234ABCD"})
+        await slack._resolve_channel_ids({"C1234ABCD"})
+        assert slack.client.conversations_info.await_count == 1
+        assert slack._channel_cache["C1234ABCD"] == "general"
+
+    @pytest.mark.asyncio
+    async def test_shares_lookup_sem_with_user_resolver(self):
+        # _resolve_user_ids and _resolve_channel_ids must drain the same
+        # semaphore so the effective concurrency cap holds even when both
+        # resolvers run concurrently inside one _enrich_messages pass.
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general"}
+        }))
+        # Sentinel: both resolvers must use this exact instance, not a
+        # newly-allocated one per call.
+        sentinel = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
+        slack._lookup_sem = sentinel
+        await asyncio.gather(
+            slack._resolve_user_ids({"U123ABC456"}),
+            slack._resolve_channel_ids({"C1234ABCD"}),
+        )
+        assert slack._lookup_sem is sentinel
+
+
+# ===========================================================================
+# _collect_user_ids_from_message
+# ===========================================================================
+
+class TestCollectUserIdsFromMessage:
+    def test_non_dict_no_op(self):
+        ids: set = set()
+        slack = _build_slack()
+        slack._collect_user_ids_from_message("not a dict", ids)
+        slack._collect_user_ids_from_message(None, ids)
+        assert ids == set()
+
+    def test_collects_text_mentions(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"text": "hi <@U123ABC456> and <@W999XYZ12>"}, ids
+        )
+        assert ids == {"U123ABC456", "W999XYZ12"}
+
+    def test_collects_user_and_parent_user_id(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"user": "U123ABC456", "parent_user_id": "U999XYZ12"}, ids
+        )
+        assert ids == {"U123ABC456", "U999XYZ12"}
+
+    def test_skips_bot_user_field(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message({"user": "B01BOT123"}, ids)
+        assert ids == set()
+
+    def test_collects_replies_user(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"replies": [{"user": "U1AAAAAAA"}, {"user": "U2BBBBBBB"}]}, ids
+        )
+        assert ids == {"U1AAAAAAA", "U2BBBBBBB"}
+
+    def test_collects_reply_users_roster(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"reply_users": ["U1AAAAAAA", "B01BOT123", "U2BBBBBBB"]}, ids
+        )
+        # Bot ID filtered out by _is_user_id.
+        assert ids == {"U1AAAAAAA", "U2BBBBBBB"}
+
+    def test_collects_reactions_users(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"reactions": [{"name": "tada", "users": ["U1AAAAAAA", "U2BBBBBBB"]}]},
+            ids,
+        )
+        assert ids == {"U1AAAAAAA", "U2BBBBBBB"}
+
+    def test_collects_files_user(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"files": [{"user": "U1AAAAAAA"}, {"user": "U2BBBBBBB"}]}, ids
+        )
+        assert ids == {"U1AAAAAAA", "U2BBBBBBB"}
+
+    def test_collects_edited_user(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {"edited": {"user": "U1AAAAAAA", "ts": "1.0"}}, ids
+        )
+        assert ids == {"U1AAAAAAA"}
+
+    def test_collects_room_fields(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_user_ids_from_message(
+            {
+                "subtype": "huddle_thread",
+                "room": {
+                    "created_by": "U1AAAAAAA",
+                    "participant_history": ["U2BBBBBBB", "U3CCCCCCC"],
+                },
+            },
+            ids,
+        )
+        assert ids == {"U1AAAAAAA", "U2BBBBBBB", "U3CCCCCCC"}
+
+    def test_handles_none_lists_gracefully(self):
+        slack = _build_slack()
+        ids: set = set()
+        # Slack often returns None instead of [] for absent collections.
+        slack._collect_user_ids_from_message(
+            {"replies": None, "reply_users": None, "reactions": None,
+             "files": None, "edited": None, "room": None},
+            ids,
+        )
+        assert ids == set()
+
+
+# ===========================================================================
+# _collect_channel_ids_from_message
+# ===========================================================================
+
+class TestCollectChannelIdsFromMessage:
+    def test_non_dict_no_op(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_channel_ids_from_message("nope", ids)
+        assert ids == set()
+
+    def test_collects_top_level_channel(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_channel_ids_from_message({"channel": "C1234ABCD"}, ids)
+        assert ids == {"C1234ABCD"}
+
+    def test_skips_user_id_in_channel_field(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_channel_ids_from_message({"channel": "U123ABC456"}, ids)
+        # User-ID prefix → not a channel.
+        assert ids == set()
+
+    def test_collects_room_channels(self):
+        slack = _build_slack()
+        ids: set = set()
+        slack._collect_channel_ids_from_message(
+            {"room": {"channels": ["C1AAAAAAA", "G2BBBBBBB", "D3CCCCCCC", "X4DDDDDDD"]}},
+            ids,
+        )
+        # X-prefix is not a channel — filtered out.
+        assert ids == {"C1AAAAAAA", "G2BBBBBBB", "D3CCCCCCC"}
+
+
+# ===========================================================================
+# _apply_resolution_to_message
+# ===========================================================================
+
+class TestApplyResolutionToMessage:
+    def test_non_dict_returned_as_is(self):
+        slack = _build_slack()
+        assert slack._apply_resolution_to_message("not-a-msg", {}, {}) == "not-a-msg"
+        assert slack._apply_resolution_to_message(None, {}, {}) is None
+
+    def test_resolves_text_mentions_and_emits_meta(self):
+        slack = _build_slack()
+        msg = {"text": "hi <@U123ABC456>"}
+        out = slack._apply_resolution_to_message(
+            msg,
+            {"U123ABC456": "alice"},
+            {"U123ABC456": "a@x.com"},
+        )
+        assert out["resolved_text"] == "hi @alice"
+        assert out["mentions"] == [
+            {"id": "U123ABC456", "display_name": "alice", "email": "a@x.com"}
+        ]
+
+    def test_unresolved_mention_kept_as_id_in_resolved_text(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"text": "hi <@U123ABC456>"}, {}, {}
+        )
+        assert out["resolved_text"] == "hi @U123ABC456"
+        assert out["mentions"] == [
+            {"id": "U123ABC456", "display_name": None, "email": None}
+        ]
+
+    def test_no_mentions_no_meta_field(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message({"text": "hi"}, {}, {})
+        assert "mentions" not in out
+
+    def test_author_email_only_added_when_mapping_exists(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"user": "U123ABC456"},
+            {"U123ABC456": "alice"},
+            {},  # no email mapping
+        )
+        assert out["user_display_name"] == "alice"
+        assert "user_email" not in out
+
+    def test_parent_user_display_name(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"parent_user_id": "U123ABC456"},
+            {"U123ABC456": "alice"},
+            {},
+        )
+        assert out["parent_user_display_name"] == "alice"
+
+    def test_replies_get_user_display_name_and_ts_date(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"replies": [{"user": "U123ABC456", "ts": "1700000000.000000"}]},
+            {"U123ABC456": "alice"},
+            {},
+        )
+        rep = out["replies"][0]
+        assert rep["user_display_name"] == "alice"
+        assert rep["ts_date"] == "2023-11-14T22:13:20Z"
+
+    def test_reply_users_display_names(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"reply_users": ["U1AAAAAAA", "U2BBBBBBB"]},
+            {"U1AAAAAAA": "alice"},  # only one resolved
+            {},
+        )
+        # Unresolved IDs fall through unchanged.
+        assert out["reply_users_display_names"] == ["alice", "U2BBBBBBB"]
+
+    def test_channel_name_added_from_lookup(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"channel": "C1234ABCD"},
+            {},
+            {},
+            channel_id_to_name={"C1234ABCD": "general"},
+        )
+        assert out["channel_name"] == "general"
+
+    def test_reactions_users_display_names(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"reactions": [
+                {"name": "tada", "users": ["U1AAAAAAA", "U2BBBBBBB"]}
+            ]},
+            {"U1AAAAAAA": "alice", "U2BBBBBBB": "bob"},
+            {},
+        )
+        assert out["reactions"][0]["user_display_names"] == ["alice", "bob"]
+
+    def test_files_user_display_name_and_iso_dates(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"files": [{"user": "U1", "created": 1700000000, "timestamp": 1700000000}]},
+            {"U1": "alice"},
+            {"U1": "a@x.com"},
+        )
+        # Note: U1 is too short to be _is_user_id, but apply_resolution doesn't
+        # filter — it just looks up. Since U1 is NOT in id_to_name, it stays raw.
+        # Use a valid-length id instead.
+        assert out["files"][0].get("user_display_name") is None
+
+    def test_files_full_resolution(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"files": [{
+                "user": "U1AAAAAAA",
+                "created": 1700000000,
+                "timestamp": "1700000000.000000",
+                "updated": 1700000000,
+            }]},
+            {"U1AAAAAAA": "alice"},
+            {"U1AAAAAAA": "a@x.com"},
+        )
+        f = out["files"][0]
+        assert f["user_display_name"] == "alice"
+        assert f["user_email"] == "a@x.com"
+        assert f["created_date"] == "2023-11-14T22:13:20Z"
+        assert f["timestamp_date"] == "2023-11-14T22:13:20Z"
+        assert f["updated_date"] == "2023-11-14T22:13:20Z"
+
+    def test_edited_user_display_name_and_ts_date(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"edited": {"user": "U1AAAAAAA", "ts": "1700000000.000000"}},
+            {"U1AAAAAAA": "alice"},
+            {},
+        )
+        assert out["edited"]["user_display_name"] == "alice"
+        assert out["edited"]["ts_date"] == "2023-11-14T22:13:20Z"
+
+    def test_room_resolution(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {
+                "subtype": "huddle_thread",
+                "room": {
+                    "created_by": "U1AAAAAAA",
+                    "participant_history": ["U1AAAAAAA", "U2BBBBBBB"],
+                    "channels": ["C1AAAAAAA"],
+                    "date_start": 1700000000,
+                },
+            },
+            {"U1AAAAAAA": "alice", "U2BBBBBBB": "bob"},
+            {},
+            channel_id_to_name={"C1AAAAAAA": "general"},
+        )
+        room = out["room"]
+        assert room["created_by_display_name"] == "alice"
+        assert room["participant_history_display_names"] == ["alice", "bob"]
+        assert room["channel_names"] == ["general"]
+        assert room["date_start_date"] == "2023-11-14T22:13:20Z"
+
+    def test_top_level_epoch_fields_get_iso_siblings(self):
+        slack = _build_slack()
+        out = slack._apply_resolution_to_message(
+            {"ts": "1700000000.000000", "thread_ts": "1700000000.000000"},
+            {},
+            {},
+        )
+        assert out["ts_date"] == "2023-11-14T22:13:20Z"
+        assert out["thread_ts_date"] == "2023-11-14T22:13:20Z"
+
+    def test_input_message_not_mutated(self):
+        slack = _build_slack()
+        msg = {"text": "<@U1AAAAAAA>", "user": "U1AAAAAAA"}
+        slack._apply_resolution_to_message(
+            msg, {"U1AAAAAAA": "alice"}, {}
+        )
+        # Returned a shallow copy; original is untouched.
+        assert "resolved_text" not in msg
+        assert "user_display_name" not in msg
+
+
+# ===========================================================================
+# _enrich_reactable — shared helper extracted in commit a7cc01ff
+# ===========================================================================
+
+class TestEnrichReactable:
+    @pytest.mark.asyncio
+    async def test_no_user_ids_returns_input_unchanged(self):
+        # Bare-text comment with no user fields → return identity (not even
+        # a copy). The caller relies on this to skip writing back.
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        obj = {"comment": "a string", "reactions": []}
+        out = await slack._enrich_reactable(obj)
+        assert out is obj
+        slack.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_top_level_user_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        out = await slack._enrich_reactable({"user": "U1AAAAAAA"})
+        assert out["user_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_reaction_user_lists_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=[
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice"}}}),
+            _ok({"user": {"id": "U2", "name": "bob",
+                          "profile": {"display_name": "bob"}}}),
+        ])
+        out = await slack._enrich_reactable({
+            "reactions": [
+                {"name": "tada", "users": ["U1AAAAAAA", "U2BBBBBBB"]}
+            ]
+        })
+        assert out["reactions"][0]["user_display_names"] == ["alice", "bob"]
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_users_kept_as_id_in_display_names(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=RuntimeError("net"))
+        # One ID is U-prefix (will be looked up but fail); the other is a
+        # bot ID that _is_user_id rejects and should be passed through raw.
+        out = await slack._enrich_reactable({
+            "user": "U1AAAAAAA",
+            "reactions": [
+                {"name": "tada", "users": ["U1AAAAAAA", "B01BOT123"]}
+            ],
+        })
+        # No display_name added when resolution fails.
+        assert "user_display_name" not in out
+        assert out["reactions"][0]["user_display_names"] == [
+            "U1AAAAAAA", "B01BOT123",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_input_not_mutated(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        original = {
+            "user": "U1AAAAAAA",
+            "reactions": [{"name": "tada", "users": ["U1AAAAAAA"]}],
+        }
+        out = await slack._enrich_reactable(original)
+        # Returned object is a copy with the enrichment fields.
+        assert out is not original
+        assert "user_display_name" not in original
+        assert "user_display_names" not in original["reactions"][0]
+        assert out["user_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_reaction_entries_passed_through(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        out = await slack._enrich_reactable({
+            "user": "U1AAAAAAA",
+            "reactions": ["weird", {"name": "tada", "users": ["U1AAAAAAA"]}],
+        })
+        assert out["reactions"][0] == "weird"
+        assert out["reactions"][1]["user_display_names"] == ["alice"]
+
+
+# ===========================================================================
+# _enrich_messages
+# ===========================================================================
+
+class TestEnrichMessages:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self):
+        slack = _build_slack()
+        assert await slack._enrich_messages([]) == []
+        assert await slack._enrich_messages(None) == []
+
+    @pytest.mark.asyncio
+    async def test_resolves_user_and_channel_ids_in_one_pass(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice", "profile": {"display_name": "alice"}}
+        }))
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general"}
+        }))
+        out = await slack._enrich_messages([
+            {"user": "U1AAAAAAA", "channel": "C1AAAAAAA", "text": "hello"}
+        ])
+        assert out[0]["user_display_name"] == "alice"
+        assert out[0]["channel_name"] == "general"
+
+
+# ===========================================================================
+# _resolve_user_id_list
+# ===========================================================================
+
+class TestResolveUserIdList:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self):
+        slack = _build_slack()
+        assert await slack._resolve_user_id_list([]) == []
+        assert await slack._resolve_user_id_list(None) == []
+
+    @pytest.mark.asyncio
+    async def test_preserves_order_and_skips_non_strings(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=[
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice", "email": "a@x.com"}}}),
+            _ok({"user": {"id": "U2", "name": "bob",
+                          "profile": {"display_name": "bob"}}}),
+        ])
+        out = await slack._resolve_user_id_list(
+            ["U1AAAAAAA", 42, None, "U2BBBBBBB"]  # type: ignore[list-item]
+        )
+        ids = [entry["id"] for entry in out]
+        assert ids == ["U1AAAAAAA", "U2BBBBBBB"]
+        # Every entry has display_name (falls back to id for non-resolvable).
+        assert all(entry["display_name"] for entry in out)
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_id_falls_back_to_id_as_display(self):
+        slack = _build_slack()
+        # Non-user-id string is kept in the output but not resolved.
+        out = await slack._resolve_user_id_list(["bot-name"])
+        assert out == [
+            {"id": "bot-name", "display_name": "bot-name",
+             "real_name": None, "email": None}
+        ]
+
+
+# ===========================================================================
+# _enrich_pin_items
+# ===========================================================================
+
+class TestEnrichPinItems:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self):
+        slack = _build_slack()
+        assert await slack._enrich_pin_items([]) == []
+        assert await slack._enrich_pin_items(None) == []
+
+    @pytest.mark.asyncio
+    async def test_message_pin_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        items = [{
+            "type": "message",
+            "created": 1700000000,
+            "created_by": "U1AAAAAAA",
+            "message": {"user": "U1AAAAAAA", "text": "hi"},
+        }]
+        out = await slack._enrich_pin_items(items)
+        item = out[0]
+        assert item["created_by_display_name"] == "alice"
+        assert item["created_date"] == "2023-11-14T22:13:20Z"
+        assert item["message"]["user_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_file_pin_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice", "email": "a@x.com"}}
+        }))
+        items = [{
+            "type": "file",
+            "file": {"user": "U1AAAAAAA", "created": 1700000000},
+        }]
+        out = await slack._enrich_pin_items(items)
+        f = out[0]["file"]
+        assert f["user_display_name"] == "alice"
+        assert f["user_email"] == "a@x.com"
+        assert f["created_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_file_comment_pin_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        items = [{
+            "type": "file_comment",
+            "comment": {"user": "U1AAAAAAA", "created": 1700000000},
+        }]
+        out = await slack._enrich_pin_items(items)
+        c = out[0]["comment"]
+        assert c["user_display_name"] == "alice"
+        assert c["created_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_items_passed_through(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        items = ["not a dict", {"type": "message", "message": {"text": "hi"}}]
+        out = await slack._enrich_pin_items(items)
+        assert out[0] == "not a dict"
+        assert isinstance(out[1], dict)
+
+
+# ===========================================================================
+# _enrich_conversations
+# ===========================================================================
+
+class TestEnrichConversations:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self):
+        slack = _build_slack()
+        assert await slack._enrich_conversations([]) == []
+        assert await slack._enrich_conversations(None) == []
+
+    @pytest.mark.asyncio
+    async def test_im_partner_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U9", "name": "alice",
+                     "profile": {"display_name": "alice", "email": "a@x.com"}}
+        }))
+        out = await slack._enrich_conversations([
+            {"id": "D1", "is_im": True, "user": "U9AAAAAAA", "created": 1700000000}
+        ])
+        c = out[0]
+        assert c["user_display_name"] == "alice"
+        assert c["user_email"] == "a@x.com"
+        assert c["created_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_channel_creator_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        out = await slack._enrich_conversations([
+            {"id": "C1", "name": "general", "creator": "U1AAAAAAA",
+             "latest": {"ts": "1700000000.000000", "text": "hi"}}
+        ])
+        c = out[0]
+        assert c["creator_display_name"] == "alice"
+        # `latest` is a sub-message preview — gets ts_date.
+        assert c["latest"]["ts_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_no_user_ids_still_runs_date_enrichment(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        out = await slack._enrich_conversations([
+            {"id": "C1", "name": "general", "created": 1700000000}
+        ])
+        # No user-ids, so users.info is never called.
+        slack.client.users_info.assert_not_awaited()
+        assert out[0]["created_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_passed_through(self):
+        slack = _build_slack()
+        out = await slack._enrich_conversations(["weird"])
+        assert out == ["weird"]
+
+    @pytest.mark.asyncio
+    async def test_unread_count_display_is_not_treated_as_epoch(self):
+        # `unread_count_display` is a count of unread messages, not an epoch.
+        # Treating it as one (as we used to) yielded nonsense `…_date`
+        # siblings like 1970-01-01T00:00:42Z, which the LLM then misread as
+        # the channel's last activity. Commit a7cc01ff dropped it from
+        # _EPOCH_FIELDS_ON_CONVERSATION.
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        out = await slack._enrich_conversations([
+            {"id": "C1", "name": "general",
+             "created": 1700000000,
+             "unread_count_display": 42,
+             "last_read": "1700000000.000000"},
+        ])
+        c = out[0]
+        # Real epoch fields still get ISO siblings.
+        assert c["created_date"] == "2023-11-14T22:13:20Z"
+        assert c["last_read_date"] == "2023-11-14T22:13:20Z"
+        # The count must NOT get a `_date` sibling.
+        assert "unread_count_display_date" not in c
+        # Original count is preserved.
+        assert c["unread_count_display"] == 42
+
+
+# ===========================================================================
+# _enrich_usergroups
+# ===========================================================================
+
+class TestEnrichUsergroups:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self):
+        slack = _build_slack()
+        assert await slack._enrich_usergroups([]) == []
+        assert await slack._enrich_usergroups(None) == []
+
+    @pytest.mark.asyncio
+    async def test_no_user_ids_passes_through_unchanged(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        groups = [{"id": "S1", "name": "engineering"}]
+        out = await slack._enrich_usergroups(groups)
+        slack.client.users_info.assert_not_awaited()
+        assert out == groups
+
+    @pytest.mark.asyncio
+    async def test_resolves_by_fields_and_users(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(side_effect=[
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice", "email": "a@x.com"}}}),
+            _ok({"user": {"id": "U2", "name": "bob",
+                          "profile": {"display_name": "bob"}}}),
+        ])
+        groups = [{
+            "id": "S1",
+            "created_by": "U1AAAAAAA",
+            "updated_by": "U1AAAAAAA",
+            "users": ["U1AAAAAAA", "U2BBBBBBB"],
+        }]
+        out = await slack._enrich_usergroups(groups)
+        g = out[0]
+        assert g["created_by_display_name"] == "alice"
+        assert g["updated_by_display_name"] == "alice"
+        # `resolved_users` is added alongside the original `users` list.
+        assert g["users"] == ["U1AAAAAAA", "U2BBBBBBB"]
+        assert {u["id"] for u in g["resolved_users"]} == {"U1AAAAAAA", "U2BBBBBBB"}
+
+    @pytest.mark.asyncio
+    async def test_deleted_by_field_resolved(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        out = await slack._enrich_usergroups([{"deleted_by": "U1AAAAAAA"}])
+        assert out[0]["deleted_by_display_name"] == "alice"
+
+
+# ===========================================================================
+# _enrich_search_response
+# ===========================================================================
+
+class TestEnrichSearchResponse:
+    @pytest.mark.asyncio
+    async def test_non_dict_returned_as_is(self):
+        slack = _build_slack()
+        assert await slack._enrich_search_response("not-a-dict") == "not-a-dict"  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_messages_matches_enriched(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        slack.client.conversations_info = AsyncMock()
+        out = await slack._enrich_search_response({
+            "messages": {"matches": [{"user": "U1AAAAAAA", "text": "hi"}]}
+        })
+        assert out["messages"]["matches"][0]["user_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_files_matches_enriched(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice", "email": "a@x.com"}}
+        }))
+        out = await slack._enrich_search_response({
+            "files": {"matches": [{"user": "U1AAAAAAA", "name": "log.txt"}]}
+        })
+        f = out["files"]["matches"][0]
+        assert f["user_display_name"] == "alice"
+        assert f["user_email"] == "a@x.com"
+
+    @pytest.mark.asyncio
+    async def test_files_section_with_no_user_ids_skips_resolve(self):
+        slack = _build_slack()
+        slack.client.users_info = AsyncMock()
+        out = await slack._enrich_search_response({
+            "files": {"matches": [{"name": "log.txt"}]}
+        })
+        slack.client.users_info.assert_not_awaited()
+        assert out["files"]["matches"] == [{"name": "log.txt"}]
+
+
+# ===========================================================================
+# Tool-method changes: ISO date conversion for get_channel_history
+# ===========================================================================
+
+class TestGetChannelHistoryDateConversion:
+    @pytest.mark.asyncio
+    async def test_iso_date_converted_to_slack_ts(self):
+        slack = _build_slack()
+        slack.client.conversations_history = AsyncMock(
+            return_value=_ok({"messages": []})
+        )
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            await slack.get_channel_history("C1", oldest="2023-11-14")
+        kwargs = slack.client.conversations_history.await_args.kwargs
+        assert kwargs["oldest"] == "1699920000.000000"
+        assert kwargs["latest"] is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_oldest_returns_slack_date_error(self):
+        slack = _build_slack()
+        slack.client.conversations_history = AsyncMock()
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_channel_history(
+                "C1", oldest="garbage"
+            )
+        assert ok is False
+        assert "Invalid date 'garbage'" in json.loads(payload)["error"]
+        # Must not call the API after a date-parse failure.
+        slack.client.conversations_history.assert_not_awaited()
+
+
+# ===========================================================================
+# Tool-method changes: get_thread_replies — channel resolution + date conversion
+# ===========================================================================
+
+class TestGetThreadRepliesEnrichment:
+    @pytest.mark.asyncio
+    async def test_resolves_channel_name_to_id(self):
+        slack = _build_slack()
+        slack.client.conversations_replies = AsyncMock(
+            return_value=_ok({"messages": []})
+        )
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
+        ):
+            await slack.get_thread_replies("#bugs", "1.0")
+        kwargs = slack.client.conversations_replies.await_args.kwargs
+        assert kwargs["channel"] == "C1234ABCD"
+
+    @pytest.mark.asyncio
+    async def test_invalid_oldest_returns_error_no_api_call(self):
+        slack = _build_slack()
+        slack.client.conversations_replies = AsyncMock()
+        ok, payload = await slack.get_thread_replies(
+            "C1", "1.0", oldest="garbage"
+        )
+        assert ok is False
+        assert "Invalid date" in json.loads(payload)["error"]
+        slack.client.conversations_replies.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_messages_get_enriched_with_user_display_name(self):
+        slack = _build_slack()
+        slack.client.conversations_replies = AsyncMock(return_value=_ok({
+            "messages": [{"user": "U1AAAAAAA", "text": "hi"}]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_thread_replies("C1", "1.0")
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["messages"][0]["user_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: schedule_message — ISO conversion + post_at_date sibling
+# ===========================================================================
+
+class TestScheduleMessageDateConversion:
+    @pytest.mark.asyncio
+    async def test_iso_with_offset_converted_to_int_epoch(self):
+        slack = _build_slack()
+        slack.client.chat_schedule_message = AsyncMock(return_value=_ok({}))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            await slack.schedule_message(
+                "C1", "hi", "2009-02-14T05:01:30+05:30"  # 1234567890 UTC
+            )
+        kwargs = slack.client.chat_schedule_message.await_args.kwargs
+        assert kwargs["post_at"] == 1234567890
+        assert isinstance(kwargs["post_at"], int)
+
+    @pytest.mark.asyncio
+    async def test_post_at_date_sibling_added_on_success(self):
+        slack = _build_slack()
+        slack.client.chat_schedule_message = AsyncMock(return_value=_ok({
+            "channel": "C1", "scheduled_message_id": "Q1", "post_at": 1700000000
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.schedule_message(
+                "C1", "hi", "2023-11-14T22:13:20Z"
+            )
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["post_at"] == 1700000000
+        assert body["data"]["post_at_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_empty_post_at_returns_required_error(self):
+        slack = _build_slack()
+        slack.client.chat_schedule_message = AsyncMock()
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.schedule_message("C1", "hi", "")
+        assert ok is False
+        assert json.loads(payload)["error"] == "post_at is required"
+        slack.client.chat_schedule_message.assert_not_awaited()
+
+
+# ===========================================================================
+# Tool-method changes: get_unread_messages — channel resolution + enrichment
+# ===========================================================================
+
+class TestGetUnreadMessagesEnrichment:
+    @pytest.mark.asyncio
+    async def test_resolves_channel_name_before_calling_apis(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general", "created": 1700000000}
+        }))
+        slack.client.conversations_history = AsyncMock(return_value=_ok({
+            "messages": []
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
+        ):
+            await slack.get_unread_messages("#general")
+        slack.client.conversations_info.assert_awaited_once_with(
+            channel="C1234ABCD"
+        )
+        slack.client.conversations_history.assert_awaited_once_with(
+            channel="C1234ABCD", limit=50
+        )
+
+    @pytest.mark.asyncio
+    async def test_messages_and_channel_info_get_enriched(self):
+        slack = _build_slack()
+        slack.client.conversations_info = AsyncMock(return_value=_ok({
+            "channel": {"id": "C1", "name": "general",
+                        "creator": "U1AAAAAAA", "created": 1700000000}
+        }))
+        slack.client.conversations_history = AsyncMock(return_value=_ok({
+            "messages": [{"user": "U1AAAAAAA", "text": "hi"}]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_unread_messages("C1")
+        assert ok is True
+        body = json.loads(payload)
+        info = body["data"]["channel_info"]["channel"]
+        assert info["creator_display_name"] == "alice"
+        assert info["created_date"] == "2023-11-14T22:13:20Z"
+        assert body["data"]["recent_messages"][0]["user_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: get_pinned_messages — channel resolution + enrichment
+# ===========================================================================
+
+class TestGetPinnedMessagesEnrichment:
+    @pytest.mark.asyncio
+    async def test_channel_name_resolved_before_pins_list(self):
+        slack = _build_slack()
+        slack.client.pins_list = AsyncMock(return_value=_ok({"items": []}))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
+        ):
+            await slack.get_pinned_messages("#general")
+        slack.client.pins_list.assert_awaited_once_with(channel="C1234ABCD")
+
+    @pytest.mark.asyncio
+    async def test_pin_items_enriched(self):
+        slack = _build_slack()
+        slack.client.pins_list = AsyncMock(return_value=_ok({
+            "items": [{
+                "type": "message",
+                "created": 1700000000,
+                "created_by": "U1AAAAAAA",
+                "message": {"user": "U1AAAAAAA", "text": "hi"},
+            }]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_pinned_messages("C1")
+        assert ok is True
+        item = json.loads(payload)["data"]["items"][0]
+        assert item["created_by_display_name"] == "alice"
+        assert item["message"]["user_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: get_reactions — channel resolution + enrichment branches
+# ===========================================================================
+
+class TestGetReactionsEnrichment:
+    @pytest.mark.asyncio
+    async def test_channel_name_resolved(self):
+        slack = _build_slack()
+        slack.client.reactions_get = AsyncMock(return_value=_ok({}))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")
+        ):
+            await slack.get_reactions("#general", "1.0")
+        kwargs = slack.client.reactions_get.await_args.kwargs
+        assert kwargs["channel"] == "C1234ABCD"
+
+    @pytest.mark.asyncio
+    async def test_message_reaction_enriched(self):
+        slack = _build_slack()
+        slack.client.reactions_get = AsyncMock(return_value=_ok({
+            "type": "message",
+            "message": {"user": "U1AAAAAAA", "text": "hi"},
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_reactions("C1", "1.0")
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["message"]["user_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_file_reaction_enriched(self):
+        slack = _build_slack()
+        slack.client.reactions_get = AsyncMock(return_value=_ok({
+            "type": "file",
+            "file": {
+                "user": "U1AAAAAAA",
+                "reactions": [
+                    {"name": "tada", "users": ["U2BBBBBBB"]},
+                ],
+            },
+        }))
+        slack.client.users_info = AsyncMock(side_effect=[
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice"}}}),
+            _ok({"user": {"id": "U2", "name": "bob",
+                          "profile": {"display_name": "bob"}}}),
+        ])
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_reactions("C1", "1.0")
+        assert ok is True
+        f = json.loads(payload)["data"]["file"]
+        assert f["user_display_name"] == "alice"
+        assert f["reactions"][0]["user_display_names"] == ["bob"]
+
+    @pytest.mark.asyncio
+    async def test_file_comment_reaction_enriched(self):
+        slack = _build_slack()
+        slack.client.reactions_get = AsyncMock(return_value=_ok({
+            "type": "file_comment",
+            "file_comment": {
+                "user": "U1AAAAAAA",
+                "reactions": [{"name": "tada", "users": ["U1AAAAAAA"]}],
+            },
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_reactions("C1", "1.0")
+        assert ok is True
+        c = json.loads(payload)["data"]["file_comment"]
+        assert c["user_display_name"] == "alice"
+        assert c["reactions"][0]["user_display_names"] == ["alice"]
+
+
+# ===========================================================================
+# Tool-method changes: search_messages — enrichment of matches
+# ===========================================================================
+
+class TestSearchMessagesEnrichment:
+    @pytest.mark.asyncio
+    async def test_messages_matches_enriched(self):
+        slack = _build_slack()
+        slack.client.search_messages = AsyncMock(return_value=_ok({
+            "messages": {
+                "matches": [{"user": "U1AAAAAAA", "text": "release notes"}]
+            }
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.search_messages(query="release")
+        assert ok is True
+        match = json.loads(payload)["data"]["messages"]["matches"][0]
+        assert match["user_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: get_user_groups / get_user_group_info — enrichment
+# ===========================================================================
+
+class TestGetUserGroupsEnrichment:
+    @pytest.mark.asyncio
+    async def test_usergroups_enriched(self):
+        slack = _build_slack()
+        slack.client.usergroups_list = AsyncMock(return_value=_ok({
+            "usergroups": [{
+                "id": "S1",
+                "name": "engineering",
+                "created_by": "U1AAAAAAA",
+                "users": ["U1AAAAAAA"],
+            }]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.get_user_groups()
+        assert ok is True
+        g = json.loads(payload)["data"]["usergroups"][0]
+        assert g["created_by_display_name"] == "alice"
+        assert g["resolved_users"][0]["display_name"] == "alice"
+
+
+class TestGetUserGroupInfoEnrichment:
+    @pytest.mark.asyncio
+    async def test_singular_usergroup_enriched(self):
+        slack = _build_slack()
+        slack.client.usergroups_info = AsyncMock(return_value=_ok({
+            "usergroup": {
+                "id": "S1", "name": "eng",
+                "created_by": "U1AAAAAAA",
+                "users": ["U1AAAAAAA"],
+            }
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.get_user_group_info(usergroup="S1")
+        assert ok is True
+        g = json.loads(payload)["data"]["usergroup"]
+        assert g["created_by_display_name"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_plural_usergroups_list_enriched(self):
+        # Defensive: some helpers return `usergroups: [...]` even on .info.
+        slack = _build_slack()
+        slack.client.usergroups_info = AsyncMock(return_value=_ok({
+            "usergroups": [{
+                "id": "S1",
+                "created_by": "U1AAAAAAA",
+                "users": [],
+            }]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.get_user_group_info(usergroup="S1")
+        assert ok is True
+        g = json.loads(payload)["data"]["usergroups"][0]
+        assert g["created_by_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: get_channel_members(_by_id) — resolved_members
+# ===========================================================================
+
+class TestGetChannelMembersEnrichment:
+    @pytest.mark.asyncio
+    async def test_resolved_members_added(self):
+        slack = _build_slack()
+        slack.client.conversations_members = AsyncMock(return_value=_ok({
+            "members": ["U1AAAAAAA", "U2BBBBBBB"]
+        }))
+        slack.client.users_info = AsyncMock(side_effect=[
+            _ok({"user": {"id": "U1", "name": "alice",
+                          "profile": {"display_name": "alice", "email": "a@x.com"}}}),
+            _ok({"user": {"id": "U2", "name": "bob",
+                          "profile": {"display_name": "bob"}}}),
+        ])
+        with patch.object(
+            slack, "_resolve_channel", AsyncMock(return_value="C1")
+        ):
+            ok, payload = await slack.get_channel_members("C1")
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["members"] == ["U1AAAAAAA", "U2BBBBBBB"]
+        ids = [m["id"] for m in body["data"]["resolved_members"]]
+        assert ids == ["U1AAAAAAA", "U2BBBBBBB"]
+
+
+class TestGetChannelMembersByIdEnrichment:
+    @pytest.mark.asyncio
+    async def test_resolved_members_added(self):
+        slack = _build_slack()
+        slack.client.conversations_members = AsyncMock(return_value=_ok({
+            "members": ["U1AAAAAAA"]
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.get_channel_members_by_id("C1")
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["resolved_members"][0]["display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: fetch_channels / get_user_channels / get_user_conversations
+# ===========================================================================
+
+class TestFetchChannelsEnrichment:
+    @pytest.mark.asyncio
+    async def test_im_partner_pre_resolved(self):
+        slack = _build_slack()
+        slack.client.conversations_list = AsyncMock(return_value=_ok({
+            "channels": [
+                {"id": "D1", "is_im": True, "user": "U9AAAAAAA",
+                 "created": 1700000000},
+            ],
+            "response_metadata": {"next_cursor": ""},
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U9", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        ok, payload = await slack.fetch_channels()
+        assert ok is True
+        chan = json.loads(payload)["data"]["channels"][0]
+        assert chan["user_display_name"] == "alice"
+        assert chan["created_date"] == "2023-11-14T22:13:20Z"
+
+
+class TestGetUserChannelsEnrichment:
+    @pytest.mark.asyncio
+    async def test_creator_resolved(self):
+        slack = _build_slack()
+        slack.client.users_conversations = AsyncMock(return_value=_ok({
+            "channels": [{"id": "C1", "name": "g", "creator": "U1AAAAAAA"}],
+            "response_metadata": {"next_cursor": ""},
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_get_authenticated_user_id",
+            AsyncMock(return_value="U1AAAAAAA"),
+        ):
+            ok, payload = await slack.get_user_channels()
+        assert ok is True
+        c = json.loads(payload)["data"]["channels"][0]
+        assert c["creator_display_name"] == "alice"
+
+
+class TestGetUserConversationsLimitPathEnrichment:
+    @pytest.mark.asyncio
+    async def test_limit_path_enriches_channels(self):
+        # When `limit` is provided, the method short-circuits the pagination
+        # loop and goes through the dedicated single-call branch.
+        slack = _build_slack()
+        slack.client.users_conversations = AsyncMock(return_value=_ok({
+            "channels": [{"id": "C1", "name": "g", "creator": "U1AAAAAAA"}],
+        }))
+        slack.client.users_info = AsyncMock(return_value=_ok({
+            "user": {"id": "U1", "name": "alice",
+                     "profile": {"display_name": "alice"}}
+        }))
+        with patch.object(
+            slack, "_get_authenticated_user_id",
+            AsyncMock(return_value="U1AAAAAAA"),
+        ):
+            ok, payload = await slack.get_user_conversations(limit=5)
+        assert ok is True
+        c = json.loads(payload)["data"]["channels"][0]
+        assert c["creator_display_name"] == "alice"
+
+
+# ===========================================================================
+# Tool-method changes: get_scheduled_messages — date sibling enrichment
+# ===========================================================================
+
+class TestGetScheduledMessagesDateEnrichment:
+    @pytest.mark.asyncio
+    async def test_post_at_and_date_created_get_iso_siblings(self):
+        slack = _build_slack()
+        slack.client.chat_scheduled_messages_list = AsyncMock(return_value=_ok({
+            "scheduled_messages": [{
+                "id": "Q1",
+                "post_at": 1700000000,
+                "date_created": 1700000000,
+            }]
+        }))
+        ok, payload = await slack.get_scheduled_messages()
+        assert ok is True
+        item = json.loads(payload)["data"]["scheduled_messages"][0]
+        assert item["post_at"] == 1700000000
+        assert item["post_at_date"] == "2023-11-14T22:13:20Z"
+        assert item["date_created_date"] == "2023-11-14T22:13:20Z"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_items_passed_through(self):
+        slack = _build_slack()
+        slack.client.chat_scheduled_messages_list = AsyncMock(return_value=_ok({
+            "scheduled_messages": ["weird"]
+        }))
+        ok, payload = await slack.get_scheduled_messages()
+        assert ok is True
+        assert json.loads(payload)["data"]["scheduled_messages"] == ["weird"]
