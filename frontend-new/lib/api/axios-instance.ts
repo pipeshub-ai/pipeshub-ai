@@ -19,7 +19,8 @@ declare module 'axios' {
 // — template-concatenating `undefined` would produce the literal string
 // "undefined" in the URL and 404 via the Node.js backend's static handler.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
-const API_TIMEOUT = 20000;
+
+const API_TIMEOUT = 90_000;
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
@@ -75,7 +76,7 @@ function isTokenExpired(token: string | null): boolean {
   const decoded = decodeToken(token);
   if (!decoded || typeof decoded.exp !== 'number') return false;
   const nowSeconds = Date.now() / 1000;
-return decoded.exp < nowSeconds + 30;
+  return decoded.exp < nowSeconds + 90;
 }
 
 export const apiClient = axios.create({
