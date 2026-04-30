@@ -363,7 +363,7 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            config_values = await self._fetch_and_parse_config(use_cache=True)
+            config_values = await self._fetch_and_parse_config(use_cache=False)
 
             self.url = config_values["url"]
             self.crawl_type = config_values["crawl_type"]
@@ -464,12 +464,12 @@ class WebConnector(BaseConnector):
                 )
             ]
 
-    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+    async def _fetch_and_parse_config(self, use_cache: bool = False) -> Dict:
         """
         Fetch and parse connector configuration.
 
         Args:
-            use_cache: Whether to use cached config (default: True)
+            use_cache: Whether to use cached config (default: False)
 
         Returns:
             Dictionary containing parsed config values:

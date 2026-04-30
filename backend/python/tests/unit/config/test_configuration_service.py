@@ -64,7 +64,7 @@ class TestGetConfig:
         svc = _build_service(store)
         svc.cache["/some/key"] = {"cached": True}
 
-        result = await svc.get_config("/some/key")
+        result = await svc.get_config("/some/key", use_cache=True)
 
         assert result == {"cached": True}
         store.get_key.assert_not_called()

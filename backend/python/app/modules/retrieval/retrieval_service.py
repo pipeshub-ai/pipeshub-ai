@@ -98,7 +98,7 @@ class RetrievalService:
         # import-time on Python 3.10+ (no running loop required).
         self._embedding_model_lock = asyncio.Lock()
 
-    async def get_llm_instance(self, use_cache: bool = True) -> BaseChatModel | None:
+    async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -135,7 +135,7 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Embeddings | None:
+    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
 
@@ -207,7 +207,7 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> str | None:
+    async def get_current_embedding_model_name(self, use_cache: bool = False) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
