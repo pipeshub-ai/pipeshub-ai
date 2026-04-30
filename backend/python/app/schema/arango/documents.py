@@ -796,6 +796,7 @@ agent_schema = {
                 "type": "string",
                 "enum": ["single", "linear", "conditional"],
             },
+            "webSearch": {"type": ["string", "null"]},
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},
