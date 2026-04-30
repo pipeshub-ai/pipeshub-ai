@@ -790,6 +790,7 @@ agent_schema = {
                 "items": {"type": "string"},
                 "default": [],
             },
+            "webSearch": {"type": ["string", "null"] },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},
