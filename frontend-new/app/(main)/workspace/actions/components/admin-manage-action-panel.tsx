@@ -108,7 +108,7 @@ export function AdminManageActionPanel({
   const [instanceName, setInstanceName] = useState(instance.instanceName || instance.displayName || '');
   const [selectedOauthConfigId, setSelectedOauthConfigId] = useState(instance.oauthConfigId ?? '');
   const [oauthFieldValues, setOauthFieldValues] = useState<Record<string, unknown>>({});
-  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState('');
+  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState(stableStringifyRecord({}));
   const [clientSecretWasSet, setClientSecretWasSet] = useState(false);
 
   const [nonOauthValues, setNonOauthValues] = useState<Record<string, unknown>>({});
@@ -116,7 +116,7 @@ export function AdminManageActionPanel({
   const [instanceAuthFromGet, setInstanceAuthFromGet] = useState<Record<string, unknown> | null>(null);
   const [instanceAuthLoading, setInstanceAuthLoading] = useState(false);
 
-  const [initialNonOauthSnapshot, setInitialNonOauthSnapshot] = useState('');
+  const [initialNonOauthSnapshot, setInitialNonOauthSnapshot] = useState(stableStringifyRecord({}));
   const [initialOauthConfigId, setInitialOauthConfigId] = useState(instance.oauthConfigId ?? '');
 
   const [saving, setSaving] = useState(false);
@@ -281,7 +281,7 @@ export function AdminManageActionPanel({
     setOauthFieldValues(seeded);
     setInitialOauthSnapshot(stableStringifyRecord(seeded));
     if (!oauthConfigIdInitializedRef.current) {
-      setInitialOauthConfigId(selectedOauthConfigId);
+      setInitialOauthConfigId(row?._id ?? '');
       oauthConfigIdInitializedRef.current = true;
     }
     setClientSecretWasSet(
