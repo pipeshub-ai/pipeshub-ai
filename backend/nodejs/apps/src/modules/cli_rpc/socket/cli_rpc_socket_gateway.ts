@@ -66,7 +66,20 @@ export class CliRpcSocketGateway {
   ) {}
 
   initialize(server: HttpServer): void {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? ['*'];
+    // The /cli-rpc namespace is only used by the desktop/CLI clients (which do
+    // not run in a browser) and proxies authenticated REST calls. Default to a
+    // closed list — enabling `*` with credentials would let any origin in the
+    // browser open an authenticated RPC channel against this backend.
+    const rawOrigins = process.env.ALLOWED_ORIGINS;
+    const parsedOrigins =
+      rawOrigins !== undefined && rawOrigins.length > 0
+        ? rawOrigins
+            .split(',')
+            .map((o) => o.trim())
+            .filter((o) => o.length > 0)
+        : [];
+    const allowedOrigins: string[] | false =
+      parsedOrigins.length > 0 ? parsedOrigins : false;
     this.io = new Server(server, {
       path: SOCKET_PATH,
       cors: {
@@ -100,22 +113,26 @@ export class CliRpcSocketGateway {
         'localfs:registerWatcher',
         (
           payload: { connectorId?: string } | undefined,
-          ack?: (res: RpcResponse | {
-            ok: true;
-          }) => void,
+          ack?: (res: RpcResponse) => void,
         ) => {
+          const responseId = 'localfs:registerWatcher';
           try {
             const connectorId = String(payload?.connectorId ?? '').trim();
             if (!connectorId) {
               throw new BadRequestError('connectorId is required');
             }
             localFsWatcherRegistry.register(socket, connectorId);
-            ack?.({ ok: true });
+            ack?.({
+              type: 'response',
+              id: responseId,
+              ok: true,
+              result: { status: 200, body: { connectorId } },
+            });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             ack?.({
               type: 'response',
-              id: 'localfs:registerWatcher',
+              id: responseId,
               ok: false,
               error: {
                 code: 'WATCHER_REGISTRATION_FAILED',

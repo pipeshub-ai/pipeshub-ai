@@ -169,7 +169,10 @@ export class Application {
           configurationManagerConfig,
           appConfig,
         );
-      this.cliRpcContainer = await CliRpcContainer.initialize(appConfig);
+      this.cliRpcContainer = await CliRpcContainer.initialize(
+        appConfig,
+        () => this.port,
+      );
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
