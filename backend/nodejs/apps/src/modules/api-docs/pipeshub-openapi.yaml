@@ -3431,6 +3431,18 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
+        webSearch:
+          type: object
+          nullable: true
+          description: Web search provider attached to this agent. Null when none is configured.
+          properties:
+            provider:
+              type: string
+              description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+          required:
+            - provider
+          example:
+            provider: "serper"
 
     AgentTemplate:
       type: object
