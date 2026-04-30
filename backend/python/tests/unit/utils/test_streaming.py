@@ -499,50 +499,50 @@ class TestSupportsHumanMessageAfterTool:
 # _get_schema_for_structured_output
 # ---------------------------------------------------------------------------
 class TestGetSchemaForStructuredOutput:
-    """Tests for _get_schema_for_structured_output(is_agent)."""
+    """Tests for _get_schema_for_structured_output()."""
 
     def test_agent_true(self):
         from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
 
-        result = _get_schema_for_structured_output(is_agent=True)
+        result = _get_schema_for_structured_output()
         assert result is AgentAnswerWithMetadataDict
 
     def test_agent_false(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataDict
-
-        result = _get_schema_for_structured_output(is_agent=False)
-        assert result is AnswerWithMetadataDict
-
-    def test_default_is_false(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataDict
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
 
         result = _get_schema_for_structured_output()
-        assert result is AnswerWithMetadataDict
+        assert result is AgentAnswerWithMetadataDict
+
+    def test_default_is_false(self):
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        result = _get_schema_for_structured_output()
+        assert result is AgentAnswerWithMetadataDict
 
 
 # ---------------------------------------------------------------------------
 # _get_schema_for_parsing
 # ---------------------------------------------------------------------------
 class TestGetSchemaForParsing:
-    """Tests for _get_schema_for_parsing(is_agent)."""
+    """Tests for _get_schema_for_parsing()."""
 
     def test_agent_true(self):
         from app.modules.agents.qna.schemas import AgentAnswerWithMetadataJSON
 
-        result = _get_schema_for_parsing(is_agent=True)
+        result = _get_schema_for_parsing()
         assert result is AgentAnswerWithMetadataJSON
 
     def test_agent_false(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
-
-        result = _get_schema_for_parsing(is_agent=False)
-        assert result is AnswerWithMetadataJSON
-
-    def test_default_is_false(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataJSON
 
         result = _get_schema_for_parsing()
-        assert result is AnswerWithMetadataJSON
+        assert result is AgentAnswerWithMetadataJSON
+
+    def test_default_is_false(self):
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataJSON
+
+        result = _get_schema_for_parsing()
+        assert result is AgentAnswerWithMetadataJSON
 
 
 # ---------------------------------------------------------------------------
@@ -3145,23 +3145,23 @@ class TestGetSchemaFunctions:
 
     def test_structured_output_agent(self):
         from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
-        result = _get_schema_for_structured_output(is_agent=True)
+        result = _get_schema_for_structured_output()
         assert result is AgentAnswerWithMetadataDict
 
     def test_structured_output_default(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataDict
-        result = _get_schema_for_structured_output(is_agent=False)
-        assert result is AnswerWithMetadataDict
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+        result = _get_schema_for_structured_output()
+        assert result is AgentAnswerWithMetadataDict
 
     def test_parsing_agent(self):
         from app.modules.agents.qna.schemas import AgentAnswerWithMetadataJSON
-        result = _get_schema_for_parsing(is_agent=True)
+        result = _get_schema_for_parsing()
         assert result is AgentAnswerWithMetadataJSON
 
     def test_parsing_default(self):
-        from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
-        result = _get_schema_for_parsing(is_agent=False)
-        assert result is AnswerWithMetadataJSON
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataJSON
+        result = _get_schema_for_parsing()
+        assert result is AgentAnswerWithMetadataJSON
 
 
 # ---------------------------------------------------------------------------
@@ -4054,7 +4054,6 @@ class TestCallAiterLlmStreamCoverage:
                     final_results=[],
                     records=[],
                     target_words_per_chunk=1,
-                    is_agent=True,  # Agent mode has referenceData
                 ):
                     events.append(event)
 

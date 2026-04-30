@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -145,7 +146,7 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/zammad.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.ZAMMAD.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Zammad API Token Setup",

@@ -146,6 +146,12 @@ export interface AgentDetail {
   _id: string;
   toolsets: AgentToolset[];
   knowledge: unknown[];
+  /** Optional web-search provider attached to this agent. */
+  webSearch?: {
+    provider: string;
+    providerKey: string;
+    providerLabel?: string;
+  } | null;
   shareWithOrg: boolean;
   access_type: string;
   user_role: string;

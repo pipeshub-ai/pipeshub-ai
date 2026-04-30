@@ -29,6 +29,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.types import AuthField
 from app.connectors.core.registry.tool_builder import (
@@ -559,12 +560,12 @@ class _SharedItemFetchResult(BaseModel):
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/onedrive.svg",
+            icon_path=IconPaths.connector_icon("onedrive"),
             app_group="Microsoft 365",
             app_description="OneDrive OAuth application for agent integration"
         )
     ])\
-        .configure(lambda builder: builder.with_icon("/assets/icons/connectors/onedrive.svg")
+        .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("onedrive"))
         .add_documentation_link(DocumentationLink(
             title="Create an Azure App Registration",
             url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",

@@ -45,16 +45,26 @@ export function CustomSyncFieldsSection({
         </Text>
       </Flex>
 
-      {fields.map((field) => (
-        <SchemaFormField
-          key={field.name}
-          field={field}
-          value={values[field.name]}
-          onChange={onChange}
-          error={errors[field.name]}
-          disabled={isNonEditableSyncFieldLocked(field, connectorConfig)}
-        />
-      ))}
+      {fields.map((field) => {
+        const locked = isNonEditableSyncFieldLocked(field, connectorConfig);
+        return (
+          <SchemaFormField
+            key={field.name}
+            field={field}
+            value={values[field.name]}
+            onChange={onChange}
+            error={errors[field.name]}
+            disabled={locked}
+            disabledTooltip={
+              locked
+                ? field.fieldType === 'URL'
+                  ? t('workspace.connectors.configTab.nonEditableUrlFieldTooltip')
+                  : t('workspace.connectors.configTab.nonEditableLockedFieldTooltip')
+                : undefined
+            }
+          />
+        );
+      })}
     </Flex>
   );
 }

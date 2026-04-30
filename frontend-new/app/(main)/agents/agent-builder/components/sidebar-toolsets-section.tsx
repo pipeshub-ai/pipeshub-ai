@@ -20,7 +20,9 @@ import { SidebarCategoryRow } from './sidebar-category-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import { AgentBuilderWebSearchSection } from './sidebar-web-search-section';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+import type { AgentWebSearchAttachment } from '../types';
 
 /** Toolset type row (e.g. Slack): expanded by default so instance rows are listed. */
 const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
@@ -174,6 +176,8 @@ export function AgentBuilderToolsetsSection(props: {
   orgCredentialUiLocked?: boolean;
   /** Same toast as main palette when structure-only drag is blocked (from sidebar). */
   onPaletteStructureDragBlocked?: () => void;
+  /** Web-search provider currently attached to the agent (null if none). */
+  webSearchAttached: AgentWebSearchAttachment | null;
 }) {
   const {
     toolsets,
@@ -188,6 +192,7 @@ export function AgentBuilderToolsetsSection(props: {
     structureLocked = false,
     orgCredentialUiLocked = false,
     onPaletteStructureDragBlocked,
+    webSearchAttached,
   } = props;
 
   const { t } = useTranslation();
@@ -363,6 +368,12 @@ export function AgentBuilderToolsetsSection(props: {
         </TextField.Root>
       </Box>
 
+      <AgentBuilderWebSearchSection
+        attached={webSearchAttached}
+        onNotify={onNotify}
+        structureLocked={structureLocked}
+      />
+
       {loading ? (
         <AgentBuilderPaletteSkeletonList count={6} />
       ) : null}
@@ -387,6 +398,7 @@ export function AgentBuilderToolsetsSection(props: {
               <Box key={toolsetType} mb="2">
                 <SidebarCategoryRow
                   groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
+                  groupConnectorType={(first.toolsetType || toolsetType) as string}
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
                   isExpanded={isTypeExpanded}
@@ -433,6 +445,7 @@ export function AgentBuilderToolsetsSection(props: {
                       <SidebarCategoryRow
                         key={ts.instanceId || ts.displayName}
                         groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
+                        groupConnectorType={ts.toolsetType}
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
                         isExpanded={isInstanceExpanded}

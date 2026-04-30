@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { AGENT_TOOLSET_FALLBACK_ICON } from '../display-utils';
 import type { ToolsetSidebarStatus } from '../sidebar-toolset-utils';
@@ -67,10 +68,13 @@ function StatusGlyphTooltip({ label, children }: { label: string; children: Reac
 
 export function SidebarCategoryRow(props: {
   groupLabel: string;
+  /** Connector type string (e.g. `"slack"`, `"linear"`). Takes precedence over `groupIcon` — renders via `ConnectorIcon` so brand colors are preserved and Linear/Notion/GitHub get dark-mode invert. */
+  groupConnectorType?: string;
   groupIcon?: string;
   /** Used when `groupIcon` URL fails (connector / toolset artwork). */
   groupIconFallbackSrc?: string;
   groupMaterialIcon?: string;
+  groupMaterialIconColor?: string;
   itemCount: number;
   isExpanded: boolean;
   onToggle: () => void;
@@ -91,9 +95,11 @@ export function SidebarCategoryRow(props: {
 }) {
   const {
     groupLabel,
+    groupConnectorType,
     groupIcon,
     groupIconFallbackSrc = AGENT_TOOLSET_FALLBACK_ICON,
     groupMaterialIcon,
+    groupMaterialIconColor = 'var(--slate-11)',
     itemCount,
     isExpanded,
     onToggle,
@@ -216,7 +222,11 @@ export function SidebarCategoryRow(props: {
               borderRadius: 'var(--radius-1)',
             }}
           >
-            {groupIcon ? (
+            {groupConnectorType ? (
+              <Box style={{ flexShrink: 0, lineHeight: 0 }}>
+                <ConnectorIcon type={groupConnectorType} size={18} />
+              </Box>
+            ) : groupIcon ? (
               <ThemeableAssetIcon
                 {...themeableAssetIconPresets.agentBuilderCategoryRow}
                 src={groupIcon}

@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     RecordRelations,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -251,7 +252,7 @@ class SyncStats:
                     is_secret=False
                 ),
             ],
-            icon_path="/assets/icons/connectors/snowflake.svg",
+            icon_path=IconPaths.connector_icon(Connectors.SNOWFLAKE.value),
             app_group="Snowflake",
             app_description="OAuth application for accessing Snowflake SQL API",
             app_categories=["Database", "Data Warehouse"],
@@ -261,7 +262,7 @@ class SyncStats:
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/snowflake.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.SNOWFLAKE.value))
         .add_documentation_link(DocumentationLink(
             "Snowflake PAT Setup",
             "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",

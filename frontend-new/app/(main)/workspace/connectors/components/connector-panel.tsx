@@ -30,7 +30,7 @@ import { trimConnectorConfig } from '../utils/trim-config';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
-  collectRequiredAuthFieldErrors,
+  collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import type { PanelTab } from '../types';
@@ -375,7 +375,7 @@ export function ConnectorPanel() {
       return false;
     }
 
-    const fieldErrs = collectRequiredAuthFieldErrors(
+    const fieldErrs = collectAuthFieldErrors(
       vFields,
       formData.auth,
       (f) => t('workspace.actions.validation.fieldRequired', { field: f.displayName }),

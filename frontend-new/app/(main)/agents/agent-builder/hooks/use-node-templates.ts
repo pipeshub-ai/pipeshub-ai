@@ -244,6 +244,20 @@ export function useAgentBuilderNodeTemplates(
         category: 'knowledge' as const,
       })),
       {
+        type: 'web-search',
+        label: t('agentBuilder.webSearch'),
+        description: t('Web Search'),
+        icon: 'public',
+        defaultConfig: {
+          provider: '',
+          providerKey: '',
+          providerLabel: '',
+        },
+        inputs: ['query'],
+        outputs: ['results'],
+        category: 'tools',
+      },
+      {
         type: 'chat-response',
         label: t('agentBuilder.nodeLabelChatOutput'),
         description: t('agentBuilder.nodeTemplateChatResponseDesc'),

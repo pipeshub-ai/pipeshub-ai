@@ -4,6 +4,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
@@ -11,11 +12,12 @@ import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
 import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
-import { AGENT_LLM_FALLBACK_ICON, AGENT_TOOLSET_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
+import { AGENT_LLM_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import type { AgentWebSearchAttachment } from '../types';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
 const PALETTE_ICON_SIZE = 20;
@@ -118,6 +120,8 @@ export function AgentBuilderSidebar(props: {
   paletteDragBlockedMessage?: string;
   /** SA viewer without edit: lock org toolset credential UI inside Tools. */
   toolsetsOrgCredentialLocked?: boolean;
+  /** Web-search provider currently attached to the agent (null if none). */
+  webSearchAttached: AgentWebSearchAttachment | null;
 }) {
   const {
     open,
@@ -136,6 +140,7 @@ export function AgentBuilderSidebar(props: {
     paletteStructureLocked = false,
     paletteDragBlockedMessage = '',
     toolsetsOrgCredentialLocked = false,
+    webSearchAttached,
   } = props;
 
   const { t } = useTranslation();
@@ -359,10 +364,12 @@ export function AgentBuilderSidebar(props: {
                   ) : (
                     connectorTypeEntries.map(([connectorTypeLabel, { instances, icon }]) => {
                       const expandKey = `knowledge-connector-${connectorTypeLabel}`;
+                      const groupConnectorType = instances[0]?.type;
                       return (
                         <SidebarCategoryRow
                           key={connectorTypeLabel}
                           groupLabel={connectorTypeLabel}
+                          groupConnectorType={groupConnectorType}
                           groupIcon={icon || undefined}
                           itemCount={instances.length}
                           isExpanded={expanded[expandKey] ?? true}
@@ -386,23 +393,12 @@ export function AgentBuilderSidebar(props: {
                                 disabled={paletteStructureLocked}
                                 onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
                               >
-                                {icon ? (
-                                  <Box style={{ flexShrink: 0, lineHeight: 0 }}>
-                                    <ThemeableAssetIcon
-                                      {...themeableAssetIconPresets.agentBuilderSidebar}
-                                      src={icon}
-                                      size={PALETTE_ICON_SIZE}
-                                      fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
-                                    />
-                                  </Box>
-                                ) : (
-                                  <MaterialIcon
-                                    name="cloud"
+                                <Box style={{ flexShrink: 0, lineHeight: 0 }}>
+                                  <ConnectorIcon
+                                    type={inst.type || 'generic'}
                                     size={PALETTE_ICON_SIZE}
-                                    color="var(--olive-11)"
-                                    style={{ flexShrink: 0 }}
                                   />
-                                )}
+                                </Box>
                                 <span style={paletteRowLabelStyle}>
                                   {inst.name?.trim() || connectorTypeLabel}
                                 </span>
@@ -462,7 +458,7 @@ export function AgentBuilderSidebar(props: {
             onToggle={() => toggle('tools')}
           />
           {expanded.tools ? (
-            <Box className="agent-builder-palette-nest">
+            <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <AgentBuilderToolsetsSection
                 toolsets={toolsets}
                 loading={loading}
@@ -476,6 +472,7 @@ export function AgentBuilderSidebar(props: {
                 structureLocked={paletteStructureLocked}
                 orgCredentialUiLocked={toolsetsOrgCredentialLocked}
                 onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                webSearchAttached={webSearchAttached}
               />
             </Box>
           ) : null}

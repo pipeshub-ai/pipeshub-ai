@@ -7,7 +7,6 @@ from app.models.blocks import BlockType, GroupType
 from app.utils.citations import (
     _extract_block_index_from_url,
     _extract_record_id_from_url,
-    _is_url_resolvable_via_records,
     _renumber_citation_links,
     detect_hallucinated_citation_urls,
     fix_json_string,
@@ -226,8 +225,8 @@ class TestRenumberCitationLinks:
         text = f"See [1]({url}) here."
         matches = self._make_matches(text)
         result = _renumber_citation_links(text, matches, {})
-        # Citation link is removed when url not in mapping
-        assert result == "See  here."
+        # Links whose URL is not in the mapping are left as-is
+        assert result == text
 
     def test_multiple_citations_renumbered_in_order(self):
         url1 = _url(REC1, 0)
@@ -255,8 +254,8 @@ class TestRenumberCitationLinks:
         text = f"[1]({url})"
         matches = self._make_matches(text)
         result = _renumber_citation_links(text, matches, {})
-        # Citation link is removed when mapping is empty
-        assert result == ""
+        # Links whose URL is not in the mapping are left as-is
+        assert result == text
 
     def test_no_matches(self):
         text = "No citations here."
@@ -265,134 +264,38 @@ class TestRenumberCitationLinks:
 
 
 # ---------------------------------------------------------------------------
-# _is_url_resolvable_via_records
-# ---------------------------------------------------------------------------
-class TestIsUrlResolvableViaRecords:
-
-    def test_resolved_via_flattened_final_results(self):
-        url = _url(REC1, 2)
-        doc = {
-            "metadata": {"recordId": REC1},
-            "block_index": 2,
-        }
-        assert _is_url_resolvable_via_records(url, [], [doc]) is True
-
-    def test_not_resolved_when_block_index_mismatch(self):
-        url = _url(REC1, 5)
-        doc = {
-            "metadata": {"recordId": REC1},
-            "block_index": 0,
-        }
-        assert _is_url_resolvable_via_records(url, [], [doc]) is False
-
-    def test_not_resolved_when_record_id_mismatch(self):
-        url = _url(REC1, 0)
-        doc = {
-            "metadata": {"recordId": "different-record"},
-            "block_index": 0,
-        }
-        assert _is_url_resolvable_via_records(url, [], [doc]) is False
-
-    def test_resolved_via_records_list(self):
-        url = _url(REC1, 1)
-        record = {
-            "id": REC1,
-            "block_containers": {
-                "blocks": [
-                    {"type": "text", "data": "block0"},
-                    {"type": "text", "data": "block1"},
-                ]
-            },
-        }
-        assert _is_url_resolvable_via_records(url, [record], []) is True
-
-    def test_not_resolved_when_block_index_out_of_range(self):
-        url = _url(REC1, 99)
-        record = {
-            "id": REC1,
-            "block_containers": {"blocks": [{"type": "text"}]},
-        }
-        assert _is_url_resolvable_via_records(url, [record], []) is False
-
-    def test_url_without_record_id_returns_false(self):
-        url = f"{BASE}/other/path#blockIndex=0"
-        assert _is_url_resolvable_via_records(url, [], []) is False
-
-    def test_url_without_block_index_returns_false(self):
-        url = f"{BASE}/record/{REC1}/preview"
-        assert _is_url_resolvable_via_records(url, [], []) is False
-
-    def test_empty_inputs_returns_false(self):
-        url = _url(REC1, 0)
-        assert _is_url_resolvable_via_records(url, [], []) is False
-
-    def test_none_block_containers_in_record(self):
-        url = _url(REC1, 0)
-        record = {"id": REC1, "block_containers": None}
-        assert _is_url_resolvable_via_records(url, [record], []) is False
-
-
-# ---------------------------------------------------------------------------
 # detect_hallucinated_citation_urls
 # ---------------------------------------------------------------------------
 class TestDetectHallucinatedCitationUrls:
+    r"""detect_hallucinated_citation_urls only flags tiny refs (ref\d+).
+    Full block URLs are outside its current scope and are silently skipped."""
 
     def test_no_citation_urls_returns_empty(self):
         result = detect_hallucinated_citation_urls("No citations here.")
         assert result == []
 
-    def test_resolvable_url_not_hallucinated(self):
-        url = _url(REC1, 0)
-        text = f"See [1]({url})."
-        doc = {"metadata": {"recordId": REC1}, "block_index": 0}
-        result = detect_hallucinated_citation_urls(text, flattened_final_results=[doc])
-        assert url not in result
-
-    def test_unresolvable_url_is_hallucinated(self):
+    def test_full_block_url_not_flagged(self):
+        """Full block URLs are not examined — the function only handles tiny refs."""
         url = _url(REC1, 99)
         text = f"See [1]({url})."
         result = detect_hallucinated_citation_urls(text, records=[], flattened_final_results=[])
-        assert url in result
-
-    def test_mixed_resolvable_and_hallucinated(self):
-        url_good = _url(REC1, 0)
-        url_bad = _url(REC2, 99)
-        text = f"A [1]({url_good}) and B [2]({url_bad})."
-        doc = {"metadata": {"recordId": REC1}, "block_index": 0}
-        result = detect_hallucinated_citation_urls(text, flattened_final_results=[doc])
-        assert url_bad in result
-        assert url_good not in result
-
-    def test_duplicate_url_counted_once(self):
-        url = _url(REC1, 99)
-        text = f"[1]({url}) and [2]({url})."
-        result = detect_hallucinated_citation_urls(text)
-        assert result.count(url) == 1
-
-    def test_resolvable_via_records_not_hallucinated(self):
-        url = _url(REC1, 0)
-        text = f"See [1]({url})."
-        record = {
-            "id": REC1,
-            "block_containers": {"blocks": [{"type": "text"}]},
-        }
-        result = detect_hallucinated_citation_urls(text, records=[record])
         assert url not in result
 
-    def test_none_defaults_handled(self):
+    def test_full_block_url_resolvable_not_flagged(self):
+        """Resolvable full URLs are also not flagged (skipped entirely)."""
+        url = _url(REC1, 0)
+        text = f"See [1]({url})."
+        doc = {"metadata": {"recordId": REC1}, "block_index": 0}
+        result = detect_hallucinated_citation_urls(text, flattened_final_results=[doc])
+        assert url not in result
+
+    def test_none_defaults_do_not_raise(self):
         """None records and flattened_final_results should not raise."""
         url = _url(REC1, 99)
         text = f"[1]({url})"
         result = detect_hallucinated_citation_urls(text, records=None, flattened_final_results=None)
-        assert url in result
-
-    def test_block_group_index_url_detected(self):
-        """URLs with blockGroupIndex also match the pattern."""
-        url = _grp_url(REC1, 2)
-        text = f"See [1]({url})."
-        result = detect_hallucinated_citation_urls(text)
-        # Not resolvable (no records) → hallucinated
-        assert url in result
+        # Full URL is skipped; result should be empty
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +396,8 @@ class TestNormalizeCitationsAndChunks:
         assert citations[1]["content"] == "row2 data"
 
     def test_table_block_empty_children_uses_parent(self):
-        """TABLE block with no children: parent-only citation URL is not resolvable."""
+        """TABLE block with no children: parent URL is not indexed, so no citation is built.
+        The unresolved markdown link remains in the text unchanged."""
         parent_url = _url(REC1, 4)
         table_doc = {
             "virtual_record_id": REC1,
@@ -507,9 +411,9 @@ class TestNormalizeCitationsAndChunks:
         }
         answer = f"See [1]({parent_url})."
         result_text, citations = normalize_citations_and_chunks(answer, [table_doc])
-        # Parent table URL is dropped because only child row URLs are indexed.
-        assert result_text == "See ."
+        # No citation is produced; the unresolved link is left in the text as-is.
         assert citations == []
+        assert f"[1]({parent_url})" in result_text
 
     def test_url_not_in_docs_falls_back_to_records(self):
         """URL not in flattened results but matches a record in records list."""
@@ -979,7 +883,7 @@ class TestNormalizeCitationsAndChunksForAgent:
 # Added tests to raise coverage
 # ---------------------------------------------------------------------------
 
-from app.utils.citations import _resolve_ref, _safe_stringify_content  # noqa: E402
+from app.utils.citations import _resolve_ref, _safe_stringify_content  # noqa: E402  # pylint: disable=wrong-import-position
 
 
 class TestResolveRef:
@@ -1010,65 +914,6 @@ class TestSafeStringifyContent:
                 raise RuntimeError("boom")
 
         assert _safe_stringify_content(BadStr()) == ""
-
-
-class TestIsUrlResolvableExtra:
-    def test_resolved_via_table_child_block_index(self):
-        """Cover lines 145-151 — URL resolves through TABLE group's child block_index."""
-        url = _url(REC1, 7)
-        table_doc = {
-            "metadata": {"recordId": REC1},
-            "block_index": 4,
-            "block_type": GroupType.TABLE.value,
-            "content": ("summary", [{"block_index": 7}]),
-        }
-        assert _is_url_resolvable_via_records(url, [], [table_doc]) is True
-
-    def test_table_child_block_index_mismatch_not_resolvable(self):
-        url = _url(REC1, 7)
-        table_doc = {
-            "metadata": {"recordId": REC1},
-            "block_index": 4,
-            "block_type": GroupType.TABLE.value,
-            "content": ("summary", [{"block_index": 1}]),
-        }
-        assert _is_url_resolvable_via_records(url, [], [table_doc]) is False
-
-    def test_table_child_results_not_list_ignored(self):
-        url = _url(REC1, 7)
-        table_doc = {
-            "metadata": {"recordId": REC1},
-            "block_index": 4,
-            "block_type": GroupType.TABLE.value,
-            "content": ("summary", "not a list"),
-        }
-        assert _is_url_resolvable_via_records(url, [], [table_doc]) is False
-
-    def test_resolved_via_virtual_record_id_to_result(self):
-        """Cover lines 160-164 — resolution through virtual_record_id_to_result map."""
-        url = _url(REC1, 0)
-        vrid_map = {
-            "vr-xyz": {
-                "id": REC1,
-                "block_containers": {"blocks": [{"type": "text"}]},
-            }
-        }
-        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is True
-
-    def test_virtual_record_id_map_out_of_range_not_resolvable(self):
-        url = _url(REC1, 5)
-        vrid_map = {
-            "vr-xyz": {
-                "id": REC1,
-                "block_containers": {"blocks": [{"type": "text"}]},
-            }
-        }
-        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is False
-
-    def test_virtual_record_id_map_none_entry_skipped(self):
-        url = _url(REC1, 0)
-        vrid_map = {"vr-xyz": None}
-        assert _is_url_resolvable_via_records(url, [], [], virtual_record_id_to_result=vrid_map) is False
 
 
 class TestDetectHallucinatedTinyRefs:
@@ -1103,7 +948,8 @@ class TestNormalizeCitationsExtra:
     """Additional tests raising branch coverage in normalize_citations_and_chunks."""
 
     def test_url_mapped_to_doc_with_empty_content_skipped(self):
-        """Cover line 298 — when stringified content is falsy, citation is skipped."""
+        """When stringified content is falsy the citation is skipped, but the
+        unresolved markdown link is left in the text unchanged."""
         url = _url(REC1, 0)
         docs = [{
             "virtual_record_id": REC1,
@@ -1116,8 +962,8 @@ class TestNormalizeCitationsExtra:
         answer = f"See [1]({url})."
         result_text, citations = normalize_citations_and_chunks(answer, docs)
         assert citations == []
-        # link is dropped because mapping is empty
-        assert "[1]" not in result_text
+        # Unresolved link stays as-is in the text
+        assert f"[1]({url})" in result_text
 
     def test_record_fallback_table_row_with_empty_text_skipped(self):
         """Cover line 327 — TABLE_ROW block whose text is empty is skipped."""

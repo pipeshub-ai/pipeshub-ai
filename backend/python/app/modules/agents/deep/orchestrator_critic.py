@@ -456,7 +456,14 @@ async def critic_node(
             invoke_kwargs["config"] = opik_config
 
         response = await llm.ainvoke(messages, **invoke_kwargs)
-        raw = response.content if hasattr(response, "content") else str(response)
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        if isinstance(raw_content, list):
+            raw = "\n".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+        else:
+            raw = str(raw_content)
 
     except Exception as e:
         log.error("Critic LLM call failed: %s — defaulting to APPROVE", e)

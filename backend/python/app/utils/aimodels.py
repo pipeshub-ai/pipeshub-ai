@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -105,7 +105,7 @@ def get_default_embedding_model() -> Embeddings:
 
 logger = create_logger("aimodels")
 
-def _create_bedrock_client(configuration: Dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
+def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
 
     Tries credentials in this order:
@@ -135,7 +135,7 @@ def _create_bedrock_client(configuration: Dict[str, Any], service_name: str = "b
 
     return session.client(service_name)
 
-def is_multimodal_llm(config: Dict[str, Any]) -> bool:
+def is_multimodal_llm(config: dict[str, Any]) -> bool:
     """
     Check if an LLM configuration supports multimodal capabilities.
 
@@ -161,7 +161,7 @@ def _set_embedding_dimensions_kwarg(
         kwargs[key] = dimensions
 
 
-def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
+def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
     if is_default and model_name is None:
@@ -402,7 +402,7 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
 
     return True
 
-def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
+def get_generator_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
     if is_default and model_name is None:
@@ -539,7 +539,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
-                stream_usage=True,  # Enable token usage tracking for Opik
+                stream_usage=True,
             )
 
     elif provider == LLMProvider.COHERE.value:

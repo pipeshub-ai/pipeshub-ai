@@ -40,6 +40,16 @@ const BADGE_STYLE: Record<
     color: 'var(--pink-11)',
     bg: 'color-mix(in srgb, var(--pink-3) 40%, transparent)',
   },
+  tts: {
+    border: '1px solid var(--green-9)',
+    color: 'var(--green-11)',
+    bg: 'color-mix(in srgb, var(--green-3) 40%, transparent)',
+  },
+  stt: {
+    border: '1px solid var(--amber-9)',
+    color: 'var(--amber-11)',
+    bg: 'color-mix(in srgb, var(--amber-3) 40%, transparent)',
+  },
 };
 
 const DEFAULT_BADGE_STYLE = {

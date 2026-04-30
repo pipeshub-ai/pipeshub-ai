@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -107,7 +108,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/gmail.svg",
+            icon_path=IconPaths.connector_icon(Connectors.GOOGLE_MAIL.value),
             app_group="Google Workspace",
             app_description="OAuth application for accessing Gmail API and related Google Workspace services",
             app_categories=["Email"],
@@ -119,7 +120,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
         )
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/gmail.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.GOOGLE_MAIL.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Gmail API Setup",

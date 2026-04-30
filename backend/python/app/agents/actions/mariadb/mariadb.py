@@ -19,7 +19,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
 from app.utils.conversation_tasks import register_task
-
+from app.connectors.core.constants import IconPaths
 logger = logging.getLogger(__name__)
 
 
@@ -108,7 +108,7 @@ class GetTablesSchemaInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/mariadb.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("mariadb"))
         .add_documentation_link(DocumentationLink(
             "MariaDB Documentation",
             "https://mariadb.com/docs/server/server-usage/connecting/mariadb-connecting-guide-1",

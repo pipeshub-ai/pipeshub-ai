@@ -423,17 +423,32 @@
     "answer": "Respuesta",
     "sources": "Fuentes",
     "citation": "Cita",
-    "thankYouForFeedback": "Gracias por tu opinión",
-    "feedbackHelpsImprove": "Esto nos ayuda a mejorar los resultados la próxima vez",
-    "like": "Me gusta",
-    "dislike": "No me gusta",
+    "thankYouForFeedback": "Gracias por sus comentarios",
+    "feedbackHelpsImprove": "Sus comentarios nos ayudan a mejorar",
+    "feedbackError": "Error al enviar comentarios",
+    "feedbackLikeTitle": "¿Qué le gustó de esta respuesta? (opcional)",
+    "feedbackDislikeTitle": "¿Qué no le gustó de esta respuesta?",
+    "feedbackOtherPlaceholder": "Añadir detalles específicos...",
+    "feedbackDislikeOtherPlaceholder": "Describa el problema...",
+    "feedbackSubmit": "Enviar",
+    "feedbackCategoryExcellentAnswer": "Excelente respuesta",
+    "feedbackCategoryWellExplained": "Bien explicado",
+    "feedbackCategoryHelpfulCitations": "Citas útiles",
+    "feedbackCategoryIncorrectInfo": "Información incorrecta",
+    "feedbackCategoryMissingInfo": "Información faltante",
+    "feedbackCategoryIrrelevantInfo": "Información irrelevante",
+    "feedbackCategoryUnclearExplanation": "Explicación poco clara",
+    "feedbackCategoryPoorCitations": "Citas deficientes",
+    "feedbackCategoryOther": "Otro...",
+    "like": "Útil",
+    "dislike": "No útil",
     "copy": "Copiar",
     "regenerate": "Regenerar",
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
-    "ttsFailed": "Error en la conversión de texto a voz. Inténtalo de nuevo.",
-    "copiedAsMarkdown": "Copiado como markdown",
+    "ttsFailed": "Error al leer en voz alta. Inténtelo de nuevo.",
+    "copiedAsMarkdown": "Copiado como Markdown",
     "copiedAsText": "Copiado como texto",
     "citations": "Citas",
     "markdownWithCitations": "Markdown con citas",
@@ -469,8 +484,8 @@
     },
     "queryModes": {
       "chat": {
-        "label": "Búsqueda interna",
-        "toolbarLabel": "Chat",
+        "label": "Búsqueda Interna",
+        "toolbarLabel": "Búsqueda Interna",
         "description": "Piensa, pregunta y razona sobre tu conocimiento en un flujo conversacional"
       },
       "web-search": {
@@ -1040,6 +1055,7 @@
       "configFillRequiredTooltip": "Rellene todos los campos obligatorios",
       "configSaveErrorFallback": "No se pudo guardar la configuración del modelo",
       "configNoConfigRequired": "No se requiere configuración para este proveedor.",
+      "configDefaultModelNotice": "\"{{modelName}}\" será utilizado por el sistema de forma predeterminada.",
       "configSectionModelConfiguration": "Configuración del modelo",
       "configProviderType": "Tipo de proveedor",
       "configSectionCompatibilities": "Compatibilidades del modelo",
@@ -1425,6 +1441,10 @@
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      },
+      "xmlUpload": {
+        "parseError": "No se pudieron analizar los metadatos SAML de este archivo. Comprueba que se trata de un XML de metadatos de IdP válido.",
+        "readError": "No se pudo leer el archivo."
       }
     },
     "connectors": {
@@ -1501,6 +1521,8 @@
       "configTab": {
         "additionalSettings": "Additional Settings",
         "additionalSettingsDescription": "Configure connector-specific sync options",
+        "nonEditableUrlFieldTooltip": "La URL del sitio web no se puede cambiar después de establecerla.",
+        "nonEditableLockedFieldTooltip": "Este valor no se puede cambiar después de establecerlo.",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",
@@ -1551,6 +1573,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Nombre de la instancia",
+        "renameSuccess": "Conector renombrado",
+        "renameErrorGeneric": "Error al renombrar el conector",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

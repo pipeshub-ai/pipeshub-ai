@@ -10,11 +10,12 @@ import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import type { ModelOverride } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
+import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { AgentStrategyModePanel } from '@/chat/components/chat-panel/expansion-panels/agent-strategy-mode-panel';
 import type { AgentStrategy, QueryMode } from '@/chat/types';
 
-type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy' | 'agent-resources';
+type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy' | 'agent-resources' | 'universal-agent-resources';
 
 interface MobileQueryOptionsSheetProps {
   open: boolean;
@@ -70,6 +71,9 @@ export function MobileQueryOptionsSheet({
     'agent-resources': t('chat.agentResources.sheetTitle', {
       defaultValue: 'Connectors, collections & actions',
     }),
+    'universal-agent-resources': t('chat.agentResources.sheetTitle', {
+      defaultValue: 'Connectors, collections & actions',
+    }),
   };
 
   return (
@@ -116,6 +120,14 @@ export function MobileQueryOptionsSheet({
           <AgentScopedResourcesPanel />
         </Flex>
       )}
+      {activePanel === 'universal-agent-resources' && (
+        <Flex
+          direction="column"
+          style={{ flex: 1, minHeight: 0, maxHeight: 'min(70vh, 520px)', overflow: 'hidden' }}
+        >
+          <UniversalAgentResourcesPanel />
+        </Flex>
+      )}
       {activePanel === 'agent-strategy' && (
         <AgentStrategyModePanel
           activeStrategy={settings.agentStrategy}
@@ -159,13 +171,21 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
             label={t('chat.models', { defaultValue: 'Models' })}
             onClick={() => onNavigate('models')}
           />
-          {!isAgentChat ? (
+          {!isAgentChat && (queryMode !== 'web-search' && queryMode !== 'agent') ? (
             <ManageRow
               icon="hub"
               label={t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' })}
               onClick={() => onNavigate('connectors')}
             />
-          ) : (
+          ) : !isAgentChat && queryMode === 'agent' ? (
+            <ManageRow
+              icon="apps"
+              label={t('chat.agentResources.sheetTitle', {
+                defaultValue: 'Connectors, collections & actions',
+              })}
+              onClick={() => onNavigate('universal-agent-resources')}
+            />
+          ) : isAgentChat ? (
             <ManageRow
               icon="apps"
               label={t('chat.agentResources.sheetTitle', {
@@ -173,7 +193,7 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
               })}
               onClick={() => onNavigate('agent-resources')}
             />
-          )}
+          ) : null}
           {!isAgentChat && queryMode === 'agent' && (
             <ManageRow
               icon="smart_toy"

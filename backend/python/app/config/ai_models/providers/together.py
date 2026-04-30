@@ -17,7 +17,7 @@ _TOGETHER_ENDPOINT = AIModelField(
 @AIModelProviderBuilder("Together", "together") \
     .with_description("Open-source models at scale") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/together-color.svg") \
+    .with_icon("/icons/ai-models/together-color.svg") \
     .with_color("#7C3AED") \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g., deepseek-ai/DeepSeek-V3"), ModelCapability.TEXT_GENERATION) \

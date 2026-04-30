@@ -539,7 +539,7 @@ class TestBuildConnectorInfo:
 
         result = registry._build_connector_info("X", metadata)
 
-        assert result["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert result["iconPath"] == "/icons/connectors/default.svg"
 
     def test_scope_param_overrides_metadata(self):
         """Explicit scope param overrides metadata scopes."""

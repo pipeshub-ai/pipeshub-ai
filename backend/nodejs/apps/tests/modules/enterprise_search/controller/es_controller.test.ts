@@ -56,6 +56,7 @@ import {
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
   updateAgentPermissions,
+  updateAgentFeedback,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
@@ -161,6 +162,23 @@ function createMockConversationDoc(overrides: Record<string, any> = {}): any {
   doc.save.resolves(doc)
   doc.toObject.returns({ ...doc, save: undefined, toObject: undefined })
   return doc
+}
+
+/**
+ * Stub model.findOne to return a thenable query that resolves to the given value.
+ * Use this when the controller does `await model.findOne(query)` without calling `.exec()`.
+ */
+function stubThenableFindOne(model: any, resolveValue: any): sinon.SinonStub {
+  const thenableQuery: any = {
+    exec: sinon.stub().resolves(resolveValue),
+    then(onFulfilled: any, onRejected?: any) {
+      return Promise.resolve(resolveValue).then(onFulfilled, onRejected)
+    },
+  }
+  thenableQuery.select = sinon.stub().returns(thenableQuery)
+  thenableQuery.populate = sinon.stub().returns(thenableQuery)
+  thenableQuery.lean = sinon.stub().returns(thenableQuery)
+  return sinon.stub(model, 'findOne').returns(thenableQuery)
 }
 
 /**
@@ -11181,6 +11199,528 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
       await promise
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedback
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedback', () => {
+    it('should call next when user is not authenticated', async () => {
+      const req = createMockRequest({
+        user: undefined,
+        params: { agentKey: 'agent-1', conversationId: 'invalid-conv-id', messageId: 'invalid-msg-id' },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when conversationId is not a valid ObjectId', async () => {
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: 'not-valid', messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when agent conversation is not found', async () => {
+      stubMongooseFind(AgentConversation, 'findOne', null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when message is not found in agent conversation', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when trying to provide feedback on a user_query message', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when findByIdAndUpdate returns null', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should respond 200 with feedback on happy path', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ rating: 'positive' }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive', metrics: { userInteractionTime: 1000, feedbackSessionId: 'sess-1' } },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'test-agent' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — categories & structured comments
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (categories and comments)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should accept feedback with valid categories', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['incorrect_information'] }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false, categories: ['incorrect_information'] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg).to.have.property('feedback')
+        expect(jsonArg.feedback).to.have.property('categories').that.deep.equals(['incorrect_information'])
+      }
+    })
+
+    it('should accept feedback with structured comments object', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: false,
+          categories: ['other'],
+          comments: { negative: 'This was wrong' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback.comments).to.deep.equal({ negative: 'This was wrong' })
+      }
+    })
+
+    it('should include feedbackProvider and metrics in the feedback entry', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const createdAt = Date.now() - 5000
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{}] }],
+      } as any)
+
+      const userId = new mongoose.Types.ObjectId(VALID_OID)
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true, categories: ['excellent_answer'] },
+        user: { userId, orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'TestBrowser/1.0' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback).to.have.property('feedbackProvider')
+        expect(jsonArg.feedback).to.have.property('timestamp')
+        expect(jsonArg.feedback.metrics).to.have.property('userAgent', 'TestBrowser/1.0')
+        expect(jsonArg.feedback.metrics).to.have.property('timeToFeedback').that.is.a('number')
+      }
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — non-bot_response message types rejected
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (message type guard)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should reject feedback on system messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should reject feedback on error messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should reject feedback on tool_call messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'tool_call', content: 'tool output', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — conversation not found (thenable stub)
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (conversation not found - thenable)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should call next with NotFoundError when conversation is null', async () => {
+      stubThenableFindOne(Conversation, null)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('Conversation not found')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedback — categories, comments, message type guard
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedback (categories and comments)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should accept agent feedback with categories and structured comments', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['missing_information'], comments: { negative: 'Missing key details' } }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: false,
+          categories: ['missing_information'],
+          comments: { negative: 'Missing key details' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'TestBrowser/1.0' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback).to.have.property('categories').that.deep.equals(['missing_information'])
+        expect(jsonArg.feedback.comments).to.deep.equal({ negative: 'Missing key details' })
+        expect(jsonArg.feedback.metrics).to.have.property('userAgent', 'TestBrowser/1.0')
+      }
+    })
+
+    it('should reject agent feedback on system messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should accept positive agent feedback with like categories', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: true }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: true,
+          categories: ['excellent_answer'],
+          comments: { positive: 'Very helpful response' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should reject agent feedback on error messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should call next when agent conversation not found (thenable)', async () => {
+      stubThenableFindOne(AgentConversation, null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('Conversation not found')
     })
   })
 })

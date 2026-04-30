@@ -61,6 +61,7 @@ from app.schema.arango.documents import (
     app_role_schema,
     app_schema,
     comment_record_schema,
+    deal_record_schema,
     department_schema,
     file_record_schema,
     link_record_schema,
@@ -68,6 +69,7 @@ from app.schema.arango.documents import (
     meeting_record_schema,
     orgs_schema,
     people_schema,
+    product_record_schema,
     project_record_schema,
     record_group_schema,
     record_schema,
@@ -84,21 +86,21 @@ from app.schema.arango.documents import (
 from app.schema.arango.edges import (
     basic_edge_schema,
     belongs_to_schema,
-    entity_relations_schema,
-    inherit_permissions_schema,
-    is_of_type_schema,
-    permissions_schema,
-    record_relations_schema,
-    user_app_relation_schema,
-    user_drive_relation_schema,
-    deal_of_schema,
     contact_schema,
     customer_schema,
     deal_info_schema,
+    deal_of_schema,
+    entity_relations_schema,
+    inherit_permissions_schema,
+    is_of_type_schema,
     lead_schema,
-    prospect_schema,
-    sold_in_schema,
     member_of_schema,
+    permissions_schema,
+    prospect_schema,
+    record_relations_schema,
+    sold_in_schema,
+    user_app_relation_schema,
+    user_drive_relation_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
@@ -3963,7 +3965,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
-    async def get_user_apps(self, user_id: str) -> list[dict]:
+    async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list[dict]:
         """Get all apps (connectors) associated with a user by user document key (_key).
 
         Note: The parameter is named ``user_id`` for cross-provider consistency
@@ -3993,6 +3995,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.execute_query(
                 query,
                 bind_vars={"user_from": user_from},
+                transaction=transaction,
             )
             return list(results) if results else []
         except Exception as e:
@@ -13397,6 +13400,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Merge filter params
         bind_vars.update(filter_params)
 
+        bind_vars["user_accessible_apps"] = await self.get_user_app_ids(user_key, transaction)
+
         # Build children intersection AQL (only for recordGroup/kb/record/folder parents)
         children_intersection_aql = self._build_children_intersection_aql(parent_id, parent_type)
 
@@ -13404,12 +13409,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = f"""
         LET user_from = CONCAT("users/", @user_key)
 
-        // Get user's accessible apps (for filtering by app access)
-        LET user_accessible_apps = (
-            FOR app IN OUTBOUND user_from userAppRelation
-                FILTER app != null
-                RETURN app._key
-        )
+        LET user_accessible_apps = @user_accessible_apps
 
         // ========== UNIFIED TRAVERSAL: RecordGroups + Nested RecordGroups + Records ==========
 
@@ -14070,7 +14070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> list[str]:
         """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
         try:
-            apps = await self.get_user_apps(user_key)
+            apps = await self.get_user_apps(user_key, transaction)
             return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
@@ -14367,29 +14367,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         self.logger.info(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
         start = time.perf_counter()
-        query = """
-        // Get connector apps the user has access to (exclude Collection app)
-        LET apps = (
-            FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
-                FILTER app != null
-                FILTER app.type != "KB"
-                RETURN { id: app._key, name: app.name, type: app.type }
-        )
-
-        RETURN { apps: apps }
-        """
-
         try:
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"user_key": user_key},
-                txn_id=transaction
-            )
+            apps_raw = await self.get_user_apps(user_key, transaction)
+            apps = [
+                {
+                    "id": app.get("_key") or app.get("id"),
+                    "name": app.get("name"),
+                    "type": app.get("type"),
+                }
+                for app in apps_raw
+                if app
+                and (app.get("type") or "") != "KB"
+                and (app.get("_key") or app.get("id"))
+            ]
+            apps.sort(key=lambda a: (a.get("name") or "").lower())
             elapsed = time.perf_counter() - start
             self.logger.info(f"get_knowledge_hub_filter_options finished in {elapsed * 1000} ms")
-            return results[0] if results else {"apps": []}
-        except Exception:
-            # self.logger.error(f"Failed to get filter options: {e}")
+            return {"apps": apps}
+        except Exception as e:
+            self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
             return {"apps": []}
 
     async def check_record_access_with_details(
@@ -18768,6 +18764,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check agent permission: {str(e)}")
             return None
 
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        try:
+            query = f"""
+            // Collect user keys that belong to this org
+            LET org_user_keys = (
+                FOR bt IN {CollectionNames.BELONGS_TO.value}
+                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                    RETURN PARSE_IDENTIFIER(bt._from).key
+            )
+
+            // Find agents owned by those users that use this web search provider
+            LET user_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm.type == 'USER'
+                    FILTER perm.role == 'OWNER'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                    FILTER owner_key IN org_user_keys
+                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+            )
+
+            // Also include agents shared directly with the org
+            LET org_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER perm.type == 'ORG'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN PARSE_IDENTIFIER(perm._to).key
+            )
+
+            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+
+            FOR agent_key IN all_agent_keys
+                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+                FILTER agent != null
+                FILTER agent.isDeleted != true
+                FILTER agent.webSearch == @provider
+                LET creator = agent.createdBy != null
+                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                    : null
+                RETURN {{
+                    name: agent.name,
+                    _key: agent._key,
+                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+                }}
+            """
+            result = await self.execute_query(
+                query, bind_vars={"org_id": org_id, "provider": provider}
+            )
+            return result or []
+        except Exception as e:
+            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+            return []
+
     async def get_all_agents(
         self,
         user_id: str,
@@ -19025,7 +19078,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "instructions",
                 "tags",
                 "isActive",
-                "isServiceAccount",
+                "isServiceAccount", "webSearch",
                 "flow",
                 "flowSchemaVersion",
                 "orchestrationMode",

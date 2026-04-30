@@ -132,7 +132,7 @@ export function useAgentBuilderReconstruction(): {
         });
         toolsetsCount = uniqueApps.size;
       }
-      
+
       const counts = {
         llm: agent.models?.length || (modelCatalog.length > 0 ? 1 : 0),
         tools: 0,
@@ -140,7 +140,7 @@ export function useAgentBuilderReconstruction(): {
         knowledge: agent.knowledge?.length || 0,
       };
 
-      
+
       // Smart positioning system with visual balance
       const calculateOptimalPosition = (
         layerKey: keyof typeof layout.layers,
@@ -257,20 +257,20 @@ export function useAgentBuilderReconstruction(): {
             knowledgeBases.some((kb) => kb.id === rgId)
           );
           const hasKBIds = kbIdsInRecordGroups.length > 0;
-          
+
           const isKnowledgeBase = isKB || hasKBIds;
-          
+
           if (isKnowledgeBase) {
             const kbName = knowledgeItem.name || knowledgeItem.displayName || t('agentBuilder.nodeCollectionFallbackName');
             const kbDisplayName = knowledgeItem.displayName || knowledgeItem.name || kbName;
             const kbId = kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
-            
+
             const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
-            
+
             const kbConnectorId = matchingKB?.connectorId || connectorId;
             const finalKbName = matchingKB?.name || kbDisplayName;
             const finalKbId = matchingKB?.id || kbId;
-            
+
             nodeCounter += 1;
             const nodeId = `kb-${nodeCounter}`;
             const kbNode: Node<FlowNodeData> = {
@@ -304,12 +304,12 @@ export function useAgentBuilderReconstruction(): {
           } else {
             const appName = knowledgeItem.name || knowledgeItem.displayName || '';
             const appDisplayName = knowledgeItem.displayName || knowledgeItem.name || appName;
-            
+
             const displayName =
               appDisplayName || (connectorId.split('/').pop() || connectorId) || t('agentBuilder.knowledgeSourceFallback');
             const normalizedAppSlug = displayName.toLowerCase().replace(/\s+/g, '');
             const appKnowledgeType = knowledgeItem.type?.toLowerCase().replace(/\s+/g, '') || normalizedAppSlug;
-            
+
             nodeCounter += 1;
             const nodeId = `app-${nodeCounter}`;
             const appKnowledgeNode: Node<FlowNodeData> = {
@@ -330,7 +330,7 @@ export function useAgentBuilderReconstruction(): {
                   filters: filtersParsed,
                   selectedRecordGroups: (filtersParsed.recordGroups as string[]) || [],
                   selectedRecords: (filtersParsed.records as string[]) || [],
-                  iconPath: `/assets/icons/connectors/${appKnowledgeType}.svg`,
+                  iconPath: `/icons/connectors/${appKnowledgeType}.svg`,
                   similarity: 0.8,
                 },
                 inputs: ['query'],
@@ -343,7 +343,7 @@ export function useAgentBuilderReconstruction(): {
           }
         });
       }
-      
+
 
       // 3. Create LLM nodes
       const llmNodes: Node<FlowNodeData>[] = [];
@@ -352,10 +352,10 @@ export function useAgentBuilderReconstruction(): {
           const isModelObject = typeof modelConfig === 'object' && modelConfig !== null;
           const modelConfigObj: ModelConfigObject | null = isModelObject ? (modelConfig as ModelConfigObject) : null;
           const modelConfigString: string | null = typeof modelConfig === 'string' ? modelConfig : null;
-          
+
           // Match models with priority: modelKey > (modelName + provider) > modelName > provider
           let matchingModel = null;
-          
+
           // If modelConfig is a string, try to match by modelKey directly
           if (modelConfigString) {
             matchingModel = modelCatalog.find((m) => m.modelKey === modelConfigString);
@@ -364,19 +364,19 @@ export function useAgentBuilderReconstruction(): {
             if (modelConfigObj.modelKey) {
               matchingModel = modelCatalog.find((m) => m.modelKey === modelConfigObj.modelKey);
             }
-            
+
             // If no match by modelKey, try matching by modelName AND provider together
             if (!matchingModel && modelConfigObj.modelName && modelConfigObj.provider) {
               matchingModel = modelCatalog.find(
                 (m) => m.modelName === modelConfigObj.modelName && m.provider === modelConfigObj.provider
               );
             }
-            
+
             // If still no match, try just modelName
             if (!matchingModel && modelConfigObj.modelName) {
               matchingModel = modelCatalog.find((m) => m.modelName === modelConfigObj.modelName);
             }
-            
+
             // Last resort: match by provider only
             if (!matchingModel && modelConfigObj.provider) {
               matchingModel = modelCatalog.find((m) => m.provider === modelConfigObj.provider);
@@ -462,10 +462,10 @@ export function useAgentBuilderReconstruction(): {
 
       // 4. Create Toolset nodes
       const toolsetNodes: Node<FlowNodeData>[] = [];
-      
+
       const hasToolsets = agent.toolsets && agent.toolsets.length > 0;
       const hasLegacyTools = !hasToolsets && agent.tools && agent.tools.length > 0;
-      
+
       if (hasToolsets && agent.toolsets) {
         agent.toolsets.forEach((toolset: AgentToolset, index: number) => {
           const toolsetName = toolset.name || '';
@@ -474,7 +474,7 @@ export function useAgentBuilderReconstruction(): {
           const toolsetType = toolset.type || toolsetName;
           const toolsetInstanceId = toolset.instanceId as string | undefined;
           const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-');
-          const iconPath = `/assets/icons/connectors/${normalizedToolsetName}.svg`;
+          const iconPath = `/icons/connectors/${normalizedToolsetName}.svg`;
 
           const toolsetTools: AgentToolDefinition[] = toolset.tools || [];
 
@@ -593,7 +593,7 @@ export function useAgentBuilderReconstruction(): {
 
         let toolsetIndex = 0;
         toolsByApp.forEach((appTools, appName) => {
-          const iconPath = `/assets/icons/connectors/${appName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '')}.svg`;
+          const iconPath = `/icons/connectors/${appName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '')}.svg`;
 
           const normalizedTools = appTools.map((tool: CatalogEntry) => ({
             name: tool.tool_name || tool.full_name?.split('.').pop() || t('agentBuilder.placeholderTool'),
@@ -656,6 +656,36 @@ export function useAgentBuilderReconstruction(): {
           toolsetNodes.push(toolsetNode);
           toolsetIndex += 1;
         });
+      }
+
+      // 4b. Web search node (if the agent has one attached)
+      const webSearchNodes: Node<FlowNodeData>[] = [];
+      if (agent.webSearch?.provider) {
+        nodeCounter += 1;
+        const nodeId = `web-search-${nodeCounter}`;
+        const wsNode: Node<FlowNodeData> = {
+          id: nodeId,
+          type: 'flowNode',
+          position: calculateOptimalPosition('tools', counts.toolsets, Math.max(counts.toolsets + 1, 1)),
+          data: {
+            id: nodeId,
+            type: 'web-search',
+            label: agent.webSearch.providerLabel || agent.webSearch.provider,
+            description: t('Web Search'),
+            icon: 'public',
+            category: 'tools',
+            config: {
+              provider: agent.webSearch.provider,
+              providerKey: agent.webSearch.providerKey || '',
+              providerLabel: agent.webSearch.providerLabel || '',
+            },
+            inputs: ['query'],
+            outputs: ['results'],
+            isConfigured: true,
+          },
+        };
+        nodes.push(wsNode);
+        webSearchNodes.push(wsNode);
       }
 
       // 5. Create Agent Core with optimal centered positioning
@@ -750,6 +780,19 @@ export function useAgentBuilderReconstruction(): {
           source: toolsetNode.id,
           target: 'agent-core-1',
           sourceHandle: 'output',
+          targetHandle: 'toolsets',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      webSearchNodes.forEach((wsNode) => {
+        edges.push({
+          id: `e-web-search-agent-${(edgeCounter += 1)}`,
+          source: wsNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'results',
           targetHandle: 'toolsets',
           type: 'smoothstep',
           style: edgeStyle,

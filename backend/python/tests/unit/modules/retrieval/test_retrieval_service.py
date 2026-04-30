@@ -647,9 +647,9 @@ class TestSearchWithFilters:
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
         retrieval_service._execute_parallel_searches = AsyncMock(side_effect=VectorDBEmptyError())
         result = await retrieval_service.search_with_filters(
-            queries=["test"], user_id="u1", org_id="o1", is_agent=True
+            queries=["test"], user_id="u1", org_id="o1"
         )
-        assert result["status"] == Status.EMPTY_RESPONSE.value
+        assert result["status"] == Status.VECTOR_DB_EMPTY.value
 
     @pytest.mark.asyncio
     async def test_vector_db_empty_error_non_agent(self, retrieval_service, mock_graph_provider):
@@ -657,7 +657,7 @@ class TestSearchWithFilters:
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
         retrieval_service._execute_parallel_searches = AsyncMock(side_effect=VectorDBEmptyError())
         result = await retrieval_service.search_with_filters(
-            queries=["test"], user_id="u1", org_id="o1", is_agent=False
+            queries=["test"], user_id="u1", org_id="o1"
         )
         assert result["status"] == Status.VECTOR_DB_EMPTY.value
 

@@ -1,22 +1,11 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import {
-  Flex,
-  Box,
-  Text,
-  IconButton,
-  DropdownMenu,
-} from '@radix-ui/themes';
+import React, { useMemo } from 'react';
+import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse, emptyCitationMaps } from '@/chat/components';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
-import { Spinner } from '@/app/components/ui/spinner';
 import type { ConversationMessage } from '../types';
-import { DeleteConfirmDialog } from './delete-confirm-dialog';
-import { ArchivedChatsApi } from '../api';
-import { useToastStore } from '@/lib/store/toast-store';
 
 // Stable empty citation maps — avoids creating new objects per render.
 const EMPTY_CITATION_MAPS = emptyCitationMaps();
@@ -95,91 +84,21 @@ function LoadingState() {
 // ======================================================
 
 interface ArchivedChatViewProps {
-  conversationId: string;
   conversationTitle: string;
   messages: ConversationMessage[];
   isLoading: boolean;
   error: string | null;
-  /** If set, this is an agent conversation and API calls will use agent-scoped endpoints. */
-  agentKey?: string | null;
-  /** Called after a successful restore — page should navigate to /chat */
-  onRestored: (conversationId: string) => void;
-  /** Called after a successful permanent delete — page selects next conv */
-  onDeleted: (conversationId: string) => void;
 }
 
 export function ArchivedChatView({
-  conversationId,
   conversationTitle: _conversationTitle,
   messages,
   isLoading,
   error,
-  agentKey,
-  onRestored,
-  onDeleted,
 }: ArchivedChatViewProps) {
   const { t } = useTranslation();
-  const addToast = useToastStore((s) => s.addToast);
-
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [isRestoring, setIsRestoring] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const messagePairs = useMemo(() => buildMessagePairs(messages), [messages]);
-
-  // ── Actions ────────────────────────────────────────────────────────
-
-  const handleRestore = async () => {
-    if (isRestoring) return;
-    setIsRestoring(true);
-    try {
-      if (agentKey) {
-        await ArchivedChatsApi.restoreAgentConversation(agentKey, conversationId);
-      } else {
-        await ArchivedChatsApi.restoreConversation(conversationId);
-      }
-      addToast({
-        variant: 'success',
-        title: t('workspace.archivedChats.restoreSuccess'),
-        icon: 'restore',
-      });
-      onRestored(conversationId);
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.archivedChats.restoreError'),
-      });
-    } finally {
-      setIsRestoring(false);
-    }
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (isDeleting) return;
-    setIsDeleting(true);
-    try {
-      if (agentKey) {
-        await ArchivedChatsApi.deleteAgentConversation(agentKey, conversationId);
-      } else {
-        await ArchivedChatsApi.deleteConversation(conversationId);
-      }
-      setDeleteDialogOpen(false);
-      addToast({
-        variant: 'success',
-        title: t('workspace.archivedChats.deleteSuccess'),
-        description: t('workspace.archivedChats.deleteSuccessDescription'),
-        icon: 'check',
-      });
-      onDeleted(conversationId);
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.archivedChats.deleteError'),
-      });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
 
   // ── Render ─────────────────────────────────────────────────────────
 
@@ -206,65 +125,6 @@ export function ArchivedChatView({
       direction="column"
       style={{ height: '100%', width: '100%', position: 'relative' }}
     >
-      {/* ── Top-right actions ── */}
-      <Box
-        style={{
-          position: 'absolute',
-          top: 'var(--space-3)',
-          right: 'var(--space-3)',
-          zIndex: 10,
-        }}
-      >
-        <DropdownMenu.Root modal={false}>
-          <DropdownMenu.Trigger>
-            <IconButton
-              variant="ghost"
-              size="1"
-              disabled={isRestoring || isDeleting}
-              style={{ cursor: 'pointer', color: 'var(--slate-10)' }}
-            >
-              <MaterialIcon name="more_horiz" size={20} />
-            </IconButton>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content
-            side="bottom"
-            align="end"
-            sideOffset={4}
-            style={{ minWidth: 160 }}
-          >
-            <DropdownMenu.Item
-              disabled={isRestoring}
-              onClick={(event) => {
-                event.preventDefault();
-                void handleRestore();
-              }}
-            >
-              <Flex align="center" gap="2">
-                {isRestoring ? (
-                  <Spinner size={16} color="var(--slate-11)" />
-                ) : (
-                  <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
-                )}
-                <Text size="2">
-                  {isRestoring
-                    ? t('action.loading')
-                    : t('workspace.archivedChats.restore')}
-                </Text>
-              </Flex>
-            </DropdownMenu.Item>
-            <DropdownMenu.Item
-              color="red"
-              onClick={() => setDeleteDialogOpen(true)}
-            >
-              <Flex align="center" gap="2">
-                <MaterialIcon name="delete" size={16} />
-                <Text size="2">{t('workspace.archivedChats.permanentlyDelete')}</Text>
-              </Flex>
-            </DropdownMenu.Item>
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
-      </Box>
-
       {/* ── Message area ── */}
       <Box
         className="no-scrollbar"
@@ -296,13 +156,6 @@ export function ArchivedChatView({
         )}
       </Box>
 
-      {/* ── Permanent delete confirmation ── */}
-      <DeleteConfirmDialog
-        open={deleteDialogOpen}
-        isLoading={isDeleting}
-        onOpenChange={setDeleteDialogOpen}
-        onConfirm={handleDeleteConfirm}
-      />
     </Flex>
   );
 }

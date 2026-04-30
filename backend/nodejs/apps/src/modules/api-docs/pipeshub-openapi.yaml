@@ -189,6 +189,8 @@ tags:
     description: Manage organization-level configuration including Slack bot integration, AI models, and metrics collection.
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
+  - name: Web Search
+    description: Manage web search providers (DuckDuckGo, Serper, Tavily) and settings for internet search.
   - name: Metrics Collection
     description: |
       Configure telemetry and metrics collection for application monitoring and analytics.
@@ -2676,6 +2678,46 @@ components:
             format: uuid
           description: Filter by knowledge base IDs
 
+    AppliedFilterNode:
+      type: object
+      description: A single filter node selected by the user (used for display/persistence of active filters)
+      required:
+        - id
+        - name
+        - nodeType
+        - connector
+      properties:
+        id:
+          type: string
+          description: Unique identifier of the filter node
+        name:
+          type: string
+          description: Display name of the filter node
+        nodeType:
+          type: string
+          description: Type of the node (e.g. app, kb)
+        connector:
+          type: string
+          description: Connector identifier associated with this node
+
+    AppliedFilters:
+      type: object
+      description: |
+        Rich filter state selected by the user, used for display and persistence only.
+        This mirrors the active selection shown in the UI and is distinct from the
+        machine-readable `filters` field used for retrieval scoping.
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied app/connector filter nodes
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied knowledge-base filter nodes
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
       type: object
@@ -2717,6 +2759,8 @@ components:
           description: Filter by department IDs to scope the search
         filters:
           $ref: '#/components/schemas/Filters'
+        appliedFilters:
+          $ref: '#/components/schemas/AppliedFilters'
         modelKey:
           type: string
           description: |
@@ -2751,6 +2795,17 @@ components:
             ISO 8601 datetime string from the client.
             Used to provide time-aware context to the AI.
           example: "2026-04-12T10:30:00Z"
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Optional list of tool identifiers (fully-qualified action names such as
+            "jira.create_issue") that the AI agent is permitted to invoke for this
+            request. When omitted the agent may use any configured tool. Applicable
+            only when chatMode is an agent mode (e.g. "agent:auto").
+          example: ["jira.create_issue", "confluence.search_content"]
 
     AddMessageRequest:
       type: object
@@ -2765,6 +2820,8 @@ components:
           example: "Can you elaborate on the revenue trends?"
         filters:
           $ref: '#/components/schemas/Filters'
+        appliedFilters:
+          $ref: '#/components/schemas/AppliedFilters'
         modelKey:
           type: string
           description: Override the model for this specific message
@@ -2791,6 +2848,16 @@ components:
             ISO 8601 datetime string from the client.
             Used to provide time-aware context to the AI.
           example: "2026-04-12T10:30:00Z"
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Optional list of tool identifiers the agent may invoke for this
+            follow-up message. Semantics are identical to the create-conversation
+            tools field. Applicable only in agent chat modes.
+          example: ["jira.create_issue", "confluence.search_content"]
 
     Message:
       type: object
@@ -2935,13 +3002,14 @@ components:
             enum:
               - incorrect_information
               - missing_information
-              - outdated_information
-              - irrelevant_response
-              - too_verbose
-              - too_brief
-              - formatting_issues
-              - citation_issues
-          description: Categories of issues identified
+              - irrelevant_information
+              - unclear_explanation
+              - poor_citations
+              - excellent_answer
+              - helpful_citations
+              - well_explained
+              - other
+          description: Categories of issues or positive attributes identified
         comments:
           type: object
           properties:
@@ -4652,6 +4720,97 @@ components:
           format: uri
           description: Public URL
           example: "https://app.example.com"
+
+    # Web Search Schemas
+    WebSearchProviderType:
+      type: string
+      enum: [duckduckgo, serper, tavily]
+      description: Supported web search provider
+
+    WebSearchSettingsUpdate:
+      type: object
+      description: Web search global settings
+      required:
+        - includeImages
+      properties:
+        includeImages:
+          type: boolean
+          description: Whether to include images in search results
+        maxImages:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Maximum number of images to return (required when includeImages is true)
+
+    AddWebSearchProviderRequest:
+      type: object
+      description: Request to add a new web search provider
+      required:
+        - provider
+        - configuration
+      properties:
+        provider:
+          $ref: '#/components/schemas/WebSearchProviderType'
+        configuration:
+          type: object
+          description: Provider-specific configuration (e.g. apiKey, cx, endpoint, engine)
+          additionalProperties: true
+        isDefault:
+          type: boolean
+          default: false
+          description: Whether this provider should be the default
+
+    UpdateWebSearchProviderRequest:
+      type: object
+      description: Request to update an existing web search provider
+      required:
+        - provider
+        - configuration
+      properties:
+        provider:
+          $ref: '#/components/schemas/WebSearchProviderType'
+        configuration:
+          type: object
+          description: Provider-specific configuration
+          additionalProperties: true
+        isDefault:
+          type: boolean
+          default: false
+          description: Whether this provider should be the default
+
+    WebSearchProviderItem:
+      type: object
+      description: Web search provider configuration item
+      properties:
+        provider:
+          type: string
+        providerKey:
+          type: string
+        configuration:
+          type: object
+          additionalProperties: true
+        isDefault:
+          type: boolean
+
+    WebSearchProvidersResponse:
+      type: object
+      description: Response for get web search providers
+      properties:
+        status:
+          type: string
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebSearchProviderItem'
+        settings:
+          type: object
+          properties:
+            includeImages:
+              type: boolean
+            maxImages:
+              type: integer
+        message:
+          type: string
 
     # Metrics Collection Schemas
     MetricsCollectionConfig:
@@ -14292,6 +14451,25 @@ paths:
                   description: Friendly display name of the selected model
                 chatMode:
                   type: string
+                timezone:
+                  type: string
+                  minLength: 1
+                  description: IANA timezone identifier from the client.
+                  example: "America/New_York"
+                currentTime:
+                  type: string
+                  format: date-time
+                  description: ISO 8601 datetime string from the client.
+                  example: "2026-04-12T10:30:00Z"
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  description: |
+                    Optional list of tool identifiers the agent may invoke when
+                    regenerating. Applicable only in agent chat modes.
+                  example: ["jira.create_issue", "confluence.search_content"]
       responses:
         '200':
           description: Response regenerated successfully
@@ -15453,6 +15631,39 @@ paths:
         '401':
           description: Unauthorized
 
+  /agents/web-search-usage/{provider}:
+    get:
+      tags:
+        - Agents
+      summary: Get web search provider usage
+      description: |
+        Retrieve usage statistics for a specific web search provider used by agents.<br><br>
+        <b>Overview:</b><br>
+        Returns information about how a particular web search provider is being used
+        across agents in the organization.
+      operationId: getWebSearchProviderUsage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The web search provider identifier (e.g. "google", "bing", "brave")
+      responses:
+        '200':
+          description: Web search provider usage data
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Bad request - provider or organization ID missing
+        '401':
+          description: Unauthorized
+
   /agents/{agentKey}:
     get:
       tags:
@@ -16117,6 +16328,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversation'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent, conversation, or message not found
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
+    post:
+      tags:
+        - Agent Conversations
+      summary: Submit feedback on an agent response
+      description: |
+        Provide feedback on an AI-generated response in an agent conversation.<br><br>
+        <b>Overview:</b><br>
+        Feedback helps improve AI response quality over time. You can indicate
+        helpfulness, select issue categories, and provide free-text comments.<br><br>
+        <b>Feedback Options:</b><br>
+        <ul>
+        <li><b>isHelpful:</b> Overall thumbs up/down</li>
+        <li><b>ratings:</b> 1-5 scale for accuracy, relevance, completeness, clarity</li>
+        <li><b>categories:</b> Issue categories (incorrect info, missing info, etc.)</li>
+        <li><b>comments:</b> Free-text positive/negative feedback and suggestions</li>
+        </ul>
+        <b>Restrictions:</b><br>
+        Feedback can only be submitted on <code>bot_response</code> messages,
+        not on user queries or system messages.
+      operationId: updateAgentMessageFeedback
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageFeedback'
+      responses:
+        '200':
+          description: Feedback submitted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  messageId:
+                    type: string
+                    format: objectId
+                  feedback:
+                    $ref: '#/components/schemas/MessageFeedback'
+                  meta:
+                    type: object
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+        '400':
+          description: |
+            Invalid feedback. Possible reasons:<br>
+            <ul>
+            <li>Ratings must be 1-5</li>
+            <li>Cannot add feedback to user_query messages</li>
+            </ul>
         '401':
           description: Unauthorized
         '404':
@@ -20086,6 +20384,224 @@ paths:
           description: Admin access required
         '404':
           description: Model not found
+
+  # -------------------- Web Search --------------------
+  /configurationManager/web-search:
+    get:
+      tags:
+        - Web Search
+      summary: Get all web search providers
+      description: Retrieve all configured web search providers and current web search settings.
+      operationId: getWebSearchProviders
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Web search providers and settings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchProvidersResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/web-search/settings:
+    put:
+      tags:
+        - Web Search
+      summary: Update web search settings
+      description: Update global web search settings (e.g. include images, max images).
+      operationId: updateWebSearchSettings
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSearchSettingsUpdate'
+      responses:
+        '200':
+          description: Web search settings updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '400':
+          description: Invalid settings (e.g. maxImages required when includeImages is true)
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/web-search/providers:
+    post:
+      tags:
+        - Web Search
+      summary: Add a new web search provider
+      description: Add a new web search provider (duckduckgo, serper, or tavily) with provider-specific configuration.
+      operationId: addWebSearchProvider
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddWebSearchProviderRequest'
+      responses:
+        '200':
+          description: Web search provider added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  details:
+                    type: object
+                    properties:
+                      providerKey:
+                        type: string
+                        description: Unique key for the new provider
+                      provider:
+                        type: string
+                      isDefault:
+                        type: boolean
+        '400':
+          description: Invalid configuration or duplicate provider
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/web-search/providers/{providerKey}:
+    put:
+      tags:
+        - Web Search
+      summary: Update a web search provider
+      description: Update an existing web search provider configuration.
+      operationId: updateWebSearchProvider
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: providerKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique key for the provider configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebSearchProviderRequest'
+      responses:
+        '200':
+          description: Web search provider updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Provider not found
+
+    delete:
+      tags:
+        - Web Search
+      summary: Delete a web search provider
+      description: Remove a web search provider configuration. If the deleted provider was default, the first remaining provider becomes default.
+      operationId: deleteWebSearchProvider
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: providerKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique key for the provider configuration
+      responses:
+        '200':
+          description: Web search provider deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Provider not found
+
+  /configurationManager/web-search/default/{providerKey}:
+    put:
+      tags:
+        - Web Search
+      summary: Update the default web search provider
+      description: Set the given provider as the default web search provider.
+      operationId: updateDefaultWebSearchProvider
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: providerKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique key for the provider configuration
+      responses:
+        '200':
+          description: Default web search provider updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Provider not found
 
   # -------------------- Public URLs --------------------
   /configurationManager/frontendPublicUrl:

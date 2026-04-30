@@ -32,42 +32,6 @@ class FetchFullRecordArgs(BaseModel):
         description="Brief explanation of why the full records are needed (e.g., 'query asks for complete details')."
     )
 
-class FetchBlockGroupArgs(BaseModel):
-    """
-    Required tool args for fetching a block group.
-    """
-    block_group_number: str = Field(
-        ...,
-        description="Number of the block group to fetch."
-    )
-    reason: str = Field(
-        default="Fetching block group for additional context",
-        description="Why the block group is needed (explain the gap in the provided blocks)."
-    )
-
-
-# async def _try_blobstore_fetch(blob_store: BlobStorage, org_id: str, record_id: str) -> Optional[Dict[str, Any]]:
-#     """
-#     Try common BlobStorage paths. We don't know the exact method names in your code,
-#     so attempt a few sensible options and return the first successful payload.
-#     """
-#     try:
-#         rec = await blob_store.get_record_from_storage(org_id=org_id, virtual_record_id=record_id)
-#         if rec:
-#             return rec
-#     except Exception:
-#         pass
-
-# async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_id: str) -> Dict[str, Any]:
-#     """
-#     Fetch complete record using virtual record id.
-#     """
-#     record = await _try_blobstore_fetch(blob_store, org_id, vrid)
-#     if record:
-#         return {"ok": True, "record": record}
-#     else:
-#         return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}
-
 
 async def _enrich_sql_table_with_fk_relations(
     record: dict[str, Any],
@@ -393,10 +357,3 @@ def create_fetch_full_record_tool(
     return fetch_full_record_tool
 
 
-def create_record_for_fetch_block_group(record: dict[str, Any],block_group: dict[str, Any],blocks: list[dict[str, Any]]) -> dict[str, Any]:
-    block_container = {
-        "blocks": blocks,
-        "block_groups": [block_group]
-    }
-    record["block_containers"] = block_container
-    return record

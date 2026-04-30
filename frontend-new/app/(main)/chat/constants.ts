@@ -64,7 +64,7 @@ export const QUERY_MODES: QueryModeConfig[] = [
     id: 'chat',
     label: 'Internal Search',
     toolbarLabel: 'chat.queryModes.chat.toolbarLabel',
-    description: 'Think, ask, and reason across your knowledge in a conversational flow',
+    description: 'Search and reason across your internal knowledge base',
     icon: 'chat-star',
     iconType: 'component',
     colors: {

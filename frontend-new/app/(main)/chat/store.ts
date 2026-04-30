@@ -197,6 +197,30 @@ interface ChatState {
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
 
+  // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
+  /**
+   * Selected tool `fullName`s for universal agent streams. `null` = all tools; `[]` = none; explicit
+   * list = subset. Persists across turns in ASSISTANT_CTX and survives queryMode switches.
+   */
+  universalAgentStreamTools: string[] | null;
+  /** Every tool fullName from my-toolsets — drives "select all" and null expansion. */
+  universalAgentToolCatalogFullNames: string[];
+  /**
+   * Toolset groups for universal agent Actions tab (from GET /api/v1/toolsets/my-toolsets).
+   * Keyed by `instanceId` where present; `isAuthenticated` drives credential status display.
+   */
+  universalAgentToolGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>;
+  universalAgentToolsLoading: boolean;
+  universalAgentToolsError: string | null;
+
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
 
@@ -209,6 +233,7 @@ interface ChatState {
 
   // ── Cache ──
   collectionNamesCache: Record<string, string>;
+  collectionMetaCache: Record<string, { name: string; nodeType: string; connector: string }>;
 
   // ── Search state ──
   searchResults: SearchResultItem[];
@@ -308,6 +333,24 @@ interface ChatState {
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
+  // ── Universal agent actions ──
+  setUniversalAgentStreamTools: (tools: string[] | null) => void;
+  /** Populate universal agent tool groups from my-toolsets. Pass null to clear. */
+  hydrateUniversalAgentResources: (payload: {
+    toolGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId: string;
+      iconPath?: string;
+      isAuthenticated: boolean;
+    }>;
+    toolCatalogFullNames: string[];
+  } | null) => void;
+  setUniversalAgentToolsLoading: (loading: boolean) => void;
+  setUniversalAgentToolsError: (error: string | null) => void;
+
   addPendingConversation: (slotId: string) => void;
   clearNewlyResolvedId: (conversationId: string) => void;
   resolvePendingConversation: (
@@ -343,6 +386,7 @@ interface ChatState {
 
   // ── Cache actions ──
   setCollectionNamesCache: (cache: Record<string, string>) => void;
+  setCollectionMetaCache: (cache: Record<string, { name: string; nodeType: string; connector: string }>) => void;
 
   // ── Global reset ──
   reset: () => void;
@@ -394,6 +438,20 @@ const initialState = {
   agentContextDisplayName: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
 
+  universalAgentStreamTools: null as string[] | null,
+  universalAgentToolCatalogFullNames: [] as string[],
+  universalAgentToolGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>,
+  universalAgentToolsLoading: false,
+  universalAgentToolsError: null as string | null,
+
   settings: {
     mode: 'chat' as ChatMode,
     queryMode: 'agent' as QueryMode,
@@ -411,6 +469,7 @@ const initialState = {
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
   expansionViewMode: 'inline' as 'inline' | 'overlay',
   collectionNamesCache: {} as Record<string, string>,
+  collectionMetaCache: {} as Record<string, { name: string; nodeType: string; connector: string }>,
 
   searchResults: [] as SearchResultItem[],
   searchQuery: '' as string,
@@ -717,6 +776,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               return { ...state.collectionNamesCache, ...patch };
             })(),
+            collectionMetaCache: (() => {
+              const patch: Record<string, { name: string; nodeType: string; connector: string }> = {};
+              for (const c of payload.connectors) {
+                patch[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+              }
+              for (const r of payload.knowledgeCollectionRows) {
+                patch[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+              }
+              return { ...state.collectionMetaCache, ...patch };
+            })(),
           }
         : {
             agentToolCatalogFullNames: [],
@@ -735,6 +804,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
+
+  setUniversalAgentStreamTools: (tools) => set({ universalAgentStreamTools: tools }),
+
+  hydrateUniversalAgentResources: (payload) =>
+    set(
+      payload
+        ? {
+            universalAgentToolGroups: payload.toolGroups,
+            universalAgentToolCatalogFullNames: payload.toolCatalogFullNames,
+            universalAgentToolsLoading: false,
+            universalAgentToolsError: null,
+          }
+        : {
+            universalAgentToolGroups: [],
+            universalAgentToolCatalogFullNames: [],
+            universalAgentStreamTools: null,
+            universalAgentToolsLoading: false,
+            universalAgentToolsError: null,
+          }
+    ),
+
+  setUniversalAgentToolsLoading: (loading) => set({ universalAgentToolsLoading: loading }),
+
+  setUniversalAgentToolsError: (error) => set({ universalAgentToolsError: error }),
 
   moveConversationToTop: (conversationId) =>
     set((state) => {
@@ -936,6 +1029,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       collectionNamesCache: { ...state.collectionNamesCache, ...cache },
     })),
 
+  setCollectionMetaCache: (cache) =>
+    set((state) => ({
+      collectionMetaCache: { ...state.collectionMetaCache, ...cache },
+    })),
+
   // ── Reset ────────────────────────────────────────────────────────
 
   reset: () => {
@@ -990,8 +1088,13 @@ if (typeof window !== 'undefined') {
     'agentKnowledgeScope',
     'agentContextDisplayName',
     'agentContextAccess',
+    'universalAgentStreamTools',
+    'universalAgentToolCatalogFullNames',
+    'universalAgentToolGroups',
+    'universalAgentToolsLoading',
+    'universalAgentToolsError',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
-    'collectionNamesCache', 'conversationsVersion',
+    'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
   ] as const;
 

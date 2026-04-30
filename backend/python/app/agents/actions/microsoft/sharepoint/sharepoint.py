@@ -11,6 +11,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -90,13 +91,13 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Azure App Registration"),
                 CommonFields.client_secret("Azure App Registration")
             ],
-            icon_path="/assets/icons/connectors/sharepoint.svg",
+            icon_path=IconPaths.connector_icon("sharepoint"),
             app_group="Microsoft 365",
             app_description="SharePoint OAuth application for agent integration"
         )
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/sharepoint.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("sharepoint")))\
     .build_decorator()
 class SharePoint:
     """SharePoint tool exposed to the agents"""

@@ -82,7 +82,10 @@ export function formatChatMode(chatMode?: string): string {
           : strategy;
     return `Agent (${label})`;
   }
-  return chatMode.charAt(0).toUpperCase() + chatMode.slice(1);
+  return chatMode
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 /**

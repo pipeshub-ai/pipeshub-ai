@@ -3,7 +3,6 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from io import BytesIO
 from logging import Logger
-from typing import Optional
 
 import aiohttp  # type: ignore
 
@@ -28,8 +27,8 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
+from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
 class RecordEventHandler(BaseEventService):
@@ -432,7 +431,7 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         indexing_status: str,
         extraction_status: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> dict|None:
         """Update document status in database"""
         try:

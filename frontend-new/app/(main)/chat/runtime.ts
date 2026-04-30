@@ -17,11 +17,14 @@ import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import {
   buildAssistantApiFilters,
   buildStreamRequestModeFields,
+  type AppliedFilterNode,
+  type AppliedFilters,
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ConversationMessage,
   type StreamChatRequest,
 } from './types';
+import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -99,10 +102,21 @@ export function loadHistoricalMessages(
               citationMaps: buildCitationMapsFromApi(msg.citations || []),
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
-              feedbackInfo: msg.feedback?.[0] || undefined,
+              // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }
-        : undefined,
+        : msg.messageType === 'user_query' && msg.appliedFilters
+        ? {
+            custom: {
+              appliedFilters: msg.appliedFilters,
+              createdAt: msg.createdAt,
+            },
+          }
+        : {
+          custom: {
+            createdAt: msg.createdAt,
+          },
+        },
   }));
 }
 
@@ -173,14 +187,40 @@ export function buildExternalStoreConfig(
       const slotAgent = currentSlot.threadAgentId?.trim() || null;
       const effectiveAgentId = slotAgent ?? agentIdFromUrl ?? undefined;
 
-      const toolsSel = currentState.agentStreamTools;
-      const toolCatalog = currentState.agentToolCatalogFullNames;
-      /** Agent streams only: store `null` = all tools → full catalog `fullName`s; else explicit list. */
-      const streamTools = !effectiveAgentId
-        ? []
-        : toolsSel === null
-          ? [...toolCatalog]
-          : [...toolsSel];
+      const isUniversalAgentMode =
+        !effectiveAgentId && currentState.settings.queryMode === 'agent';
+
+      // Resolve tool selection for the active context:
+      // - URL-scoped agent: agentStreamTools (null = full catalog)
+      // - Universal agent (no agentId, queryMode === 'agent'): universalAgentStreamTools
+      // - All other modes: no tools sent
+      const toolsSel = effectiveAgentId
+        ? currentState.agentStreamTools
+        : isUniversalAgentMode
+          ? currentState.universalAgentStreamTools
+          : null;
+      const toolCatalog = effectiveAgentId
+        ? currentState.agentToolCatalogFullNames
+        : currentState.universalAgentToolCatalogFullNames;
+
+      /**
+       * Expand null ("all tools") to catalog fullNames; explicit list passes through.
+       *
+       * The internal selection state uses `${instanceId}:${fullName}` composite keys so
+       * multiple instances of the same toolset type can be independently selected. Strip
+       * the prefix here before putting keys on the wire — the backend only understands
+       * bare fullName strings.
+       */
+      const stripInstancePrefix = (key: string) => {
+        const colon = key.indexOf(':');
+        return colon >= 0 ? key.slice(colon + 1) : key;
+      };
+      // Deduplicate after stripping: two same-type instances share fullNames on the wire,
+      // so Set removes duplicates while preserving order.
+      const streamTools =
+        effectiveAgentId || isUniversalAgentMode
+          ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(stripInstancePrefix))]
+          : [];
 
       // Resolve the model for the CURRENT context (agent or assistant) so the
       // submitted payload matches exactly what the chat input pill shows.
@@ -198,27 +238,67 @@ export function buildExternalStoreConfig(
       const resolvedAgentKnowledge =
         isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
+      const resolvedFilters = isAgent
+        ? {
+            apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0
+            ),
+            kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0
+            ),
+          }
+        : buildAssistantApiFilters(assistantFilters);
+
+      const metaCache = currentState.collectionMetaCache;
+      const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
+        ids
+          .filter((id) => id.trim().length > 0)
+          .map((id) => {
+            const meta = metaCache[id];
+            return {
+              id,
+              name: meta?.name ?? currentState.collectionNamesCache[id] ?? id,
+              nodeType: meta?.nodeType ?? '',
+              connector: meta?.connector ?? '',
+            };
+          });
+
+      const hasFilters = resolvedFilters.apps.length > 0 || resolvedFilters.kb.length > 0;
+      const appliedFilters: AppliedFilters | undefined = hasFilters
+        ? {
+            apps: buildAppliedFilterNodes(resolvedFilters.apps),
+            kb: buildAppliedFilterNodes(resolvedFilters.kb),
+          }
+        : undefined;
+
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
-        filters: isAgent
-          ? {
-              apps: (resolvedAgentKnowledge?.apps ?? []).filter(
-                (id): id is string => typeof id === 'string' && id.trim().length > 0
-              ),
-              kb: (resolvedAgentKnowledge?.kb ?? []).filter(
-                (id): id is string => typeof id === 'string' && id.trim().length > 0
-              ),
-            }
-          : buildAssistantApiFilters(assistantFilters),
+        timezone: getClientTimezone(),
+        currentTime: getClientCurrentTime(),
+        filters: resolvedFilters,
+        ...(appliedFilters ? { appliedFilters } : {}),
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {
               agentId: effectiveAgentId,
               agentStreamTools: streamTools,
             }
-          : {}),
+          : isUniversalAgentMode && toolsSel !== null
+            ? {
+                // Universal agent streams to the assistant endpoint (Option A contract):
+                //   POST /api/v1/conversations[/:convId]/messages/stream with chatMode "agent:..."
+                // Node.js parses chatMode and proxies to the agentIdPlaceholder path on Python,
+                // where get_assistant_agent assembles a synthetic agent config from etcd toolsets.
+                // `tools` in the body carries the selected fullName subset. Node.js MUST forward
+                // this field to Python for per-session tool selection to take effect.
+                // Do NOT route universal agent to /api/v1/agents/:id/... — that path is reserved
+                // for URL-scoped agent chat. A dedicated universal-agent endpoint (Option B) may
+                // replace this path in a future release.
+                agentStreamTools: streamTools,
+              }
+            : {}),
       };
 
       // Fire-and-forget — streaming.ts handles all state updates

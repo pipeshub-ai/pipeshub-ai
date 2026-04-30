@@ -33,24 +33,6 @@ class TestFetchFullRecordArgs:
         assert args.record_ids == []
 
 
-class TestFetchBlockGroupArgs:
-    def test_valid_args(self):
-        from app.utils.fetch_full_record import FetchBlockGroupArgs
-
-        args = FetchBlockGroupArgs(block_group_number="3")
-        assert args.block_group_number == "3"
-
-    def test_missing_block_group_number_fails(self):
-        from app.utils.fetch_full_record import FetchBlockGroupArgs
-
-        with pytest.raises(ValidationError):
-            FetchBlockGroupArgs()
-
-    def test_custom_reason(self):
-        from app.utils.fetch_full_record import FetchBlockGroupArgs
-
-        args = FetchBlockGroupArgs(block_group_number="5", reason="Need context")
-        assert args.reason == "Need context"
 
 
 # ===========================================================================
@@ -869,26 +851,3 @@ class TestCreateFetchFullRecordTool:
         assert call_args.kwargs["org_id"] == "org-1"
 
 
-# ===========================================================================
-# create_record_for_fetch_block_group
-# ===========================================================================
-
-
-class TestCreateRecordForFetchBlockGroup:
-    def test_creates_record(self):
-        from app.utils.fetch_full_record import create_record_for_fetch_block_group
-
-        record = {"id": "r1", "name": "test"}
-        block_group = {"group_number": 1}
-        blocks = [{"text": "block1"}, {"text": "block2"}]
-        result = create_record_for_fetch_block_group(record, block_group, blocks)
-        assert "block_containers" in result
-        assert len(result["block_containers"]["blocks"]) == 2
-        assert result["block_containers"]["block_groups"] == [block_group]
-
-    def test_empty_blocks(self):
-        from app.utils.fetch_full_record import create_record_for_fetch_block_group
-
-        record = {"id": "r1"}
-        result = create_record_for_fetch_block_group(record, {"g": 1}, [])
-        assert result["block_containers"]["blocks"] == []

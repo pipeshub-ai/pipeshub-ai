@@ -425,17 +425,32 @@
     "sources": "Sources",
     "citation": "Citation",
     "thankYouForFeedback": "Thank you for your feedback",
-    "feedbackHelpsImprove": "This helps us improve the results next time",
-    "like": "Like",
-    "dislike": "Dislike",
+    "feedbackHelpsImprove": "Your feedback helps us improve",
+    "feedbackError": "Failed to submit feedback",
+    "feedbackLikeTitle": "What did you like about this response? (optional)",
+    "feedbackDislikeTitle": "What didn't you like about this response?",
+    "feedbackOtherPlaceholder": "Add specific details...",
+    "feedbackDislikeOtherPlaceholder": "Please describe the issue...",
+    "feedbackSubmit": "Submit",
+    "feedbackCategoryExcellentAnswer": "Excellent answer",
+    "feedbackCategoryWellExplained": "Well explained",
+    "feedbackCategoryHelpfulCitations": "Helpful citations",
+    "feedbackCategoryIncorrectInfo": "Incorrect information",
+    "feedbackCategoryMissingInfo": "Missing information",
+    "feedbackCategoryIrrelevantInfo": "Irrelevant information",
+    "feedbackCategoryUnclearExplanation": "Unclear explanation",
+    "feedbackCategoryPoorCitations": "Poor citations",
+    "feedbackCategoryOther": "Other...",
+    "like": "Helpful",
+    "dislike": "Not helpful",
     "copy": "Copy",
     "regenerate": "Regenerate",
-    "readAloud": "Read Aloud",
-    "stopReading": "Stop Reading",
+    "readAloud": "Read aloud",
+    "stopReading": "Stop reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
-    "ttsFailed": "Text-to-speech failed. Please try again.",
-    "copiedAsMarkdown": "Copied as markdown",
-    "copiedAsText": "Copied as a text",
+    "ttsFailed": "Failed to read aloud. Please try again.",
+    "copiedAsMarkdown": "Copied as Markdown",
+    "copiedAsText": "Copied as text",
     "citations": "Citations",
     "markdownWithCitations": "Markdown with citations",
     "onlyTextWithoutCitations": "Only text without citations",
@@ -495,7 +510,7 @@
     "queryModes": {
       "chat": {
         "label": "Internal Search",
-        "toolbarLabel": "Chat",
+        "toolbarLabel": "Internal Search",
         "description": "Think, ask, and reason across your knowledge in a conversational flow"
       },
       "web-search": {
@@ -1035,6 +1050,7 @@
       "configFillRequiredTooltip": "Fill in all required fields",
       "configSaveErrorFallback": "Failed to save model configuration",
       "configNoConfigRequired": "No configuration required for this provider.",
+      "configDefaultModelNotice": "\"{{modelName}}\" will be used by the system by default.",
       "configSectionModelConfiguration": "Model Configuration",
       "configProviderType": "Provider Type",
       "configSectionCompatibilities": "Model Compatibilities",
@@ -1430,6 +1446,10 @@
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
+      },
+      "xmlUpload": {
+        "parseError": "Could not parse SAML metadata from this file. Check that it is a valid IdP metadata XML.",
+        "readError": "Failed to read the file."
       }
     },
     "connectors": {
@@ -1506,6 +1526,8 @@
       "configTab": {
         "additionalSettings": "Additional Settings",
         "additionalSettingsDescription": "Configure connector-specific sync options",
+        "nonEditableUrlFieldTooltip": "The website URL can't be changed after it's set.",
+        "nonEditableLockedFieldTooltip": "This value can't be changed after it's set.",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",
@@ -1556,6 +1578,9 @@
         "personalRecordsIndexed": "Personal Records Indexed"
       },
       "settingsTab": {
+        "instanceName": "Instance Name",
+        "renameSuccess": "Connector renamed",
+        "renameErrorGeneric": "Failed to rename connector",
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",

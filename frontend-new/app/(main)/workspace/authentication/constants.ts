@@ -63,12 +63,27 @@ export interface JitFieldDef {
   providerName: string;
 }
 
+/**
+ * An XML file upload that parses IdP metadata and populates sibling fields.
+ * The key should be prefixed with `_` (e.g. `_xmlFile`) so `saveValues`
+ * naturally ignores it.
+ */
+export interface XmlUploadFieldDef {
+  type: 'xml-upload';
+  key: string;
+  label: string;
+  labelSuffix?: string;
+  helperText?: string;
+  required?: boolean;
+}
+
 export type FieldDef =
   | TextFieldDef
   | PasswordFieldDef
   | TextareaFieldDef
   | ReadonlyFieldDef
-  | JitFieldDef;
+  | JitFieldDef
+  | XmlUploadFieldDef;
 
 // ── Provider config type ─────────────────────────────────────
 
@@ -206,6 +221,23 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
   samlSso: {
     fields: [
       {
+        type: 'readonly',
+        key: 'acsUrl',
+        label: 'ACS (Assertion Consumer Service) URL',
+        labelSuffix: '(add this to your Identity Provider)',
+        warningKey: '_acsUrlMismatch',
+        warningText:
+          'The current origin differs from the configured frontend URL. Add the value above to your Identity Provider.',
+      },
+      {
+        type: 'xml-upload',
+        key: '_xmlFile',
+        label: 'IdP Metadata XML',
+        required: true,
+        helperText:
+          "Upload your Identity Provider's metadata XML",
+      },
+      {
         type: 'text',
         key: 'entryPoint',
         label: 'SSO Entry Point (IdP URL)',
@@ -258,8 +290,31 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
     ],
 
     async loadValues() {
+      const SAML_CALLBACK_PATH = '/api/v1/saml/signIn/callback';
+      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? '').trim();
+
+      let currentAcsUrl: string;
+      let recommendedAcsUrl: string;
+
+      if (apiBaseUrl) {
+        // Split-deployment: backend URL is authoritative — no mismatch possible
+        const base = apiBaseUrl.replace(/\/+$/, '');
+        currentAcsUrl = `${base}${SAML_CALLBACK_PATH}`;
+        recommendedAcsUrl = currentAcsUrl;
+      } else {
+        const rawFrontendUrl = await FrontendUrlApi.getFrontendUrl();
+        let normalizedUrl = rawFrontendUrl.trim().replace(/\/+$/, '');
+        if (!/^https?:\/\//i.test(normalizedUrl)) {
+          normalizedUrl = `https://${normalizedUrl}`;
+        }
+        currentAcsUrl = `${window.location.origin}${SAML_CALLBACK_PATH}`;
+        recommendedAcsUrl = `${normalizedUrl}${SAML_CALLBACK_PATH}`;
+      }
+
       const config = await AuthConfigApi.getSamlConfig();
       return {
+        acsUrl: recommendedAcsUrl,
+        _acsUrlMismatch: currentAcsUrl !== recommendedAcsUrl,
         entryPoint: config?.entryPoint ?? '',
         certificate: config?.certificate ?? '',
         emailKey:

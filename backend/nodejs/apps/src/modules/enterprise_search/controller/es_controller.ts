@@ -387,7 +387,7 @@ export const streamChat =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -436,7 +436,7 @@ export const streamChat =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
@@ -450,6 +450,13 @@ export const streamChat =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      // For agent mode, forward the user-selected tool list so the backend
+      // can scope toolset loading to the selected instances.
+      // Only set when the client explicitly sent `tools`; omitting it means
+      // "use all configured tools" (Python receives None).
+      if (agentMode && req.body.tools !== undefined) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -799,7 +806,7 @@ export const createConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -1117,7 +1124,7 @@ export const addMessage =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -1397,7 +1404,7 @@ export const addMessageStream =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -1468,7 +1475,7 @@ export const addMessageStream =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -1481,6 +1488,9 @@ export const addMessageStream =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      if (agentMode && req.body.tools !== undefined) {
+        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -2696,8 +2706,13 @@ async function regenerateAnswersInternal(
       existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
     );
 
+    // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
+    // so the regenerate request is routed to the correct backend endpoint and carries tools.
+    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
+    const isUniversalAgentRegen = regenIsAgentMode && !agentKey;
+
     // Prepare AI payload
-    const aiPayload = {
+    const aiPayload: Record<string, unknown> = {
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
@@ -2705,12 +2720,21 @@ async function regenerateAnswersInternal(
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
-      chatMode: req.body.chatMode || 'quick',
+      chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
+      timezone: req.body.timezone || null,
+      currentTime: req.body.currentTime || null,
     };
+    if (regenIsAgentMode && req.body.tools !== undefined) {
+      aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+    }
+
+    const regenEndpoint = isUniversalAgentRegen
+      ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
+      : config.buildAIEndpoint(appConfig, agentKey);
 
     const aiCommandOptions: AICommandOptions = {
-      uri: config.buildAIEndpoint(appConfig, agentKey),
+      uri: regenEndpoint,
       method: HttpMethod.POST,
       headers: {
         ...(req.headers as Record<string, string>),
@@ -3083,6 +3107,60 @@ export const updateTitle = async (
   }
 };
 
+async function performFeedbackUpdate(params: {
+  model: mongoose.Model<any>;
+  query: Record<string, any>;
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  body: any;
+  userAgent: string | undefined;
+  session?: ClientSession | null;
+}): Promise<{ updatedConversation: any; feedbackEntry: any }> {
+  const { model, query, conversationId, messageId, userId, body, userAgent, session } = params;
+
+  const conversation = await model.findOne(query);
+  if (!conversation) {
+    throw new NotFoundError('Conversation not found');
+  }
+
+  const messageIndex = conversation.messages.findIndex(
+    (msg: IMessageDocument) => msg._id?.toString() === messageId,
+  );
+  if (messageIndex === -1) {
+    throw new NotFoundError('Message not found');
+  }
+
+  if (conversation.messages[messageIndex]?.messageType !== 'bot_response') {
+    throw new BadRequestError('Feedback is only allowed for bot responses');
+  }
+
+  const feedbackEntry = {
+    ...body,
+    feedbackProvider: userId,
+    timestamp: Date.now(),
+    metrics: {
+      timeToFeedback:
+        Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
+      userInteractionTime: body.metrics?.userInteractionTime,
+      feedbackSessionId: body.metrics?.feedbackSessionId,
+      userAgent,
+    },
+  };
+
+  const updatePath = `messages.${messageIndex}.feedback`;
+  const updatedConversation = await model.findByIdAndUpdate(
+    conversationId,
+    { $push: { [updatePath]: feedbackEntry } },
+    { new: true, session, runValidators: true },
+  );
+  if (!updatedConversation) {
+    throw new InternalServerError('Failed to update feedback');
+  }
+
+  return { updatedConversation, feedbackEntry };
+}
+
 export const updateFeedback = async (
   req: AuthenticatedUserRequest,
   res: Response,
@@ -3105,82 +3183,31 @@ export const updateFeedback = async (
       timestamp: new Date().toISOString(),
     });
 
-    async function performUpdateFeedback(session?: ClientSession | null) {
-      const conversation = await Conversation.findOne({
-        _id: conversationId,
-        orgId,
-        userId,
-        isDeleted: false,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId },
-          { isShared: true },
-        ],
-      });
+    const query = {
+      _id: conversationId,
+      orgId,
+      isDeleted: false,
+      $or: [
+        { initiator: userId },
+        { 'sharedWith.userId': userId },
+        { isShared: true },
+      ],
+    };
 
-      if (!conversation) {
-        throw new NotFoundError('Conversation not found');
-      }
-
-      // Find the specific message
-      const messageIndex = conversation.messages.findIndex(
-        (msg: IMessageDocument) => msg._id?.toString() === messageId,
-      );
-
-      if (messageIndex === -1) {
-        throw new NotFoundError('Message not found');
-      }
-
-      // Check if message is a user query
-      if (conversation.messages[messageIndex]?.messageType === 'user_query') {
-        throw new BadRequestError('Feedback is not allowed for user queries');
-      }
-
-      // Update message feedback
-      // Prepare feedback entry
-      const feedbackEntry = {
-        ...req.body,
-        feedbackProvider: userId,
-        timestamp: Date.now(),
-        metrics: {
-          timeToFeedback:
-            Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
-          userInteractionTime: req.body.metrics?.userInteractionTime,
-          feedbackSessionId: req.body.metrics?.feedbackSessionId,
-          userAgent: req.headers['user-agent'],
-        },
-      };
-
-      // Update message feedback
-      const updatePath = `messages.${messageIndex}.feedback`;
-      const updateObject = {
-        $push: { [updatePath]: feedbackEntry },
-      };
-
-      // Update conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
-        updateObject,
-        {
-          new: true,
-          session,
-          runValidators: true,
-        },
-      );
-
-      if (!updatedConversation) {
-        throw new InternalServerError('Failed to update feedback');
-      }
-      return { updatedConversation, feedbackEntry };
-    }
     let updatedConversation, feedbackEntry;
     if (rsAvailable) {
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
-        () => performUpdateFeedback(session),
+        () => performFeedbackUpdate({
+          model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
+        }),
       ));
     } else {
-      ({ updatedConversation, feedbackEntry } = await performUpdateFeedback());
+      ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
+        model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+      }));
     }
 
     logger.debug('Feedback updated successfully', {
@@ -3190,7 +3217,6 @@ export const updateFeedback = async (
       duration: Date.now() - startTime,
     });
 
-    // Prepare response
     const response = {
       conversationId: updatedConversation._id,
       messageId,
@@ -3212,6 +3238,10 @@ export const updateFeedback = async (
       duration: Date.now() - startTime,
     });
     next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 
@@ -4712,6 +4742,45 @@ export const checkServiceAccountAccess =
     }
   };
 
+export const getWebSearchProviderUsage =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      const { provider } = req.params;
+      if (!provider) {
+        throw new BadRequestError('Provider is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(provider)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error checking web search provider usage', {
+        requestId,
+        message: 'Error checking web search provider usage',
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Web Search Provider Usage');
+      next(backendError);
+    }
+  };
+
 export const listAgents =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -5013,7 +5082,7 @@ export const unshareAgent =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5351,7 +5420,7 @@ export const createAgentConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5621,7 +5690,7 @@ export const createAgentConversation =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -5933,7 +6002,7 @@ export const addMessageStreamToAgentConversation =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -7055,6 +7124,87 @@ export const updateAgentConversationTitle = async (
       duration: Date.now() - startTime,
     });
     next(error);
+  }
+};
+
+export const updateAgentFeedback = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { agentKey, conversationId, messageId } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation feedback', {
+      requestId,
+      message: 'Attempting to update agent conversation feedback',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    const query = {
+      _id: conversationId,
+      orgId,
+      userId,
+      agentKey,
+      isDeleted: false,
+    };
+
+    let updatedConversation, feedbackEntry;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      ({ updatedConversation, feedbackEntry } = await session.withTransaction(
+        () => performFeedbackUpdate({
+          model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
+        }),
+      ));
+    } else {
+      ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
+        model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+      }));
+    }
+
+    logger.debug('Agent feedback updated successfully', {
+      requestId,
+      conversationId,
+      messageId,
+      duration: Date.now() - startTime,
+    });
+
+    const response = {
+      conversationId: updatedConversation._id,
+      messageId,
+      feedback: feedbackEntry,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    res.status(200).json(response);
+  } catch (error: any) {
+    logger.error('Error updating agent conversation feedback', {
+      requestId,
+      message: 'Error updating agent conversation feedback',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 

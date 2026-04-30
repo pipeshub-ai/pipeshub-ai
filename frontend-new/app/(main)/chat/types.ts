@@ -111,6 +111,13 @@ export interface ChatSuggestion {
   icons: Array<'slack' | 'jira' | 'notion' | 'sheets' | 'confluence' | 'github'>;
 }
 
+/**
+ * Top-level UI mode toggle (Internal Search vs Chat/Web).
+ *
+ * This is **NOT** the `chatMode` field in stream request payloads — that is
+ * {@link StreamChatModePayload}. Code that handles `settings.mode` must not
+ * import or assign `StreamChatModePayload` values here.
+ */
 export type ChatMode = 'chat' | 'search';
 
 /**
@@ -133,9 +140,9 @@ export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep'
  * model config currently treats unrecognized values as standard behavior.
  */
 export type StreamChatModePayload =
-  | 'quick'
-  | 'web-search'
+  | 'web_search'
   | 'image'
+  | 'internal_search'
   | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
@@ -159,7 +166,6 @@ const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
 export function streamChatModeToAgentApiChatMode(
   chatMode: StreamChatModePayload
 ): AgentStrategyApiSegment {
-  if (chatMode === 'quick') return 'quick';
   if (typeof chatMode === 'string' && chatMode.startsWith('agent:')) {
     const rest = chatMode.slice(6) as AgentStrategyApiSegment;
     if (AGENT_HTTP_CHAT_MODES.includes(rest)) return rest;
@@ -199,6 +205,18 @@ export interface QueryModeConfig {
 export interface ChatKnowledgeFilters {
   apps: string[];
   kb: string[];
+}
+
+export interface AppliedFilterNode {
+  id: string;
+  name: string;
+  nodeType: string;
+  connector: string;
+}
+
+export interface AppliedFilters {
+  apps: AppliedFilterNode[];
+  kb: AppliedFilterNode[];
 }
 
 /** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
@@ -412,6 +430,7 @@ export interface ConversationMessage {
   createdAt: string;
   updatedAt: string;
   feedback: Record<string, unknown>[];
+  appliedFilters?: AppliedFilters;
 }
 
 export interface ConversationCompleteData {
@@ -473,6 +492,7 @@ export interface StreamChatRequest {
     apps: string[];
     kb: string[];
   };
+  appliedFilters?: AppliedFilters;
   conversationId?: string;
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
@@ -481,6 +501,10 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
+  /** IANA timezone string (e.g. "America/New_York"). Sent on all turns for time-aware queries. */
+  timezone?: string;
+  /** ISO-8601 timestamp of when the request was built. */
+  currentTime?: string;
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */
@@ -495,7 +519,7 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
   }
   if (settings.queryMode === 'web-search') {
     return {
-      chatMode: 'web-search',
+      chatMode: 'web_search',
     };
   }
   if (settings.queryMode === 'image') {
@@ -504,7 +528,7 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
     };
   }
   return {
-    chatMode: 'quick',
+    chatMode: 'internal_search',
   };
 }
 
@@ -538,7 +562,7 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string }
+  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
   | { type: 'editQuery'; messageId: string; text: string };
 
 // ── Multi-Chat Slot Types ──

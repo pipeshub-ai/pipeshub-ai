@@ -20,21 +20,25 @@ import saveIcon from '@iconify-icons/mdi/content-save';
 import restoreIcon from '@iconify-icons/mdi/restore';
 import axios from 'src/utils/axios';
 
-// Default hardcoded system prompt
-const DEFAULT_SYSTEM_PROMPT =
+const DEFAULT_INTERNAL_PROMPT =
   'You are an assistant. Answer queries in a professional, enterprise-appropriate format.';
+const DEFAULT_WEB_SEARCH_PROMPT =
+  'You are a helpful web research assistant.';
 
 type PromptsSettingsData = {
   customSystemPrompt: string;
+  customSystemPromptWebSearch: string;
 };
 
 export default function PromptsSettings() {
   const theme = useTheme();
   const [settings, setSettings] = useState<PromptsSettingsData>({
-    customSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+    customSystemPrompt: DEFAULT_INTERNAL_PROMPT,
+    customSystemPromptWebSearch: DEFAULT_WEB_SEARCH_PROMPT,
   });
   const [originalSettings, setOriginalSettings] = useState<PromptsSettingsData>({
-    customSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+    customSystemPrompt: DEFAULT_INTERNAL_PROMPT,
+    customSystemPromptWebSearch: DEFAULT_WEB_SEARCH_PROMPT,
   });
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -52,10 +56,14 @@ export default function PromptsSettings() {
       try {
         const res = await axios.get('/api/v1/configurationManager/prompts/system');
         if (mounted) {
-          const customSystemPrompt = res.data?.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
-          const loaded = {
+          const customSystemPrompt =
+            res.data?.customSystemPrompt || DEFAULT_INTERNAL_PROMPT;
+          const customSystemPromptWebSearch =
+            res.data?.customSystemPromptWebSearch || DEFAULT_WEB_SEARCH_PROMPT;
+          const loaded: PromptsSettingsData = {
             customSystemPrompt,
-          } as PromptsSettingsData;
+            customSystemPromptWebSearch,
+          };
           setSettings(loaded);
           setOriginalSettings(loaded);
           setError(null);
@@ -78,8 +86,9 @@ export default function PromptsSettings() {
     try {
       await axios.put('/api/v1/configurationManager/prompts/system', {
         customSystemPrompt: settings.customSystemPrompt,
+        customSystemPromptWebSearch: settings.customSystemPromptWebSearch,
       });
-      showSuccessSnackbar('Custom system prompt saved successfully');
+      showSuccessSnackbar('Custom system prompts saved successfully');
       setOriginalSettings(settings);
     } catch (e: any) {
       setError(e?.response?.data?.message || e?.message || 'Failed to save settings');
@@ -89,24 +98,136 @@ export default function PromptsSettings() {
   };
 
   const showSuccessSnackbar = (message: string) => {
-    setSnackbar({
-      open: true,
-      message,
-      severity: 'success',
-    });
+    setSnackbar({ open: true, message, severity: 'success' });
   };
 
   const handleCloseSnackbar = () => {
     setSnackbar((prev) => ({ ...prev, open: false }));
   };
 
-  const handleUseDefault = () => {
-    setSettings((prev) => ({ ...prev, customSystemPrompt: DEFAULT_SYSTEM_PROMPT }));
+  const hasChanges = useMemo(
+    () =>
+      settings.customSystemPrompt !== originalSettings.customSystemPrompt ||
+      settings.customSystemPromptWebSearch !== originalSettings.customSystemPromptWebSearch,
+    [settings, originalSettings]
+  );
+
+  const sectionBoxSx = {
+    p: 2.5,
+    borderRadius: 1,
+    bgcolor: isDark
+      ? alpha(theme.palette.background.default, 0.3)
+      : alpha(theme.palette.grey[50], 0.8),
+    border: `1px solid ${theme.palette.divider}`,
   };
 
-  const hasChanges = useMemo(
-    () => settings.customSystemPrompt !== originalSettings.customSystemPrompt,
-    [settings, originalSettings]
+  const renderPromptSection = (
+    title: string,
+    description: string,
+    value: string,
+    defaultValue: string,
+    infoText: string,
+    onChange: (val: string) => void,
+    onReset: () => void
+  ) => (
+    <Box>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 1.5,
+          mb: 2,
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              color: theme.palette.primary.main,
+            }}
+          >
+            <Iconify icon={messageTextIcon} width={20} height={20} />
+          </Box>
+          <Box>
+            <Typography
+              variant="subtitle1"
+              sx={{ fontWeight: 600, fontSize: '0.9375rem', mb: 0.25 }}
+            >
+              {title}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+              {description}
+            </Typography>
+          </Box>
+        </Box>
+        <Button
+          onClick={onReset}
+          variant="outlined"
+          color="primary"
+          size="small"
+          startIcon={<Iconify icon={restoreIcon} width={16} height={16} />}
+          sx={{
+            borderRadius: 1,
+            borderColor: theme.palette.primary.main,
+            textTransform: 'none',
+            fontSize: '0.8125rem',
+            flexShrink: 0,
+            '&:hover': {
+              borderColor: theme.palette.primary.dark,
+              backgroundColor: alpha(theme.palette.primary.main, 0.08),
+            },
+          }}
+        >
+          Use Default Prompt
+        </Button>
+      </Box>
+
+      <Box sx={sectionBoxSx}>
+        <TextField
+          multiline
+          rows={6}
+          fullWidth
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={`Enter your custom system prompt for ${title.toLowerCase()} here...`}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              bgcolor: theme.palette.background.paper,
+            },
+          }}
+        />
+
+        <Box
+          sx={{
+            mt: 2,
+            p: 1.5,
+            borderRadius: 1,
+            bgcolor: alpha(theme.palette.info.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.info.main, 0.1)}`,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 1,
+          }}
+        >
+          <Iconify
+            icon={informationIcon}
+            width={16}
+            height={16}
+            sx={{ color: theme.palette.info.main, mt: 0.25, flexShrink: 0 }}
+          />
+          <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+            {infoText}
+          </Typography>
+        </Box>
+      </Box>
+    </Box>
   );
 
   return (
@@ -146,17 +267,14 @@ export default function PromptsSettings() {
                 color: theme.palette.text.primary,
               }}
             >
-              Custom System Prompt
+              Custom System Prompts
             </Typography>
             <Typography
               variant="body2"
               color="text.secondary"
-              sx={{
-                maxWidth: 500,
-                lineHeight: 1.5,
-              }}
+              sx={{ maxWidth: 500, lineHeight: 1.5 }}
             >
-              Configure the custom system prompt for AI responses
+              Configure separate system prompts for internal search and web search modes
             </Typography>
           </Box>
         </Box>
@@ -170,9 +288,7 @@ export default function PromptsSettings() {
               mb: 3,
               borderRadius: 1,
               border: 'none',
-              '& .MuiAlert-icon': {
-                color: theme.palette.error.main,
-              },
+              '& .MuiAlert-icon': { color: theme.palette.error.main },
             }}
           >
             <Typography variant="body2">{error}</Typography>
@@ -218,138 +334,30 @@ export default function PromptsSettings() {
             </Box>
           </Stack>
         ) : (
-          <Stack spacing={3}>
-          {/* Custom System Prompt Section */}
-          <Box>
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1.5,
-                mb: 2,
-              }}
-            >
-              <Box
-                sx={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  bgcolor: alpha(theme.palette.primary.main, 0.1),
-                  color: theme.palette.primary.main,
-                }}
-              >
-                <Iconify icon={messageTextIcon} width={20} height={20} />
-              </Box>
-              <Box>
-                <Typography
-                  variant="subtitle1"
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: '0.9375rem',
-                    mb: 0.25,
-                  }}
-                >
-                  System Prompt
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
-                  Define the behavior and personality of the AI assistant
-                </Typography>
-              </Box>
-            </Box>
+          <Stack spacing={4}>
+          {renderPromptSection(
+            'Internal Search',
+            'System prompt used when answering from your internal knowledge base',
+            settings.customSystemPrompt,
+            DEFAULT_INTERNAL_PROMPT,
+            'This prompt guides the AI when answering from internal documents. Changes take effect immediately for new conversations.',
+            (val) => setSettings((prev) => ({ ...prev, customSystemPrompt: val })),
+            () => setSettings((prev) => ({ ...prev, customSystemPrompt: DEFAULT_INTERNAL_PROMPT }))
+          )}
 
-            <Box
-              sx={{
-                p: 2.5,
-                borderRadius: 1,
-                bgcolor: isDark
-                  ? alpha(theme.palette.background.default, 0.3)
-                  : alpha(theme.palette.grey[50], 0.8),
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <Box
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  mb: 1.5,
-                }}
-              >
-                <Typography
-                  variant="body2"
-                  sx={{ fontWeight: 500, color: theme.palette.text.secondary }}
-                >
-                  Custom System Prompt
-                </Typography>
-                <Button
-                  onClick={handleUseDefault}
-                  variant="outlined"
-                  color="primary"
-                  size="small"
-                  startIcon={<Iconify icon={restoreIcon} width={16} height={16} />}
-                  sx={{
-                    borderRadius: 1,
-                    borderColor: theme.palette.primary.main,
-                    textTransform: 'none',
-                    fontSize: '0.8125rem',
-                    '&:hover': {
-                      borderColor: theme.palette.primary.dark,
-                      backgroundColor: alpha(theme.palette.primary.main, 0.08),
-                    },
-                  }}
-                >
-                  Use Default Prompt
-                </Button>
-              </Box>
-              <TextField
-                multiline
-                rows={6}
-                fullWidth
-                value={settings.customSystemPrompt}
-                onChange={(e) =>
-                  setSettings((prev) => ({ ...prev, customSystemPrompt: e.target.value }))
-                }
-                placeholder="Enter your custom system prompt here..."
-                sx={{
-                  '& .MuiOutlinedInput-root': {
-                    bgcolor: theme.palette.background.paper,
-                  },
-                }}
-              />
-
-              <Box
-                sx={{
-                  mt: 2,
-                  p: 1.5,
-                  borderRadius: 1,
-                  bgcolor: alpha(theme.palette.info.main, 0.04),
-                  border: `1px solid ${alpha(theme.palette.info.main, 0.1)}`,
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 1,
-                }}
-              >
-                <Iconify
-                  icon={informationIcon}
-                  width={16}
-                  height={16}
-                  sx={{ color: theme.palette.info.main, mt: 0.25, flexShrink: 0 }}
-                />
-                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
-                  This prompt will be used across all AI chat interactions to guide the
-                  assistant&apos;s responses. Changes take effect immediately for new conversations.
-                </Typography>
-              </Box>
-            </Box>
-          </Box>
+          {renderPromptSection(
+            'Web Search',
+            'System prompt used when answering with live web search results',
+            settings.customSystemPromptWebSearch,
+            DEFAULT_WEB_SEARCH_PROMPT,
+            'This prompt guides the AI when answering using web search results. Changes take effect immediately for new conversations.',
+            (val) => setSettings((prev) => ({ ...prev, customSystemPromptWebSearch: val })),
+            () => setSettings((prev) => ({ ...prev, customSystemPromptWebSearch: DEFAULT_WEB_SEARCH_PROMPT }))
+          )}
         </Stack>
         )}
 
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
-          {/* Save button */}
           <Button
             onClick={handleSave}
             disabled={saving || loading || !hasChanges}
@@ -366,9 +374,7 @@ export default function PromptsSettings() {
               borderRadius: 1,
               borderColor: theme.palette.divider,
               color: theme.palette.common.white,
-              '&:hover': {
-                backgroundColor: theme.palette.primary.main,
-              },
+              '&:hover': { backgroundColor: theme.palette.primary.main },
             }}
           >
             {saving ? 'Saving...' : 'Save Changes'}
@@ -425,31 +431,23 @@ export default function PromptsSettings() {
             <Typography
               variant="subtitle2"
               color="text.primary"
-              sx={{
-                mb: 0.5,
-                fontWeight: 600,
-                fontSize: '0.875rem',
-              }}
+              sx={{ mb: 0.5, fontWeight: 600, fontSize: '0.875rem' }}
             >
               Prompt Configuration
             </Typography>
             <Typography
               variant="body2"
               color="text.secondary"
-              sx={{
-                fontSize: '0.8125rem',
-                lineHeight: 1.5,
-              }}
+              sx={{ fontSize: '0.8125rem', lineHeight: 1.5 }}
             >
-              The custom system prompt helps define the AI&apos;s behavior, tone, and approach to
-              answering questions. Make sure your prompt is clear and aligns with your
-              organization&apos;s needs.
+              Each mode has its own system prompt that defines the AI&apos;s behavior for that
+              context. If left at the default, the built-in prompt for that mode is used. Make sure
+              your prompts are clear and align with your organization&apos;s needs.
             </Typography>
           </Box>
         </Box>
       </Paper>
 
-      {/* Snackbar for success and error messages */}
       <Snackbar
         open={snackbar.open}
         autoHideDuration={4000}
@@ -466,9 +464,7 @@ export default function PromptsSettings() {
             boxShadow: isDark
               ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
               : '0px 3px 8px rgba(0, 0, 0, 0.12)',
-            '& .MuiAlert-icon': {
-              opacity: 0.8,
-            },
+            '& .MuiAlert-icon': { opacity: 0.8 },
             fontSize: '0.8125rem',
           }}
         >

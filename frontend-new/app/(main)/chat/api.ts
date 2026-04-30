@@ -22,6 +22,17 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
 } from './types';
+import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+
+export interface FeedbackPayload {
+  isHelpful: boolean;
+  categories?: string[];
+  comments?: {
+    positive?: string;
+    negative?: string;
+    suggestions?: string;
+  };
+}
 
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
@@ -59,6 +70,28 @@ export interface FetchConversationsOptions {
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
   signal?: AbortSignal;
+}
+
+/**
+ * Normalise an app/KB filter list and return a `{ filters }` spread fragment.
+ *
+ * Filters out any non-string or blank IDs, then only returns the key when at
+ * least one valid ID remains — so the backend never receives `filters: { apps:
+ * [], kb: [] }` and applies an unintended "no scope" constraint.
+ */
+function buildFiltersPayload(
+  apps: unknown[] | null | undefined,
+  kb: unknown[] | null | undefined,
+): Record<string, unknown> {
+  const validApps = (apps ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.trim().length > 0,
+  );
+  const validKb = (kb ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.trim().length > 0,
+  );
+  return validApps.length > 0 || validKb.length > 0
+    ? { filters: { apps: validApps, kb: validKb } }
+    : {};
 }
 
 // Chat API endpoints
@@ -183,37 +216,33 @@ export const ChatApi = {
 
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
-      const timezone =
-        typeof Intl !== 'undefined'
-          ? Intl.DateTimeFormat().resolvedOptions().timeZone
-          : 'UTC';
       endpoint = request.conversationId
         ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
       const f = request.filters;
-      const apps = (f?.apps ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
-      const kb = (f?.kb ?? []).filter(
-        (id): id is string => typeof id === 'string' && id.trim().length > 0
-      );
       payload = {
         query: request.query,
         modelKey: request.modelKey,
         modelName: request.modelName,
         modelFriendlyName: request.modelFriendlyName ?? request.modelName,
         chatMode: agentChatMode,
-        timezone,
-        currentTime: new Date().toISOString(),
+        timezone: getClientTimezone(),
+        currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
-        // Always send explicit `filters` (like `tools`): `{ apps: [], kb: [] }` means no knowledge scope.
-        filters: { apps, kb },
+        ...buildFiltersPayload(f?.apps, f?.kb),
       };
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
         : `/api/v1/conversations/stream`;
-      payload = request as unknown as Record<string, unknown>;
+      // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
+      // uniformly for both agent and non-agent paths) and validate filters.
+      const { agentStreamTools, filters: reqFilters, ...rest } = request;
+      payload = {
+        ...rest,
+        ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
+        ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+      };
     }
 
     // Track whether a complete event was received and the last SSE error
@@ -302,6 +331,8 @@ export const ChatApi = {
       modelFriendlyName: string;
       chatMode: StreamChatRequest['chatMode'];
       filters: StreamChatRequest['filters'];
+      /** Universal agent mode: explicit tool subset (null = all, [] = none). */
+      agentStreamTools?: string[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -309,15 +340,22 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
+    const body: Record<string, unknown> = {
+      modelKey: request.modelKey,
+      modelName: request.modelName,
+      modelFriendlyName: request.modelFriendlyName,
+      chatMode: request.chatMode,
+      ...buildFiltersPayload(request.filters?.apps, request.filters?.kb),
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
+    };
+    if (request.agentStreamTools !== undefined) {
+      body.tools = request.agentStreamTools;
+    }
+
     await streamSSERequest(
       endpoint,
-      {
-        modelKey: request.modelKey,
-        modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName,
-        chatMode: request.chatMode,
-        filters: request.filters,
-      } as unknown as Record<string, unknown>,
+      body,
       {
         onEvent: (event: SSEEvent) => {
           switch (event.event as SSEEventType) {
@@ -380,6 +418,9 @@ export const ChatApi = {
       modelName: string;
       modelProvider: string;
       chatMode: AgentStrategyApiSegment;
+      /** Explicit tool subset for this agent context (all tools when omitted). */
+      tools?: string[];
+      filters?: { apps: string[]; kb: string[] };
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -387,14 +428,22 @@ export const ChatApi = {
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
 
+    const agentRegenBody: Record<string, unknown> = {
+      modelKey: model.modelKey,
+      modelName: model.modelName,
+      modelProvider: model.modelProvider,
+      chatMode: model.chatMode,
+      timezone: getClientTimezone(),
+      currentTime: getClientCurrentTime(),
+      ...(model.filters ? { filters: model.filters } : {}),
+    };
+    if (model.tools !== undefined) {
+      agentRegenBody.tools = model.tools;
+    }
+
     await streamSSERequest(
       endpoint,
-      {
-        modelKey: model.modelKey,
-        modelName: model.modelName,
-        modelProvider: model.modelProvider,
-        chatMode: model.chatMode,
-      },
+      agentRegenBody,
       {
         onEvent: (event: SSEEvent) => {
           switch (event.event as SSEEventType) {
@@ -459,6 +508,37 @@ export const ChatApi = {
       }
     );
     return data;
+  },
+
+  /**
+   * Submit feedback (thumbs up / thumbs down) for a bot response message.
+   * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/feedback
+   */
+  async submitFeedback(
+    conversationId: string,
+    messageId: string,
+    feedback: FeedbackPayload
+  ): Promise<void> {
+    await apiClient.post(
+      `/api/v1/conversations/${conversationId}/message/${messageId}/feedback`,
+      feedback
+    );
+  },
+
+  /**
+   * Submit feedback for a bot response in an agent conversation.
+   * Endpoint: POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/feedback
+   */
+  async submitAgentFeedback(
+    agentId: string,
+    conversationId: string,
+    messageId: string,
+    feedback: FeedbackPayload
+  ): Promise<void> {
+    await apiClient.post(
+      `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/feedback`,
+      feedback
+    );
   },
 
   // Rename a conversation

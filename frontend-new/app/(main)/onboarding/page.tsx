@@ -264,15 +264,15 @@ function OnboardingPageInner() {
       }}
     >
       {/* Header — fixed height, never scrolls */}
-      <OnboardingHeader
-        userName={userName}
-        userEmail={userEmail}
-        userInitials={userInitials}
-        orgDisplayName={orgDisplayName}
-        orgInitial={orgInitial}
-        orgSubtitle={orgDisplayName}
-        showOrgBadge={showOrgBadge}
-      />
+        <OnboardingHeader
+          userName={userName}
+          userEmail={userEmail}
+          userInitials={userInitials}
+          orgDisplayName={orgDisplayName}
+          orgInitial={orgInitial}
+          orgSubtitle={orgDisplayName}
+          showOrgBadge={showOrgBadge}
+        />
 
       {/* Loading step — fills remaining space */}
       {isLoadingStep && (
@@ -308,7 +308,7 @@ function OnboardingPageInner() {
             align="center"
             justify="center"
             className="no-scrollbar"
-            style={{ flex: 1, minHeight: 0, overflow: 'hidden', padding: '40px 24px' }}
+            style={{ flex: 1, minHeight: 0, overflow: 'hidden', padding: '8px 16px' }}
           >
             {renderStep()}
           </Flex>
@@ -324,7 +324,7 @@ function OnboardingPageInner() {
             maxWidth: '1228px',
             width: '100%',
             margin: '0 auto',
-            padding: '16px 0',
+            padding: '8px 0',
             flexShrink: 0,
           }}
         >

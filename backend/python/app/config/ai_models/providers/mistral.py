@@ -9,7 +9,7 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, mode
 @AIModelProviderBuilder("Mistral", "mistral") \
     .with_description("High-performance language models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/mistral-color.svg") \
+    .with_icon("/icons/ai-models/mistral-color.svg") \
     .with_color("#FF7000") \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g. mistral-large-latest"), ModelCapability.TEXT_GENERATION) \

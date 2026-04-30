@@ -471,18 +471,16 @@ class TestGroupToolsByDomain:
         """Tools from known utility domains are merged into 'utility'."""
         t1 = self._make_tool("calculator_calculate", "calculator.calculate")
         t2 = self._make_tool("datetime_now", "datetime.get_current_datetime")
-        t3 = self._make_tool("web_search_query", "web_search.query")
-        mock_get_tools.return_value = [t1, t2, t3]
+        mock_get_tools.return_value = [t1, t2]
 
         state = {"logger": log}
         groups = group_tools_by_domain(state)
 
         assert "utility" in groups
-        assert len(groups["utility"]) == 3
+        assert len(groups["utility"]) == 2
         # They should not appear as separate domain keys
         assert "calculator" not in groups
         assert "datetime" not in groups
-        assert "web_search" not in groups
 
     @patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas")
     def test_alias_normalization(self, mock_get_tools):

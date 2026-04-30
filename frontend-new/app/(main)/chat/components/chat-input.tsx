@@ -11,9 +11,11 @@ import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-pa
 import { QueryModePanel } from '@/chat/components/chat-panel/expansion-panels/query-mode-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
+import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
+import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   ModeSwitcher,
   AgentStrategyModeSwitcher,
@@ -30,7 +32,7 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
-import type { UploadedFile, ActiveMessageAction, ModelOverride } from '@/chat/types';
+import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -153,9 +155,16 @@ export function ChatInput({
   const setFilters = useChatStore((s) => s.setFilters);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
   const collectionNamesCache = useChatStore((s) => s.collectionNamesCache);
+  const collectionMetaCache = useChatStore((s) => s.collectionMetaCache);
   const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
+  const agentKnowledgeDefaults = useChatStore((s) => s.agentKnowledgeDefaults);
+  const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const agentStreamToolsSel = useChatStore((s) => s.agentStreamTools);
   const agentToolCatalogLen = useChatStore((s) => s.agentToolCatalogFullNames.length);
+  const agentChatToolGroups = useChatStore((s) => s.agentChatToolGroups);
+  const universalAgentStreamTools = useChatStore((s) => s.universalAgentStreamTools);
+  const universalAgentToolsLoading = useChatStore((s) => s.universalAgentToolsLoading);
+  const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -209,6 +218,14 @@ export function ChatInput({
       (agentStreamToolsSel !== null &&
         agentToolCatalogLen > 0 &&
         (agentStreamToolsSel.length === 0 || agentStreamToolsSel.length < agentToolCatalogLen)));
+
+  /** Universal agent mode has an explicit tool selection (not null = "all tools"). */
+  const universalAgentResourcesCustomized =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentStreamTools !== null;
+
+  /** True when universal agent tool data is loading (disable send while loading). */
+  const isUniversalAgentLoading =
+    !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
@@ -232,39 +249,93 @@ export function ChatInput({
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
 
-  // Build selected collections from store (roots → apps API; record groups → kb API)
+  // Build selected collections from store (roots → apps API; record groups → kb API).
+  // Includes connector metadata so pills show the right icon per source type.
+  // In agent mode, read from the effective agent knowledge scope instead of settings.filters.
+  // In regenerate mode, read from the original message's appliedFilters (locked, non-removable).
+  const regenAppliedFilters = isRegenerateMode && activeMessageAction?.type === 'regenerate'
+    ? activeMessageAction.appliedFilters
+    : undefined;
+
   const selectedCollections = useMemo(() => {
-    const hubApps = settings.filters?.apps ?? [];
-    const groups = settings.filters?.kb ?? [];
+    // Regenerate mode: derive pills directly from the original message's appliedFilters nodes
+    // (they carry name + connector already, so no cache lookup needed).
+    if (regenAppliedFilters) {
+      return [
+        ...regenAppliedFilters.apps.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: (node.nodeType === 'app' ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+        ...regenAppliedFilters.kb.map((node) => ({
+          id: node.id,
+          name: node.name,
+          kind: 'collection' as const,
+          connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
+        })),
+      ];
+    }
+
+    const source = isAgentChat
+      ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
+      : settings.filters;
+    const hubApps = source?.apps ?? [];
+    const groups = source?.kb ?? [];
     return [
-      ...hubApps.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
-      ...groups.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-      })),
+      ...hubApps.map((id) => {
+        const meta = collectionMetaCache[id];
+        const isConnector = meta?.nodeType === 'app';
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: (isConnector ? 'connector' : 'collection') as 'connector' | 'collection',
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
+      ...groups.map((id) => {
+        const meta = collectionMetaCache[id];
+        return {
+          id,
+          name: collectionNamesCache[id] || meta?.name || 'Collection',
+          kind: 'collection' as const,
+          connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
+        };
+      }),
     ];
-  }, [settings.filters, collectionNamesCache]);
+  }, [regenAppliedFilters, isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
-      const hubApps = settings.filters?.apps ?? [];
-      const groups = settings.filters?.kb ?? [];
-      if (hubApps.includes(id)) {
-        setFilters({
-          ...settings.filters,
-          apps: hubApps.filter((aid) => aid !== id),
-        });
+      if (isAgentChat) {
+        const eff = agentKnowledgeScope ?? agentKnowledgeDefaults;
+        const nextApps = eff.apps.filter((aid) => aid !== id);
+        const nextKb = eff.kb.filter((gid) => gid !== id);
+        // Normalize to null when result matches defaults (no customization applied)
+        const appsMatch =
+          new Set(nextApps).size === new Set(agentKnowledgeDefaults.apps).size &&
+          nextApps.every((x) => agentKnowledgeDefaults.apps.includes(x));
+        const kbMatch =
+          new Set(nextKb).size === new Set(agentKnowledgeDefaults.kb).size &&
+          nextKb.every((x) => agentKnowledgeDefaults.kb.includes(x));
+        setAgentKnowledgeScope(appsMatch && kbMatch ? null : { apps: nextApps, kb: nextKb });
       } else {
-        setFilters({
-          ...settings.filters,
-          kb: groups.filter((gid) => gid !== id),
-        });
+        const hubApps = settings.filters?.apps ?? [];
+        const groups = settings.filters?.kb ?? [];
+        if (hubApps.includes(id)) {
+          setFilters({
+            ...settings.filters,
+            apps: hubApps.filter((aid) => aid !== id),
+          });
+        } else {
+          setFilters({
+            ...settings.filters,
+            kb: groups.filter((gid) => gid !== id),
+          });
+        }
       }
     },
-    [settings.filters, setFilters]
+    [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, setAgentKnowledgeScope, settings.filters, setFilters]
   );
 
   // Toolbar icon color follows the active query mode so it stays consistent with ModeSwitcher.
@@ -285,11 +356,11 @@ export function ChatInput({
   // as { messageId, text: question }).
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
-    const { messageId, text } = payload as { messageId: string; text?: string };
+    const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
     if (!messageId) return;
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'regenerate', messageId });
+    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
   }, [dismissExpansionPanels]);
@@ -341,10 +412,14 @@ export function ChatInput({
 
     if (activeMessageAction.type === 'regenerate') {
       const modelOverride = regenModelOverride ?? undefined;
+      const af = activeMessageAction.appliedFilters;
+      const originalFilters = af
+        ? { apps: af.apps.map((a) => a.id), kb: af.kb.map((k) => k.id) }
+        : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
       if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride);
+        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
       return;
     }
@@ -368,6 +443,88 @@ export function ChatInput({
     if (activeMessageAction) {
       executeMessageAction();
       return;
+    }
+
+    // ── Agent tool validation ─────────────────────────────────
+    const isUrlAgent = Boolean(agentId);
+    const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
+    if (isUrlAgent || isUniversalAgentMode) {
+      const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
+      const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;
+
+      const stripPrefix = (key: string) => {
+        const colon = key.indexOf(':');
+        return colon >= 0 ? key.slice(colon + 1) : key;
+      };
+
+      // Count resolved (stripped + deduped) tools — mirrors the wire format
+      // in runtime.ts where prefixed keys are stripped then deduped via Set.
+      const resolvedCount =
+        toolsSel === null
+          ? new Set(groups.flatMap((g) => g.fullNames).map(stripPrefix)).size
+          : new Set(toolsSel.map(stripPrefix)).size;
+
+      if (resolvedCount > 128) {
+        toast.error(
+          t('chat.toolValidation.tooManyTools', {
+            defaultValue:
+              'Too many tools selected. Maximum 128 tools are allowed per request due to performance limits.',
+          })
+        );
+        return;
+      }
+
+      // Detect multiple selected instances of the same toolset type.
+      // Key format differs by mode:
+      //   universal agent  → `${instanceId}:${fullName}` (prefixed)
+      //   URL-scoped agent → bare `fullName`
+      //
+      // When toolsSel === null (default "all tools") and the groups list is empty
+      // (panel hasn't loaded yet), skip the check — the user hasn't had a chance
+      // to curate, and blocking without an actionable path is confusing.
+      const instanceCountBySlug = new Map<string, number>();
+      if (toolsSel === null) {
+        if (groups.length === 0) {
+          // Groups not loaded yet — let the request through; the backend will
+          // use its own full set and handle any conflicts server-side.
+        } else {
+          for (const group of groups) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
+        }
+      } else {
+        const selectedKeys = new Set(toolsSel);
+        for (const group of groups) {
+          const hasSelected = isUniversalAgentMode
+            // Universal: keys are `${instanceId}:${fullName}`
+            ? group.fullNames.some((fn) => selectedKeys.has(`${group.instanceId ?? ''}:${fn}`))
+            // URL-scoped: keys are bare fullNames
+            : group.fullNames.some((fn) => selectedKeys.has(fn));
+          if (hasSelected) {
+            instanceCountBySlug.set(
+              group.toolsetSlug,
+              (instanceCountBySlug.get(group.toolsetSlug) ?? 0) + 1
+            );
+          }
+        }
+      }
+      const multiTypes = [...instanceCountBySlug.entries()]
+        .filter(([, n]) => n > 1)
+        .map(([slug]) => slug);
+      if (multiTypes.length > 0) {
+        const typeNames = multiTypes.join(', ');
+        toast.error(
+          t('chat.toolValidation.multipleInstances', {
+            types: typeNames,
+            defaultValue:
+              `Multiple instances of the same action type (${typeNames}) cannot be used together. Open the Actions panel and select only one instance per type.`,
+          })
+        );
+        return;
+      }
     }
 
     // ── Normal send flow (unchanged) ──────────────────────────
@@ -458,7 +615,7 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = hasContent || activeMessageAction !== null;
+  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -501,6 +658,18 @@ export function ChatInput({
       setIsAgentResourcesPanelOpen(false);
     }
   }, [isAgentChat]);
+
+  // Close the collections panel when switching away from agent queryMode so
+  // the user doesn't see a stale universal-agent panel under a different mode.
+  const prevQueryModeRef = useRef(settings.queryMode);
+  useEffect(() => {
+    const prev = prevQueryModeRef.current;
+    prevQueryModeRef.current = settings.queryMode;
+    if (prev === 'agent' && settings.queryMode !== 'agent' && isCollectionsPanelOpen) {
+      setIsCollectionsPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+  }, [settings.queryMode, isCollectionsPanelOpen, setExpansionViewMode]);
 
   if (!showFullUI) {
     return (
@@ -598,7 +767,7 @@ export function ChatInput({
     >
       {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
       {selectedCollections.length > 0 &&
-        !isAgentChat &&
+        // !isAgentChat &&
         !isCollectionsPanelOpen &&
         !modeChromeOpen && (
         <Flex
@@ -610,13 +779,13 @@ export function ChatInput({
             borderRight: '1px solid var(--slate-5)',
             borderTopLeftRadius: 'var(--radius-1)',
             borderTopRightRadius: 'var(--radius-1)',
-            padding: 'var(--space-3) var(--space-4)',
+            padding: 'var(--space-2) var(--space-3)',
           }}
         >
           <SelectedCollections
             collections={selectedCollections}
-            removable
-            onRemove={handleRemoveCollection}
+            removable={!isRegenerateMode}
+            onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
           />
         </Flex>
       )}
@@ -869,7 +1038,17 @@ export function ChatInput({
         >
           <AgentScopedResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : !isAgentChat && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+        <ChatInputExpansionPanel
+          open={isCollectionsPanelOpen}
+          onClose={() => {
+            setIsCollectionsPanelOpen(false);
+            setExpansionViewMode('inline');
+          }}
+        >
+          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+        </ChatInputExpansionPanel>
+      ) : !isAgentChat && settings.queryMode !== 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1070,11 +1249,25 @@ export function ChatInput({
 
               {/* Action buttons group */}
               <Flex align="center" gap="1">
-                {/* Apps — assistant: collections; agent: connectors / collections / actions */}
-                {!isAgentChat ? (
-                  <Tooltip content={t('chat.connectorsTooltip')} side="top">
+                  
+                {!isAgentChat && settings.queryMode !== 'web-search' ? (
+                  <Tooltip
+                  content={
+                    settings.queryMode === 'agent'
+                      ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                      : t('chat.connectorsTooltip')
+                  }
+                  side="top"
+                >
                     <IconButton
-                      variant={isCollectionsPanelOpen || selectedKbCount > 0 ? 'soft' : 'ghost'}
+                      variant={
+                        isCollectionsPanelOpen ||
+                        (settings.queryMode === 'agent'
+                          ? universalAgentResourcesCustomized
+                          : selectedKbCount > 0)
+                          ? 'soft'
+                          : 'ghost'
+                      }
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
@@ -1093,7 +1286,7 @@ export function ChatInput({
                       <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                     </IconButton>
                   </Tooltip>
-                ) : (
+                ) : isAgentChat ? (
                   <Tooltip content={t('chat.agentResourcesTooltip')} side="top">
                     <IconButton
                       variant={
@@ -1118,7 +1311,7 @@ export function ChatInput({
                       <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                     </IconButton>
                   </Tooltip>
-                )}
+                ) : null}
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
@@ -1289,6 +1482,8 @@ export function ChatInput({
     >
       {isAgentChat ? (
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+      ) : settings.queryMode === 'agent' ? (
+        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : (
         <ConnectorsCollectionsPanel
           apps={settings.filters?.apps ?? []}

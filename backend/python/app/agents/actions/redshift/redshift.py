@@ -5,7 +5,7 @@ import time
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
-
+from app.connectors.core.constants import IconPaths
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
@@ -134,7 +134,7 @@ class GetTablesSchemaInput(BaseModel):
             ),
         ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/redshift.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("redshift"))
         .add_documentation_link(DocumentationLink(
             "Amazon Redshift Documentation",
             "https://docs.aws.amazon.com/redshift/latest/gsg/new-user-serverless.html",

@@ -5,8 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Popover, Separator, Badge } from '@radix-ui/themes';
 import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
-import { AGENT_TOOLSET_FALLBACK_ICON, normalizeDisplayName } from '../display-utils';
+import { AGENT_TOOLSET_FALLBACK_ICON, normalizeDisplayName, resolveNodeConnectorType } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
@@ -140,6 +141,7 @@ export function ToolsetFlowNode({
   );
 
   const icon = (data.icon as string) || (cfg.iconPath as string) || 'extension';
+  const headerConnectorType = resolveNodeConnectorType(data);
 
   return (
     <div className="flow-node-card">
@@ -169,7 +171,9 @@ export function ToolsetFlowNode({
         <Flex align="center" justify="between" gap="2" px="3" py="2">
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
             <Flex align="center" justify="center" style={{ flexShrink: 0, lineHeight: 0 }} aria-hidden>
-              {isIconUrl(icon) ? (
+              {headerConnectorType ? (
+                <ConnectorIcon type={headerConnectorType} size={22} color={chrome.iconColor} />
+              ) : isIconUrl(icon) ? (
                 <ThemeableAssetIcon
                   {...themeableAssetIconPresets.flowNodeHeader}
                   src={icon}

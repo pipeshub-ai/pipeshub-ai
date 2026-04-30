@@ -29,6 +29,7 @@ DOMAIN_ALIASES: dict[str, str] = {
     "one_drive": "onedrive",
 }
 
+_WEB_TOOL_NAMES = {"fetch_url", "web_search"}
 
 def derive_tool_domain(tool: Any) -> tuple[str, str]:
     """Return ``(domain, action)`` for a runtime tool.
@@ -42,7 +43,9 @@ def derive_tool_domain(tool: Any) -> tuple[str, str]:
     name = getattr(tool, "name", "") or ""
     canonical = getattr(tool, "_original_name", "") or name
 
-    if "." in canonical:
+    if canonical in _WEB_TOOL_NAMES or name in _WEB_TOOL_NAMES:
+        domain, action = "web", canonical
+    elif "." in canonical:
         domain, action = canonical.split(".", 1)
     else:
         domain, action = "utility", canonical

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Button, Flex, IconButton, Separator, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils/formatters';
@@ -42,7 +43,6 @@ export function ToolsetInstanceRowCard({
     !ok &&
     !isNoneAuthType(authTypeUpper) &&
     (isOAuthType(authTypeUpper) || scope === 'personal');
-  const [iconBroken, setIconBroken] = useState(false);
 
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
@@ -108,16 +108,8 @@ export function ToolsetInstanceRowCard({
             overflow: 'hidden',
           }}
         >
-          {!iconBroken && instance.iconPath ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={instance.iconPath}
-              alt=""
-              width={22}
-              height={22}
-              style={{ objectFit: 'contain' }}
-              onError={() => setIconBroken(true)}
-            />
+          {instance.toolsetType || instance.name ? (
+            <ConnectorIcon type={instance.toolsetType || instance.name} size={22} />
           ) : (
             <MaterialIcon name="bolt" size={20} color="var(--gray-11)" />
           )}

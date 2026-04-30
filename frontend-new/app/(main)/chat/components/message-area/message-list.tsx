@@ -10,11 +10,12 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ChatArtifact } from '../../types';
+import type { AppliedFilters, ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
+import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -36,9 +37,6 @@ function extractTextContent(content: readonly { type: string; text?: string }[])
     .join('');
 }
 
-interface FeedbackInfo {
-  value?: 'like' | 'dislike';
-}
 
 interface MessagePair {
   key: string;
@@ -50,9 +48,12 @@ interface MessagePair {
   confidence?: ConfidenceLevel;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
-  feedbackInfo?: FeedbackInfo;
+  feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
+  appliedFilters?: AppliedFilters;
+  /** ISO timestamp of when the user sent this query */
+  createdAt?: string;
 }
 
 export function MessageList() {
@@ -201,13 +202,13 @@ export function MessageList() {
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
-          feedbackInfo?: FeedbackInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
-          feedbackInfo?: FeedbackInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } | undefined;
 
         // Find preceding user message
@@ -226,20 +227,24 @@ export function MessageList() {
         const isCurrentlyStreaming =
           isStreaming && isLastAssistant && question === streamingQuestion;
 
-        // Extract collections from the preceding user message metadata
-        const userMessageCollections = prevMsg
-          ? ((prevMsg as { metadata?: { custom?: { collections?: Array<{ id: string; name: string }> } } }).metadata?.custom?.collections as Array<{ id: string; name: string }> | undefined)
-          : undefined;
+        // appliedFilters from the preceding user message metadata
+        const userMsgCustom = prevMsg?.metadata?.custom as {
+          collections?: Array<{ id: string; name: string }>;
+          appliedFilters?: AppliedFilters;
+          createdAt?: string;
+        } | undefined;
+        const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
+        const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
+        const userCreatedAt = userMsgCustom?.createdAt;
+
 
         pairs.push({
           key: msg.id ?? `asst-${i}`,
           messageId: metadata?.messageId,
           question,
-          // Clear old answer immediately when regeneration starts so the
-          // stale content doesn't linger until the first streaming chunk.
           answer: isBeingRegenerated ? '' : content,
           citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
-            ? EMPTY_CITATION_MAPS  // streaming citations passed as a separate prop
+            ? EMPTY_CITATION_MAPS
             : (metadata?.citationMaps || EMPTY_CITATION_MAPS),
           confidence: metadata?.confidence,
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
@@ -249,6 +254,8 @@ export function MessageList() {
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
+          appliedFilters: userMessageAppliedFilters,
+          createdAt: userCreatedAt,
         });
       }
     }
@@ -892,11 +899,12 @@ export function MessageList() {
                   confidence={pair.confidence}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
-                  feedbackInfo={pair.feedbackInfo}
                   collections={pair.collections}
+                  appliedFilters={pair.appliedFilters}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}
+                  createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
@@ -939,6 +947,11 @@ export function MessageList() {
         }}
         aria-hidden="true"
       />
+
+      {/* Single inline-citation popover host for the whole message list. It's
+          driven by the zustand store so only one popover is ever rendered,
+          even when the answer contains many citation badges. */}
+      <InlineCitationPopoverHost />
     </Box>
   );
 }

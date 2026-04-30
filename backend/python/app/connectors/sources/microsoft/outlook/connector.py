@@ -161,7 +161,7 @@ from app.utils.time_conversion import (
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon(IconPaths.connector_icon("outlook"))
+        .with_icon(IconPaths.connector_icon(Connectors.OUTLOOK.value))
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
             OutlookDocs.AZURE_AD_SETUP_URL,
