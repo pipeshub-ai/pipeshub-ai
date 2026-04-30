@@ -439,6 +439,8 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
+    if (isStreaming) return;
+
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
       executeMessageAction();
@@ -615,7 +617,8 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
+  const canSubmit =
+    (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading && !isStreaming;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -729,23 +732,37 @@ export function ChatInput({
             }}
           />
 
-          {/* Send button */}
-          <IconButton
-            variant="solid"
-            size="2"
-            onClick={handleSubmit}
-            disabled={!message.trim()}
-            style={{
-              margin: 0,
-              backgroundColor: message.trim() ? activeIconColor : 'var(--slate-a3)',
-            }}
-          >
-            <MaterialIcon
-              name="arrow_upward"
-              size={ICON_SIZES.PRIMARY}
-              color={message.trim() ? 'white' : 'var(--slate-a8)'}
-            />
-          </IconButton>
+          {/* Send / Stop — same contract as full composer */}
+          {isStreaming ? (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleStopStream}
+              style={{
+                margin: 0,
+                backgroundColor: activeIconColor,
+              }}
+            >
+              <MaterialIcon name="stop" size={ICON_SIZES.PRIMARY} color="white" />
+            </IconButton>
+          ) : (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              style={{
+                margin: 0,
+                backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
+              }}
+            >
+              <MaterialIcon
+                name="arrow_upward"
+                size={ICON_SIZES.PRIMARY}
+                color={canSubmit ? 'white' : 'var(--slate-a8)'}
+              />
+            </IconButton>
+          )}
         </Flex>
       </Flex>
     );

@@ -112,6 +112,9 @@ export function ChatInputWrapper() {
     }
 
     // ── Chat mode (existing flow) ──
+    if (store.activeSlotId && store.slots[store.activeSlotId]?.isStreaming) {
+      return;
+    }
 
     // Ensure a slot exists for new chats
     let activeSlotId = store.activeSlotId;

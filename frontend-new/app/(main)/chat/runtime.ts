@@ -157,6 +157,7 @@ export function buildExternalStoreConfig(
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
+      if (currentSlot.isStreaming) return;
 
       // Extract KB / collection-root scope from message metadata (attached at send-time)
       const msgCollections = readKbCollectionsFromMessage(message);
