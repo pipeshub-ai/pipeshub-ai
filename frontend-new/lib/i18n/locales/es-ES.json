@@ -738,7 +738,7 @@
         "cancel": "Cancelar",
         "send": "Enviar invitación",
         "successTitle": "Invitaciones enviadas",
-        "successDescription": "Invitación enviada correctamente.",
+        "successDescription": "Se ha invitado a {{email}}",
         "invalidEmail": "Dirección de correo inválida",
         "errorGeneric": "No se pudieron enviar las invitaciones. Inténtalo de nuevo."
       }

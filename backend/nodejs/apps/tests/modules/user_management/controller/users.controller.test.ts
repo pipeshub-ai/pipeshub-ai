@@ -2033,6 +2033,83 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('array of email');
     });
+
+    it('should resend invite email for existing pending non-blocked users', async () => {
+      req.body = {
+        emails: ['pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439021',
+          email: 'pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+    });
+
+    it('should not resend invite for pending blocked users', async () => {
+      req.body = {
+        emails: ['blocked-pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439022',
+          email: 'blocked-pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].errorMessage).to.include('already have active accounts');
+    });
   });
 
   describe('getUserById - hideEmail', () => {

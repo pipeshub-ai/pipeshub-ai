@@ -1424,6 +1424,31 @@ export class UserController {
 
       const activeEmails = activeUsers.map((user) => user.email);
       const deletedEmails = deletedUsers.map((user) => user.email);
+      const pendingUsers = activeUsers.filter((user) => !user.hasLoggedIn);
+      const pendingUserIds = pendingUsers
+        .map((user) => user._id)
+        .filter((userId): userId is mongoose.Types.ObjectId => Boolean(userId));
+
+      const blockedPendingCredentialDocs = pendingUserIds.length > 0
+        ? await UserCredentials.find({
+            orgId: req.user?.orgId,
+            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
+            isBlocked: true,
+            isDeleted: false,
+          })
+            .select('userId')
+            .lean()
+            .exec()
+        : [];
+
+      const blockedPendingUserIds = new Set(
+        blockedPendingCredentialDocs
+          .map((doc) => doc.userId?.toString())
+          .filter((userId): userId is string => Boolean(userId)),
+      );
+      const pendingUsersToReinvite = pendingUsers.filter(
+        (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
+      );
 
       // Restore deleted accounts
       let restoredUsers: User[] = [];
@@ -1481,7 +1506,11 @@ export class UserController {
         );
       }
       // If nothing was done, return 409
-      if (newUsers.length === 0 && restoredUsers.length === 0) {
+      if (
+        newUsers.length === 0 &&
+        restoredUsers.length === 0 &&
+        pendingUsersToReinvite.length === 0
+      ) {
         res.status(200).json({
           errorMessage: 'All provided emails already have active accounts',
         });
@@ -1490,36 +1519,50 @@ export class UserController {
       let errorSendingMail = false;
 
       await this.eventService.start();
-      for (let i = 0; i < emailsForNewAccounts.length; ++i) {
-        const email = emailsForNewAccounts[i];
-        const userId = newUsers[i]?._id;
+      const newUserByEmail = new Map(
+        newUsers.map((user) => [user.email, user]),
+      );
+      const pendingUserByEmail = new Map(
+        pendingUsersToReinvite.map((user) => [user.email, user]),
+      );
+      const emailsForPendingAccounts = pendingUsersToReinvite
+        .map((user) => user.email)
+        .filter((email): email is string => Boolean(email));
+      const emailsForInvites = [...emailsForNewAccounts, ...emailsForPendingAccounts];
+
+      for (let i = 0; i < emailsForInvites.length; ++i) {
+        const email = emailsForInvites[i];
+        const pendingUser = pendingUserByEmail.get(email);
+        const userId = pendingUser?._id || newUserByEmail.get(email)?._id;
         if (!userId) {
           throw new InternalServerError(
             'User ID missing while inviting restored user. Please ensure user restoration was successful.',
           );
         }
-        await UserGroups.updateMany(
-          { _id: { $in: groupIds }, orgId },
-          { $addToSet: { users: userId } },
-          { new: true },
-        );
+        if (!pendingUser) {
+          await UserGroups.updateMany(
+            { _id: { $in: groupIds }, orgId },
+            { $addToSet: { users: userId } },
+            { new: true },
+          );
 
-        await UserGroups.updateOne(
-          { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
-          { $addToSet: { users: userId } }, // Add user to the group if not already present
-        );
+          await UserGroups.updateOne(
+            { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
+            { $addToSet: { users: userId } }, // Add user to the group if not already present
+          );
 
-        const event: Event = {
-          eventType: EventType.NewUserEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: req.user?.orgId.toString(),
-            userId: userId,
-            email: email,
-            syncAction: SyncAction.Immediate,
-          } as UserAddedEvent,
-        };
-        await this.eventService.publishEvent(event);
+          const event: Event = {
+            eventType: EventType.NewUserEvent,
+            timestamp: Date.now(),
+            payload: {
+              orgId: req.user?.orgId.toString(),
+              userId: userId,
+              email: email,
+              syncAction: SyncAction.Immediate,
+            } as UserAddedEvent,
+          };
+          await this.eventService.publishEvent(event);
+        }
 
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),

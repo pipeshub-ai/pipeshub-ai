@@ -739,7 +739,7 @@
         "cancel": "रद्द करें",
         "send": "आमंत्रण भेजें",
         "successTitle": "आमंत्रण भेजे गए",
-        "successDescription": "आमंत्रण सफलतापूर्वक भेजा गया।",
+        "successDescription": "{{email}} को आमंत्रित किया गया है",
         "invalidEmail": "अमान्य ईमेल पता",
         "errorGeneric": "आमंत्रण भेजने में विफल। कृपया पुनः प्रयास करें।"
       }
