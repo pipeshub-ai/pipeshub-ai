@@ -213,6 +213,21 @@ class TestGetFilesList:
         assert "network error" in json.loads(result)["error"]
 
     @pytest.mark.asyncio
+    async def test_fulltext_contains_query_not_wrapped(self):
+        # Regression: 'fullText contains' has a capital T but the operator list
+        # is checked against query.lower(), so the literal must be lowercase too.
+        # Before the fix this query was misidentified as a plain-text query and
+        # wrapped as: name contains "fullText contains \"budget\""
+        gd = _make_drive()
+        gd.client.files_list = AsyncMock(return_value={"files": []})
+        q = 'fullText contains "budget"'
+        await gd.get_files_list(query=q)
+        call_kwargs = gd.client.files_list.call_args[1]
+        assert call_kwargs["q"] == q, (
+            f"fullText contains query must be passed through unchanged; got: {call_kwargs['q']!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_size_gt_client_side_filtering_applied(self):
         gd = _make_drive()
         files = [{"size": "500"}, {"size": "1500"}, {"size": "2000"}]
@@ -449,6 +464,19 @@ class TestSearchFiles:
         call_kwargs = gd.client.files_list.call_args[1]
         assert call_kwargs["pageSize"] == 20
         assert call_kwargs["orderBy"] == "modifiedTime desc"
+
+    @pytest.mark.asyncio
+    async def test_fulltext_contains_query_not_wrapped(self):
+        # Regression: same fix as TestGetFilesList — fullText contains must be
+        # recognised as a structured operator and passed through unmodified.
+        gd = _make_drive()
+        gd.client.files_list = AsyncMock(return_value={"files": []})
+        q = 'fullText contains "budget"'
+        await gd.search_files(query=q)
+        call_kwargs = gd.client.files_list.call_args[1]
+        assert call_kwargs["q"] == q, (
+            f"fullText contains query must be passed through unchanged; got: {call_kwargs['q']!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_exception_returns_false(self):
