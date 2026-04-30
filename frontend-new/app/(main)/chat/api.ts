@@ -237,15 +237,12 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
-      const { agentStreamTools, filters: reqFilters, ...rest } = request as unknown as Record<string, unknown> & {
-        agentStreamTools?: string[];
-        filters?: { apps?: string[]; kb?: string[] };
-      };
+      const { agentStreamTools, filters: reqFilters, ...rest } = request;
       payload = {
         ...rest,
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
         ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
-      } as Record<string, unknown>;
+      };
     }
 
     // Track whether a complete event was received and the last SSE error
