@@ -374,6 +374,7 @@ export function FilePreviewSidebar({
                     fileType={file.type}
                     fileBlob={file.blob}
                     webUrl={file.webUrl}
+                    previewRenderable={file.previewRenderable}
                     pagination={paginationControls}
                     highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                     highlightPage={hasCitations ? syncHighlightPage : undefined}

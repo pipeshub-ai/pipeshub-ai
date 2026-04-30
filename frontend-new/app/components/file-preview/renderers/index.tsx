@@ -154,7 +154,7 @@ export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl, previewRen
         Preview not available for this file type
       </Text>
       <Flex gap="3">
-        {previewRenderable && downloadHref && downloadHref.trim() !== '' && (
+        {previewRenderable !== false && downloadHref && downloadHref.trim() !== '' && (
           <a
             href={downloadHref}
             download={fileName}

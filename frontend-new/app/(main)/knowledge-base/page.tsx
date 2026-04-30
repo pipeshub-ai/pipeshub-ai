@@ -437,6 +437,7 @@ function KnowledgeBasePageContent() {
     error?: string;
     recordDetails?: RecordDetailsResponse;
     webUrl?: string;
+    previewRenderable?: boolean;
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
@@ -1558,6 +1559,7 @@ function KnowledgeBasePageContent() {
           isLoading: false,
           recordDetails,
           webUrl: recordDetails.record.webUrl || undefined,
+          previewRenderable: recordDetails.record.previewRenderable,
         });
 
       } catch (error) {
@@ -1627,6 +1629,7 @@ function KnowledgeBasePageContent() {
           isLoading: false,
           recordDetails,
           webUrl: recordDetails.record.webUrl || undefined,
+          previewRenderable: recordDetails.record.previewRenderable,
         });
 
       } catch (error) {
@@ -2314,6 +2317,7 @@ function KnowledgeBasePageContent() {
             type: previewFile.type,
             size: previewFile.size,
             ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
+            previewRenderable: previewFile.previewRenderable,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -2343,6 +2347,7 @@ function KnowledgeBasePageContent() {
             type: previewFile.type,
             size: previewFile.size,
             ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
+            previewRenderable: previewFile.previewRenderable,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
