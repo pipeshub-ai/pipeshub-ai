@@ -69,10 +69,19 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
       return;
     }
 
+    let parsed: URL;
     try {
-      new URL(trimmed);
+      parsed = new URL(trimmed);
     } catch {
       setError('Please enter a valid URL (e.g. http://localhost:3000).');
+      return;
+    }
+
+    // Reject javascript:, file:, data:, etc. The stored value is later used as
+    // axios.baseURL and string-concatenated into fetch() URLs, so anything
+    // other than http(s) is unsafe.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      setError('Server URL must use http:// or https://.');
       return;
     }
 

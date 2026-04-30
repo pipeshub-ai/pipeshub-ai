@@ -40,6 +40,8 @@ export type ConnectorType =
   | 'azure-blob'
   | 'azure-files'
   | 'azure-fileshares'
+  | 'local-fs'
+  | 'localfs'
   | 'nextcloud'
   // Document & Knowledge
   | 'notion'
@@ -124,6 +126,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'azure-blob': { svg: svg('azureblob'), fallback: 'cloud' },
   'azure-files': { svg: svg('azurefiles'), fallback: 'folder_shared' },
   'azure-fileshares': { svg: svg('azurefiles'), fallback: 'folder_shared' },
+  'local-fs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
+  'localfs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
   // Document & Knowledge
   'notion': { svg: svg('notion'), fallback: 'description', needDarkModeInvert: true },
@@ -194,6 +198,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['amazon-s3', 'amazon-s3'], ['aws-s3', 'amazon-s3'], ['s3', 'amazon-s3'],
   ['azure-fileshare', 'azure-fileshares'], ['azure-blob', 'azure-blob'],
   ['azure-storage', 'azure-blob'],
+  ['local-filesystem', 'local-fs'], ['local-fs', 'local-fs'], ['localfs', 'local-fs'],
+  ['foldersync', 'local-fs'], ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking
@@ -266,6 +272,10 @@ export const ConnectorIcon = ({
 
   // Use SVG if available and no error occurred
   if (iconConfig.svg && !imageError) {
+    const monochromeFilter = iconConfig.needDarkModeInvert
+      ? (isDarkMode ? 'brightness(0) invert(1)' : 'brightness(0)')
+      : undefined;
+
     return (
       <Image
         src={iconConfig.svg}
@@ -277,7 +287,7 @@ export const ConnectorIcon = ({
         style={{
           objectFit: 'contain',
           display: 'inline-flex',
-          filter: isDarkMode && (iconConfig.needDarkModeInvert ?? false) ? 'invert(1)' : undefined,
+          filter: monochromeFilter,
           ...style
         }}
       />

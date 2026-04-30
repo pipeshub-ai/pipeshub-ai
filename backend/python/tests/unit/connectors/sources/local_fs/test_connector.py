@@ -426,6 +426,13 @@ class TestLocalFsConnectorAsync:
         folder_connector.sync_root_path = ""
         assert await folder_connector.test_connection_and_access() is True
 
+    async def test_test_connection_invalid_root_is_non_blocking(
+        self, folder_connector: LocalFsConnector
+    ):
+        folder_connector.sync_root_path = "/nonexistent/path/for-local-fs"
+        assert await folder_connector.test_connection_and_access() is True
+        folder_connector.logger.warning.assert_called()
+
     async def test_init_no_config_ok(self, folder_connector: LocalFsConnector):
         folder_connector.config_service.get_config = AsyncMock(return_value=None)
         assert await folder_connector.init() is True

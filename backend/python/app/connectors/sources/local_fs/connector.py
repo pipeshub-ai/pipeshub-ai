@@ -188,7 +188,7 @@ class LocalFsApp(App):
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/local_fs.svg")
+        lambda builder: builder.with_icon("/assets/icons/connectors/local-fs.png")
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(
@@ -377,9 +377,12 @@ class LocalFsConnector(BaseConnector):
         ok, _detail = _validate_host_path(self.sync_root_path)
         if not ok:
             self.logger.warning(
-                "Local FS: connection test failed — %s", _detail
+                "Local FS: backend cannot access sync_root_path during toggle (%s); "
+                "allowing activation and deferring validation/sync to client watcher or CLI.",
+                _detail,
             )
-        return ok
+            return True
+        return True
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         return None
@@ -590,33 +593,36 @@ class LocalFsConnector(BaseConnector):
 
         return owner, sync_filters, indexing_filters, rg_external
 
-    async def _delete_rel_path(self, rel_path: str, user_id: str) -> None:
-        external_id = self._external_record_id_for_rel_path(rel_path)
+    async def _delete_external_ids(
+        self, external_ids: List[str], user_id: str
+    ) -> None:
+        if not external_ids:
+            return
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_record_by_external_id(
-                self.connector_id, external_id, user_id
-            )
+            for external_id in external_ids:
+                await tx_store.delete_record_by_external_id(
+                    self.connector_id, external_id, user_id
+                )
 
-    async def _upsert_rel_path(
+    def _prepare_upsert_record(
         self,
         root: Path,
         rel_path: str,
         rg_external: str,
         sync_filters: FilterCollection,
         indexing_filters: FilterCollection,
-    ) -> bool:
+    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
         abs_path = self._resolve_event_file_path(root, rel_path)
         if abs_path.is_symlink() or not abs_path.is_file():
-            return False
+            return None
         if not self._extension_allowed(abs_path, sync_filters):
-            return False
+            return None
         st = abs_path.stat()
         if not _local_fs_passes_date_filters(st, sync_filters):
-            return False
-        await self.data_entities_processor.on_new_records(
-            [self._build_file_record(abs_path, root, rg_external, indexing_filters, st=st)]
+            return None
+        return self._build_file_record(
+            abs_path, root, rg_external, indexing_filters, st=st
         )
-        return True
 
     async def _has_existing_records(self) -> bool:
         """True if any records already exist for this connector.
@@ -698,11 +704,30 @@ class LocalFsConnector(BaseConnector):
         root = Path(detail)
         processed = 0
         deleted = 0
+        upsert_buffer: List[Tuple[FileRecord, List[Permission]]] = []
+        delete_buffer: List[str] = []
+        batch_size = max(1, self.batch_size)
 
         try:
             owner, sync_filters, indexing_filters, rg_external = (
                 await self._ensure_owner_and_record_group(root)
             )
+
+            async def flush_upserts() -> None:
+                nonlocal processed
+                if not upsert_buffer:
+                    return
+                await self.data_entities_processor.on_new_records(list(upsert_buffer))
+                processed += len(upsert_buffer)
+                upsert_buffer.clear()
+
+            async def flush_deletes() -> None:
+                nonlocal deleted
+                if not delete_buffer:
+                    return
+                await self._delete_external_ids(list(delete_buffer), owner.id)
+                deleted += len(delete_buffer)
+                delete_buffer.clear()
 
             if reset_before_apply:
                 deleted += await self._reset_existing_records(owner.id)
@@ -726,39 +751,49 @@ class LocalFsConnector(BaseConnector):
                     )
 
                 if event_type in {"CREATED", "MODIFIED"}:
-                    if await self._upsert_rel_path(
-                        root,
-                        rel_path,
-                        rg_external,
-                        sync_filters,
-                        indexing_filters,
-                    ):
-                        processed += 1
+                    record = self._prepare_upsert_record(
+                        root, rel_path, rg_external, sync_filters, indexing_filters
+                    )
+                    if record is not None:
+                        upsert_buffer.append(record)
+                        if len(upsert_buffer) >= batch_size:
+                            await flush_upserts()
                     continue
 
                 if event_type == "DELETED":
-                    await self._delete_rel_path(rel_path, owner.id)
-                    deleted += 1
+                    delete_buffer.append(
+                        self._external_record_id_for_rel_path(rel_path)
+                    )
+                    if len(delete_buffer) >= batch_size:
+                        await flush_deletes()
                     continue
 
                 if event_type in {"RENAMED", "MOVED"}:
                     if old_rel_path:
-                        await self._delete_rel_path(old_rel_path, owner.id)
-                        deleted += 1
-                    if await self._upsert_rel_path(
-                        root,
-                        rel_path,
-                        rg_external,
-                        sync_filters,
-                        indexing_filters,
-                    ):
-                        processed += 1
+                        # Validate the old path the same way as the new one so a
+                        # hostile rename event can't sneak a path-escape past us.
+                        self._resolve_event_file_path(root, old_rel_path)
+                        delete_buffer.append(
+                            self._external_record_id_for_rel_path(old_rel_path)
+                        )
+                        if len(delete_buffer) >= batch_size:
+                            await flush_deletes()
+                    record = self._prepare_upsert_record(
+                        root, rel_path, rg_external, sync_filters, indexing_filters
+                    )
+                    if record is not None:
+                        upsert_buffer.append(record)
+                        if len(upsert_buffer) >= batch_size:
+                            await flush_upserts()
                     continue
 
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=f"Unsupported Local FS file event type: {event_type}",
                 )
+
+            await flush_upserts()
+            await flush_deletes()
 
             return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
         finally:
@@ -813,20 +848,28 @@ class LocalFsConnector(BaseConnector):
 
         p = candidate
 
-        def _read() -> bytes:
-            return p.read_bytes()
-
         try:
-            data = await asyncio.to_thread(_read)
+            handle = await asyncio.to_thread(p.open, "rb")
         except OSError as e:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Cannot read file: {e}",
             ) from e
 
+        async def _stream_chunks() -> Any:
+            chunk_size = 1 << 20  # 1 MiB
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(handle.read, chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                await asyncio.to_thread(handle.close)
+
         media = record.mime_type or "application/octet-stream"
         return StreamingResponse(
-            iter([data]),
+            _stream_chunks(),
             media_type=media,
             headers={"Content-Disposition": f'inline; filename="{record.record_name}"'},
         )

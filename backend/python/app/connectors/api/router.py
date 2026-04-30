@@ -85,6 +85,12 @@ router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
 
+# Hard cap on the number of file events accepted in a single replay/journal
+# batch. The connector still chunks internally, but capping at the edge keeps a
+# single signed-in caller from forcing the connector into a multi-megabyte
+# DB/Kafka loop while it stays in SYNCING.
+LOCAL_FS_MAX_EVENTS_PER_BATCH = 5_000
+
 
 def _unwrap_local_fs_file_event_payload(raw_payload: Any) -> Any:
     candidate = raw_payload
@@ -152,6 +158,20 @@ async def _parse_local_fs_file_event_batch_request(
             "timestamp": timestamp if timestamp is not None else now,
             "resetBeforeApply": payload.get("resetBeforeApply", False),
         }
+
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("events"), list)
+        and len(payload["events"]) > LOCAL_FS_MAX_EVENTS_PER_BATCH
+    ):
+        raise HTTPException(
+            status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+            detail=(
+                f"Local FS file event batch exceeds maximum size "
+                f"({LOCAL_FS_MAX_EVENTS_PER_BATCH} events); "
+                f"received {len(payload['events'])}"
+            ),
+        )
 
     try:
         return LocalFsFileEventBatchRequest.model_validate(payload)
