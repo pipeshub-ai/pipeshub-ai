@@ -4360,19 +4360,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             external_filter = "FILTER (org.isExternal == false OR !HAS(org, 'isExternal'))"
 
-        if active:
-            query = f"""
-            FOR org IN {CollectionNames.ORGS.value}
-                FILTER org.isActive == true
-                {external_filter}
-                RETURN org
-            """
-        else:
-            query = f"""
-            FOR org IN {CollectionNames.ORGS.value}
-                {external_filter}
-                RETURN org
-            """
+        active_filter = "FILTER org.isActive == true" if active else ""
+        query = f"""
+        FOR org IN {CollectionNames.ORGS.value}
+            {active_filter}
+            {external_filter}
+            RETURN org
+        """
 
         try:
             results = await self.http_client.execute_aql(query, txn_id=transaction)
