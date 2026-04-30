@@ -26,7 +26,8 @@ import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
-import type { FlowNodeData } from './types';
+import type { AgentWebSearchAttachment, FlowNodeData } from './types';
+import type { WebSearchProviderType } from '../../workspace/web-search/types';
 import { normalizeDisplayName, formattedProvider } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
 import { connectionError } from './connection-rules';
@@ -382,6 +383,23 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   /** Logical toolset types already on the canvas (legacy: at most one per type). */
   const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
 
+  const webSearchNode = useMemo(
+    () => nodes.find((n) => n.data?.type === 'web-search') ?? null,
+    [nodes],
+  );
+
+  const webSearchAttached = useMemo<AgentWebSearchAttachment | null>(() => {
+    if (!webSearchNode) return null;
+    const cfg = webSearchNode.data.config || {};
+    const provider = cfg.provider as string | undefined;
+    if (!provider) return null;
+    return {
+      provider: provider as WebSearchProviderType,
+      providerKey: (cfg.providerKey as string) || '',
+      providerLabel: (cfg.providerLabel as string) || undefined,
+    };
+  }, [webSearchNode]);
+
   const saveRef = useRef(false);
 
   const focusAgentNameInput = useCallback(() => {
@@ -679,6 +697,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             paletteStructureLocked={isAgentStructureLocked}
             paletteDragBlockedMessage={paletteDragBlockedMessage}
             toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
+            webSearchAttached={webSearchAttached}
             onManageAgentToolsetCredentials={
               isServiceAccountToolsetOrgLocked
                 ? undefined

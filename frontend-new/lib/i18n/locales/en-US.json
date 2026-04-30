@@ -510,7 +510,7 @@
     "queryModes": {
       "chat": {
         "label": "Internal Search",
-        "toolbarLabel": "Chat",
+        "toolbarLabel": "Internal Search",
         "description": "Think, ask, and reason across your knowledge in a conversational flow"
       },
       "web-search": {

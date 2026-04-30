@@ -423,7 +423,7 @@ def _build_agent_capability_context(
         (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
         where tools_data is a list of {"full_name": str, "desc": str} dicts.
     """
-    from app.modules.agents.capability_summary import (  # noqa: PLC0415 – lazy import kept for historical reasons
+    from app.modules.agents.capability_summary import (
         classify_knowledge_sources,
         format_connector_filter_lines,
     )
@@ -649,6 +649,151 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
             model_entries.append(model)
 
     return model_entries, has_reasoning_model
+
+
+_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily"}
+
+
+def _parse_web_search(raw_web_search: Any) -> str | None:
+    """Normalize the agent-level web-search attachment to a provider string.
+
+    Accepts either:
+    - a dict like {"provider": "serper", ...}
+    - a provider string like "serper"
+
+    Returns the sanitized provider (lowercase), or None if invalid/missing.
+    """
+    if not raw_web_search:
+        return None
+
+    provider = ""
+    if isinstance(raw_web_search, dict):
+        provider = str(raw_web_search.get("provider", "")).strip().lower()
+    elif isinstance(raw_web_search, str):
+        provider = raw_web_search.strip().lower()
+
+    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+        return None
+    return provider
+
+
+def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | None:
+    """Normalize webSearch payloads to an API-friendly object shape."""
+    provider = _parse_web_search(raw_web_search)
+    if not provider:
+        return None
+
+    formatted: dict[str, Any] = {"provider": provider}
+    if isinstance(raw_web_search, dict):
+        provider_key = str(raw_web_search.get("providerKey", "")).strip()
+        provider_label = str(raw_web_search.get("providerLabel", "")).strip()
+        if provider_key:
+            formatted["providerKey"] = provider_key
+        if provider_label:
+            formatted["providerLabel"] = provider_label
+    return formatted
+
+
+async def _resolve_default_web_search_config(
+    config_service: ConfigurationService,
+    logger: Logger,
+) -> dict[str, Any] | None:
+    """Auto-detect the default web search provider from org-level config.
+
+    Used by the assistant agent (agentIdPlaceholder) which doesn't have an
+    explicit webSearch attachment but should still offer the tool when the
+    org has a provider configured.
+    """
+    try:
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+    except Exception as e:
+        logger.warning("Failed to load web search configuration for auto-detect: %s", e)
+        return None
+
+    providers = (
+        web_search_config.get("providers", [])
+        if isinstance(web_search_config, dict)
+        else []
+    )
+    if not isinstance(providers, list) or not providers:
+        return None
+
+    default_provider = next(
+        (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
+        None,
+    )
+
+    # When providers exist but none carries isDefault=true, the Node.js layer has
+    # set DuckDuckGo as the active default (it clears all isDefault flags rather
+    # than inserting a DuckDuckGo entry into the array).
+    if not default_provider:
+        logger.debug("No explicit default web search provider; falling back to duckduckgo")
+        return {"provider": "duckduckgo", "configuration": {}}
+
+    provider = str(default_provider.get("provider", "")).strip().lower()
+    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+        return None
+
+    configuration = default_provider.get("configuration", {})
+    if not isinstance(configuration, dict):
+        configuration = {}
+
+    return {"provider": provider, "configuration": configuration}
+
+
+async def _resolve_web_search_tool_config(
+    provider: str | None,
+    config_service: ConfigurationService,
+    logger: Logger,
+) -> dict[str, Any] | None:
+    """Resolve provider-specific config for the web_search tool at runtime."""
+    if not provider:
+        return None
+
+    try:
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load web search configuration for provider '%s': %s",
+            provider,
+            str(e),
+        )
+        return {"provider": provider, "configuration": {}}
+
+    providers = (
+        web_search_config.get("providers", [])
+        if isinstance(web_search_config, dict)
+        else []
+    )
+    if not isinstance(providers, list):
+        providers = []
+
+    selected_provider = next(
+        (
+            entry
+            for entry in providers
+            if isinstance(entry, dict)
+            and str(entry.get("provider", "")).strip().lower() == provider
+        ),
+        None,
+    )
+
+    if not selected_provider:
+        return {"provider": provider, "configuration": {}}
+
+    configuration = selected_provider.get("configuration", {})
+    if not isinstance(configuration, dict):
+        configuration = {}
+
+    return {"provider": provider, "configuration": configuration}
 
 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
@@ -1608,6 +1753,7 @@ async def create_agent(request: Request) -> JSONResponse:
         # Parse toolsets and knowledge BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        web_search_attachment = _parse_web_search(body.get("webSearch"))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
@@ -1626,6 +1772,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
+            "webSearch": web_search_attachment,
             "isActive": True,
             "isServiceAccount": is_service_account,
             "createdBy": user_key,
@@ -1898,6 +2045,9 @@ async def create_agent(request: Request) -> JSONResponse:
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
         }
+        response_agent["webSearch"] = _format_web_search_for_response(
+            response_agent.get("webSearch"),
+        )
 
         status = "partial_success" if failed_toolsets else "success"
         message = f"Agent created with warnings: {len(failed_toolsets)} toolset(s) failed" if failed_toolsets else "Agent created successfully"
@@ -1960,6 +2110,35 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def get_web_search_provider_usage(request: Request, provider: str) -> JSONResponse:
+    """Return agents in the org that use a specific web search provider."""
+    try:
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
+
+        provider = provider.strip().lower()
+        if provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+            return JSONResponse(
+                status_code=200,
+                content={"success": True, "agents": []},
+            )
+
+        agents = await services["graph_provider"].get_agents_by_web_search_provider(
+            org_key, provider
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "agents": agents},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
@@ -1983,6 +2162,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         # Enrich models with configurations
         await _enrich_agent_models(agent, services["config_service"], services["logger"])
         agent.pop("modelsEnriched", None)
+        agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
 
         return JSONResponse(
             status_code=200,
@@ -2037,6 +2217,10 @@ async def get_agents(
         else:
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
+
+        for agent in agents:
+            if isinstance(agent, dict):
+                agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
 
         # Build pagination envelope
         current_page = page
@@ -2168,6 +2352,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
                 logger.info(f"Deleted org permission edge for agent {agent_id}")
 
+
+        # Normalize webSearch attachment before persisting
+        if "webSearch" in body:
+            body["webSearch"] = _parse_web_search(body.get("webSearch"))
 
         # Update agent document
         # Persist update (use original body to avoid changing storage format)
@@ -2810,6 +2998,12 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _chat_conn_ids)
+        web_search_provider = _parse_web_search(agent.get("webSearch"))
+        web_search_tool_config = await _resolve_web_search_tool_config(
+            web_search_provider,
+            config_service,
+            logger,
+        )
 
         # Build query info
         query_info = {
@@ -2830,6 +3024,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "currentTime": chat_query.currentTime,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
+            "webSearch": web_search_provider,
+            "webSearchConfig": web_search_tool_config,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
@@ -3204,6 +3400,19 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
+        web_search_provider = _parse_web_search(agent.get("webSearch"))
+        web_search_tool_config = None
+        if web_search_provider:
+            web_search_tool_config = await _resolve_web_search_tool_config(
+                web_search_provider,
+                config_service,
+                logger,
+            )
+        elif agent_id == "agentIdPlaceholder":
+            web_search_tool_config = await _resolve_default_web_search_config(
+                config_service,
+                logger,
+            )
 
         # Build query info
         query_info = {
@@ -3228,6 +3437,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "isPlaceholderAgent": agent_id == "agentIdPlaceholder",
             "modelName": model_name,
             "modelKey": model_key,
+            "webSearch": web_search_provider,
+            "webSearchConfig": web_search_tool_config,
         }
 
         return StreamingResponse(

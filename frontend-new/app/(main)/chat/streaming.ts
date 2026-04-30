@@ -200,11 +200,12 @@ export async function streamMessageForSlot(
               metadata: {
                 custom: {
                   filters: request.filters,
+                  createdAt: new Date().toISOString(),
                   ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
                 },
               },
             }
-          : {}),
+          : {metadata: { custom: { createdAt: new Date().toISOString() } }}),
       },
       {
         role: 'assistant' as const,

@@ -658,6 +658,36 @@ export function useAgentBuilderReconstruction(): {
         });
       }
 
+      // 4b. Web search node (if the agent has one attached)
+      const webSearchNodes: Node<FlowNodeData>[] = [];
+      if (agent.webSearch?.provider) {
+        nodeCounter += 1;
+        const nodeId = `web-search-${nodeCounter}`;
+        const wsNode: Node<FlowNodeData> = {
+          id: nodeId,
+          type: 'flowNode',
+          position: calculateOptimalPosition('tools', counts.toolsets, Math.max(counts.toolsets + 1, 1)),
+          data: {
+            id: nodeId,
+            type: 'web-search',
+            label: agent.webSearch.providerLabel || agent.webSearch.provider,
+            description: t('Web Search'),
+            icon: 'public',
+            category: 'tools',
+            config: {
+              provider: agent.webSearch.provider,
+              providerKey: agent.webSearch.providerKey || '',
+              providerLabel: agent.webSearch.providerLabel || '',
+            },
+            inputs: ['query'],
+            outputs: ['results'],
+            isConfigured: true,
+          },
+        };
+        nodes.push(wsNode);
+        webSearchNodes.push(wsNode);
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<FlowNodeData> = {
@@ -750,6 +780,19 @@ export function useAgentBuilderReconstruction(): {
           source: toolsetNode.id,
           target: 'agent-core-1',
           sourceHandle: 'output',
+          targetHandle: 'toolsets',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      webSearchNodes.forEach((wsNode) => {
+        edges.push({
+          id: `e-web-search-agent-${(edgeCounter += 1)}`,
+          source: wsNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'results',
           targetHandle: 'toolsets',
           type: 'smoothstep',
           style: edgeStyle,

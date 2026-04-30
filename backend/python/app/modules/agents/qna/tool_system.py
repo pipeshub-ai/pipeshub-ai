@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
-
     from app.agents.tools.models import Tool
 
 from app.agents.tools.registry import _global_tools_registry
@@ -74,7 +73,6 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
 
     # Default to sanitized for safety — dots break most LLM function-calling APIs
     return True
-
 
 def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'], state: ChatState) -> str:
     """
@@ -463,9 +461,10 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     # Fallback patterns (retrieval excluded - handled separately based on knowledge)
     internal_patterns = [
         "calculator.",
-        "web_search",
+        "fetch_url",
         "get_current_datetime",
         "image_generator.",
+        "web_search",
     ]
 
     return any(p in full_name.lower() for p in internal_patterns)
@@ -504,6 +503,49 @@ def _initialize_tool_state(state: ChatState) -> None:
     """Initialize tool state"""
     state.setdefault("tool_results", [])
     state.setdefault("all_tool_results", [])
+
+
+# ============================================================================
+# Web Tools (fetch_url + web_search)
+# ============================================================================
+
+def _create_web_tools(state: ChatState) -> list:
+    """Create fetch_url and (optionally) web_search tools.
+
+    - fetch_url: always included (implicit tool for all agents)
+    - web_search: only when agent has a webSearch provider attached
+    """
+    tools: list = []
+    state_logger = state.get("logger")
+
+    ref_mapper = state.get("citation_ref_mapper")
+    if ref_mapper is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        ref_mapper = CitationRefMapper()
+        state["citation_ref_mapper"] = ref_mapper
+
+    try:
+        from app.utils.fetch_url_tool import create_fetch_url_tool
+           
+        fetch_url_tool = create_fetch_url_tool(
+            ref_mapper=ref_mapper,
+        )
+        tools.append(fetch_url_tool)
+    except Exception as e:
+        if state_logger:
+            state_logger.warning(f"Failed to create fetch_url tool: {e}")
+
+    web_search_config = state.get("web_search_config")
+    if web_search_config:
+        try:
+            from app.utils.web_search_tool import create_web_search_tool
+            web_search_tool = create_web_search_tool(config=web_search_config)
+            tools.append(web_search_tool)
+        except Exception as e:
+            if state_logger:
+                state_logger.warning(f"Failed to create web_search tool: {e}")
+
+    return tools
 
 
 # ============================================================================
@@ -777,6 +819,16 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
+        # Add web tools (fetch_url always, web_search if agent has it configured)
+        try:
+            web_tools = _create_web_tools(state)
+            structured_tools.extend(web_tools)
+            if state_logger and web_tools:
+                web_tool_names = [getattr(t, 'name', str(t)) for t in web_tools]
+                state_logger.debug(f"Added web tools: {web_tool_names}")
+        except Exception as e:
+            if state_logger:
+                state_logger.warning(f"Failed to add web tools: {e}")
 
         # Cache the StructuredTools for reuse
         state["_cached_schema_tools"] = structured_tools

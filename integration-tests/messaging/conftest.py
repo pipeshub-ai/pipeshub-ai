@@ -15,7 +15,6 @@ import os
 import uuid
 from typing import Any, AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from redis.asyncio import Redis

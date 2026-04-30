@@ -92,9 +92,9 @@ You are responsible for:
 </answer_guidelines>
 
 <citation_rules>
-**Cite key facts from internal knowledge immediately after the claim.**
+**Cite key facts**
 
-### Citation Format Rules:
+### Internal Knowledge Citation Rules:
 
 1. **Use Citation IDs as Markdown Links**: Each knowledge block has a "Citation ID" (e.g., ref1, ref2).
    Embed the Citation ID as a markdown link with [source] as the link text: [source](ref1).
@@ -112,6 +112,12 @@ You are responsible for:
 5. **Use EXACT Citation IDs**: Use the Citation ID exactly as shown in the context. Do NOT invent or modify Citation IDs.
 
 6. **WHEN UNSURE, OMIT**: If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
+
+### Web Search Citation Rules:
+
+When citing information from web search or fetched URL results:
+- Cite by embedding the url/citation id as a markdown link: [source](URL/citation id).
+- Use EXACTLY the URL/citation id shown.
 
 </citation_rules>
 
@@ -248,11 +254,13 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
 2. **Company Knowledge Questions**: Use internal knowledge blocks, cite the most relevant facts with [source](Citation ID) inline
-3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
-4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
-   - Cite ALL relevant internal knowledge facts with inline [source](Citation ID) citations
+3. **Web Search Questions**: Use web search results, cite with the url/citation id: [source](URL/citation id)
+4. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
+5. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API/web results are present:
+   - Cite internal knowledge facts with [source](refN) using the Citation ID
+   - Cite web search facts with [source](URL) using the URL/citation id
    - Format ALL API results with links AND include them in `referenceData`
-   - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
+   - Weave all sources into one unified, coherent answer
 </source_prioritization>
 
 <critical_reminders>
@@ -260,11 +268,10 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
 2. **LIMIT CITATIONS** — Only cite the most important, non-obvious claims. Do NOT cite every sentence.
-3. **CITE INLINE** — [source](Citation ID) right after the specific fact it supports
-4. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
-5. **BE COMPREHENSIVE** — thorough, complete answers
-6. **Format Professionally** — clean markdown hierarchy
-7. **INCLUDE LINKS**
+3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
+4. **BE COMPREHENSIVE** — thorough, complete answers
+5. **Format Professionally** — clean markdown hierarchy
+6. **INCLUDE LINKS**
 </critical_reminders>
 
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
@@ -353,6 +360,14 @@ def build_response_prompt(state, max_iterations=30) -> str:
 
     # Brief status line for the system prompt so the LLM knows whether knowledge
     # is available without duplicating the full context.
+    has_web_search = bool(state.get("web_search_config"))
+    web_search_note = ""
+    if has_web_search:
+        web_search_note = (
+            "\nFor web search results: cite using the url/citation id as a markdown link: [source](URL/citation id). "
+            "Use EXACTLY the URL/citation id shown."
+        )
+
     if state.get("qna_message_content"):
         internal_context = (
             "Internal knowledge (records and content) has been "
@@ -360,6 +375,7 @@ def build_response_prompt(state, max_iterations=30) -> str:
             "Cite key facts using markdown links: [source](ref1). Limit to most relevant citations — do NOT cite every sentence. "
             "The system assigns citation numbers automatically. "
             "Use the exact Citation ID from the context. If unsure, omit the citation."
+            + web_search_note
         )
     elif final_results:
         internal_context = (
@@ -367,12 +383,20 @@ def build_response_prompt(state, max_iterations=30) -> str:
             "Cite key facts using the Citation ID as a markdown link: [source](ref1). Limit to most relevant citations — do NOT cite every sentence. "
             "The system assigns citation numbers automatically. "
             "Use the exact Citation ID from the context. If unsure, omit the citation."
+            + web_search_note
         )
     else:
-        internal_context = (
-            "No internal knowledge sources available for this query. "
-            "Use tool results or user context to answer, or explain that information is unavailable."
-        )
+        if has_web_search:
+            internal_context = (
+                "No internal knowledge sources available for this query. "
+                "For web search results, cite using the url/citation id: [source](URL/citation id)."
+                "Use EXACTLY the URL/citation id shown."
+            )
+        else:
+            internal_context = (
+                "No internal knowledge sources available for this query. "
+                "Use tool results or user context to answer, or explain that information is unavailable."
+            )
 
     user_context = ""
     if state.get("user_info") and state.get("org_info"):

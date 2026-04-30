@@ -913,6 +913,12 @@ class TestGetToolResultsSummary:
 
 class TestGetAgentToolsWithSchemas:
 
+    @pytest.fixture(autouse=True)
+    def _mock_web_tools(self):
+        """Prevent _create_web_tools from adding extra tools in schema tests."""
+        with patch("app.modules.agents.qna.tool_system._create_web_tools", return_value=[]):
+            yield
+
     @patch("app.modules.agents.qna.tool_system.get_agent_tools")
     def test_returns_structured_tools(self, mock_get_tools):
         """Creates StructuredTool wrappers from registry tools."""

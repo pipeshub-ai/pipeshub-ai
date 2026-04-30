@@ -4742,6 +4742,45 @@ export const checkServiceAccountAccess =
     }
   };
 
+export const getWebSearchProviderUsage =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      const { provider } = req.params;
+      if (!provider) {
+        throw new BadRequestError('Provider is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(provider)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error checking web search provider usage', {
+        requestId,
+        message: 'Error checking web search provider usage',
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Web Search Provider Usage');
+      next(backendError);
+    }
+  };
+
 export const listAgents =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

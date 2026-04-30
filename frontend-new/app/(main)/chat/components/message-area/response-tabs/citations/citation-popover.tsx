@@ -83,8 +83,10 @@ function CitationPopoverContentInner({
             </Button>
           )}
 
-          {citation.previewRenderable && (
-            <Button
+          
+          {citation.recordType?.toUpperCase() === 'FILE' &&
+            citation.connector?.toUpperCase() !== 'WEB' && (
+              <Button
               size="1"
               variant="solid"
               tabIndex={-1}

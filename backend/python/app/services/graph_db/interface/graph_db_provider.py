@@ -4010,3 +4010,22 @@ class IGraphDBProvider(ABC):
             no access.
         """
         pass
+
+    @abstractmethod
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        """
+        Find all agents in the organisation that use a specific web search provider.
+
+        Scoped via ORG-type permission edges (i.e. agents shared with the org).
+
+        Args:
+            org_id:   The organisation key.
+            provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``).
+
+        Returns:
+            List of dicts with ``{name, _key, creatorName}`` for each matching
+            agent.  Returns an empty list when no agents match.
+        """
+        pass

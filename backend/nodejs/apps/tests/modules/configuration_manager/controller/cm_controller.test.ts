@@ -1299,7 +1299,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: '' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: '', customSystemPromptWebSearch: '' })
     })
 
     it('should return custom prompt when it exists', async () => {
@@ -1315,7 +1315,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: 'Be helpful' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: 'Be helpful', customSystemPromptWebSearch: '' })
     })
   })
 
@@ -1339,7 +1339,7 @@ describe('ConfigurationManager Controller', () => {
         compareAndSet: sinon.stub().resolves(true),
       })
       const handler = setCustomSystemPrompt(kvs)
-      const req = createMockRequest({ body: { customSystemPrompt: 'Be concise' } })
+      const req = createMockRequest({ body: { customSystemPrompt: 'Be concise', customSystemPromptWebSearch: '' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -2979,7 +2979,7 @@ describe('ConfigurationManager Controller', () => {
         compareAndSet: sinon.stub().resolves(true),
       })
       const handler = setCustomSystemPrompt(kvs)
-      const req = createMockRequest({ body: { customSystemPrompt: 'Test prompt' } })
+      const req = createMockRequest({ body: { customSystemPrompt: 'Test prompt', customSystemPromptWebSearch: '' } })
       const res = createMockResponse()
       const next = createMockNext()
 

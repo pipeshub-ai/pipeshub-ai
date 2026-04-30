@@ -85,6 +85,7 @@ class ChatState(TypedDict):
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
+    web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -321,6 +322,27 @@ def _extract_kb_record_groups(knowledge: list[dict[str, Any]]) -> list[str]:
     return kb_record_groups
 
 
+def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] | None:
+    """Build runtime web_search tool config from query payload.
+
+    Priority:
+    1. `webSearchConfig` (already resolved server-side from /services/webSearch)
+    2. Backward-compatible `webSearch` payload (dict/string)
+    """
+    resolved_config = chat_query.get("webSearchConfig")
+    if isinstance(resolved_config, dict):
+        provider = str(resolved_config.get("provider", "")).strip().lower()
+        configuration = resolved_config.get("configuration", {})
+        if provider:
+            return {
+                "provider": provider,
+                "configuration": configuration if isinstance(configuration, dict) else {},
+            }
+
+
+    return None
+
+
 def cleanup_state_after_retrieval(state: ChatState) -> None:
     """
     Clean up state after retrieval phase to reduce memory pollution.
@@ -478,6 +500,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
+        "web_search_config": _build_web_search_tool_config(chat_query),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 

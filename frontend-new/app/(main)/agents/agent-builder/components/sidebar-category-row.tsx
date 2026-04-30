@@ -74,6 +74,7 @@ export function SidebarCategoryRow(props: {
   /** Used when `groupIcon` URL fails (connector / toolset artwork). */
   groupIconFallbackSrc?: string;
   groupMaterialIcon?: string;
+  groupMaterialIconColor?: string;
   itemCount: number;
   isExpanded: boolean;
   onToggle: () => void;
@@ -98,6 +99,7 @@ export function SidebarCategoryRow(props: {
     groupIcon,
     groupIconFallbackSrc = AGENT_TOOLSET_FALLBACK_ICON,
     groupMaterialIcon,
+    groupMaterialIconColor = 'var(--slate-11)',
     itemCount,
     isExpanded,
     onToggle,

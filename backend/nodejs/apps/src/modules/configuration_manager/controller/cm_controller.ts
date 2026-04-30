@@ -56,6 +56,8 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
 import { AIModelsConfig } from '../types/ai-models.types';
+import { WebSearchConfig } from '../types/web-search.types';
+import { WebSearchProviderConfiguration } from '../types/web-search.types';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -76,6 +78,32 @@ type SlackBotStore = {
 
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
+  includeImages: false,
+  maxImages: 3,
+});
+
+const normalizeWebSearchSettings = (
+  settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
+) => {
+  const includeImages =
+    typeof settings?.includeImages === 'boolean'
+      ? settings.includeImages
+      : DEFAULT_WEB_SEARCH_SETTINGS.includeImages;
+  const parsedMaxImages = Number(settings?.maxImages);
+  const maxImages =
+    Number.isInteger(parsedMaxImages) &&
+    parsedMaxImages >= 1 &&
+    parsedMaxImages <= 500
+      ? parsedMaxImages
+      : DEFAULT_WEB_SEARCH_SETTINGS.maxImages;
+
+  return {
+    includeImages,
+    maxImages,
+  };
+};
 
 const handleBackendError = (error: any, operation: string): Error => {
   if (
@@ -3548,7 +3576,7 @@ export const getCustomSystemPrompt =
       );
 
       if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPrompt: '' }).end();
+        res.status(200).json({ customSystemPrompt: '', customSystemPromptWebSearch: '' }).end();
         return;
       }
 
@@ -3560,7 +3588,8 @@ export const getCustomSystemPrompt =
       );
 
       const customSystemPrompt = aiModels.customSystemPrompt || '';
-      res.status(200).json({ customSystemPrompt }).end();
+      const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
+      res.status(200).json({ customSystemPrompt, customSystemPromptWebSearch }).end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3571,14 +3600,17 @@ export const setCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { customSystemPrompt } = req.body;
+      const { customSystemPrompt, customSystemPromptWebSearch } = req.body;
 
       if (typeof customSystemPrompt !== 'string') {
         throw new BadRequestError('customSystemPrompt must be a string');
       }
+      if (typeof customSystemPromptWebSearch !== 'string') {
+        throw new BadRequestError('customSystemPromptWebSearch must be a string');
+      }
 
       const configManagerConfig = loadConfigurationManagerConfig();
-      
+
       // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
       const MAX_RETRIES = 5;
       let success = false;
@@ -3598,8 +3630,9 @@ export const setCustomSystemPrompt =
           );
         }
 
-        // Update only the customSystemPrompt field, keeping everything else intact
+        // Update only the custom prompt fields, keeping everything else intact
         aiModels.customSystemPrompt = customSystemPrompt;
+        aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
 
         // Encrypt the updated configuration
         const encryptedUpdatedConfig = EncryptionService.getInstance(
@@ -3619,7 +3652,7 @@ export const setCustomSystemPrompt =
           break;
         } else if (attempt === MAX_RETRIES - 1) {
           throw new Error(
-            'Failed to update custom system prompt due to persistent concurrent modification. Please try again.',
+            'Failed to update custom system prompts due to persistent concurrent modification. Please try again.',
           );
         }
         // If CAS failed, retry with exponential backoff
@@ -3628,13 +3661,14 @@ export const setCustomSystemPrompt =
 
       if (!success) {
         throw new Error(
-          'Failed to update custom system prompt after maximum retries.',
+          'Failed to update custom system prompts after maximum retries.',
         );
       }
 
       res.status(200).json({
-        message: 'Custom system prompt updated successfully',
+        message: 'Custom system prompts updated successfully',
         customSystemPrompt,
+        customSystemPromptWebSearch,
       });
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });
@@ -3730,4 +3764,590 @@ export const getAIModelProviderSchema =
       `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
       { query: params, logMessage: 'Error proxying AI model provider schema request' },
     );
+  };
+
+// Web Search Provider Management Functions
+export const getWebSearchProviders =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(200).json({
+          status: 'success',
+          providers: [],
+          settings: DEFAULT_WEB_SEARCH_SETTINGS,
+          message: 'No web search providers found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      ) as WebSearchConfig;
+
+      const providers = Array.isArray(webSearchConfig.providers)
+        ? webSearchConfig.providers
+        : [];
+      const settings = normalizeWebSearchSettings(webSearchConfig.settings);
+
+      res.status(200).json({
+        status: 'success',
+        providers,
+        settings,
+        message: 'Web search providers retrieved successfully',
+      });
+    } catch (error: any) {
+      logger.error('Error getting web search providers', { error });
+      next(error);
+    }
+  };
+
+export const updateWebSearchSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { includeImages, maxImages } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
+      const MAX_RETRIES = 5;
+      let success = false;
+      let normalizedSettings: ReturnType<typeof normalizeWebSearchSettings> | null =
+        null;
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+          configPaths.webSearch,
+        );
+
+        let webSearchConfig: WebSearchConfig = { providers: [] };
+        if (encryptedWebSearchConfig) {
+          webSearchConfig = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedWebSearchConfig),
+          ) as WebSearchConfig;
+        }
+
+        if (!Array.isArray(webSearchConfig.providers)) {
+          webSearchConfig.providers = [];
+        }
+
+        const existingSettings = normalizeWebSearchSettings(
+          webSearchConfig.settings,
+        );
+        normalizedSettings = normalizeWebSearchSettings({
+          includeImages,
+          maxImages:
+            typeof maxImages === 'number'
+              ? maxImages
+              : existingSettings.maxImages,
+        });
+
+        webSearchConfig.settings = normalizedSettings;
+
+        const encryptedUpdatedConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify(webSearchConfig));
+
+        const casSuccess = await keyValueStoreService.compareAndSet<string>(
+          configPaths.webSearch,
+          encryptedWebSearchConfig ?? null,
+          encryptedUpdatedConfig,
+        );
+
+        if (casSuccess) {
+          success = true;
+          break;
+        } else if (attempt === MAX_RETRIES - 1) {
+          throw new Error(
+            'Failed to update web search settings due to persistent concurrent modification. Please try again.',
+          );
+        }
+        // If CAS failed, retry with exponential backoff
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+
+      if (!success || normalizedSettings === null) {
+        throw new Error(
+          'Failed to update web search settings after maximum retries.',
+        );
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search settings updated successfully',
+        settings: normalizedSettings,
+      });
+    } catch (error: any) {
+      logger.error('Error updating web search settings', { error });
+      next(error);
+    }
+  };
+
+export const addWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { provider, configuration, isDefault = false } = req.body;
+
+      // Validate required fields
+      if (!provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'provider and configuration are required',
+        });
+        return;
+      }
+
+      // Health check: verify provider credentials before saving
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration },
+      };
+
+      logger.debug('Health check for web search provider before adding');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      let webSearchConfig: WebSearchConfig = { providers: [] };
+      if (encryptedWebSearchConfig) {
+        webSearchConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedWebSearchConfig),
+        );
+      }
+
+      // Ensure providers array exists
+      if (!webSearchConfig.providers) {
+        webSearchConfig.providers = [];
+      }
+
+      // Generate a unique providerKey
+      const providerKey = uuidv4();
+
+      // If this is set as default, remove default flag from other providers
+      if (isDefault) {
+        for (const config of webSearchConfig.providers) {
+          config.isDefault = false;
+        }
+      }
+
+      // If this is the first provider, make it default
+      const shouldBeDefault = webSearchConfig.providers.length === 0 || isDefault;
+
+      // Add the new configuration
+      const newConfig = {
+        provider,
+        configuration,
+        providerKey,
+        isDefault: shouldBeDefault,
+      };
+
+      webSearchConfig.providers.push(newConfig);
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider added successfully',
+        details: {
+          providerKey,
+          provider,
+          isDefault: shouldBeDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error adding web search provider', { error });
+      next(error);
+    }
+  };
+
+export const updateWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+      const { provider, configuration, isDefault = false } = req.body;
+
+      // Validate required fields
+      if (!provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'provider and configuration are required',
+        });
+        return;
+      }
+
+      // Health check: verify provider credentials before updating
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration },
+      };
+
+      logger.debug('Health check for web search provider before updating');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider with the specified key
+      const targetProvider = webSearchConfig.providers?.find(
+        (p: WebSearchProviderConfiguration) => p.providerKey === providerKey,
+      );
+
+      if (!targetProvider) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      // Update the provider configuration
+      targetProvider.provider = provider;
+      targetProvider.configuration = configuration;
+      targetProvider.isDefault = isDefault;
+
+      // If this is set as default, remove default flag from other providers
+      if (isDefault) {
+        for (const config of webSearchConfig.providers) {
+          if (config.providerKey !== providerKey) {
+            config.isDefault = false;
+          }
+        }
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider updated successfully',
+        details: {
+          providerKey,
+          provider: targetProvider.provider,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating web search provider', { error });
+      next(error);
+    }
+  };
+
+export const deleteWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider index
+      const providerIndex = webSearchConfig.providers?.findIndex(
+        (p: any) => p.providerKey === providerKey,
+      );
+
+      if (providerIndex === -1 || providerIndex === undefined) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      const deletedProvider = webSearchConfig.providers[providerIndex];
+
+      // Check if any agents are using this provider before allowing deletion
+      try {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+          method: HttpMethod.GET,
+          headers: {
+            ...(req.headers as Record<string, string>),
+            'Content-Type': 'application/json',
+          },
+        };
+        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
+        const aiResponse = await aiCommand.execute();
+
+        const agents =
+          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
+            ? aiResponse.data.agents
+            : [];
+
+        if (agents.length > 0) {
+          res.status(409).json({
+            status: 'error',
+            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+            agents,
+          });
+          return;
+        }
+      } catch (usageError: any) {
+        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      }
+
+      const wasDefault = deletedProvider.isDefault || false;
+
+      // Remove the provider from the configuration
+      webSearchConfig.providers.splice(providerIndex, 1);
+
+      // If the deleted provider was default, set the first remaining provider as default
+      if (wasDefault && webSearchConfig.providers.length > 0) {
+        webSearchConfig.providers[0].isDefault = true;
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider deleted successfully',
+        details: {
+          providerKey,
+          provider: deletedProvider.provider,
+          wasDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error deleting web search provider', { error });
+      next(error);
+    }
+  };
+
+export const updateDefaultWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      // DuckDuckGo is a built-in provider that requires no stored configuration.
+      // Setting it as default means clearing the default flag from all stored providers.
+      if (providerKey === 'duckduckgo') {
+        if (encryptedWebSearchConfig) {
+          const webSearchConfigForDDG = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedWebSearchConfig),
+          );
+
+          for (const config of webSearchConfigForDDG.providers || []) {
+            config.isDefault = false;
+          }
+
+          const encryptedUpdatedConfig = EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).encrypt(JSON.stringify(webSearchConfigForDDG));
+
+          await keyValueStoreService.set<string>(
+            configPaths.webSearch,
+            encryptedUpdatedConfig,
+          );
+        }
+
+        res.status(200).json({
+          status: 'success',
+          message: 'Default web search provider updated successfully',
+          details: {
+            providerKey,
+            provider: 'duckduckgo',
+          },
+        });
+        return;
+      }
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider with the specified key
+      const targetProvider = webSearchConfig.providers?.find(
+        (p: any) => p.providerKey === providerKey,
+      );
+
+      if (!targetProvider) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      // Health check: verify provider is reachable before setting as default
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider: targetProvider.provider, configuration: targetProvider.configuration },
+      };
+
+      logger.debug('Health check for web search provider before setting as default');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      // Remove default flag from all providers
+      for (const config of webSearchConfig.providers) {
+        config.isDefault = false;
+      }
+
+      // Set the target provider as default
+      targetProvider.isDefault = true;
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Default web search provider updated successfully',
+        details: {
+          providerKey,
+          provider: targetProvider.provider,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating default web search provider', { error });
+      next(error);
+    }
   };

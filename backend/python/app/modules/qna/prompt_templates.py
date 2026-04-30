@@ -19,6 +19,47 @@ class AnswerWithMetadataJSON(BaseModel):
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
 
 
+web_search_system_prompt = """You are a helpful web research assistant."""
+
+web_search_user_prompt = """Query: {{ query }}
+
+CRITICAL: You MUST use tools to find information. Do NOT answer from your own training knowledge — only use information retrieved from the web_search and fetch_url tools.
+
+Answer the query clearly and comprehensively using relevant context.
+
+### Core Requirements
+- Provide a detailed, well-structured answer
+- Ensure high accuracy — only use relevant information
+- Avoid unnecessary verbosity or repetition
+
+### URL Fetching Strategy
+- When `fetch_url` fails for a URL (returns `ok: false`), do NOT stop — check whether the context gathered so far is sufficient to answer the query.
+- If the context is **not sufficient**, identify other relevant URLs from the web_search results and fetch them until you have enough information to answer.
+- Only stop fetching when you either have sufficient context OR all relevant URLs have been tried.
+
+### Citations
+- Cite key facts
+- Cite by embedding the url/citation id as a markdown link: [source](URL). Each block has a unique url/citation id. Use EXACTLY the url/citation id shown in the context.
+
+### Relevance
+- Ignore unrelated retrieved content
+
+### Output Quality
+- Be comprehensive, structured, and easy to read
+- Generate rich markdown with appropriate headings, bullet points, sub-sections, tables, lists, bold, italic, and formatting where helpful
+
+<output_format>
+  Output format:
+  Provide your answer directly in rich markdown format with citations like [source](<exact url/citation id from tool result>).
+  Do not wrap your response in JSON. Simply provide the answer text.
+
+  <example>
+  ✅ Example Output:
+  The latest news about the company is that they are hiring for a new position [source](https://example.com/news#:~:text=hiring). The company is also working on a new product [source](https://ref3.xyz).
+  </example>
+</output_format>"""
+
+
 
 agent_block_group_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: {{label}}

@@ -390,6 +390,7 @@ class TestAbstractMethodInventory:
         # Agent permission operations
         "get_agent",
         "check_agent_permission",
+        "get_agents_by_web_search_provider",
     ]
 
     def test_all_expected_methods_are_abstract(self):

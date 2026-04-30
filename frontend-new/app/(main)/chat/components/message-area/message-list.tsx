@@ -47,9 +47,12 @@ interface MessagePair {
   confidence?: ConfidenceLevel;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
+  feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFilters;
+  /** ISO timestamp of when the user sent this query */
+  createdAt?: string;
 }
 
 export function MessageList() {
@@ -198,11 +201,13 @@ export function MessageList() {
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          feedbackInfo?: { value?: 'like' | 'dislike' };
         } | undefined;
 
         // Find preceding user message
@@ -225,28 +230,31 @@ export function MessageList() {
         const userMsgCustom = prevMsg?.metadata?.custom as {
           collections?: Array<{ id: string; name: string }>;
           appliedFilters?: AppliedFilters;
+          createdAt?: string;
         } | undefined;
         const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
         const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
+        const userCreatedAt = userMsgCustom?.createdAt;
+
 
         pairs.push({
           key: msg.id ?? `asst-${i}`,
           messageId: metadata?.messageId,
           question,
-          // Clear old answer immediately when regeneration starts so the
-          // stale content doesn't linger until the first streaming chunk.
           answer: isBeingRegenerated ? '' : content,
           citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
-            ? EMPTY_CITATION_MAPS  // streaming citations passed as a separate prop
+            ? EMPTY_CITATION_MAPS
             : (metadata?.citationMaps || EMPTY_CITATION_MAPS),
           confidence: metadata?.confidence,
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
           modelInfo: metadata?.modelInfo,
+          feedbackInfo: metadata?.feedbackInfo,
           // Use streaming collections for the temp message; user metadata for the final message
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
           appliedFilters: userMessageAppliedFilters,
+          createdAt: userCreatedAt,
         });
       }
     }
@@ -895,6 +903,7 @@ export function MessageList() {
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}
+                  createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}

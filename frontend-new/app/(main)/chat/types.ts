@@ -140,9 +140,9 @@ export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep'
  * model config currently treats unrecognized values as standard behavior.
  */
 export type StreamChatModePayload =
-  | 'quick'
-  | 'web-search'
+  | 'web_search'
   | 'image'
+  | 'internal_search'
   | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
@@ -166,7 +166,6 @@ const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
 export function streamChatModeToAgentApiChatMode(
   chatMode: StreamChatModePayload
 ): AgentStrategyApiSegment {
-  if (chatMode === 'quick') return 'quick';
   if (typeof chatMode === 'string' && chatMode.startsWith('agent:')) {
     const rest = chatMode.slice(6) as AgentStrategyApiSegment;
     if (AGENT_HTTP_CHAT_MODES.includes(rest)) return rest;
@@ -520,7 +519,7 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
   }
   if (settings.queryMode === 'web-search') {
     return {
-      chatMode: 'web-search',
+      chatMode: 'web_search',
     };
   }
   if (settings.queryMode === 'image') {
@@ -529,7 +528,7 @@ export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
     };
   }
   return {
-    chatMode: 'quick',
+    chatMode: 'internal_search',
   };
 }
 

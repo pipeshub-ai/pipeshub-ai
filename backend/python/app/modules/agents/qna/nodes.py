@@ -21,6 +21,8 @@ import time
 from typing import Any, Literal, Union
 from uuid import UUID
 
+from app.config.constants.service import config_node_constants
+from app.config.configuration_service import ConfigurationService
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -237,7 +239,16 @@ class ToolResultExtractor:
             if "error" in result and result["error"] not in (None, "", "null"):
                 return False
 
-        # String format - check for error indicators
+        # String format - try JSON parse first to avoid false negatives from content
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                return ToolResultExtractor.extract_success_status(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Plain string fallback - check for error indicators
+        # NOTE: only reaches here for non-JSON strings; JSON results are handled above
         result_str = str(result).lower()
         error_indicators = [
             "error:", '"error": "', "'error': '",
@@ -355,12 +366,26 @@ class ToolResultExtractor:
                                 pass
                         i += 1
                         continue
-                    # Bidirectional alias fallback: content ↔ body (common in Confluence/API responses)
-                    # Try the alias if the requested field doesn't exist
+                    # Fallback: "results" → prefixed variants (e.g. web_results)
+                    elif field == "results":
+                        matched = None
+                        for key in current:
+                            if key.endswith("_results") and isinstance(current[key], list):
+                                matched = key
+                                break
+                        if matched is not None:
+                            current = current[matched]
+                        else:
+                            return None
+                    # Bidirectional alias fallbacks
                     elif field == "content" and "body" in current:
                         current = current.get("body")
                     elif field == "body" and "content" in current:
                         current = current.get("content")
+                    elif field == "url" and "link" in current:
+                        current = current.get("link")
+                    elif field == "link" and "url" in current:
+                        current = current.get("url")
                     else:
                         return None
 
@@ -2557,7 +2582,7 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
    - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
    → Use the matching service tool. **If that service is ALSO indexed (see DUAL-SOURCE APPS), add retrieval in parallel.**
 6. **Short follow-up trigger after established topic+source?** ("give data", "show me", "go ahead", "yes", "do it", "continue") → Check conversation context for the most recent topic and source, then search that source for that topic. Do NOT set `can_answer_directly: true`.
-7. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
+7. **User references an EXTERNAL WEBSITE or URL?** (mentions a public website by name — Wikipedia, Stack Overflow, GitHub docs, MDN, Medium, Reddit, any "*.com/org/io" domain, or includes a URL like "https://...") → Use `fetch_url` (if a specific URL is given) or `web_search` (to find the page first).
 
 **Image Generation Rule:** Only plan `image_generator.generate_image` when the user's request contains an **explicit** instruction to create a new image from a description (e.g. "generate / create / draw / render / paint / design an image/logo/illustration of ..."). Do not use it for:
 
@@ -2594,6 +2619,17 @@ Examples of retrieval queries:
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
 
+**Use WEB TOOLS (`web_search` / `fetch_url`) when:**
+- User mentions a **specific external/public website** by name (Wikipedia, Stack Overflow, GitHub, MDN, Reddit, Medium, any public site)
+- User provides or references a **URL** (https://...)
+- User asks to summarize, read, or get content from an **external page/site/article**
+- User wants information that is explicitly **from the web** or **from a specific public source**
+- Query is about **general/public knowledge** unlikely to exist in internal org documents — e.g. product reviews, consumer recommendations, health/medical info, market comparisons, "best X", travel, recipes, public news, scientific research, technology comparisons
+- Query asks for **recommendations, rankings, or comparisons** of products, services, or brands (e.g. "best probiotic supplement", "top laptops 2026", "cheapest flight to X")
+- Query requires **current/real-time data** — prices, availability, weather, sports scores, stock prices, release dates
+
+**⚠️ IMPORTANT — web_search + retrieval in parallel:** When a query could have BOTH internal AND external relevance, plan BOTH `retrieval.search_internal_knowledge` AND `web_search` in parallel.
+
 **Use RETRIEVAL when:**
 - User wants **INFORMATION ABOUT** a topic/person/concept (e.g., "what is X", "tell me about Y", "who is Z")
 - User wants **DOCUMENTATION** or **KNOWLEDGE** (e.g., "how to X", "best practices for Y")
@@ -2604,7 +2640,6 @@ Examples of retrieval queries:
 **Key Distinction:**
 - **LIVE data requests (explicit):** "list/get/show/fetch [items] from [service]" → Use service tools
 - **LIVE data requests (implicit — SERVICE NOUN):** "[topic] tickets", "[topic] issues", "[topic] bugs", "[topic] pages" — service resource noun used → **Use BOTH the matching service search tool AND retrieval (if that service is indexed).** This rule takes priority over the "ambiguous → retrieval only" default.
-- **Information requests:** "what/explain/tell me about [topic]" (no service resource noun) → Use retrieval only
 - **Action requests:** "create/update/delete [resource]" → Use service tools
 - **DUAL-SOURCE:** If the query references a service that is BOTH indexed AND has live API → use BOTH retrieval + service search API in parallel
 
@@ -4015,16 +4050,30 @@ async def planner_node(
     agent_tools = state.get("tools", []) or []
     has_user_tools = bool(agent_tools)
     has_knowledge = state.get("has_knowledge", False)
+    has_web_search = bool(state.get("web_search_config"))
 
     if not has_knowledge:
+        web_search_note = ""
+        if has_web_search:
+            web_search_note = (
+                "- ✅ **`web_search` and `fetch_url` ARE available.**\n"
+                "- ✅ Prefer `web_search` over your training data for anything that may have changed: "
+                "news, prices, weather, sports, stocks, software versions, docs, regulations, current events, etc.\n"
+                "- ✅ Also prefer `web_search` when user asks for \"latest\", \"current\", or \"up-to-date\" info.\n"
+                "- ✅ Use training data only for timeless knowledge (math, science, core programming concepts).\n"
+                "- ✅ When in doubt, prefer `web_search` over answering from training data.\n"
+                "- ✅ Use `fetch_url` to read a specific URL or to get full content from a `web_search` result link.\n"
+                "- ✅ **Cascading:** `web_search` → `fetch_url` via `{{web_search.web_results[0].link}}`.\n"
+            )
+
         if not has_user_tools:
-            # Agent has NEITHER tools NOR knowledge — fully unconfigured for data retrieval
             no_retrieval_note = (
                 "\n\n## ⚠️ CRITICAL: This Agent Has No Knowledge Base and No Service Tools Configured\n"
                 "- `retrieval.search_internal_knowledge` is NOT available (no knowledge sources configured).\n"
-                "- There are also NO connected service tools available beyond the built-in calculator.\n"
+                "- There are NO connected service tools available beyond the built-in calculator.\n"
                 "- ❌ NEVER plan `retrieval.search_internal_knowledge` or any service tool calls.\n"
                 "- ❌ NEVER set `needs_clarification: true` for questions about org-specific topics — instead, answer directly and guide the user.\n"
+                f"{web_search_note}"
                 "- ✅ For conversational or general questions answerable from your training knowledge: set `can_answer_directly: true` and answer.\n"
                 "- ✅ For questions about org-specific content (documents, policies, licenses, people, data): set `can_answer_directly: true` and tell the user:\n"
                 "  1. This agent currently has no knowledge sources configured.\n"
@@ -4039,11 +4088,26 @@ async def planner_node(
                 "`retrieval.search_internal_knowledge` is **NOT available** in this agent — no knowledge sources have been configured.\n"
                 "- ❌ NEVER plan `retrieval.search_internal_knowledge` — it does not exist and will cause an error.\n"
                 "- ✅ Use only the service tools listed under `## AVAILABLE TOOLS`.\n"
+                f"{web_search_note}"
                 "- ✅ If the user asks a general question with no applicable service tool, set `can_answer_directly: true` and answer from your own knowledge.\n"
                 "- ✅ If the user asks about org-specific documents/policies not served by any available tool: set `can_answer_directly: true` and inform the user that no knowledge base is configured — they should add knowledge sources to this agent to enable knowledge-based answers.\n"
                 "- ❌ NEVER set `needs_clarification: true` for org-knowledge questions — instead answer directly and explain the limitation.\n"
             )
         system_prompt += no_retrieval_note
+
+    if has_web_search and has_knowledge:
+        system_prompt += (
+            "\n\n## Web Search vs Internal Knowledge\n"
+            "- **`web_search`**: Prefer for current/changing info — news, prices, weather, software versions, latest docs, regulations, current events. "
+            "Also when user asks for \"latest\"/\"current\"/\"up-to-date\" info.\n"
+            "- **`web_search`**: ALSO use for general/public knowledge queries — product recommendations, comparisons, reviews, "
+            "health/medical info, consumer advice, market research, scientific topics, travel, recipes, \"best X\" queries. "
+            "- **Internal knowledge**: Prefer for org-specific documents, policies, company data, internal wikis.\n"
+            "- **Both in parallel**: When the query could have both internal AND external relevance, plan BOTH "
+            "`retrieval.search_internal_knowledge` AND `web_search`.\n"
+            "- **Training data**: Only for timeless knowledge (math, science, core concepts). When in doubt, prefer `web_search`.\n"
+            "- **Cascading:** `web_search` → `fetch_url` via `{{web_search.web_results[0].link}}`.\n"
+        )
 
     # Inject knowledge context so the LLM knows what is indexed vs. what is live API
     knowledge_context = _build_knowledge_context(state, log)
@@ -4126,16 +4190,19 @@ async def planner_node(
 
     # Post-processing: if the agent has NO user tools AND NO knowledge:
     # 1. If the plan still set needs_clarification (despite the prompt), override it.
-    # 2. Always set agent_not_configured_hint so _generate_direct_response knows to guide
+    # 2. Set agent_not_configured_hint so _generate_direct_response knows to guide
     #    the user to configure the agent when they ask org-specific questions.
+    #    Skip the hint when web_search is available and the planner selected tools
+    #    (the agent can meaningfully answer via web search).
     if not has_user_tools and not has_knowledge:
         if plan.get("needs_clarification") and not plan.get("can_answer_directly") and not plan.get("tools"):
             log.info("🔧 No tools/knowledge configured — overriding clarification with agent setup guidance")
             plan["needs_clarification"] = False
             plan["can_answer_directly"] = True
             plan["tools"] = []
-        # Always signal the respond_node to include knowledge-configuration guidance
-        state["agent_not_configured_hint"] = True
+        planned_tools = plan.get("tools", [])
+        if not (has_web_search and planned_tools):
+            state["agent_not_configured_hint"] = True
 
     # Store plan in state
     state["execution_plan"] = plan
@@ -4673,8 +4740,9 @@ async def _plan_with_validation_retry(
                     await keepalive_task
 
             # Parse response
+            raw_content = response.content if hasattr(response, 'content') else str(response)
             plan = _parse_planner_response(
-                response.content if hasattr(response, 'content') else str(response),
+                _normalize_llm_content(raw_content),
                 log
             )
 
@@ -4755,6 +4823,22 @@ Choose tools ONLY from the available list above.
         if not fallback['tools']:
             fallback['can_answer_directly'] = True
     return fallback
+
+
+def _normalize_llm_content(content: Any) -> str:
+    """Extract text from LLM response content that may be a str or list of content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
 
 
 def _parse_planner_response(content: str, log: logging.Logger) -> dict[str, Any]:
@@ -5255,10 +5339,6 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             "  • User asks 'find pages/tickets/docs about [topic]'\n"
             "  • User asks 'search [app] for [X]' or 'is there anything about [topic] in [app]'\n"
             "\n"
-            "**Do NOT use live search APIs for:**\n"
-            "  • General information queries ('what is X', 'tell me about Y') with NO service resource noun — retrieval is sufficient\n"
-            "  • Queries with no service reference and no service noun — use retrieval only\n"
-            "\n"
             "**Available live search APIs:**"
         )
         for ts_key, search_tools in sorted(non_overlap_search_tools.items()):
@@ -5289,6 +5369,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         "Lookup by exact ID or key (e.g. PA-123)                                        →  live API read tool\n"
         "[topic] tickets / [topic] issues / [topic] pages (service noun, dual-source)   →  BOTH retrieval + live search API (parallel)\n"
         "FIND/SEARCH [service] content by topic or keyword                              →  BOTH retrieval + live search API (parallel)\n"
+        "External website/URL (Wikipedia, SO, GitHub, MDN, any public site, or a URL)   →  web_search / fetch_url\n"
         "General information query — 'what is X', 'tell me about Y' (no service noun)   →  retrieval (DEFAULT)\n"
         "Ambiguous / unclear intent                                                     →  retrieval (DEFAULT)\n"
         "```\n"
@@ -5625,14 +5706,35 @@ async def execute_node(
     )
 
     # Build tool messages
+    from app.utils.tool_handlers import ToolHandlerRegistry
+
     tool_messages = []
+    ref_mapper = state.get("citation_ref_mapper")
+    handler_context = {
+        "ref_mapper": ref_mapper,
+        "config_service": state.get("config_service"),
+        "is_multimodal_llm": state.get("is_multimodal_llm", False),
+    }
     for result in tool_results:
         if result.get("tool_id"):
-            content_str = format_result_for_llm(result.get("result", ""), result.get("tool_name", ""))
-            tool_messages.append(ToolMessage(
-                content=content_str,
-                tool_call_id=result.get("tool_id", "")
-            ))
+            tool_result_data = result.get("result", "")
+            if (
+                isinstance(tool_result_data, dict)
+                and tool_result_data.get("ok")
+                and tool_result_data.get("result_type") in ("web_search", "url_content")
+            ):
+                handler = ToolHandlerRegistry.get_handler(tool_result_data)
+                tool_msg_content = await handler.format_message(tool_result_data, handler_context)
+                tool_messages.append(ToolMessage(
+                    content=tool_msg_content,
+                    tool_call_id=result.get("tool_id", ""),
+                ))
+            else:
+                content_str = format_result_for_llm(tool_result_data, result.get("tool_name", ""))
+                tool_messages.append(ToolMessage(
+                    content=content_str,
+                    tool_call_id=result.get("tool_id", ""),
+                ))
 
     # Update state
     # IMPORTANT: accumulate across iterations so that retrieval results from
@@ -5967,7 +6069,7 @@ async def reflect_node(
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
 
-        reflection = _parse_reflection_response(response.content, log)
+        reflection = _parse_reflection_response(_normalize_llm_content(response.content), log)
 
     except asyncio.TimeoutError:
         log.warning("⏱️ Reflect timeout")
@@ -6351,6 +6453,7 @@ async def respond_node(
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
     query = state.get("query", "")
+    org_id = state.get("org_id", "")
 
     # ================================================================
     # FAST PATH: API-only results with sub-agent analyses
@@ -6389,10 +6492,13 @@ async def respond_node(
         "Fast-path check: analyses=%d, final_results=%d, virtual_map=%d, tool_results=%d",
         len(sub_agent_analyses), len(final_results), len(virtual_record_map), len(tool_results),
     )
+    _prior_web_records = _extract_web_records_from_tool_results(tool_results, org_id)
+
     if (
         sub_agent_analyses
         and not final_results
         and not virtual_record_map
+        and not _prior_web_records
     ):
         log.info("⚡ Fast-path: API-only results with sub-agent analysis, using lightweight response")
         try:
@@ -6477,11 +6583,14 @@ async def respond_node(
         # user message — pass [] to avoid duplication but set has_retrieval_in_context=True
         # so the LLM is instructed to use MODE 3 (inline citations + referenceData).
         qna_has_retrieval = bool(state.get("qna_message_content"))
-        context = _build_tool_results_context(
+        context = (await _build_tool_results_context(
             tool_results,
             [] if qna_has_retrieval else final_results,
             has_retrieval_in_context=qna_has_retrieval,
-        ) if has_api_results else ""
+            ref_mapper=state.get("citation_ref_mapper"),
+            config_service=state.get("config_service"),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+        )) if has_api_results else ""
 
         if context.strip():
             if messages and isinstance(messages[-1], HumanMessage):
@@ -6568,19 +6677,62 @@ async def respond_node(
                 f"({len(virtual_record_map)} records available, "
             )
 
+        # Add web tools (fetch_url always, web_search if configured)
+        has_web_search_tool = False
+        try:
+            from app.modules.agents.qna.tool_system import _create_web_tools
+            web_tools = _create_web_tools(state)
+            tools.extend(web_tools)
+            has_web_search_tool = any(
+                getattr(t, 'name', '') == 'web_search' for t in web_tools
+            )
+            if web_tools:
+                log.debug(f"Added {len(web_tools)} web tool(s) to respond_node")
+        except Exception as e:
+            log.warning(f"Failed to add web tools to respond_node: {e}")
+
+        # Instruct the LLM to use web tools when retrieval results are insufficient.
+        # This is the safety net: even if the planner didn't select web_search,
+        # the respond-phase LLM can still call it when the provided context
+        # clearly does not answer the user's question.
+        if has_web_search_tool and messages:
+            web_tool_hint = (
+                "\n\n## Web Tools Available (CRITICAL — READ BEFORE RESPONDING)\n"
+                "You have `web_search` and `fetch_url` tools available.\n\n"
+                "**MANDATORY RULE**: If the retrieved knowledge blocks above do NOT contain "
+                "sufficient information to answer the user's question, you MUST use "
+                "`web_search` (and/or `fetch_url` for specific URLs) to find the answer "
+                "from the web BEFORE responding. "
+                "Always attempt a web search first.\n\n"
+            )
+            from langchain_core.messages import SystemMessage as _SysMsg
+            if isinstance(messages[0], _SysMsg):
+                messages[0] = _SysMsg(content=messages[0].content + web_tool_hint)
+            else:
+                messages.insert(0, _SysMsg(content=web_tool_hint))
+        
+      
+      
         # Create tool_runtime_kwargs
         tool_runtime_kwargs = {
             "blob_store": blob_store,
             "graph_provider": graph_provider,
             "org_id": org_id,
             "conversation_id": state.get("conversation_id"),
+            "config_service": config_service,
         }
+
+        # Pre-seed web_records from prior tool execution so that web citations
+        # are available even when the LLM does not re-invoke tools during streaming.
+        if _prior_web_records:
+            log.info("Pre-seeded %d web records from prior tool execution", len(_prior_web_records))
 
         answer_text = ""
         citations = []
         reason = None
         confidence = None
         reference_data = []
+        _captured_web_records: list[dict] = list(_prior_web_records)
 
         async for stream_event in stream_llm_response_with_tools(
             llm=llm,
@@ -6598,29 +6750,24 @@ async def respond_node(
             tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
-            is_agent=True,  # Use agent schemas (with referenceData support)
             conversation_id=state.get("conversation_id"),
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
             ref_mapper=state.get("citation_ref_mapper"),
+            initial_web_records=_prior_web_records,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
 
-            # ── Agent-side citation enrichment (no streaming.py changes) ────────
-            # streaming.py's normalize_citations_and_chunks extracts citations from
-            # inline citation markers (markdown links or legacy R-labels) in the LLM
-            # answer text.  In combined (MODE 3) responses the LLM may skip inline
-            # markers. streaming.py does not forward
-            # here — before the event reaches the client.
-            #
-            # Pass 1: re-run inline marker extraction in case streaming.py received
-            #         stale/empty final_results (safety net for edge cases).
-            # Pass 2: if the LLM DID write inline markers they are already extracted
-            #         by streaming.py; citations will be non-empty and we skip below.
+            if event_type == "tool_execution_complete":
+                _captured_web_records = event_data.get("web_records", []) or []
+
+            # ── Agent-side citation enrichment ──────────────────────────────────
+            # Second-pass fallback: if streaming.py returned empty citations on
+            # the complete event, re-run extraction here with web_records support.
             if (
                 event_type == "complete"
-                and final_results
+                and (final_results or _captured_web_records)
                 and not event_data.get("citations")
             ):
                 _raw_answer = event_data.get("answer", "")
@@ -6632,17 +6779,19 @@ async def respond_node(
                         )
                         _ref_to_url = state.get("citation_ref_mapper")
                         _ref_to_url = _ref_to_url.ref_to_url if _ref_to_url else None
-                        _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [], ref_to_url=_ref_to_url)
+                        _, _enriched = _ncc_agent(
+                            _raw_answer, final_results, virtual_record_map, [],
+                            ref_to_url=_ref_to_url, web_records=_captured_web_records,
+                        )
                         if _enriched:
                             log.info(
-                                "🔖 Citation enrichment (respond_node): "
+                                "Citation enrichment (respond_node): "
                                 "extracted %d citations from inline markers",
                                 len(_enriched),
                             )
                     except Exception as _ce:
                         log.debug("Citation enrichment error: %s", _ce)
                 if _enriched:
-                    # Shallow-copy so we never mutate the yielded stream_event dict
                     event_data = {**event_data, "citations": _enriched}
             # ────────────────────────────────────────────────────────────────────
 
@@ -6896,20 +7045,62 @@ async def _generate_fast_api_response(
     analyses_text = "\n\n".join(sub_agent_analyses)
 
     # Include raw API data for reference
+    from app.utils.citations import display_url_for_llm
+    from app.utils.chat_helpers import generate_text_fragment_url
+
     non_retrieval = [
         r for r in tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
     ]
+    ref_mapper = state.get("citation_ref_mapper")
     raw_data_parts = []
     for r in non_retrieval[:5]:
         tool_name = r.get("tool_name", "unknown")
         content = ToolResultExtractor.extract_data_from_result(r.get("result", ""))
+
+        result_type = content.get("result_type", "") if isinstance(content, dict) else ""
+        # if isinstance(content, dict) and (
+        #     result_type == "web_search" or "web_results" in content
+        # ):
+        #     query = content.get("query", "")
+        #     lines = [f"### {tool_name}", f"web_search_query: {query}", "Blocks retrieved from web search:\n"]
+        #     for wr in content.get("web_results", []):
+        #         if not isinstance(wr, dict):
+        #             continue
+        #         title = wr.get("title", "")
+        #         link = wr.get("link", "")
+        #         snippet = wr.get("snippet", "")
+        #         d_url = display_url_for_llm(link, ref_mapper)
+        #         lines.append(f"title: {title}\nurl/citation id: {d_url}\ncontent: {snippet}")
+        #     raw_data_parts.append("\n".join(lines))
+        # elif isinstance(content, dict) and (
+        #     result_type == "url_content"
+        # ):
+        #     url = content.get("url", "")
+        #     lines = [f"### {tool_name}", "Blocks of content from the URL:\n"]
+        #     for block in content.get("blocks", []):
+        #         if hasattr(block, "type"):
+        #             if block.type == "image":
+        #                 continue
+        #             block_content = getattr(block, "content", "")
+        #             block_url = generate_text_fragment_url(url, block_content)
+        #         elif isinstance(block, dict):
+        #             if block.get("type") == "image":
+        #                 continue
+        #             block_content = block.get("content", "")
+        #             block_url = generate_text_fragment_url(url, block_content)
+        #         else:
+        #             continue
+        #         if block_content:
+        #             d_url = display_url_for_llm(block_url, ref_mapper)
+        #             lines.append(f"url/citation id: {d_url}\ncontent: {block_content}")
+        #     raw_data_parts.append("\n".join(lines))
+        # else:
         if isinstance(content, (dict, list)):
             content_str = json.dumps(content, indent=2, default=str)
         else:
             content_str = str(content)
-        # Limit raw data size to keep the prompt small
         if len(content_str) > _RAW_DATA_SIZE_LIMIT:
             content_str = content_str[:_RAW_DATA_SIZE_LIMIT] + "\n... (truncated)"
         raw_data_parts.append(f"### {tool_name}\n```json\n{content_str}\n```")
@@ -7036,6 +7227,38 @@ async def _generate_fast_api_response(
     return True
 
 
+def _extract_web_records_from_tool_results(
+    tool_results: list[dict], org_id: str,
+) -> list[dict]:
+    """Build web_records from web_search / fetch_url tool results that were
+    executed in the agent's execution phase (before respond_node).
+
+    Delegates to ToolHandlerRegistry.extract_records — the same path that
+    streaming.py's execute_tool_calls uses for live tool output — so citation
+    URLs are generated identically (text-fragment URLs for fetch_url blocks,
+    plain links for web_search snippets).
+    """
+    from app.utils.tool_handlers import ToolHandlerRegistry
+
+    web_records: list[dict] = []
+    for r in tool_results:
+        if r.get("status") != "success":
+            continue
+        result = r.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if not isinstance(result, dict):
+            continue
+        handler = ToolHandlerRegistry.get_handler(result)
+        for rec in handler.extract_records(result, org_id=org_id):
+            if rec.get("source_type") == "web":
+                web_records.append(rec)
+    return web_records
+
+
 def _extract_urls_for_reference_data(content: object, reference_data: list[dict]) -> None:
     """Extract URLs from tool result content and add to referenceData list."""
     if isinstance(content, str):
@@ -7058,11 +7281,14 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
             _extract_urls_for_reference_data(item, reference_data)
 
 
-def _build_tool_results_context(
+async def _build_tool_results_context(
     tool_results: list[dict],
     final_results: list[dict],
     *,
     has_retrieval_in_context: bool = False,
+    ref_mapper: object | None = None,
+    config_service: ConfigurationService | None = None,
+    is_multimodal_llm: bool = False,
 ) -> str:
     """Build context from tool results for response generation.
 
@@ -7076,12 +7302,17 @@ def _build_tool_results_context(
                        the user message (qna_message_content). This tells the LLM to
                        use MODE 3 (combined citations + referenceData) even though the
                        blocks aren't repeated in this tool-results section.
+        ref_mapper: CitationRefMapper for building tiny citation URLs.
     """
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
     # has_retrieval is True when blocks are in final_results OR already in context
     has_retrieval = bool(final_results) or has_retrieval_in_context
     non_retrieval = [r for r in successful if "retrieval" not in r.get("tool_name", "").lower()]
+    has_web_results = any(
+        r.get("tool_name", "").lower() in ("web_search", "fetch_url")
+        for r in non_retrieval
+    )
 
     parts = []
 
@@ -7114,31 +7345,70 @@ def _build_tool_results_context(
         )
 
     if non_retrieval:
-        parts.append("\n## 🔧 API Tool Results\n\n")
-        parts.append(
-            "Transform raw data into professional, informative markdown. Follow these rules:\n"
-            "- **Be specific**: Show exact values (dates, times, names, emails, statuses) — never summarize vaguely.\n"
-            "- **Include links**: Extract ALL URL fields from the data and render as clickable markdown links.\n"
-            "- **People fields**: Show names WITH email addresses when available: `Name (email@example.com)`.\n"
-            "- **For single items**: Show all relevant fields as detailed field-value pairs.\n"
-            "- **For lists**: Use clean, scannable markdown tables with the most important fields. "
-            "Prioritize user-actionable, business-relevant data. Include custom fields that have values.\n"
-            "- **Exclude**: Internal system metadata, aggregate calculations, empty/null fields, technical IDs "
-            "that aren't user-facing. Show user-facing IDs/keys, hide internal ones.\n"
-            "- Store all IDs, keys, and links in referenceData.\n\n"
-        )
+        from app.utils.tool_handlers import ToolHandlerRegistry
 
+        web_tool_results: list[tuple[dict, Any]] = []
+        api_tool_results: list[tuple[dict, Any]] = []
         for r in non_retrieval:
-            tool_name = r.get('tool_name', 'unknown')
             content = ToolResultExtractor.extract_data_from_result(r.get("result", ""))
-
-            if isinstance(content, (dict, list)):
-                content_str = json.dumps(content, indent=2, default=str)
+            result_type = content.get("result_type", "") if isinstance(content, dict) else ""
+            if result_type in ("web_search", "url_content") or (
+                isinstance(content, dict) and ("web_results" in content or "blocks" in content)
+            ):
+                web_tool_results.append((r, content))
             else:
-                content_str = str(content)
+                api_tool_results.append((r, content))
 
-            parts.append(f"### {tool_name}\n")
-            parts.append(f"```json\n{content_str}\n```\n\n")
+        if web_tool_results:
+            parts.append("\n## 🌐 Web Results\n\n")
+            for r, content in web_tool_results:
+                tool_name = r.get("tool_name", "unknown")
+                handler = ToolHandlerRegistry.get_handler(content)
+                formatted_blocks = await handler.format_message(
+                    content, {"ref_mapper": ref_mapper, "config_service": config_service, "is_multimodal_llm": is_multimodal_llm}
+                )
+                parts.append(f"### {tool_name}\n")
+                for block in formatted_blocks:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block["text"] + "\n\n")
+
+            has_only_snippets = all(
+                (isinstance(c, dict) and c.get("result_type") == "web_search")
+                for _, c in web_tool_results
+            )
+            if has_only_snippets:
+                parts.append(
+                    "\n**⚠️ IMPORTANT — fetch_url tool available:**\n"
+                    "The web results above are **search snippets only**. "
+                    "You MUST call the `fetch_url` tool on the most relevant URL(s) to retrieve "
+                    "the full page content before answering.\n\n"
+                )
+
+        if api_tool_results:
+            parts.append("\n## 🔧 API Tool Results\n\n")
+            parts.append(
+                "Transform raw data into professional, informative markdown. Follow these rules:\n"
+                "- **Be specific**: Show exact values (dates, times, names, emails, statuses) — never summarize vaguely.\n"
+                "- **Include links**: Extract ALL URL fields from the data and render as clickable markdown links.\n"
+                "- **People fields**: Show names WITH email addresses when available: `Name (email@example.com)`.\n"
+                "- **For single items**: Show all relevant fields as detailed field-value pairs.\n"
+                "- **For lists**: Use clean, scannable markdown tables with the most important fields. "
+                "Prioritize user-actionable, business-relevant data. Include custom fields that have values.\n"
+                "- **Exclude**: Internal system metadata, aggregate calculations, empty/null fields, technical IDs "
+                "that aren't user-facing. Show user-facing IDs/keys, hide internal ones.\n"
+                "- Store all IDs, keys, and links in referenceData.\n\n"
+            )
+
+            for r, content in api_tool_results:
+                tool_name = r.get('tool_name', 'unknown')
+
+                if isinstance(content, (dict, list)):
+                    content_str = json.dumps(content, indent=2, default=str)
+                else:
+                    content_str = str(content)
+
+                parts.append(f"### {tool_name}\n")
+                parts.append(f"```json\n{content_str}\n```\n\n")
 
 
 
@@ -7155,12 +7425,24 @@ def _build_tool_results_context(
             "  3. Use API results for current state, real-time data, and exact IDs/keys\n"
             "  4. When sources conflict, prioritize API results for current state, but mention historical context from retrieval\n"
             "  5. Cite key facts from internal knowledge using markdown links: [source](ref1). Limit to the most relevant citations — do NOT cite every sentence.\n"
-            "  6. Format all API items as clickable links and include them in `referenceData`\n"
-            "  7. Combine insights: \"Based on our indexed knowledge [source](ref1), and current live data, here's the complete picture...\"\n\n"
         )
+        if has_web_results:
+            parts.append(
+                "  6. Cite web search results using the url/citation id.\n"
+                "  7. Format all API items as clickable links and include them in `referenceData`\n"
+            )
+        else:
+            parts.append(
+                "  6. Format all API items as clickable links and include them in `referenceData`\n"
+            )
     elif has_retrieval:
         parts.append(
             "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](ref1). The system assigns citation numbers automatically.\n"
+        )
+    elif has_web_results:
+        parts.append(
+            "**WEB SEARCH DATA**: Cite web search results using the url/citation id.\n"
+            "Use EXACTLY the URL/citation id from the tool results.\n"
         )
     else:
         parts.append(
@@ -7561,6 +7843,15 @@ async def react_agent_node(
             if isinstance(msg, ToolMessage):
                 tool_name = msg.name if hasattr(msg, 'name') else "unknown"
                 result_content = msg.content
+
+                # Parse JSON strings back to dicts so downstream code
+                # (_build_tool_results_context, _extract_web_records_from_tool_results)
+                # can access structured fields like result_type, blocks, web_results.
+                if isinstance(result_content, str):
+                    try:
+                        result_content = json.loads(result_content)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
 
                 # Process retrieval tool results to extract final_results
                 if "retrieval" in tool_name.lower():
@@ -8111,6 +8402,8 @@ to target. If unsure → search ALL sources.
     final_results = state.get("final_results", [])
     has_retrieval = bool(final_results)
 
+    has_web_search = bool(state.get("web_search_config"))
+
     if has_retrieval:
         base_prompt += """
 ## Citation Rules
@@ -8122,6 +8415,19 @@ When you have internal knowledge from retrieval tools:
 4. Limit to the most relevant citations overall.
 5. Do NOT put citations at end of paragraph — inline after the specific fact
 6. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
+"""
+
+    if has_web_search:
+        base_prompt += """
+## Web Search Rules
+
+- Prefer `web_search` over training data for anything that may have changed: news, prices, weather, sports, stocks, software versions, docs, regulations, current events.
+- Also prefer `web_search` when user asks for "latest", "current", or "up-to-date" info.
+- Prefer `web_search` for general/public knowledge queries: product recommendations, comparisons, reviews, health/medical info, consumer advice, market research, "best X" queries, travel, recipes, scientific research.
+- Use training data only for timeless knowledge (math, science, core concepts). When in doubt, prefer `web_search`.
+- When a query could have BOTH internal AND external relevance, use BOTH `retrieval.search_internal_knowledge` AND `web_search` in parallel.
+- **MANDATORY**: If the available context or retrieval results do NOT contain sufficient information to answer the user's question, you MUST use `web_search` to find relevant information BEFORE telling the user that you don't have enough information or context.
+- Cite web results as [source](URL/citation id). Use EXACTLY the URL/citation id shown.
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
@@ -8164,12 +8470,16 @@ Use this decision tree to choose the right approach:
 - **Cross-service summaries**: "What happened in last quarter's planning?"
   → Retrieval may have indexed content from multiple sources.
 
+### When to use `web_search`:
+- Current/changing info (news, prices, weather, software versions, latest docs, regulations) or when user asks for "latest"/"current"/"up-to-date" info.
+- When in doubt whether internal knowledge or training data is current enough → prefer `web_search`.
+
 ### How to merge hybrid results:
-1. Call both tools (retrieval + service API).
-2. Analyze both results for overlapping and unique information.
-3. Present a unified answer that combines insights from both sources.
-4. Use citations as markdown links [source](ref1) for key retrieval-sourced facts. Limit to the most relevant citations. The system assigns citation numbers automatically.
-5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
+1. Call the appropriate tools (retrieval + service API + web_search as needed).
+2. Present a unified answer combining insights from all sources.
+4. For internal knowledge (retrieval): cite as [source](ref1) using the Citation ID from the context blocks.
+5. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.
+6. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 
     # Add tool-specific guidance

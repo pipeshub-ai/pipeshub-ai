@@ -46,6 +46,7 @@ import {
   updateAgent,
   updateAgentTemplate,
   listAgents,
+  getWebSearchProviderUsage,
   getAvailableTools,
   shareAgent,
   unshareAgent,
@@ -767,6 +768,14 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     listAgents(appConfig),
+  );
+
+  router.get(
+    '/web-search-usage/:provider',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    getWebSearchProviderUsage(appConfig),
   );
 
   router.get(

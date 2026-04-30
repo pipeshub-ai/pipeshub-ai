@@ -75,6 +75,9 @@ export function ReferenceCard({
   };
 
   // ── derived values ────────────────────────────────────────────────────
+  const showPreview =
+    citation.recordType?.toUpperCase() === 'FILE' &&
+    citation.connector?.toUpperCase() !== 'WEB';
   const syncLabel = isSourcesTab ? formatSyncLabel(citation.updatedAt) : undefined;
   const hasLocationBadges =
     isCitationsTab && (citation.pageNum?.length || citation.blockNum?.length);
@@ -137,8 +140,9 @@ export function ReferenceCard({
                     {openInLabel}
                   </Button>)}
 
-                {/* "Preview" solid accent button */}
-                {citation.previewRenderable && (
+                
+                {/* "Preview" solid accent button — only for file records, not WEB */}
+                {showPreview && (
                   <Button
                   size="1"
                   variant="solid"
@@ -286,7 +290,7 @@ export function ReferenceCard({
               </Button>)}
 
               {/* "Preview" button — only for previewable files */}
-              {citation.previewRenderable && (
+              {showPreview && (
                 <Button
                   size="1"
                   variant="solid"

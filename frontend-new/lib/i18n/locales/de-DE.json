@@ -486,7 +486,7 @@
     "queryModes": {
       "chat": {
         "label": "Interne Suche",
-        "toolbarLabel": "Chat",
+        "toolbarLabel": "Interne Suche",
         "description": "Denken, fragen und schlussfolgern Sie im konversationellen Fluss durch Ihr Wissen"
       },
       "web-search": {

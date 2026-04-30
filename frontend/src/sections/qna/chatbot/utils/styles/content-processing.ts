@@ -12,17 +12,47 @@ export interface ProcessedContent {
 }
 
 /**
- * Process raw markdown content for better rendering
+ * Build the set of URLs that belong to known citations so we only strip
+ * markdown links that actually correspond to a citation chip.
  */
-export const processMarkdownContent = (content: string): string => {
+const buildCitationUrlSet = (citations: CustomCitation[]): Set<string> => {
+  const urls = new Set<string>();
+  citations.forEach((citation) => {
+    const webUrl = citation.metadata?.webUrl;
+    if (webUrl) urls.add(webUrl);
+  });
+  return urls;
+};
+
+/**
+ * Process raw markdown content for better rendering.
+ * Strips the URL portion of citation markdown links `[N](url)` to bare `[N]`
+ * so the chat renderer can turn them into citation chips. Only strips links
+ * whose target is either an internal block URL or matches a known citation URL;
+ * unrelated markdown links (e.g. `[2024](https://example.com)`) are preserved.
+ */
+export const processMarkdownContent = (
+  content: string,
+  citations: CustomCitation[] = []
+): string => {
   if (!content) return '';
+
+  const citationUrls = buildCitationUrlSet(citations);
+  const internalBlockUrl = /\/record\/[^)]*?preview[^)]*?blockIndex=\d+/;
 
   return content
     // Fix escaped newlines
     .replace(/\\n/g, '\n')
-    // Strip citation markdown links [N](url) to [N] so they render as citation chips
-    // Only matches URLs containing /record/.../preview...blockIndex=N (backend citation format)
-    .replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '[$1]')
+    // Strip citation markdown links [N](url) to [N] so they render as citation chips.
+    // Only strip when the URL is a known citation target (internal block URL or
+    // a URL that appears in the citations list).
+    .replace(/\[(\d+)\]\(([^)]+)\)/g, (match, num, url) => {
+      const trimmedUrl = url.trim();
+      if (internalBlockUrl.test(trimmedUrl) || citationUrls.has(trimmedUrl)) {
+        return `[${num}]`;
+      }
+      return match;
+    })
     // Clean up trailing whitespace but preserve structure
     .trim();
 };
@@ -99,8 +129,9 @@ export const processStreamingContent = (
     };
   }
 
-  // Process the markdown content
-  const processedContent = processMarkdownContent(rawContent);
+  // Process the markdown content — pass citations so only known citation
+  // links get stripped; unrelated markdown links stay intact.
+  const processedContent = processMarkdownContent(rawContent, citations);
 
   // Extract citation numbers from content
   const mentionedNumbers = extractCitationNumbers(processedContent);
