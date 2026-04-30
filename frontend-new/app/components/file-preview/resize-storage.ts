@@ -8,14 +8,18 @@ export const PANEL_MAX_PX = 1680;
 export const DEFAULT_PANEL_NO_CITATIONS_PX = 600; // static fallback for SSR
 export const DEFAULT_PANEL_WITH_CITATIONS_PX = 860; // static fallback for SSR
 
+/** Default panel width as a fraction of viewport width (no citations). */
+const DEFAULT_PANEL_VW = 0.58;
+/** Default panel width as a fraction of viewport width (with citations). */
+const DEFAULT_PANEL_WITH_CITATIONS_VW = 0.75;
+
 function defaultPanelPx(hasCitations: boolean): number {
   if (typeof window === 'undefined') {
     return hasCitations ? DEFAULT_PANEL_WITH_CITATIONS_PX : DEFAULT_PANEL_NO_CITATIONS_PX;
   }
-  const base = Math.round(window.innerWidth * 0.58); // 50 vw
-  const withCitations = Math.round(window.innerWidth * 0.75);
+  const fraction = hasCitations ? DEFAULT_PANEL_WITH_CITATIONS_VW : DEFAULT_PANEL_VW;
   return clamp(
-    hasCitations ? withCitations : base,
+    Math.round(window.innerWidth * fraction),
     PANEL_MIN_PX,
     Math.min(PANEL_MAX_PX, viewportMaxPanelPx()),
   );
