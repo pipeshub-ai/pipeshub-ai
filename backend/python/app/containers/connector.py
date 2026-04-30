@@ -154,7 +154,7 @@ class ConnectorAppContainer(BaseAppContainer):
     )
 
 async def run_connector_migration(
-    container, arango_service: BaseArangoService
+    container: ConnectorAppContainer, arango_service: BaseArangoService
 ) -> bool:
     """
     Run connector migration from name-based to UUID-based system.
@@ -180,7 +180,9 @@ async def run_connector_migration(
 
         # Create migration service instance
         migration_service = ConnectorMigrationService(
-            arango_service, config_service, logger
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger,
         )
 
         # Run the migration
@@ -196,7 +198,7 @@ async def run_connector_migration(
         return False
 
 async def run_files_to_records_migration_wrapper(
-    container, arango_service: BaseArangoService
+    container: ConnectorAppContainer, arango_service: BaseArangoService
 ) -> bool:
     """
     Run files to records MD5/Size migration.
@@ -251,7 +253,7 @@ async def run_files_to_records_migration_wrapper(
         return False
 
 async def run_drive_to_drive_workspace_migration_wrapper(
-    container, arango_service: BaseArangoService
+    container: ConnectorAppContainer, arango_service: BaseArangoService
 ) -> bool:
     """
     Run drive to drive workspace migration.

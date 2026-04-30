@@ -171,9 +171,9 @@ class TestRunConnectorMigration:
         assert result is True
         mock_migration.migrate_all.assert_awaited_once()
         mock_migration_cls.assert_called_once_with(
-            mock_arango,
-            container.config_service.return_value,
-            container.logger.return_value,
+            arango_service=mock_arango,
+            config_service=container.config_service.return_value,
+            logger=container.logger.return_value,
         )
 
     @pytest.mark.asyncio
@@ -206,9 +206,9 @@ class TestRunFilesToRecordsMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_files_to_records_migration_wrapper(container, mock_gp)
+        result = await run_files_to_records_migration_wrapper(container, mock_arango)
         assert result is True
 
     @pytest.mark.asyncio
@@ -222,9 +222,9 @@ class TestRunFilesToRecordsMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_files_to_records_migration_wrapper(container, mock_gp)
+        result = await run_files_to_records_migration_wrapper(container, mock_arango)
         assert result is True
 
     @pytest.mark.asyncio
@@ -235,9 +235,9 @@ class TestRunFilesToRecordsMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_files_to_records_migration_wrapper(container, mock_gp)
+        result = await run_files_to_records_migration_wrapper(container, mock_arango)
         assert result is False
 
     @pytest.mark.asyncio
@@ -270,9 +270,9 @@ class TestRunDriveToDriveWorkspaceMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_gp)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_arango)
         assert result is True
 
     @pytest.mark.asyncio
@@ -287,9 +287,9 @@ class TestRunDriveToDriveWorkspaceMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_gp)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_arango)
         assert result is True
 
     @pytest.mark.asyncio
@@ -300,9 +300,9 @@ class TestRunDriveToDriveWorkspaceMigration:
         container = MagicMock()
         container.logger.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
-        mock_gp = MagicMock()
+        mock_arango = MagicMock()
 
-        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_gp)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, mock_arango)
         assert result is False
 
     @pytest.mark.asyncio
@@ -1107,9 +1107,9 @@ class TestRunConnectorMigrationEdgeCases:
 
         await run_connector_migration(container, arango_service)
         mock_cls.assert_called_once_with(
-            arango_service,
-            config_service,
-            logger,
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger,
         )
 
     @pytest.mark.asyncio

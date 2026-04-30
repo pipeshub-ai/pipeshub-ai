@@ -141,9 +141,9 @@ class TestRunConnectorMigrationEdgeCases:
 
         await run_connector_migration(container, arango_service)
         mock_cls.assert_called_once_with(
-            arango_service,
-            config_service,
-            logger,
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger,
         )
 
     @pytest.mark.asyncio
