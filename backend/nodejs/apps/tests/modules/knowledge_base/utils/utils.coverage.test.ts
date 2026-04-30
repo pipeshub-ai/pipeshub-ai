@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import nock from 'nock'
 import {
   processUploadsInBackground,
   PlaceholderResultWithMetadata,
@@ -10,6 +11,8 @@ import {
 describe('Knowledge Base Utils - coverage', () => {
   afterEach(() => {
     sinon.restore()
+    nock.cleanAll()
+    nock.enableNetConnect()
   })
 
   describe('uploadFileToSignedUrl', () => {
@@ -83,6 +86,7 @@ describe('Knowledge Base Utils - coverage', () => {
     }
 
     beforeEach(() => {
+      nock.disableNetConnect()
       mockLogger = {
         info: sinon.stub(),
         debug: sinon.stub(),

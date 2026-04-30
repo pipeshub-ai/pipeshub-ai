@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import axios, { AxiosError } from 'axios';
+import nock from 'nock';
 import { AuthService } from '../../../../src/modules/user_management/services/auth.service';
 
 describe('AuthService', () => {
@@ -11,6 +12,7 @@ describe('AuthService', () => {
   let axiosStub: sinon.SinonStub;
 
   beforeEach(() => {
+    nock.disableNetConnect();
     mockLogger = {
       debug: sinon.stub(),
       info: sinon.stub(),
@@ -27,6 +29,8 @@ describe('AuthService', () => {
 
   afterEach(() => {
     sinon.restore();
+    nock.cleanAll();
+    nock.enableNetConnect();
   });
 
   describe('passwordMethodEnabled', () => {

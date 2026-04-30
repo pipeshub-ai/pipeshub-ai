@@ -73,6 +73,7 @@ import {
   deleteGoogleWorkspaceCredentials,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import nock from 'nock'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3277,6 +3278,15 @@ describe('ConfigurationManager Controller', () => {
   // createSmtpConfig - happy path
   // -----------------------------------------------------------------------
   describe('createSmtpConfig (happy path)', () => {
+    beforeEach(() => {
+      nock.disableNetConnect()
+    })
+
+    afterEach(() => {
+      nock.cleanAll()
+      nock.enableNetConnect()
+    })
+
     it('should encrypt and store SMTP config before calling communication backend', async () => {
       const kvs = createMockKeyValueStore()
 

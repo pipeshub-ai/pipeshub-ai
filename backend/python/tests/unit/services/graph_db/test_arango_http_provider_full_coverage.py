@@ -41,15 +41,19 @@ def connected_provider(provider):
 
 
 class TestCreateTypedRecordFromArango:
-    def test_no_type_doc_raises(self, provider):
+    def test_no_type_doc_falls_back_to_base_record(self, provider):
         record_dict = {"_key": "r1", "recordType": "FILE"}
-        with pytest.raises(ValueError, match="No type collection or no type doc"):
-            provider._create_typed_record_from_arango(record_dict, None)
+        mock_record = MagicMock()
+        with patch.object(provider, "_build_base_record", return_value=mock_record):
+            result = provider._create_typed_record_from_arango(record_dict, None)
+            assert result is mock_record
 
-    def test_unknown_record_type_raises(self, provider):
+    def test_unknown_record_type_falls_back_to_base_record(self, provider):
         record_dict = {"_key": "r1", "recordType": "UNKNOWN_TYPE"}
-        with pytest.raises(ValueError, match="No type collection or no type doc"):
-            provider._create_typed_record_from_arango(record_dict, {"some": "doc"})
+        mock_record = MagicMock()
+        with patch.object(provider, "_build_base_record", return_value=mock_record):
+            result = provider._create_typed_record_from_arango(record_dict, {"some": "doc"})
+            assert result is mock_record
 
     def test_file_record_type(self, provider):
         record_dict = {"_key": "r1", "recordType": "FILE"}
@@ -69,14 +73,16 @@ class TestCreateTypedRecordFromArango:
                 result = provider._create_typed_record_from_arango(record_dict, type_doc)
                 assert result == "mail_record"
 
-    def test_exception_in_from_arango_record_raises(self, provider):
+    def test_exception_in_from_arango_record_falls_back(self, provider):
         record_dict = {"_key": "r1", "recordType": "FILE"}
         type_doc = {"bad": "data"}
+        mock_record = MagicMock()
         with patch("app.services.graph_db.arango.arango_http_provider.RECORD_TYPE_COLLECTION_MAPPING", {"FILE": "files"}):
             with patch("app.services.graph_db.arango.arango_http_provider.FileRecord") as mock_fr:
                 mock_fr.from_arango_record.side_effect = Exception("parse error")
-                with pytest.raises(ValueError, match="Failed to create typed record for FILE"):
-                    provider._create_typed_record_from_arango(record_dict, type_doc)
+                with patch.object(provider, "_build_base_record", return_value=mock_record):
+                    result = provider._create_typed_record_from_arango(record_dict, type_doc)
+                    assert result is mock_record
 
 
 class TestGetRecordById:
