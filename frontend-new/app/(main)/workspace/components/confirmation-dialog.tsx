@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { AlertDialog, Box, Button, Flex } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ========================================
@@ -39,6 +39,13 @@ export interface ConfirmationDialogProps {
 
   /** Callback when confirm is clicked */
   onConfirm: () => void;
+
+  /**
+   * Portal container for overlay + content. Pass the host from
+   * {@link useWorkspaceDrawerNestedModalHost} when this dialog must stack above
+   * {@link WorkspaceRightPanel} (z-index ~9201); otherwise omit for default body portal.
+   */
+  container?: HTMLElement | null;
 }
 
 // ========================================
@@ -46,13 +53,11 @@ export interface ConfirmationDialogProps {
 // ========================================
 
 /**
- * ConfirmationDialog — reusable modal for confirming destructive or important actions.
+ * ConfirmationDialog — reusable modal for destructive or important actions.
  *
- * Used for:
- * - Remove user from workspace
- * - Delete group/team
- * - Cancel invite
- * - Any action requiring user confirmation
+ * When opened from inside {@link WorkspaceRightPanel}, pass `container` from
+ * `useWorkspaceDrawerNestedModalHost(open)` so the overlay sits above the drawer
+ * (same pattern as {@link InstanceManagementPanel} delete confirmation).
  */
 export function ConfirmationDialog({
   open,
@@ -66,93 +71,64 @@ export function ConfirmationDialog({
   confirmLoadingLabel = 'Removing...',
   hideConfirm = false,
   onConfirm,
+  container,
 }: ConfirmationDialogProps) {
-  const handleCancel = () => {
-    if (!isLoading) onOpenChange(false);
-  };
-
   return (
-    <Dialog.Root open={open} onOpenChange={(v) => !isLoading && onOpenChange(v)}>
-      {/* Dark overlay */}
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.5)',
-            zIndex: 999,
-            cursor: isLoading ? 'not-allowed' : 'pointer',
-          }}
-          onClick={handleCancel}
-        />
-      )}
-      <Dialog.Content
+    <AlertDialog.Root open={open} onOpenChange={(v) => !isLoading && onOpenChange(v)}>
+      <AlertDialog.Content
+        container={container ?? undefined}
         style={{
           maxWidth: '37.5rem',
-          padding: 'var(--space-5) 0',
+          padding: 'var(--space-5)',
           backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow:
             '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
-          zIndex: 1000,
-          overflow: 'hidden',
         }}
       >
-        <VisuallyHidden>
-          <Dialog.Title>{title}</Dialog.Title>
-        </VisuallyHidden>
-
-        <Flex direction="column" gap="4">
-          {/* Title + Message */}
-          <Flex
-            direction="column"
-            gap="3"
-            style={{ padding: '0 var(--space-5)' }}
+        <AlertDialog.Title style={{ color: 'var(--slate-12)' }}>{title}</AlertDialog.Title>
+        {typeof message === 'string' ? (
+          <AlertDialog.Description
+            size="2"
+            style={{ color: 'var(--slate-12)', lineHeight: '20px', marginTop: 8 }}
           >
-            <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
-              {title}
-            </Text>
-            {typeof message === 'string' ? (
-              <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
-                {message}
-              </Text>
-            ) : (
-              <Box>{message}</Box>
-            )}
-          </Flex>
-
-          {/* Action buttons */}
-          <Flex
-            justify="end"
-            gap="2"
-            style={{ padding: '0 var(--space-5)' }}
-          >
+            {message}
+          </AlertDialog.Description>
+        ) : (
+          <Box style={{ marginTop: 8, color: 'var(--slate-12)', lineHeight: '20px' }}>{message}</Box>
+        )}
+        <Flex justify="end" gap="2" mt="4">
+          <AlertDialog.Cancel>
             <Button
+              type="button"
               variant="outline"
               color="gray"
               size="2"
-              onClick={handleCancel}
               disabled={isLoading}
               style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
             >
               {hideConfirm ? 'Close' : cancelLabel}
             </Button>
-            {!hideConfirm && (
-              <LoadingButton
-                variant="solid"
-                color={confirmVariant === 'danger' ? 'red' : undefined}
-                size="2"
-                onClick={onConfirm}
-                loading={isLoading}
-                loadingLabel={confirmLoadingLabel}
-              >
-                {confirmLabel}
-              </LoadingButton>
-            )}
-          </Flex>
+          </AlertDialog.Cancel>
+          {!hideConfirm && (
+            <LoadingButton
+              type="button"
+              variant="solid"
+              color={confirmVariant === 'danger' ? 'red' : undefined}
+              size="2"
+              onClick={(e) => {
+                e.preventDefault();
+                onConfirm();
+              }}
+              loading={isLoading}
+              loadingLabel={confirmLoadingLabel}
+            >
+              {confirmLabel}
+            </LoadingButton>
+          )}
         </Flex>
-      </Dialog.Content>
-    </Dialog.Root>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
   );
 }

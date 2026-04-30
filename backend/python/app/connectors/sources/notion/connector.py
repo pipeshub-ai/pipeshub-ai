@@ -44,6 +44,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -121,6 +122,7 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
             additional_params={}
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.NOTION.value))
         .with_realtime_support(False)

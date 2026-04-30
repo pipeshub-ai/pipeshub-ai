@@ -41,6 +41,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -147,6 +148,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
                 )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.BOX.value))
         .with_realtime_support(True)

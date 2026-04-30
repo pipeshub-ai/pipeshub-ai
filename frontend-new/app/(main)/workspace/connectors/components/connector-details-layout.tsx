@@ -2,11 +2,12 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Heading, Text, Button } from '@radix-ui/themes';
+import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
+import { getConnectorInfoText } from '../utils/connector-metadata';
 
 // ========================================
 // Props
@@ -65,6 +66,7 @@ export function ConnectorDetailsLayout({
 }: ConnectorDetailsLayoutProps) {
   const { t } = useTranslation();
   const connectorName = connector?.name ?? '';
+  const connectorInfoText = getConnectorInfoText(connector);
 
   return (
     <Flex
@@ -155,6 +157,31 @@ export function ConnectorDetailsLayout({
           </Button>
         </Flex>
       </Flex>
+
+      {connectorInfoText ? (
+        <Box
+          style={{
+            padding: 'var(--space-4)',
+            borderRadius: 'var(--radius-3)',
+            border: '1px solid var(--accent-a6)',
+            backgroundColor: 'var(--accent-a2)',
+          }}
+        >
+          <Flex align="start" gap="3">
+            <MaterialIcon name="info" size={20} color="var(--accent-11)" style={{ flexShrink: 0 }} />
+            <Text
+              size="2"
+              style={{
+                color: 'var(--gray-12)',
+                lineHeight: 1.6,
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {connectorInfoText}
+            </Text>
+          </Flex>
+        </Box>
+      ) : null}
 
       {/* ── Instance list ── */}
       {isLoading ? (

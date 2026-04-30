@@ -1500,6 +1500,13 @@
         "later": "Ich mache das später",
         "startSync": "Jetzt Synchronisierung starten"
       },
+      "syncSaveConfirm": {
+        "title": "Synchronisationsprozess starten?",
+        "manualMessage": "Sie haben die manuelle Indexierung für diesen Connector aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
+        "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
+        "confirm": "Synchronisation starten",
+        "cancel": "Abbrechen"
+      },
       "selectRecords": {
         "title": "Datensätze auswählen",
         "loading": "Datensätze werden geladen…",

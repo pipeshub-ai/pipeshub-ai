@@ -41,6 +41,7 @@ from app.connectors.core.constants import (
     AuthFieldKeys,
     BatchConfig,
     ConfigPaths,
+    CONNECTOR_EMAIL_IDENTITY_INFO,
     IconPaths,
     OAuthConfigKeys,
 )
@@ -160,6 +161,7 @@ from app.utils.time_conversion import (
             ),
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.OUTLOOK.value))
         .add_documentation_link(DocumentationLink(

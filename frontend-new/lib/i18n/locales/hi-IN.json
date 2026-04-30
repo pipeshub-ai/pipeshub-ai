@@ -1498,6 +1498,13 @@
         "later": "I'll do it later",
         "startSync": "Start Syncing Now"
       },
+      "syncSaveConfirm": {
+        "title": "Start sync process?",
+        "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
+        "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
+        "confirm": "Start sync",
+        "cancel": "Cancel"
+      },
       "selectRecords": {
         "title": "Select Records",
         "loading": "Loading records…",

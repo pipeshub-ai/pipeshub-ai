@@ -28,6 +28,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import (
     AuthFieldKeys,
     CommonStrings,
+    CONNECTOR_EMAIL_IDENTITY_INFO,
     ConnectorRegistryCategories,
     IconPaths,
     OAuthConfigKeys,
@@ -170,6 +171,7 @@ from app.connectors.sources.servicenow.servicenow.constants import (
             app_categories=[ConnectorRegistryCategories.KNOWLEDGE_MANAGEMENT]
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.SERVICENOW.value))
         .with_realtime_support(False)
