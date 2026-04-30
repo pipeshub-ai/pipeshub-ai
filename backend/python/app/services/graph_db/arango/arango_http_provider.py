@@ -4338,6 +4338,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         is_external: bool = False,
         transaction: str | None = None,
     ) -> list[dict]:
+        """
+        Retrieve all organisations from the graph.
+
+        Args:
+            active: When True (default), only return organisations where
+                ``isActive == true``. When False, return all organisations
+                regardless of active state.
+            is_external: When True, only return organisations marked as
+                external (``isExternal == true``). When False (default),
+                return only internal organisations (``isExternal == false``
+                or the field is absent).
+            transaction: Optional ArangoDB transaction ID to run the query
+                within.
+
+        Returns:
+            A list of raw organisation document dicts.
+        """
         if is_external:
             external_filter = "FILTER org.isExternal == true"
         else:
