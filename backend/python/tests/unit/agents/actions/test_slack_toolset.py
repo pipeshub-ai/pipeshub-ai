@@ -3690,13 +3690,16 @@ class TestApplyResolutionToMessage:
         slack = _build_slack()
         out = slack._apply_resolution_to_message(
             {"files": [{"user": "U1", "created": 1700000000, "timestamp": 1700000000}]},
-            {"U1": "alice"},
-            {"U1": "a@x.com"},
+            {},
+            {},
         )
-        # Note: U1 is too short to be _is_user_id, but apply_resolution doesn't
-        # filter — it just looks up. Since U1 is NOT in id_to_name, it stays raw.
-        # Use a valid-length id instead.
+        # `_apply_resolution_to_message` doesn't filter via `_is_user_id` —
+        # it just looks up. With an empty mapping, the file user stays raw
+        # (no `user_display_name` injected) and only the ISO date siblings
+        # are added.
         assert out["files"][0].get("user_display_name") is None
+        assert out["files"][0]["created_date"] == "2023-11-14T22:13:20Z"
+        assert out["files"][0]["timestamp_date"] == "2023-11-14T22:13:20Z"
 
     def test_files_full_resolution(self):
         slack = _build_slack()
@@ -3824,8 +3827,10 @@ class TestEnrichReactable:
                 {"name": "tada", "users": ["U1AAAAAAA", "B01BOT123"]}
             ],
         })
-        # No display_name added when resolution fails.
-        assert "user_display_name" not in out
+        # `_resolve_user_ids` falls back to `{display_name: uid}` on failure
+        # so callers always get a usable label — the raw ID surfaces as the
+        # display name for both the top-level user and the reaction list.
+        assert out["user_display_name"] == "U1AAAAAAA"
         assert out["reactions"][0]["user_display_names"] == [
             "U1AAAAAAA", "B01BOT123",
         ]
