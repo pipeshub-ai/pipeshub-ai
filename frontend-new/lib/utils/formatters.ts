@@ -66,6 +66,18 @@ export function stripMarkdownAndCitations(text: string): string {
 }
 
 /**
+ * Turn snake_case identifiers into title-style labels (e.g. shared_drive → Shared Drive).
+ */
+export function formatSnakeCaseTitle(value: string): string {
+  if (!value) return '';
+  return value
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
  * Format chatMode for display label (capitalize first letter).
  * Handles API form `agent:<strategy>` from agent streams.
  */
@@ -82,10 +94,7 @@ export function formatChatMode(chatMode?: string): string {
           : strategy;
     return `Agent (${label})`;
   }
-  return chatMode
-    .split('_')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
+  return formatSnakeCaseTitle(chatMode);
 }
 
 /**

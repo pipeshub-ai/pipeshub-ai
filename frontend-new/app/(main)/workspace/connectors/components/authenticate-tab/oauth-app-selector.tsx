@@ -52,8 +52,9 @@ export function OAuthAppSelector() {
   const panelConnectorId = useConnectorsStore((s) => s.panelConnectorId);
   const connectorConfig = useConnectorsStore((s) => s.connectorConfig);
   const selectedAuthType = useConnectorsStore((s) => s.selectedAuthType);
-  const formAuth = useConnectorsStore((s) => s.formData.auth);
-  const selectedId = formAuth.oauthConfigId as string | undefined;
+  const selectedId = useConnectorsStore(
+    (s) => s.formData.auth.oauthConfigId as string | undefined
+  );
   const setAuthFormValue = useConnectorsStore((s) => s.setAuthFormValue);
   const oauthConfigError = useConnectorsStore((s) => s.formErrors.oauthConfigId);
 
@@ -177,14 +178,13 @@ export function OAuthAppSelector() {
 
   const selectedIdTrimmed = (selectedId ?? '').trim();
 
+  /** Name comes from persisted GET /config auth only — form `auth` has oauthConfigId + credentials, not instance name. */
   const unlistedRegistrationLabel = useMemo(() => {
-    const name =
-      resolveOAuthInstanceName(formAuth as OAuthInstanceNameSource) ||
-      resolveOAuthInstanceName(
-        connectorConfig?.config?.auth as OAuthInstanceNameSource | undefined
-      );
+    const name = resolveOAuthInstanceName(
+      connectorConfig?.config?.auth as OAuthInstanceNameSource | undefined
+    );
     return name ? `${name} (linked)` : 'Linked OAuth registration';
-  }, [formAuth, connectorConfig?.config?.auth]);
+  }, [connectorConfig?.config?.auth]);
 
   const showUnlistedRegistrationItem = useMemo(() => {
     if (!selectedIdTrimmed || loading) return false;

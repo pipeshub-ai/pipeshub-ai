@@ -17,6 +17,7 @@ import type {
   ConnectorStatsResponse,
   RecordsStatus,
 } from '../../types';
+import { formatSnakeCaseTitle } from '@/lib/utils/formatters';
 
 // ========================================
 // Props
@@ -312,7 +313,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
                 }}
               >
                 <Text size="2" style={{ color: 'var(--gray-12)' }}>
-                  {rt.recordType.replace(/_/g, ' ')}
+                  {formatSnakeCaseTitle(rt.recordType)}
                 </Text>
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
                   {rt.total}

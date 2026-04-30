@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { apiClient } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
 
@@ -38,59 +38,17 @@ export function SettingsTab({
   const syncInterval = getSyncIntervalLabel(config ?? undefined);
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
 
-  const [creatorName, setCreatorName] = useState<string | null>(null);
-  const [creatorAvatar, setCreatorAvatar] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!instance.createdBy) {
-      setCreatorName(null);
-      setCreatorAvatar(null);
-      return;
-    }
-    let cancelled = false;
-
-    async function fetchCreator() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName =
-            (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId =
-            (user.id as string) ?? (user._id as string) ?? instance.createdBy;
-          setCreatorName(fullName.trim() || null);
-          if (userId) {
-            setCreatorAvatar(`/api/v1/users/${userId}/dp`);
-          } else {
-            setCreatorAvatar(null);
-          }
-        } else {
-          setCreatorName(null);
-          setCreatorAvatar(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setCreatorName(null);
-          setCreatorAvatar(null);
-        }
-      }
-    }
-
-    void fetchCreator();
-    return () => {
-      cancelled = true;
-    };
-  }, [instance.createdBy, instance._key]);
+  const creatorEntry = useUserDirectoryEntry(instance.createdBy);
+  const creatorNameFromDirectory =
+    creatorEntry?.fullName.trim() ? creatorEntry.fullName.trim() : null;
+  const creatorAvatarUrl = creatorEntry?.resolvedUserId
+    ? `/api/v1/users/${creatorEntry.resolvedUserId}/dp`
+    : null;
 
   const displayCreatorName =
-    creatorName ?? instance.enabledBy?.name ?? null;
+    creatorNameFromDirectory ?? instance.enabledBy?.name ?? null;
   const displayCreatorAvatar =
-    creatorAvatar ?? instance.enabledBy?.avatar ?? undefined;
+    creatorAvatarUrl ?? instance.enabledBy?.avatar ?? undefined;
 
   const removeConnectorButton = onRequestRemoveConnector ? (
     <Button

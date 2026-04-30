@@ -5,8 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { apiClient } from '@/lib/api';
 import { formatRelativeTime, formatEnabledDate } from '@/lib/utils/formatters';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { SyncStatusPill } from './sync-status';
 import {
   InfoRow,
@@ -22,7 +22,6 @@ import {
   deriveSyncStatusState,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
-  getRecordsSelectedInfo,
   getTotalRecords,
   getSyncedRecords,
   getFailedRecords,
@@ -79,47 +78,38 @@ export function InstanceCard({
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
 
-  // ── Fetch user info (identity for personal, enabled-by for all) ──
+  const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
+
+  // ── Apply directory entry → identity (personal) + enabled-by row ──
   useEffect(() => {
     setIdentityIconError(false);
     if (scope === 'personal') {
       setIdentityIcon(null);
     }
-    if (!instance.updatedBy) return;
-    let cancelled = false;
-
-    async function fetchUserData() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.updatedBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.updatedBy;
-
-          if (scope === 'personal' && userId) {
-            setIdentityIcon(`/api/v1/users/${userId}/dp`);
-          }
-
-          // "Viraj Gawde" → "Viraj G"
-          const parts = fullName.trim().split(/\s+/);
-          const displayName =
-            parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
-          setEnabledByName(displayName);
-          if (userId) setEnabledByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        // Silently fail
-      }
+    if (!instance.updatedBy) {
+      setIdentityIcon(null);
+      setEnabledByName(null);
+      setEnabledByAvatar(null);
+      return;
+    }
+    if (!updatedByEntry) {
+      setEnabledByName(null);
+      setEnabledByAvatar(null);
+      return;
     }
 
-    fetchUserData();
-    return () => { cancelled = true; };
-  }, [scope, instance.updatedBy, instance._key]);
+    const { fullName, resolvedUserId } = updatedByEntry;
+    if (scope === 'personal' && resolvedUserId) {
+      setIdentityIcon(`/api/v1/users/${resolvedUserId}/dp`);
+    }
+
+    // "Viraj Gawde" → "Viraj G"
+    const parts = fullName.trim().split(/\s+/);
+    const displayName =
+      parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
+    setEnabledByName(displayName);
+    if (resolvedUserId) setEnabledByAvatar(`/api/v1/users/${resolvedUserId}/dp`);
+  }, [scope, instance.updatedBy, updatedByEntry]);
 
   // ── Derived data ──
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
@@ -128,7 +118,6 @@ export function InstanceCard({
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
   const syncInterval = getSyncIntervalLabel(config);
-  const recordsSelected = getRecordsSelectedInfo(config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
   const enabledDate = formatEnabledDate(instance.createdAtTimestamp);
 
@@ -303,14 +292,6 @@ export function InstanceCard({
                   {enabledByName}
                 </Text>
               </Flex>
-              {enabledDate && (
-                <>
-                  <DotSeparator />
-                  <Text size="2" style={{ color: 'var(--gray-11)' }}>
-                    {enabledDate}
-                  </Text>
-                </>
-              )}
             </Flex>
           </Flex>
         ) : (

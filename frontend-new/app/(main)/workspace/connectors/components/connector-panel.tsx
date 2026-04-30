@@ -396,7 +396,7 @@ export function ConnectorPanel() {
       const first = Object.keys(fieldErrs)[0];
       requestAnimationFrame(() => {
         document
-          .querySelector(`[data-ph-auth-field="${first}"]`)
+          .querySelector(`[data-ph-field="${first}"]`)
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
       return false;
@@ -583,13 +583,11 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
-      const firstInvalid =
-        syncCustomFields.find((f) => syncFieldErrors[f.name])?.name ??
-        Object.keys(syncFieldErrors)[0];
+      const firstInvalid = syncCustomFields.find((f) => syncFieldErrors[f.name])?.name;
       if (firstInvalid) {
         requestAnimationFrame(() => {
           document
-            .querySelector(`[data-ph-auth-field="${firstInvalid}"]`)
+            .querySelector(`[data-ph-field="${firstInvalid}"]`)
             ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
       }
