@@ -90,9 +90,9 @@ function extractSearchParameter(searchParam: unknown): string {
   return searchParam;
 }
 
-export const buildAIFailureResponseMessage = (): IMessage => ({
+export const buildAIFailureResponseMessage = (content?: string): IMessage => ({
   messageType: 'error',
-  content: 'Error Generating Response, Please try again',
+  content: content ?? 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
   createdAt: new Date(),
   updatedAt: new Date(),
