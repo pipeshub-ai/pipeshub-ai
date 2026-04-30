@@ -257,7 +257,7 @@ export default function AuthenticationPage() {
             size="2"
             onClick={() =>
               window.open(
-                'https://docs.pipeshub.com/workspace/authentication',
+                'https://docs.pipeshub.com/auth',
                 '_blank',
               )
             }

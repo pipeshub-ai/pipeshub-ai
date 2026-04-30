@@ -22,10 +22,10 @@ interface ConfigurePanelProps {
 // ── Per-method display info ────────────────────────────────
 
 const METHOD_DOC_URLS: Record<ConfigurableMethod, string> = {
-  google: 'https://support.google.com/cloud/answer/6158849',
-  microsoft: 'https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app',
-  samlSso: 'https://en.wikipedia.org/wiki/Security_Assertion_Markup_Language',
-  oauth: 'https://oauth.net/2/',
+  google: 'https://docs.pipeshub.com/auth/google',
+  microsoft: 'https://docs.pipeshub.com/auth/microsoft-azureAd',
+  samlSso: 'https://docs.pipeshub.com/auth/saml',
+  oauth: 'https://docs.pipeshub.com/auth',
 };
 
 const METHOD_ICONS: Record<ConfigurableMethod, string> = {
