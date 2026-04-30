@@ -15,9 +15,6 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
-from app.migrations.delete_old_agents_templates_migration import (
-    run_delete_old_agents_templates_migration,
-)
 from app.migrations.drive_to_drive_workspace_migration import (
     run_drive_to_drive_workspace_migration,
 )
@@ -322,15 +319,27 @@ async def initialize_container(container) -> bool:
     config_service = container.config_service()
     migrations_key = config_node_constants.MIGRATIONS.value
 
-    async def get_migration_state() -> dict:
-        state = await config_service.get_config(migrations_key, default={})
-        return state or {}
+    async def get_migration_state() -> dict | None:
+        """
+        Returns the migration state dict, {} for fresh setup, or None if
+        the config store is unreachable.
+        """
+        state = await config_service.get_config(migrations_key, default=None)
+        if isinstance(state, dict):
+            return state
+
+        return None
 
     def migration_completed(state: dict, name: str) -> bool:
         return bool(state.get(name))
 
     async def mark_migration_completed(name: str, result: dict) -> None:
         state = await get_migration_state()
+        if state is None:
+            logger.warning(
+                "⚠️ Cannot mark migration as completed — config store unreachable"
+            )
+            return
         state[name] = True
         await config_service.set_config(migrations_key, state)
 
@@ -378,6 +387,9 @@ async def initialize_container(container) -> bool:
         logger.info("✅ Container initialization completed successfully")
 
         migration_state = await get_migration_state()
+        if migration_state is None:
+            logger.info("⏭️ Skipping all flag-based migrations (migration state unavailable)")
+            return True
 
         # Run All Team migration (DB-agnostic, runs for both ArangoDB and Neo4j)
         try:
@@ -546,25 +558,6 @@ async def initialize_container(container) -> bool:
             else:
                 error_msg = result_rg_app_edge.get("message", "Unknown error")
                 logger.error(f"❌ Record Group -> App edge migration failed: {error_msg}")
-
-        if migration_completed(migration_state, "deleteOldAgentsTemplates"):
-            logger.info("⏭️ Delete Old Agents and Templates migration already completed, skipping.")
-        else:
-            logger.info("🔄 Running Delete Old Agents and Templates migration...")
-            result_delete_agents_templates = await run_delete_old_agents_templates_migration(container)
-            if result_delete_agents_templates.get("success"):
-                agents_deleted = result_delete_agents_templates.get("agents_deleted", 0)
-                templates_deleted = result_delete_agents_templates.get("templates_deleted", 0)
-                total_edges_deleted = result_delete_agents_templates.get("total_edges_deleted", 0)
-                logger.info(
-                    f"✅ Delete Old Agents and Templates migration completed: "
-                    f"{agents_deleted} agents, {templates_deleted} templates, "
-                    f"{total_edges_deleted} edges deleted"
-                )
-                await mark_migration_completed("deleteOldAgentsTemplates", result_delete_agents_templates)
-            else:
-                error_msg = result_delete_agents_templates.get("message", "Unknown error")
-                logger.error(f"❌ Delete Old Agents and Templates migration failed: {error_msg}")
 
         return True
 

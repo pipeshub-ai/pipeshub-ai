@@ -98,8 +98,12 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             client = await self._get_client()
 
-            # Convert value to string if it's not already
-            value_str = str(value) if not isinstance(value, str) else value
+            # Serialize to a JSON-compatible string.  str() on dicts/lists
+            # produces Python repr (single quotes) which is not valid JSON.
+            if isinstance(value, str):
+                value_str = value
+            else:
+                value_str = json.dumps(value, default=str)
             logger.debug("📋 Serialized value: %s", value_str)
 
             # Check if key exists

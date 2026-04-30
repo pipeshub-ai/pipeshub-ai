@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import os
@@ -221,8 +222,19 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         else encrypted_value
                     )
 
-                    # Parse value if it's not already a dict
-                    result = json.loads(value) if not isinstance(value, dict) else value
+                    # Parse value — already-deserialized types pass through
+                    if isinstance(value, (dict, list, int, float, bool)):
+                        result = value
+                    elif not needs_decryption:
+                        try:
+                            result = json.loads(value)
+                        except (json.JSONDecodeError, TypeError):
+                            # Legacy fallback: unencrypted values may have been
+                            # stored via Python's str() (single quotes,
+                            # True/False/None) instead of json.dumps().
+                            result = ast.literal_eval(value)
+                    else:
+                        result = json.loads(value)
 
                     return result
 
