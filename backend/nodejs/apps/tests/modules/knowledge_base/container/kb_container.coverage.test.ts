@@ -136,6 +136,35 @@ describe('KnowledgeBaseContainer - coverage', () => {
         expect(error.message).to.include('RecordsEventProducer start failed')
       }
     })
+
+    it('should log unknown error when non-Error is thrown during initialize', async () => {
+      sinon.stub(KeyValueStoreService, 'getInstance').throws({ reason: 'non-error object' } as any)
+      const loggerErrorStub = sinon.stub((KnowledgeBaseContainer as any).logger, 'error')
+
+      const cmConfig = {
+        host: 'localhost',
+        port: 2379,
+        storeType: 'etcd' as const,
+        algorithm: 'aes-256-cbc',
+        secretKey: 'test-secret-key-32-chars-long!!',
+      }
+
+      const appConfig = {
+        jwtSecret: 'test-jwt-secret',
+        scopedJwtSecret: 'test-scoped-jwt-secret',
+        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+      } as any
+
+      try {
+        await KnowledgeBaseContainer.initialize(cmConfig as any, appConfig)
+        expect.fail('Should have thrown')
+      } catch {
+        expect(loggerErrorStub.called).to.be.true
+        expect(loggerErrorStub.lastCall.args[1]).to.deep.equal({
+          error: 'Unknown error',
+        })
+      }
+    })
   })
 
   describe('dispose - additional coverage', () => {
@@ -189,6 +218,23 @@ describe('KnowledgeBaseContainer - coverage', () => {
       ;(KnowledgeBaseContainer as any).instance = mockContainer
       await KnowledgeBaseContainer.dispose()
       // Should not throw, error handled gracefully
+    })
+
+    it('should log unknown error when non-Error is thrown during disposal', async () => {
+      const loggerErrorStub = sinon.stub((KnowledgeBaseContainer as any).logger, 'error')
+
+      const mockContainer = {
+        isBound: sinon.stub().throws({ reason: 'non-error object' } as any),
+        get: sinon.stub(),
+      }
+
+      ;(KnowledgeBaseContainer as any).instance = mockContainer
+      await KnowledgeBaseContainer.dispose()
+
+      expect(loggerErrorStub.called).to.be.true
+      expect(loggerErrorStub.lastCall.args[1]).to.deep.equal({
+        error: 'Unknown error',
+      })
     })
 
     it('should do nothing when instance is null', async () => {
