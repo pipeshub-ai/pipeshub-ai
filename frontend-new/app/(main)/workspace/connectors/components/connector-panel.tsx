@@ -60,6 +60,20 @@ function oauthAppSelectionError(
   return null;
 }
 
+/** Scroll the connector panel body to the first invalid sync custom field (matches auth step UX). */
+function scrollToFirstSyncCustomFieldError(
+  syncCustomFields: { name: string }[],
+  syncFieldErrors: Record<string, string>
+) {
+  const name = syncCustomFields.find((f) => syncFieldErrors[f.name])?.name;
+  if (!name) return;
+  requestAnimationFrame(() => {
+    document
+      .querySelector(`[data-ph-field="${name}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
 // ========================================
 // Component
 // ========================================
@@ -583,14 +597,7 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
-      const firstInvalid = syncCustomFields.find((f) => syncFieldErrors[f.name])?.name;
-      if (firstInvalid) {
-        requestAnimationFrame(() => {
-          document
-            .querySelector(`[data-ph-field="${firstInvalid}"]`)
-            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-      }
+      scrollToFirstSyncCustomFieldError(syncCustomFields, syncFieldErrors);
       return;
     }
 
@@ -693,6 +700,7 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
+      scrollToFirstSyncCustomFieldError(syncCustomFields, syncFieldErrors);
       return;
     }
 
