@@ -133,27 +133,27 @@ class TestRunConnectorMigrationEdgeCases:
         mock_migration = AsyncMock()
         mock_cls.return_value = mock_migration
         logger = MagicMock()
-        graph_provider = MagicMock()
+        arango_service = MagicMock()
         config_service = MagicMock()
         container = MagicMock()
         container.logger.return_value = logger
-        container.graph_provider = AsyncMock(return_value=graph_provider)
         container.config_service.return_value = config_service
 
-        await run_connector_migration(container)
+        await run_connector_migration(container, arango_service)
         mock_cls.assert_called_once_with(
-            graph_provider=graph_provider,
-            config_service=config_service,
-            logger=logger,
+            arango_service,
+            config_service,
+            logger,
         )
 
     @pytest.mark.asyncio
-    async def test_logs_error_on_exception(self):
+    @patch("app.containers.connector.ConnectorMigrationService")
+    async def test_logs_error_on_exception(self, mock_cls):
         logger = MagicMock()
+        mock_cls.side_effect = RuntimeError("boom")
         container = MagicMock()
         container.logger.return_value = logger
-        container.graph_provider = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await run_connector_migration(container)
+        result = await run_connector_migration(container, MagicMock())
         assert result is False
         logger.error.assert_called()
 
@@ -165,9 +165,8 @@ class TestRunFilesToRecordsMigrationEdgeCases:
         mock_mig.return_value = {"success": False}
         container = MagicMock()
         container.logger.return_value = MagicMock()
-        container.graph_provider = AsyncMock(return_value=MagicMock())
         container.config_service.return_value = MagicMock()
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(container, MagicMock())
         assert result is False
 
     @pytest.mark.asyncio
@@ -182,9 +181,8 @@ class TestRunFilesToRecordsMigrationEdgeCases:
         }
         container = MagicMock()
         container.logger.return_value = logger
-        container.graph_provider = AsyncMock(return_value=MagicMock())
         container.config_service.return_value = MagicMock()
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(container, MagicMock())
         assert result is True
         assert any("10 record(s) updated" in str(c) for c in logger.info.call_args_list)
 
@@ -200,9 +198,8 @@ class TestRunDriveMigrationEdgeCases:
         }
         container = MagicMock()
         container.logger.return_value = MagicMock()
-        container.graph_provider = AsyncMock(return_value=MagicMock())
         container.config_service.return_value = MagicMock()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, MagicMock())
         assert result is True
 
     @pytest.mark.asyncio
@@ -211,9 +208,8 @@ class TestRunDriveMigrationEdgeCases:
         mock_mig.return_value = {"success": False}
         container = MagicMock()
         container.logger.return_value = MagicMock()
-        container.graph_provider = AsyncMock(return_value=MagicMock())
         container.config_service.return_value = MagicMock()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, MagicMock())
         assert result is False
 
     @pytest.mark.asyncio
@@ -226,9 +222,8 @@ class TestRunDriveMigrationEdgeCases:
         }
         container = MagicMock()
         container.logger.return_value = MagicMock()
-        container.graph_provider = AsyncMock(return_value=MagicMock())
         container.config_service.return_value = MagicMock()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(container, MagicMock())
         assert result is True
 
 

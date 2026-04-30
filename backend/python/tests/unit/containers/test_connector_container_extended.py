@@ -55,7 +55,9 @@ class TestRunFilesToRecordsMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is True
 
     @pytest.mark.asyncio
@@ -69,7 +71,9 @@ class TestRunFilesToRecordsMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is True
 
     @pytest.mark.asyncio
@@ -83,17 +87,21 @@ class TestRunFilesToRecordsMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    @patch("app.containers.connector.run_files_to_records_migration", side_effect=Exception("DB error"))
+    async def test_exception_returns_false(self, _mock_migration):
         from app.containers.connector import run_files_to_records_migration_wrapper
 
         container = _mock_container()
-        container.graph_provider = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await run_files_to_records_migration_wrapper(container)
+        result = await run_files_to_records_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is False
 
 
@@ -119,7 +127,9 @@ class TestRunDriveToDriveWorkspaceMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is True
 
     @pytest.mark.asyncio
@@ -136,7 +146,9 @@ class TestRunDriveToDriveWorkspaceMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is True
 
     @pytest.mark.asyncio
@@ -152,19 +164,26 @@ class TestRunDriveToDriveWorkspaceMigrationWrapper:
         }
 
         container = _mock_container()
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    @patch(
+        "app.containers.connector.run_drive_to_drive_workspace_migration",
+        side_effect=Exception("DB error"),
+    )
+    async def test_exception_returns_false(self, _mock_migration):
         from app.containers.connector import (
             run_drive_to_drive_workspace_migration_wrapper,
         )
 
         container = _mock_container()
-        container.graph_provider = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await run_drive_to_drive_workspace_migration_wrapper(container)
+        result = await run_drive_to_drive_workspace_migration_wrapper(
+            container, container.arango_service.return_value
+        )
         assert result is False
 
 
@@ -223,17 +242,21 @@ class TestRunConnectorMigration:
         mock_migration_cls.return_value = mock_service
 
         container = _mock_container()
-        result = await run_connector_migration(container)
+        result = await run_connector_migration(
+            container, container.arango_service.return_value
+        )
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    @patch("app.containers.connector.ConnectorMigrationService", side_effect=Exception("DB error"))
+    async def test_exception_returns_false(self, _mock_cls):
         from app.containers.connector import run_connector_migration
 
         container = _mock_container()
-        container.graph_provider = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await run_connector_migration(container)
+        result = await run_connector_migration(
+            container, container.arango_service.return_value
+        )
         assert result is False
 
 

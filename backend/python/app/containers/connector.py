@@ -153,10 +153,20 @@ class ConnectorAppContainer(BaseAppContainer):
         ]
     )
 
-async def run_connector_migration(container) -> bool:
+async def run_connector_migration(
+    container, arango_service: BaseArangoService
+) -> bool:
     """
     Run connector migration from name-based to UUID-based system.
     This should be called once during system initialization.
+
+    Args:
+        container: Connector DI container (logger, config_service).
+        arango_service: Resolved ``BaseArangoService`` from ``initialize_container``
+            (same instance as ``await container.arango_service()``). Avoid resolving
+            ``graph_provider`` via ``await container.graph_provider()`` after
+            ``data_store()`` has run — that can re-await an exhausted DI ``Resource``
+            coroutine.
 
     Returns:
         bool: True if migration completed successfully or was not needed, False on error
@@ -166,15 +176,11 @@ async def run_connector_migration(container) -> bool:
     try:
         logger.info("🔍 Checking if Connector UUID migration is needed...")
 
-        # Get required services
-        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Create migration service instance
         migration_service = ConnectorMigrationService(
-            graph_provider=graph_provider,
-            config_service=config_service,
-            logger=logger
+            arango_service, config_service, logger
         )
 
         # Run the migration
@@ -189,10 +195,18 @@ async def run_connector_migration(container) -> bool:
         # Migration is idempotent and can be retried
         return False
 
-async def run_files_to_records_migration_wrapper(container) -> bool:
+async def run_files_to_records_migration_wrapper(
+    container, arango_service: BaseArangoService
+) -> bool:
     """
     Run files to records MD5/Size migration.
     This should be called once during system initialization.
+
+    Args:
+        container: Connector DI container.
+        arango_service: Connected ``BaseArangoService`` from ``initialize_container``
+            (same instance as ``await container.arango_service()``). This migration uses
+            the python-arango ``db`` API; ``IGraphDBProvider`` (HTTP) is not compatible.
 
     Returns:
         bool: True if migration completed successfully or was not needed, False on error
@@ -202,13 +216,11 @@ async def run_files_to_records_migration_wrapper(container) -> bool:
     try:
         logger.info("🔍 Checking if Files to Records MD5/Size migration is needed...")
 
-        # Get required services
-        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_files_to_records_migration(
-            graph_provider=graph_provider,
+            arango_service=arango_service,
             config_service=config_service,
             logger=logger
         )
@@ -238,10 +250,16 @@ async def run_files_to_records_migration_wrapper(container) -> bool:
         # Migration is idempotent and can be retried
         return False
 
-async def run_drive_to_drive_workspace_migration_wrapper(container) -> bool:
+async def run_drive_to_drive_workspace_migration_wrapper(
+    container, arango_service: BaseArangoService
+) -> bool:
     """
     Run drive to drive workspace migration.
     This should be called once during system initialization.
+
+    Args:
+        container: Connector DI container.
+        arango_service: Connected ``BaseArangoService`` (python-arango ``db`` API).
 
     Returns:
         bool: True if migration completed successfully or was not needed, False on error
@@ -251,13 +269,11 @@ async def run_drive_to_drive_workspace_migration_wrapper(container) -> bool:
     try:
         logger.info("🔍 Checking if Drive to Drive Workspace migration is needed...")
 
-        # Get required services
-        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_drive_to_drive_workspace_migration(
-            graph_provider=graph_provider,
+            arango_service=arango_service,
             config_service=config_service,
             logger=logger
         )
@@ -421,12 +437,16 @@ async def initialize_container(container) -> bool:
             else:
                 logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
         logger.info("🔄 Running Connector UUID migration...")
-        connector_migration_success = await run_connector_migration(container)
+        connector_migration_success = await run_connector_migration(
+            container, arango_service
+        )
         if not connector_migration_success:
             logger.warning("⚠️ Connector UUID migration had issues but continuing initialization")
 
         logger.info("🔄 Running Files to Records MD5/Size migration...")
-        files_to_records_migration_success = await run_files_to_records_migration_wrapper(container)
+        files_to_records_migration_success = await run_files_to_records_migration_wrapper(
+            container, arango_service
+        )
         if not files_to_records_migration_success:
             logger.warning("⚠️ Files to Records MD5/Size migration had issues but continuing initialization")
 
@@ -436,7 +456,11 @@ async def initialize_container(container) -> bool:
             logger.info("⏭️ Drive to Drive Workspace migration already completed, skipping.")
         else:
             logger.info("🔄 Running Drive to Drive Workspace migration...")
-            drive_to_drive_workspace_migration_success = await run_drive_to_drive_workspace_migration_wrapper(container)
+            drive_to_drive_workspace_migration_success = (
+                await run_drive_to_drive_workspace_migration_wrapper(
+                    container, arango_service
+                )
+            )
             if drive_to_drive_workspace_migration_success:
                 await mark_migration_completed("driveToDriveWorkspace", {})
             else:
