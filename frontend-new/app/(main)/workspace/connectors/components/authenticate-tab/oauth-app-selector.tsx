@@ -18,8 +18,18 @@ type OAuthListRow = {
   appGroup?: string;
 };
 
+/** List rows, form `auth`, and GET `/config` `auth` use camelCase or snake_case per API contract. */
+type OAuthInstanceNameSource = Pick<
+  OAuthListRow,
+  'oauthInstanceName' | 'oauth_instance_name'
+>;
+
+function resolveOAuthInstanceName(source: OAuthInstanceNameSource | undefined): string {
+  return (source?.oauthInstanceName || source?.oauth_instance_name || '').trim();
+}
+
 function rowLabel(row: OAuthListRow): string {
-  return row.oauthInstanceName || row.oauth_instance_name || 'Unnamed OAuth app';
+  return resolveOAuthInstanceName(row) || 'Unnamed OAuth app';
 }
 
 function oauthConfigPayload(full: Record<string, unknown>): Record<string, unknown> {
@@ -168,17 +178,11 @@ export function OAuthAppSelector() {
   const selectedIdTrimmed = (selectedId ?? '').trim();
 
   const unlistedRegistrationLabel = useMemo(() => {
-    const fa = formAuth as Record<string, unknown>;
-    const fromForm =
-      (typeof fa.oauthInstanceName === 'string' && fa.oauthInstanceName.trim()) ||
-      (typeof fa.oauth_instance_name === 'string' && fa.oauth_instance_name.trim()) ||
-      '';
-    const auth = connectorConfig?.config?.auth as Record<string, unknown> | undefined;
-    const fromConfig =
-      (typeof auth?.oauthInstanceName === 'string' && auth.oauthInstanceName.trim()) ||
-      (typeof auth?.oauth_instance_name === 'string' && auth.oauth_instance_name.trim()) ||
-      '';
-    const name = fromForm || fromConfig;
+    const name =
+      resolveOAuthInstanceName(formAuth as OAuthInstanceNameSource) ||
+      resolveOAuthInstanceName(
+        connectorConfig?.config?.auth as OAuthInstanceNameSource | undefined
+      );
     return name ? `${name} (linked)` : 'Linked OAuth registration';
   }, [formAuth, connectorConfig?.config?.auth]);
 

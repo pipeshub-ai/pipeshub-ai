@@ -70,7 +70,7 @@ export function InstanceCard({
   const { t } = useTranslation();
   // ── Org/User identity state ──
   const [identityName, setIdentityName] = useState<string>(instance.name);
-  // ── Personal header: optional creator avatar (title always uses instance name) ──
+  // ── Personal header: optional user avatar from updatedBy (title uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
 
