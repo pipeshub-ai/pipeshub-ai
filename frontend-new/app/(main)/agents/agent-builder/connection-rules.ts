@@ -308,7 +308,7 @@ export function applyAutoConnectToEdges(
   } else if (st === 'web-search') {
     proposals.push({
       source: droppedNode.id,
-      target: agent.id,
+      target: primaryAgent.id,
       sourceHandle: 'results',
       targetHandle: 'toolsets',
     });
