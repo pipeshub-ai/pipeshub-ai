@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useCallback, useContext } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
+import { AlertDialog, Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { WorkspaceRightPanel, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { WorkspaceRightPanel, useWorkspaceDrawerNestedModalHost, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components/destructive-typed-confirmation-dialog';
 import { toast } from '@/lib/store/toast-store';
@@ -246,6 +246,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
   const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isEditMode = !!editingConfig;
+  const { panelOpen } = useBotsStore();
 
   const [name, setName] = useState('');
   const [botToken, setBotToken] = useState('');
@@ -254,6 +255,10 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
   const [showBotToken, setShowBotToken] = useState(false);
   const [showSigningSecret, setShowSigningSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(panelOpen);
 
   // Pre-fill when editing
   useEffect(() => {
@@ -306,6 +311,24 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
       setIsSaving(false);
     }
   }, [isValid, isSaving, name, botToken, signingSecret, agentId, isEditMode, editingConfig, onSaved]);
+
+  const handleDelete = useCallback(async () => {
+    if (!editingConfig || isDeleting) return;
+
+    setIsDeleting(true);
+    try {
+      await BotsApi.deleteSlackBotConfig(editingConfig.id);
+      toast.success(t('workspace.bots.toasts.deleted'), {
+        description: t('workspace.bots.toasts.deletedDescription', { name: editingConfig.name }),
+      });
+      setDeleteDialogOpen(false);
+      onSaved();
+    } catch {
+      toast.error(t('workspace.bots.toasts.deleteError'));
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [editingConfig, isDeleting, onSaved]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -410,22 +433,32 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
         {isEditMode && (
           <Flex
             direction="column"
-            gap="2"
+            gap="3"
             style={{
               marginTop: 16,
               paddingTop: 16,
               borderTop: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-3)',
+              border: '1px solid var(--red-a6)',
+              backgroundColor: 'var(--red-a2)',
+              padding: 'var(--space-3)',
             }}
           >
+
+            <Text size="2" weight="bold" color="red">
+              {t('workspace.bots.dangerZone', 'Danger zone')}
+            </Text>
+            <Text size="2" color="gray" style={{ maxWidth: 420 }}>
+              {t('workspace.bots.deleteDescription', 'Permanently delete this bot and revoke its credentials. This cannot be undone.')}
+            </Text>
             <Button
-              variant="outline"
+              variant="soft"
               color="red"
               size="2"
-              onClick={onRequestDelete}
+              onClick={() => setDeleteDialogOpen(true)}
               style={{ cursor: 'pointer', alignSelf: 'flex-start' }}
             >
-              <MaterialIcon name="delete" size={16} color="var(--red-a11)" />
-              {t('workspace.bots.configPanel.deleteBot')}
+              {t('workspace.bots.deleteBot', 'Delete Bot')}
             </Button>
           </Flex>
         )}
@@ -466,6 +499,42 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
           {isEditMode ? t('action.save') : t('action.create')}
         </LoadingButton>
       </Flex>
+
+      {/* ── Delete confirmation dialog ── */}
+      {nestedModalHost && (
+        <AlertDialog.Root
+          open={deleteDialogOpen}
+          onOpenChange={(open) => {
+            if (!open && isDeleting) return;
+            setDeleteDialogOpen(open);
+          }}
+        >
+          <AlertDialog.Content container={nestedModalHost} style={{ maxWidth: 440 }}>
+            <AlertDialog.Title>
+              {t('workspace.bots.deleteDialogTitle', 'Delete bot?')}
+            </AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              {t('workspace.bots.deleteDialogDescription', 'Are you sure you want to delete')}{' '}
+              <Text weight="bold">&quot;{editingConfig?.name}&quot;</Text>?{' '}
+              {t('workspace.bots.deleteDialogWarning', 'This cannot be undone.')}
+            </AlertDialog.Description>
+            <Flex gap="3" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray" disabled={isDeleting}>
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <Button
+                color="red"
+                loading={isDeleting}
+                onClick={() => void handleDelete()}
+              >
+                {t('workspace.bots.deleteBot', 'Delete Bot')}
+              </Button>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      )}
     </Flex>
   );
 }

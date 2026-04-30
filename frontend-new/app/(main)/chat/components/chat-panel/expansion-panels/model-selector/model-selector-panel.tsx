@@ -12,8 +12,8 @@ import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
 } from '@/chat/constants';
-import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { toIconPath } from '@/lib/utils/formatters';
+import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
+import { resolveLlmProviderIconPath, AGENT_LLM_FALLBACK_ICON } from '@/lib/utils/llm-provider-icons';
 import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
 
 interface ModelSelectorPanelProps {
@@ -28,26 +28,13 @@ interface ModelSelectorPanelProps {
 }
 
 function ModelLogo({ provider }: { provider: string }) {
-  const [hasError, setHasError] = useState(false);
-
-  if (hasError) {
-    return (
-      <ChatStarIcon
-        size={20}
-        color="var(--accent-11)"
-        style={{ borderRadius: 'var(--radius-1)' }}
-      />
-    );
-  }
-
   return (
-    <Image
-      src={toIconPath('logos', provider)}
-      alt={provider}
-      width={20}
-      height={20}
-      onError={() => setHasError(true)}
-      style={{ flexShrink: 0, borderRadius: 'var(--radius-1)' }}
+    <ThemeableAssetIcon
+      src={resolveLlmProviderIconPath(provider)}
+      fallbackSrc={AGENT_LLM_FALLBACK_ICON}
+      size={20}
+      color="var(--slate-12)"
+      variant="flat"
     />
   );
 }

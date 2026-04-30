@@ -209,6 +209,12 @@ export interface FilePreviewRendererProps {
    * source rather than the internal blob URL.
    */
   webUrl?: string;
+  /**
+   * Whether a downloadable file is available for this record.
+   * When false, the "Download File" button is hidden in UnknownPreview
+   * (e.g. connector records that exist only as a web URL with no stored file).
+   */
+  previewRenderable?: boolean;
 }
 
 /**

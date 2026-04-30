@@ -17,7 +17,7 @@ const PDFRenderer = dynamic(() => import('./pdf-renderer').then((m) => m.PDFRend
 import { getRendererType } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
 
-export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, onHighlightClick, webUrl }: FilePreviewRendererProps) {
+export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
   const rendererType = getRendererType(fileType || '', fileName);
 
   switch (rendererType) {
@@ -42,6 +42,6 @@ export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pag
     case 'document':
       return <DocumentPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} fileBlob={fileBlob} />;
     default:
-      return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} webUrl={webUrl} />;
+      return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} webUrl={webUrl} previewRenderable={previewRenderable} />;
   }
 }
