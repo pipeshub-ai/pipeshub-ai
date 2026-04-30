@@ -49,7 +49,6 @@ interface InstanceCardProps {
   /** Per-instance stats from GET /knowledgeBase/stats/{id} */
   stats?: ConnectorStatsResponse['data'];
   onManage?: (instance: ConnectorInstance) => void;
-  onStartSync?: (instance: ConnectorInstance) => void;
   /** POST …/toggle — flips sync `isActive` */
   onToggleSyncActive?: (instance: ConnectorInstance) => void | Promise<void>;
   onChevronClick?: (instance: ConnectorInstance) => void;
@@ -65,7 +64,6 @@ export function InstanceCard({
   config,
   stats,
   onManage,
-  onStartSync,
   onToggleSyncActive,
   onChevronClick,
 }: InstanceCardProps) {
@@ -87,13 +85,13 @@ export function InstanceCard({
     if (scope === 'personal') {
       setIdentityIcon(null);
     }
-    if (!instance.createdBy) return;
+    if (!instance.updatedBy) return;
     let cancelled = false;
 
     async function fetchUserData() {
       try {
         const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
+          userIds: [instance.updatedBy],
         });
         if (cancelled) return;
 
@@ -101,7 +99,7 @@ export function InstanceCard({
         if (users.length > 0) {
           const user = users[0] as Record<string, unknown>;
           const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
+          const userId = (user.id as string) ?? (user._id as string) ?? instance.updatedBy;
 
           if (scope === 'personal' && userId) {
             setIdentityIcon(`/api/v1/users/${userId}/dp`);
@@ -121,7 +119,7 @@ export function InstanceCard({
 
     fetchUserData();
     return () => { cancelled = true; };
-  }, [scope, instance.createdBy, instance._key]);
+  }, [scope, instance.updatedBy, instance._key]);
 
   // ── Derived data ──
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
@@ -237,7 +235,6 @@ export function InstanceCard({
             totalRecords={getTotalRecords(stats)}
             failedRecords={getFailedRecords(stats)}
             unsupportedRecords={getUnsupportedRecords(stats)}
-            onStartSync={() => onStartSync?.(instance)}
           />
 
           {/* Chevron */}
@@ -254,12 +251,6 @@ export function InstanceCard({
 
         {/* ── Separator ── */}
         <div style={{ height: 1, backgroundColor: 'var(--gray-a3)' }} />
-
-        {/* ── Records Selected ── */}
-        <InfoRow
-          label={recordsSelected?.label ?? t('workspace.connectors.instanceCard.recordsSelected')}
-          value={recordsSelected ? String(recordsSelected.count) : '-'}
-        />
 
         {/* ── Sync Strategy ── */}
         {syncStrategy ? (

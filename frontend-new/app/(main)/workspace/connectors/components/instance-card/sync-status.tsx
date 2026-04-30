@@ -4,7 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { PillDivider, StartSyncButton } from './primitives';
+import { PillDivider } from './primitives';
 import type { InstanceSyncStatus } from '../../types';
 
 // ========================================
@@ -17,7 +17,6 @@ interface SyncStatusPillProps {
   totalRecords: number | null;
   failedRecords: number | null;
   unsupportedRecords: number | null;
-  onStartSync?: () => void;
 }
 
 // ========================================
@@ -46,7 +45,6 @@ export function SyncStatusPill({
   totalRecords,
   failedRecords,
   unsupportedRecords,
-  onStartSync,
 }: SyncStatusPillProps) {
   const { t } = useTranslation();
 
@@ -64,7 +62,14 @@ export function SyncStatusPill({
   }
 
   if (status === 'ready_to_sync') {
-    return <StartSyncButton onClick={onStartSync} />;
+    return (
+      <Flex align="center" gap="2" style={{ ...pillStyle, padding: '0 var(--space-3)' }}>
+        <MaterialIcon name="sync" size={14} color="var(--gray-11)" />
+        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', whiteSpace: 'nowrap' }}>
+          {syncedRecords ?? 0}/{totalRecords ?? 0}
+        </Text>
+      </Flex>
+    );
   }
 
   if (status === 'detecting_records') {

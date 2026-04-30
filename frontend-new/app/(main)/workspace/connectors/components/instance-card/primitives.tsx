@@ -77,49 +77,6 @@ export function PillDivider() {
 }
 
 // ========================================
-// StartSyncButton
-// ========================================
-
-/** Green "Sync Records" CTA — shown in the Ready to Sync state */
-export function StartSyncButton({ onClick }: { onClick?: () => void }) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        height: 32,
-        padding: '0 var(--space-3)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: isHovered ? 'var(--jade-10)' : 'var(--jade-9)',
-        color: 'white',
-        fontSize: 14,
-        fontWeight: 500,
-        lineHeight: '20px',
-        cursor: 'pointer',
-        transition: 'background-color 150ms ease',
-        whiteSpace: 'nowrap',
-        flexShrink: 0,
-      }}
-    >
-      <MaterialIcon name="sync" size={20} color="white" />
-      Sync Records
-    </button>
-  );
-}
-
-// ========================================
 // SyncButton
 // ========================================
 

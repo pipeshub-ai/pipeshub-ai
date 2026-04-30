@@ -1554,14 +1554,12 @@
         "manageConfig": "Manage Configuration"
       },
       "overview": {
-        "readyBanner": "Instance configured and ready to sync!",
-        "readyBannerSub": "Records are ready to be synced.",
-        "startSyncLoading": "Starting...",
-        "startSync": "Start Syncing Now",
         "progressPercent": "{{n}}% Complete",
         "recordsStatus": "Records Status",
         "reindexFailed": "Reindex Failed",
         "syncButton": "Sync",
+        "refreshStatsSuccess": "रिकॉर्ड स्थिति अपडेट हो गई",
+        "refreshStatsError": "रिकॉर्ड स्थिति रीफ़्रेश नहीं हो सकी",
         "statTotal": "Total",
         "statTotalSub": "Total records",
         "statFailedSub": "Errors (API / permission issues)",
@@ -1579,8 +1577,7 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available",
-        "personalRecordsIndexed": "Personal Records Indexed"
+        "noRecordTypes": "No record types available"
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -1589,10 +1586,11 @@
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",
-        "importDate": "Import start date",
+        "createdBySection": "द्वारा बनाया गया",
+        "creator": "निर्माता",
+        "createdOn": "निर्माण तिथि",
         "syncSettings": "Sync Settings",
-        "syncStrategy": "Sync Strategy",
-        "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
+        "syncStrategySettingsHint": "आप <bold>{{manageConfig}}</bold> पर जाकर सिंक रणनीति बदल सकते हैं।",
         "syncInterval": "Sync Interval",
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },

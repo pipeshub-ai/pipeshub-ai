@@ -1553,14 +1553,12 @@
         "manageConfig": "Manage Configuration"
       },
       "overview": {
-        "readyBanner": "Instance configured and ready to sync!",
-        "readyBannerSub": "Records are ready to be synced.",
-        "startSyncLoading": "Starting...",
-        "startSync": "Start Syncing Now",
         "progressPercent": "{{n}}% Complete",
         "recordsStatus": "Records Status",
         "reindexFailed": "Reindex Failed",
         "syncButton": "Sync",
+        "refreshStatsSuccess": "Estado de registros actualizado",
+        "refreshStatsError": "No se pudo actualizar el estado de los registros",
         "statTotal": "Total",
         "statTotalSub": "Total records",
         "statFailedSub": "Errors (API / permission issues)",
@@ -1578,8 +1576,7 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available",
-        "personalRecordsIndexed": "Personal Records Indexed"
+        "noRecordTypes": "No record types available"
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -1588,10 +1585,11 @@
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",
-        "importDate": "Import start date",
+        "createdBySection": "Creado por",
+        "creator": "Creador",
+        "createdOn": "Fecha de creación",
         "syncSettings": "Sync Settings",
-        "syncStrategy": "Sync Strategy",
-        "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
+        "syncStrategySettingsHint": "Puede cambiar la estrategia de sincronización yendo a <bold>{{manageConfig}}</bold>.",
         "syncInterval": "Sync Interval",
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },

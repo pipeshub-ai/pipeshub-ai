@@ -491,5 +491,4 @@ export interface InstanceOverview {
   recordsStatus: RecordsStatus;
   indexedRecords: IndexedRecord[];
   totalSelected: number;
-  personalRecordsIndexed?: number;
 }

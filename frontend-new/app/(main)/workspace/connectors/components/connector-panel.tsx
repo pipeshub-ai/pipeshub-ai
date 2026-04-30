@@ -2,9 +2,8 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
+import { Flex, Tabs, Box } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
@@ -584,6 +583,16 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
+      const firstInvalid =
+        syncCustomFields.find((f) => syncFieldErrors[f.name])?.name ??
+        Object.keys(syncFieldErrors)[0];
+      if (firstInvalid) {
+        requestAnimationFrame(() => {
+          document
+            .querySelector(`[data-ph-auth-field="${firstInvalid}"]`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }
       return;
     }
 
@@ -768,31 +777,6 @@ export function ConnectorPanel() {
     isOAuthPopupBusy,
   });
 
-  // ── Header ───────────────────────────────────────────────────
-
-  const headerActions = (
-    <Flex align="center" gap="1">
-      {connectorSchema?.documentationLinks?.[0]?.url && (
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={() => {
-            const url = connectorSchema?.documentationLinks?.[0]?.url;
-            if (url) window.open(url, '_blank', 'noopener,noreferrer');
-          }}
-          style={{ cursor: 'pointer' }}
-        >
-          <MaterialIcon
-            name="open_in_new"
-            size={16}
-            color="var(--gray-11)"
-          />
-        </IconButton>
-      )}
-    </Flex>
-  );
-
   // ── Render panel icon as img (connector icon) ────────────────
 
   const panelIcon = panelConnector ? (
@@ -808,7 +792,6 @@ export function ConnectorPanel() {
       }}
       title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
-      headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
       primaryLabel={footerConfig.primaryLabel}
       primaryDisabled={footerConfig.primaryDisabled}
