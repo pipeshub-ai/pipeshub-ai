@@ -214,12 +214,34 @@ class GoogleDrive:
                     # and return all files (client-side filtering will be needed)
                     logger.warning(f"Query contains unsupported operator: {query}. Ignoring query parameter.")
                     formatted_query = None
-                elif not any(op in query.lower() for op in ['name contains', 'mimetype', 'modifiedtime', 'createdtime', '=', 'trashed']):
+                elif not any(op in query.lower() for op in ['name contains', 'fullText contains', 'mimetype', 'modifiedtime', 'createdtime', '=', 'trashed', 'in parents', 'in owners', 'in readers', 'in writers', 'sharedwithme', 'starred']):
                     # If it's a simple text query, wrap it in name contains
                     formatted_query = f'name contains "{query}"'
                 else:
                     # Clean up the query - remove spaces around operators
                     formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
+
+            # `driveId` only accepts an actual shared-drive ID. `"root"` is a *fileId*
+            # alias for My Drive's root, not a drive ID — drop it (and any empty value)
+            # so we don't trip Google's "driveId must be set iff corpora=drive" rule.
+            if drive_id in (None, "", "root"):
+                drive_id = None
+
+            # Google requires `corpora=drive` iff `driveId` is set. If the caller passed
+            # an explicit driveId with a different corpora, normalize to `drive`.
+            if drive_id and (corpora is None or corpora.lower() != "drive"):
+                corpora = "drive"
+
+            # Conversely, `corpora=drive` without a driveId is invalid — fall back to
+            # the broader `allDrives` scope.
+            if corpora and corpora.lower() == "drive" and not drive_id:
+                corpora = "allDrives"
+
+            # `includeItemsFromAllDrives` / `supportsAllDrives` are required whenever
+            # the request scopes a shared drive or all drives.
+            scopes_shared_drives = bool(drive_id) or (
+                corpora is not None and any(c in corpora.lower() for c in ("drive", "alldrives"))
+            )
 
             # Use GoogleDriveDataSource method
             files = await self.client.files_list(
@@ -229,7 +251,9 @@ class GoogleDrive:
                 pageSize=page_size,
                 pageToken=page_token,
                 q=formatted_query,
-                spaces=spaces
+                spaces=spaces,
+                includeItemsFromAllDrives=True if scopes_shared_drives else None,
+                supportsAllDrives=True if scopes_shared_drives else None,
             )
 
             # Get files list
