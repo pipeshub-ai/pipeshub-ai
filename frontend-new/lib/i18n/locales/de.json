@@ -1187,7 +1187,7 @@
         "redirectHeading": "Redirect-URIs",
         "redirectHelper": "Geben Sie die Redirect-URIs für Ihre Anwendung ein. Mindestens eine ist erforderlich.",
         "removeRedirectAria": "Redirect-URI entfernen",
-        "redirectUriLimitNote": "Sie können bis zu 5 Redirect-URIs hinzufügen.",
+        "redirectUriLimitNote": "Sie können bis zu 10 Redirect-URIs hinzufügen.",
         "addRedirectUri": "Redirect-URI hinzufügen",
         "homepageLabel": "Homepage-URL",
         "urlPlaceholder": "https://",

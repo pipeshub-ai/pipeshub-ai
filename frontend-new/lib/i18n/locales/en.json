@@ -1226,7 +1226,7 @@
         "redirectHeading": "Redirect URIs",
         "redirectHelper": "Enter the redirect URIs for your application. At least one is required.",
         "removeRedirectAria": "Remove redirect URI",
-        "redirectUriLimitNote": "You can add up to 5 redirect URIs.",
+        "redirectUriLimitNote": "You can add up to 10 redirect URIs.",
         "addRedirectUri": "Add Redirect URI",
         "homepageLabel": "Homepage URL",
         "urlPlaceholder": "https://",

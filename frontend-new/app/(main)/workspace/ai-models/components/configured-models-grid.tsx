@@ -332,7 +332,7 @@ function PopoverMenuItem({
 }: {
   icon: string;
   label: string;
-  onClick: () => void;
+  onClick: () => void | Promise<void>;  
   color?: string;
   disabled?: boolean;
   loading?: boolean;
