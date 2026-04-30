@@ -139,7 +139,14 @@ describe('KnowledgeBaseContainer - coverage', () => {
 
     it('should log unknown error when non-Error is thrown during initialize', async () => {
       sinon.stub(KeyValueStoreService, 'getInstance').throws({ reason: 'non-error object' } as any)
-      const loggerErrorStub = sinon.stub((KnowledgeBaseContainer as any).logger, 'error')
+      const logger = (KnowledgeBaseContainer as any).logger
+      // Logger.getInstance() is a singleton shared across the process; another
+      // test file in the same mocha worker (e.g. app.test.ts) may stub
+      // Logger.prototype.error. Unwrap any pre-existing stub before re-stubbing.
+      if (typeof (logger.error as any).restore === 'function') {
+        (logger.error as any).restore()
+      }
+      const loggerErrorStub = sinon.stub(logger, 'error')
 
       const cmConfig = {
         host: 'localhost',
@@ -221,7 +228,11 @@ describe('KnowledgeBaseContainer - coverage', () => {
     })
 
     it('should log unknown error when non-Error is thrown during disposal', async () => {
-      const loggerErrorStub = sinon.stub((KnowledgeBaseContainer as any).logger, 'error')
+      const logger = (KnowledgeBaseContainer as any).logger
+      if (typeof (logger.error as any).restore === 'function') {
+        (logger.error as any).restore()
+      }
+      const loggerErrorStub = sinon.stub(logger, 'error')
 
       const mockContainer = {
         isBound: sinon.stub().throws({ reason: 'non-error object' } as any),
