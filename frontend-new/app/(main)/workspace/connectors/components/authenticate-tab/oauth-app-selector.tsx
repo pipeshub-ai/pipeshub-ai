@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Flex, Text, Select, Spinner, Box } from '@radix-ui/themes';
+import { Flex, Text, Select, Spinner } from '@radix-ui/themes';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ConnectorsApi } from '../../api';
@@ -39,8 +39,11 @@ export function OAuthAppSelector() {
 
   const connectorSchema = useConnectorsStore((s) => s.connectorSchema);
   const panelConnector = useConnectorsStore((s) => s.panelConnector);
+  const panelConnectorId = useConnectorsStore((s) => s.panelConnectorId);
+  const connectorConfig = useConnectorsStore((s) => s.connectorConfig);
   const selectedAuthType = useConnectorsStore((s) => s.selectedAuthType);
-  const selectedId = useConnectorsStore((s) => s.formData.auth.oauthConfigId as string | undefined);
+  const formAuth = useConnectorsStore((s) => s.formData.auth);
+  const selectedId = formAuth.oauthConfigId as string | undefined;
   const setAuthFormValue = useConnectorsStore((s) => s.setAuthFormValue);
   const oauthConfigError = useConnectorsStore((s) => s.formErrors.oauthConfigId);
 
@@ -49,6 +52,7 @@ export function OAuthAppSelector() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const connectorType = panelConnector?.type ?? '';
+  const isExistingConnector = Boolean(panelConnectorId);
 
   const oauthFieldNames = useMemo(() => {
     if (!connectorSchema?.auth) return [];
@@ -139,23 +143,59 @@ export function OAuthAppSelector() {
     populateFromConfig,
   ]);
 
-  /** Saved app id is invalid when the server returns no registrations for this type. */
+  /**
+   * Clear stale oauthConfigId only when creating a new instance and the server reports zero
+   * registrations. In edit mode, keep the saved id even if the list is empty (deleted app,
+   * transient API, or permissions).
+   */
   useEffect(() => {
+    if (panelConnectorId) return;
     if (selectedAuthType !== 'OAUTH' || loading || oauthApps.length > 0) return;
-    // Do not clear on a fetch error — the list may be temporarily unavailable.
     if (fetchError) return;
     const id = useConnectorsStore.getState().formData.auth.oauthConfigId as string | undefined;
     if (id?.trim()) {
       setAuthFormValue('oauthConfigId', undefined);
     }
-  }, [selectedAuthType, loading, oauthApps.length, fetchError, setAuthFormValue]);
+  }, [
+    panelConnectorId,
+    selectedAuthType,
+    loading,
+    oauthApps.length,
+    fetchError,
+    setAuthFormValue,
+  ]);
+
+  const selectedIdTrimmed = (selectedId ?? '').trim();
+
+  const unlistedRegistrationLabel = useMemo(() => {
+    const fa = formAuth as Record<string, unknown>;
+    const fromForm =
+      (typeof fa.oauthInstanceName === 'string' && fa.oauthInstanceName.trim()) ||
+      (typeof fa.oauth_instance_name === 'string' && fa.oauth_instance_name.trim()) ||
+      '';
+    const auth = connectorConfig?.config?.auth as Record<string, unknown> | undefined;
+    const fromConfig =
+      (typeof auth?.oauthInstanceName === 'string' && auth.oauthInstanceName.trim()) ||
+      (typeof auth?.oauth_instance_name === 'string' && auth.oauth_instance_name.trim()) ||
+      '';
+    const name = fromForm || fromConfig;
+    return name ? `${name} (linked)` : 'Linked OAuth registration';
+  }, [formAuth, connectorConfig?.config?.auth]);
+
+  const showUnlistedRegistrationItem = useMemo(() => {
+    if (!selectedIdTrimmed || loading) return false;
+    return !oauthApps.some((a) => a._id === selectedIdTrimmed);
+  }, [selectedIdTrimmed, loading, oauthApps]);
+
+  const showOAuthSelect =
+    loading || oauthApps.length > 0 || showUnlistedRegistrationItem;
 
   const radixValue = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return undefined;
-    if (selectedId) return selectedId;
-    if (isAdmin === true) return MANUAL_VALUE;
+    if (selectedIdTrimmed) return selectedIdTrimmed;
+    if (isAdmin === true && !isExistingConnector) return MANUAL_VALUE;
     return undefined;
-  }, [selectedAuthType, selectedId, isAdmin]);
+  }, [selectedAuthType, selectedIdTrimmed, isAdmin, isExistingConnector]);
 
   const handleValueChange = (value: string) => {
     if (value === MANUAL_VALUE) {
@@ -182,24 +222,29 @@ export function OAuthAppSelector() {
 
   if (selectedAuthType !== 'OAUTH' || !panelConnector) return null;
 
-  const oauthAppDescription = (() => {
-    if (loading) {
-      return 'Loading saved OAuth apps for this connector…';
-    }
-    if (oauthApps.length === 0) {
-      if (isProfileInitialized && isAdmin === false) {
-        return 'No OAuth apps are registered yet. Ask an administrator to add one in workspace connector settings.';
-      }
-      if (isAdmin === true) {
-        return 'No saved OAuth apps for this connector yet. Enter client credentials in the fields below to use a new OAuth app.';
-      }
-      return 'Enter OAuth client credentials below, or pick a saved app once one is available.';
-    }
-    if (isAdmin === true) {
-      return 'Pick an existing OAuth app to reuse its credentials, or choose Create new and enter credentials below.';
-    }
-    return 'Select which OAuth app this connector instance should use.';
-  })();
+  /** Only when the list is empty: avoids duplicating the main helper under this section (index). */
+  const oauthAppAuxiliaryDescription =
+    !loading && !fetchError && oauthApps.length === 0
+      ? (() => {
+          if (showUnlistedRegistrationItem) {
+            if (isAdmin === true) {
+              return isExistingConnector
+                ? 'This instance is linked to an OAuth registration that does not appear in the list. Choose another saved app below or keep the current link.'
+                : 'This instance is linked to an OAuth registration that does not appear in the list. Choose another app below, use Create new, or keep the current link.';
+            }
+            return 'This instance is linked to an OAuth registration that does not appear in the list. You can switch once your administrator adds more saved apps.';
+          }
+          if (isProfileInitialized && isAdmin === false) {
+            return 'No OAuth apps are registered yet. Ask an administrator to add one in workspace connector settings.';
+          }
+          if (isAdmin === true) {
+            return isExistingConnector
+              ? 'No other saved OAuth apps are listed for this connector. You can keep using the linked registration if shown above, or ask an administrator to add more.'
+              : 'No saved OAuth apps for this connector yet. Enter client credentials in the fields below to use a new OAuth app.';
+          }
+          return 'Enter OAuth client credentials below, or pick a saved app once one is available.';
+        })()
+      : null;
 
   return (
     <Flex direction="column" gap="3" style={{ width: '100%' }}>
@@ -207,9 +252,11 @@ export function OAuthAppSelector() {
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           OAuth app
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55, maxWidth: '100%' }}>
-          {oauthAppDescription}
-        </Text>
+        {oauthAppAuxiliaryDescription ? (
+          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55, maxWidth: '100%' }}>
+            {oauthAppAuxiliaryDescription}
+          </Text>
+        ) : null}
       </Flex>
 
       {fetchError && (
@@ -225,7 +272,7 @@ export function OAuthAppSelector() {
             Loading OAuth configurations…
           </Text>
         </Flex>
-      ) : oauthApps.length > 0 ? (
+      ) : showOAuthSelect ? (
         <Flex direction="column" gap="1" style={{ width: '100%' }}>
           <Select.Root value={radixValue} onValueChange={handleValueChange}>
             <Select.Trigger
@@ -239,21 +286,30 @@ export function OAuthAppSelector() {
                 minWidth: 0,
                 alignItems: 'center',
               }}
-              placeholder={isAdmin === true ? 'Select OAuth app or create new…' : 'Select an OAuth app (required)…'}
+              placeholder={
+                isAdmin === true
+                  ? isExistingConnector
+                    ? 'Select OAuth app…'
+                    : 'Select OAuth app or create new…'
+                  : 'Select an OAuth app (required)…'
+              }
             />
             <Select.Content
               position="popper"
               style={{ zIndex: 10000 }}
               container={panelBodyPortal ?? undefined}
             >
-              {isAdmin === true && (
+              {isAdmin === true && !isExistingConnector ? (
                 <Select.Item value={MANUAL_VALUE}>Create new OAuth app</Select.Item>
-              )}
+              ) : null}
               {oauthApps.map((app) => (
                 <Select.Item key={app._id} value={app._id}>
                   {rowLabel(app)}
                 </Select.Item>
               ))}
+              {showUnlistedRegistrationItem ? (
+                <Select.Item value={selectedIdTrimmed}>{unlistedRegistrationLabel}</Select.Item>
+              ) : null}
             </Select.Content>
           </Select.Root>
           {oauthConfigError ? (
@@ -263,163 +319,6 @@ export function OAuthAppSelector() {
           ) : null}
         </Flex>
       ) : null}
-    </Flex>
-  );
-}
-
-// ========================================
-// OAuth app in use (edit mode — no changing registration)
-// ========================================
-
-type LinkedOAuthDetails = {
-  appTitle: string;
-  manual?: boolean;
-};
-
-/**
- * After an instance exists, the OAuth app binding is fixed. Resolve registration id from saved
- * config (including flat `config.auth` from API), fetch app metadata + client credentials when exposed.
- */
-export function OAuthAppInUseReadonly() {
-  const panelConnector = useConnectorsStore((s) => s.panelConnector);
-  const panelConnectorId = useConnectorsStore((s) => s.panelConnectorId);
-  const selectedAuthType = useConnectorsStore((s) => s.selectedAuthType);
-  const formOAuthConfigId = useConnectorsStore((s) => s.formData.auth.oauthConfigId as string | undefined);
-  const connectorConfig = useConnectorsStore((s) => s.connectorConfig);
-
-  const oauthConfigId = useMemo(() => {
-    const fromForm = formOAuthConfigId?.trim();
-    if (fromForm) return fromForm;
-    const auth = connectorConfig?.config?.auth as { oauthConfigId?: string } | undefined;
-    return typeof auth?.oauthConfigId === 'string' ? auth.oauthConfigId.trim() : '';
-  }, [formOAuthConfigId, connectorConfig?.config?.auth]);
-
-  const savedInstanceName = useMemo(() => {
-    const auth = connectorConfig?.config?.auth as { oauthInstanceName?: string } | undefined;
-    return typeof auth?.oauthInstanceName === 'string' ? auth.oauthInstanceName.trim() : '';
-  }, [connectorConfig?.config?.auth]);
-
-  const connectorType = panelConnector?.type ?? '';
-  const [loading, setLoading] = useState(false);
-  const [details, setDetails] = useState<LinkedOAuthDetails | null>(null);
-
-  useEffect(() => {
-    if (!panelConnectorId || selectedAuthType !== 'OAUTH' || !connectorType) {
-      setLoading(false);
-      setDetails(null);
-      return;
-    }
-
-    if (!oauthConfigId) {
-      setLoading(false);
-      setDetails({
-        appTitle: 'Manual OAuth credentials',
-        manual: true,
-      });
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-
-    const applyFromFullDoc = (full: Record<string, unknown>): LinkedOAuthDetails => {
-      const nameFromApi =
-        (typeof full.oauthInstanceName === 'string' && full.oauthInstanceName.trim()) ||
-        (typeof full.oauth_instance_name === 'string' && full.oauth_instance_name.trim()) ||
-        '';
-      const appTitle = nameFromApi || savedInstanceName || oauthConfigId;
-      return { appTitle };
-    };
-
-    const run = async () => {
-      try {
-        const full = await ConnectorsApi.getOAuthConfig(connectorType, oauthConfigId);
-        if (cancelled) return;
-        if (full && typeof full === 'object' && Object.keys(full).length > 0) {
-          setDetails(applyFromFullDoc(full));
-          return;
-        }
-      } catch {
-        /* fall through to list */
-      }
-
-      try {
-        const res = await ConnectorsApi.listOAuthConfigs(connectorType, 1, 200);
-        if (cancelled) return;
-        const apps = (res.oauthConfigs ?? []) as OAuthListRow[];
-        const app = apps.find((a) => a._id === oauthConfigId);
-        if (app) {
-          setDetails({
-            appTitle: rowLabel(app),
-          });
-          return;
-        }
-      } catch {
-        /* handled below */
-      }
-
-      if (!cancelled) {
-        setDetails({
-          appTitle: savedInstanceName || 'OAuth registration',
-        });
-      }
-    };
-
-    void run().finally(() => {
-      if (!cancelled) setLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [panelConnectorId, selectedAuthType, connectorType, oauthConfigId, savedInstanceName]);
-
-  if (!panelConnectorId || selectedAuthType !== 'OAUTH') return null;
-
-  const credentialSurface = {
-    padding: '10px 12px',
-    borderRadius: 'var(--radius-2)',
-    border: '1px solid var(--olive-4)',
-    background: 'var(--color-surface)',
-    width: '100%',
-    boxSizing: 'border-box' as const,
-  };
-
-  return (
-    <Flex direction="column" gap="3" style={{ width: '100%' }}>
-      <Flex direction="column" gap="1">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          OAuth app in use
-        </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-          This instance is tied to one OAuth registration. It cannot be switched from this screen.
-        </Text>
-      </Flex>
-
-      {loading ? (
-        <Flex align="center" gap="2" style={credentialSurface}>
-          <Spinner />
-          <Text size="2" color="gray">
-            Loading OAuth app…
-          </Text>
-        </Flex>
-      ) : details?.manual ? (
-        <Box style={{ ...credentialSurface, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {details.appTitle}
-          </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-            Not linked to a saved OAuth app registration. Use the credential fields below (from the
-            connector schema).
-          </Text>
-        </Box>
-      ) : (
-        <Box style={{ ...credentialSurface, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', wordBreak: 'break-word' }}>
-            {details?.appTitle ?? '—'}
-          </Text>
-        </Box>
-      )}
     </Flex>
   );
 }

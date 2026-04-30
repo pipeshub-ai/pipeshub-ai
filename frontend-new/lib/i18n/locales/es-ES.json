@@ -1517,6 +1517,8 @@
         "credentialsSubtext": "Introduce los detalles de autenticación de {{name}}",
         "oauthCreateHelperAdmin": "Si existen apps OAuth guardadas, elige una arriba o elige «Crear nueva app OAuth» e introduce las credenciales de cliente abajo. Registra primero esta URL de redirección en tu IdP.",
         "oauthCreateHelperNonAdmin": "Selecciona una app OAuth guardada registrada por tu administrador. No introduzcas secretos de cliente aquí. Registra la URL de redirección en el IdP si lo exige tu organización.",
+        "oauthEditHelperAdmin": "Elige arriba una app OAuth guardada. Si cambias a otra app y guardas los cambios, vuelve a iniciar sesión en la pestaña Autorizar.",
+        "oauthEditHelperNonAdmin": "Elige arriba una app OAuth guardada (tu administrador puede ofrecer varias). Si cambias a otra app y guardas los cambios, vuelve a iniciar sesión en la pestaña Autorizar.",
         "oauthCredentialsSubtextAdmin": "Introduce o revisa credenciales de cliente (nuevo registro o app guardada elegida arriba).",
         "oauthCredentialsSubtextNonAdmin": "Se utiliza la app OAuth seleccionada en esta instancia. Los secretos de cliente los gestionan los administradores; no es necesario introducirlos aquí.",
         "redirectUrlDescription": "Añade esta URL exacta a la lista de redirecciones permitidas de tu proveedor de identidad.",
