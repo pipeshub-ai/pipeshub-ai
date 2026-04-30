@@ -48,10 +48,6 @@ function parseSamlMetadata(xmlText: string): SamlParseResult {
 
   const result: Record<string, string> = {};
 
-  // Entity ID
-  const entityId = entityDescriptor.getAttribute('entityID')?.trim();
-  if (entityId) result.entityId = entityId;
-
   // SSO entry point — prefer HTTP-POST, fall back to HTTP-Redirect
   try {
     const ssoPost = doc.querySelector('SingleSignOnService[Binding$="HTTP-POST"]');
@@ -63,22 +59,6 @@ function parseSamlMetadata(xmlText: string): SamlParseResult {
         return { values: null, errorKind: 'invalid-url' };
       }
       if (location) result.entryPoint = location;
-    }
-  } catch {
-    return { values: null, errorKind: 'malformed' };
-  }
-
-  // Logout URL
-  try {
-    const sloEl = doc.querySelector(
-      'SingleLogoutService[Binding$="HTTP-POST"], SingleLogoutService[Binding$="HTTP-Redirect"]',
-    );
-    if (sloEl) {
-      const location = sloEl.getAttribute('Location') ?? '';
-      if (location && !isValidHttpUrl(location)) {
-        return { values: null, errorKind: 'invalid-url' };
-      }
-      if (location) result.logoutUrl = location;
     }
   } catch {
     return { values: null, errorKind: 'malformed' };

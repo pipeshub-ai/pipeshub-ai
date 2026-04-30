@@ -266,21 +266,6 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
       },
       {
         type: 'text',
-        key: 'entityId',
-        label: 'Entity ID',
-        labelSuffix: '(optional)',
-        placeholder: 'https://your-app.example.com',
-        helperText: 'The service provider entity ID (defaults to your app URL if empty)',
-      },
-      {
-        type: 'text',
-        key: 'logoutUrl',
-        label: 'Logout URL',
-        labelSuffix: '(optional)',
-        placeholder: 'https://your-idp.example.com/logout',
-      },
-      {
-        type: 'text',
         key: 'samlPlatform',
         label: 'Provider Name',
         labelSuffix: '(optional)',
@@ -319,9 +304,7 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
         certificate: config?.certificate ?? '',
         emailKey:
           config?.emailKey ??
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
-        entityId: config?.entityId ?? '',
-        logoutUrl: config?.logoutUrl ?? '',
+          'nameID',
         samlPlatform: config?.samlPlatform ?? '',
         enableJit: config?.enableJit ?? true,
       };
@@ -333,8 +316,6 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
         certificate: String(values.certificate).trim(),
         emailKey: String(values.emailKey).trim(),
         samlPlatform: String(values.samlPlatform).trim() || undefined,
-        logoutUrl: String(values.logoutUrl).trim() || undefined,
-        entityId: String(values.entityId).trim() || undefined,
         enableJit: Boolean(values.enableJit),
       });
     },
