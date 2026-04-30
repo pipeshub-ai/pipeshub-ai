@@ -6348,7 +6348,7 @@ async def _get_oauth_configs_from_etcd(
     """
     config_path = _get_oauth_config_path(connector_type)
     # Use cache for faster retrieval (cache is enabled by default)
-    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=True)
+    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=False)
     return oauth_configs if isinstance(oauth_configs, list) else []
 
 
