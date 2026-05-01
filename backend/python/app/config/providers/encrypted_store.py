@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import hashlib
 import json
@@ -202,8 +203,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 # Encrypt the value
                 store_value = self.encryption_service.encrypt(value_json)
             else:
-                # Pass raw value directly — the underlying store serializer handles encoding
-                store_value = value
+                # Pass the JSON-serialized string so the underlying store
+                # stores valid JSON (not Python repr with single quotes).
+                store_value = value_json
 
             self.logger.debug("Encrypted value for key %s", key)
 
@@ -267,10 +269,24 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         else encrypted_value
                     )
 
-                    # Parse value if it's not already a dict
-                    result = (
-                        json.loads(value) if not isinstance(value, dict) else value
-                    )
+                    # Parse value — already-deserialized types pass through
+                    if isinstance(value, (dict, list, int, float)):
+                        result = value
+                    elif not needs_decryption:
+                        try:
+                            result = json.loads(value)
+                        except (json.JSONDecodeError, TypeError):
+                            try:
+                                # Legacy fallback: unencrypted values may have been
+                                # stored via Python's str() (single quotes,
+                                # True/False/None) instead of json.dumps().
+                                # Read-only: the next create_key() call will
+                                # overwrite with proper JSON, upgrading in place.
+                                result = ast.literal_eval(value)
+                            except (ValueError, SyntaxError):
+                                result = value
+                    else:
+                        result = json.loads(value)
 
                     return result
 
