@@ -357,7 +357,6 @@ class TestStreamLlmResponseCitationReflection:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=10,
-                mode="json",
             ):
                 events.append(event)
 
@@ -405,7 +404,6 @@ class TestStreamLlmResponseCitationReflection:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=10,
-                mode="json",
             ):
                 events.append(event)
 
@@ -444,7 +442,6 @@ class TestStreamLlmResponseCitationReflection:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=10,
-                mode="simple",
             ):
                 events.append(event)
 
@@ -704,7 +701,6 @@ class TestStreamLlmResponseCiteBlockExtends:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="json",
             ):
                 events.append(event)
 
@@ -730,7 +726,6 @@ class TestStreamLlmResponseCiteBlockExtends:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="simple",
             ):
                 events.append(event)
 

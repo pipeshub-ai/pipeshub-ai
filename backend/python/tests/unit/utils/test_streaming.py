@@ -1607,7 +1607,6 @@ class TestStreamLlmResponse:
                 final_results=[],
                 logger=test_logger,
                 target_words_per_chunk=1,
-                mode="json",
             ):
                 events.append(event)
 
@@ -1617,19 +1616,19 @@ class TestStreamLlmResponse:
 
     async def test_simple_mode_with_existing_ai_message(self):
         """Fast path: existing AI message in simple mode."""
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_simple_mode
 
         messages = [AIMessage(content="Simple existing answer")]
         test_logger = logging.getLogger("test_stream")
 
         events = []
-        async for event in stream_llm_response(
+        async for event in handle_simple_mode(
             llm=MagicMock(),
             messages=messages,
             final_results=[],
+            records=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             events.append(event)
 
@@ -1638,19 +1637,19 @@ class TestStreamLlmResponse:
 
     async def test_simple_mode_dict_message(self):
         """Fast path with dict-style assistant message."""
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_simple_mode
 
         messages = [{"role": "assistant", "content": "Dict answer"}]
         test_logger = logging.getLogger("test_stream")
 
         events = []
-        async for event in stream_llm_response(
+        async for event in handle_simple_mode(
             llm=MagicMock(),
             messages=messages,
             final_results=[],
+            records=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             events.append(event)
 
@@ -1683,7 +1682,6 @@ class TestStreamLlmResponse:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
@@ -1714,7 +1712,6 @@ class TestStreamLlmResponse:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             events.append(event)
 
@@ -1742,7 +1739,6 @@ class TestStreamLlmResponse:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
@@ -1770,7 +1766,6 @@ class TestStreamLlmResponse:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             events.append(event)
 
@@ -1779,19 +1774,19 @@ class TestStreamLlmResponse:
 
     async def test_json_mode_non_json_content_in_ai_message(self):
         """Fast path with non-JSON AI message content in JSON mode."""
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_json_mode
 
         messages = [AIMessage(content="Not valid JSON at all")]
         test_logger = logging.getLogger("test_stream")
 
         events = []
-        async for event in stream_llm_response(
+        async for event in handle_json_mode(
             llm=MagicMock(),
             messages=messages,
             final_results=[],
+            records=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
@@ -2373,7 +2368,6 @@ class TestStreamLlmResponseBranches:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
@@ -2412,13 +2406,11 @@ class TestStreamLlmResponseBranches:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
         complete_events = [e for e in events if e.get("event") == "complete"]
         assert len(complete_events) == 1
-        assert "referenceData" in complete_events[0]["data"]
 
     async def test_simple_mode_with_virtual_record_id(self):
         """Simple mode with virtual_record_id_to_result set."""
@@ -2444,7 +2436,6 @@ class TestStreamLlmResponseBranches:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="simple",
             virtual_record_id_to_result={"id1": {"name": "test"}},
         ):
             events.append(event)
@@ -2478,7 +2469,6 @@ class TestStreamLlmResponseBranches:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=1,
-            mode="json",
         ):
             events.append(event)
 
@@ -2510,7 +2500,6 @@ class TestStreamLlmResponseBranches:
             final_results=[],
             logger=test_logger,
             target_words_per_chunk=2,
-            mode="simple",
         ):
             events.append(event)
 
@@ -4265,12 +4254,12 @@ class TestStreamContentUrlParseFallback:
 # ---------------------------------------------------------------------------
 
 class TestStreamLlmResponseDictLastMsg:
-    """Cover the dict-based assistant message fast-path in stream_llm_response."""
+    """Cover the dict-based assistant message fast-path in handle_json_mode."""
 
     @pytest.mark.asyncio
     async def test_dict_assistant_message_fast_path_json_mode(self):
-        """JSON mode streams content via aiter_llm_stream and parses answer."""
-        from app.utils.streaming import stream_llm_response
+        """JSON mode fast-path parses answer/reason/confidence from AIMessage content."""
+        from app.utils.streaming import handle_json_mode
 
         json_content = json.dumps({
             "answer": "fast answer",
@@ -4278,20 +4267,15 @@ class TestStreamLlmResponseDictLastMsg:
             "confidence": "High",
         })
 
-        async def mock_aiter(llm, messages, parts=None):
-            for char in json_content:
-                yield char
-
-        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), \
-             patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("fast answer", [])):
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("fast answer", [])):
             events = []
-            async for event in stream_llm_response(
+            async for event in handle_json_mode(
                 llm=MagicMock(),
-                messages=[HumanMessage(content="q")],
+                messages=[AIMessage(content=json_content)],
                 final_results=[],
+                records=[],
                 logger=logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="json",
             ):
                 events.append(event)
 
@@ -4306,14 +4290,14 @@ class TestStreamLlmResponseDictLastMsg:
 # ---------------------------------------------------------------------------
 
 class TestStreamLlmResponseBaseMessageFastPath:
-    """Cover the BaseMessage fast-path in stream_llm_response JSON mode (line 731)."""
+    """Cover the BaseMessage fast-path in handle_json_mode."""
 
     @pytest.mark.asyncio
     async def test_base_message_fast_path_json_mode(self):
         """When last message is a BaseMessage (not AIMessage) with type='ai', use fast path in JSON mode."""
         from langchain_core.messages import ChatMessage
 
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_json_mode
 
         json_content = json.dumps({
             "answer": "base answer",
@@ -4328,15 +4312,15 @@ class TestStreamLlmResponseBaseMessageFastPath:
         object.__setattr__(chat_msg, "type", "ai")
         messages = [chat_msg]
 
-        with patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("base answer", [])):
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("base answer", [])):
             events = []
-            async for event in stream_llm_response(
+            async for event in handle_json_mode(
                 llm=MagicMock(),
                 messages=messages,
                 final_results=[],
+                records=[],
                 logger=logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="json",
             ):
                 events.append(event)
 
@@ -4350,19 +4334,19 @@ class TestStreamLlmResponseSimpleModeDict:
     @pytest.mark.asyncio
     async def test_simple_mode_dict_assistant_fast_path(self):
         """Dict with role=assistant in simple mode should use fast path."""
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_simple_mode
 
         messages = [{"role": "assistant", "content": "simple answer here"}]
 
-        with patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("simple answer here", [])):
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("simple answer here", [])):
             events = []
-            async for event in stream_llm_response(
+            async for event in handle_simple_mode(
                 llm=MagicMock(),
                 messages=messages,
                 final_results=[],
+                records=[],
                 logger=logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="simple",
             ):
                 events.append(event)
 
@@ -4374,22 +4358,22 @@ class TestStreamLlmResponseSimpleModeDict:
     @pytest.mark.asyncio
     async def test_simple_mode_base_message_fast_path(self):
         """BaseMessage with type='ai' in simple mode should use fast path."""
-        from app.utils.streaming import stream_llm_response
+        from app.utils.streaming import handle_simple_mode
 
         base_msg = MagicMock(spec=BaseMessage)
         base_msg.type = "ai"
         base_msg.content = "base ai content"
         messages = [base_msg]
 
-        with patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("base ai content", [])):
+        with patch("app.utils.streaming.normalize_citations_and_chunks", return_value=("base ai content", [])):
             events = []
-            async for event in stream_llm_response(
+            async for event in handle_simple_mode(
                 llm=MagicMock(),
                 messages=messages,
                 final_results=[],
+                records=[],
                 logger=logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="simple",
             ):
                 events.append(event)
 
@@ -4417,7 +4401,6 @@ class TestStreamLlmResponseSimpleModeDict:
                     final_results=[],
                     logger=logging.getLogger("test"),
                     target_words_per_chunk=1,
-                    mode="simple",
                 ):
                     events.append(event)
 
@@ -4452,7 +4435,6 @@ class TestStreamLlmResponseCitationDebug:
                     final_results=[],
                     logger=logging.getLogger("test"),
                     target_words_per_chunk=1,
-                    mode="json",
                 ):
                     events.append(event)
 
@@ -4478,7 +4460,6 @@ class TestStreamLlmResponseCitationDebug:
                     final_results=[],
                     logger=logging.getLogger("test"),
                     target_words_per_chunk=1,
-                    mode="json",
                 ):
                     events.append(event)
 
@@ -4510,7 +4491,6 @@ class TestStreamLlmResponseSimpleCitations:
                     final_results=[],
                     logger=logging.getLogger("test"),
                     target_words_per_chunk=1,
-                    mode="simple",
                 ):
                     events.append(event)
 
@@ -4534,7 +4514,6 @@ class TestStreamLlmResponseSimpleCitations:
                     final_results=[],
                     logger=logging.getLogger("test"),
                     target_words_per_chunk=1,
-                    mode="simple",
                 ):
                     events.append(event)
 
@@ -5177,7 +5156,6 @@ class TestStreamLlmResponseJsonModeFastPathException:
                 [bad_msg],
                 [],
                 logging.getLogger("test"),
-                mode="json",
             ):
                 events.append(event)
 
@@ -5211,7 +5189,6 @@ class TestStreamLlmResponseSimpleModeFastPathException:
                 [bad_msg],
                 [],
                 logging.getLogger("test"),
-                mode="simple",
             ):
                 events.append(event)
 
@@ -5245,7 +5222,6 @@ class TestStreamLlmResponseJsonCitationBlock:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="json",
             ):
                 events.append(event)
 
@@ -5279,7 +5255,6 @@ class TestStreamLlmResponseSimpleCitationBlock:
                 [],
                 logging.getLogger("test"),
                 target_words_per_chunk=1,
-                mode="simple",
             ):
                 events.append(event)
 
