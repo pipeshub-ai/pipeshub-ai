@@ -73,25 +73,45 @@ export interface FetchConversationsOptions {
 }
 
 /**
- * Normalise an app/KB filter list and return a `{ filters }` spread fragment.
+ * Sanitise an array of filter IDs: keep only non-blank strings.
+ */
+function sanitizeFilterIds(ids: unknown[] | null | undefined): string[] {
+  return (ids ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.trim().length > 0,
+  );
+}
+
+/**
+ * Normalise an app/KB filter list and return a `{ filters }` spread fragment
+ * for **non-agent** (assistant) streams.
  *
- * Filters out any non-string or blank IDs, then only returns the key when at
- * least one valid ID remains — so the backend never receives `filters: { apps:
- * [], kb: [] }` and applies an unintended "no scope" constraint.
+ * Only emits the key when at least one valid ID remains — so the backend
+ * treats the absence of `filters` as "search everything" (correct for the
+ * assistant endpoint where no scope is intentional).
  */
 function buildFiltersPayload(
   apps: unknown[] | null | undefined,
   kb: unknown[] | null | undefined,
 ): Record<string, unknown> {
-  const validApps = (apps ?? []).filter(
-    (id): id is string => typeof id === 'string' && id.trim().length > 0,
-  );
-  const validKb = (kb ?? []).filter(
-    (id): id is string => typeof id === 'string' && id.trim().length > 0,
-  );
+  const validApps = sanitizeFilterIds(apps);
+  const validKb = sanitizeFilterIds(kb);
   return validApps.length > 0 || validKb.length > 0
     ? { filters: { apps: validApps, kb: validKb } }
     : {};
+}
+
+/**
+ * Build `{ filters }` for **agent** streams.
+ *
+ * Always emits the key — even when both arrays are empty — because the agent
+ * endpoint interprets a missing `filters` key as "all knowledge," whereas
+ * `{ apps: [], kb: [] }` means "this agent has no knowledge scope."
+ */
+function buildAgentFiltersPayload(
+  apps: unknown[] | null | undefined,
+  kb: unknown[] | null | undefined,
+): { filters: { apps: string[]; kb: string[] } } {
+  return { filters: { apps: sanitizeFilterIds(apps), kb: sanitizeFilterIds(kb) } };
 }
 
 // Chat API endpoints
@@ -229,7 +249,7 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
-        ...buildFiltersPayload(f?.apps, f?.kb),
+        ...buildAgentFiltersPayload(f?.apps, f?.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
       };
     } else {
@@ -436,7 +456,9 @@ export const ChatApi = {
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
-      ...(model.filters ? { filters: model.filters } : {}),
+      ...(model.filters
+        ? buildAgentFiltersPayload(model.filters.apps, model.filters.kb)
+        : buildAgentFiltersPayload([], [])),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
