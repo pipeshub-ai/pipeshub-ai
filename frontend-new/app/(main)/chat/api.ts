@@ -249,7 +249,7 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
-        ...buildAgentFiltersPayload(f?.apps, f?.kb),
+        ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
       };
     } else {
@@ -456,9 +456,7 @@ export const ChatApi = {
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
-      ...(model.filters
-        ? buildAgentFiltersPayload(model.filters.apps, model.filters.kb)
-        : buildAgentFiltersPayload([], [])),
+      ...buildAgentFiltersPayload(model.filters?.apps, model.filters?.kb),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
