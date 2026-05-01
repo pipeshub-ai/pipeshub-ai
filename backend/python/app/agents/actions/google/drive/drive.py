@@ -24,6 +24,32 @@ from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
 
+# Operators that indicate a query is already in Google Drive query syntax.
+# Checked against query.lower() so all entries must be lowercase.
+_STRUCTURED_QUERY_OPERATORS = frozenset([
+    'name contains', 'fulltext contains', 'mimetype', 'modifiedtime',
+    'createdtime', '=', 'trashed', 'in parents', 'in owners', 'in readers',
+    'in writers', 'sharedwithme', 'starred',
+])
+
+# Operators that Google Drive does not support server-side (require client-side
+# filtering). Kept as a single source of truth used in both the detection and
+# the post-call filtering branches.
+_SIZE_OPERATORS = ('size=', 'size =', 'size>', 'size<', 'size>=', 'size<=')
+
+
+def _is_structured_query(query: str) -> bool:
+    """Return True if *query* already uses Drive query syntax."""
+    q = query.lower()
+    return any(op in q for op in _STRUCTURED_QUERY_OPERATORS)
+
+
+def _is_size_query(query: str) -> bool:
+    """Return True if *query* contains a size operator unsupported by the API."""
+    q = query.lower()
+    return any(op in q for op in _SIZE_OPERATORS)
+
+
 # Pydantic schemas for Google Drive tools
 class GetFilesListInput(BaseModel):
     """Schema for getting files list"""
@@ -205,21 +231,38 @@ class GoogleDrive:
             # Format query if provided
             formatted_query = None
             if query:
-                # Check for invalid query operators that Google Drive doesn't support
-                invalid_operators = ['size=', 'size =', 'size>', 'size<', 'size>=', 'size<=']
-                has_invalid_operator = any(op in query.lower() for op in invalid_operators)
-
-                if has_invalid_operator:
-                    # If query contains unsupported operators like size=, ignore the query
-                    # and return all files (client-side filtering will be needed)
+                if _is_size_query(query):
+                    # Size operators are unsupported server-side; fetch all files
+                    # and apply client-side filtering after the API call.
                     logger.warning(f"Query contains unsupported operator: {query}. Ignoring query parameter.")
                     formatted_query = None
-                elif not any(op in query.lower() for op in ['name contains', 'mimetype', 'modifiedtime', 'createdtime', '=', 'trashed']):
-                    # If it's a simple text query, wrap it in name contains
+                elif not _is_structured_query(query):
                     formatted_query = f'name contains "{query}"'
                 else:
                     # Clean up the query - remove spaces around operators
                     formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
+
+            # `driveId` only accepts an actual shared-drive ID. `"root"` is a *fileId*
+            # alias for My Drive's root, not a drive ID — drop it (and any empty value)
+            # so we don't trip Google's "driveId must be set iff corpora=drive" rule.
+            if drive_id in (None, "", "root"):
+                drive_id = None
+
+            # Google requires `corpora=drive` iff `driveId` is set. If the caller passed
+            # an explicit driveId with a different corpora, normalize to `drive`.
+            if drive_id and (corpora is None or corpora.lower() != "drive"):
+                corpora = "drive"
+
+            # Conversely, `corpora=drive` without a driveId is invalid — fall back to
+            # the broader `allDrives` scope.
+            if corpora and corpora.lower() == "drive" and not drive_id:
+                corpora = "allDrives"
+
+            # `includeItemsFromAllDrives` / `supportsAllDrives` are required whenever
+            # the request scopes a shared drive or all drives.
+            scopes_shared_drives = bool(drive_id) or (
+                corpora is not None and any(c in corpora.lower() for c in ("drive", "alldrives"))
+            )
 
             # Use GoogleDriveDataSource method
             files = await self.client.files_list(
@@ -229,14 +272,16 @@ class GoogleDrive:
                 pageSize=page_size,
                 pageToken=page_token,
                 q=formatted_query,
-                spaces=spaces
+                spaces=spaces,
+                includeItemsFromAllDrives=True if scopes_shared_drives else None,
+                supportsAllDrives=True if scopes_shared_drives else None,
             )
 
             # Get files list
             files_list = files.get("files", [])
 
             # Apply client-side filtering if size query was detected
-            if query and formatted_query is None and any(op in query.lower() for op in ['size=', 'size =', 'size>', 'size<', 'size>=', 'size<=']):
+            if query and formatted_query is None and _is_size_query(query):
                 files_list = self._filter_files_by_size(files_list, query)
 
             # Prepare response data
@@ -466,8 +511,7 @@ class GoogleDrive:
         """
         try:
             # Convert simple text queries to proper Google Drive query syntax
-            if not any(op in query.lower() for op in ['name contains', 'mimetype', 'modifiedtime', 'createdtime', '=']):
-                # If it's a simple text query, wrap it in name contains
+            if not _is_structured_query(query):
                 formatted_query = f'name contains "{query}"'
             else:
                 formatted_query = query
