@@ -61,11 +61,6 @@ export function AuthMethodRow({
 
   const showConfigureButton = isConfigurable;
 
-  const switchStyle = {
-    '--accent-9': 'rgba(0, 0, 51, 0.25)',
-    '--accent-indicator': 'white',
-  } as React.CSSProperties;
-
   // ── Badge colour ─────────────────────────────────────────
   const badgeColor = isConfigured ? 'green' : 'orange';
   const badgeLabel = isConfigured ? t('workspace.authentication.badges.configured') : t('workspace.authentication.badges.notConfigured');
@@ -80,8 +75,6 @@ export function AuthMethodRow({
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(25px)',
-        opacity: toggleDisabled ? 0.7 : 1,
       }}
     >
       {/* Icon */}
@@ -151,32 +144,29 @@ export function AuthMethodRow({
           </Tooltip>
         )}
 
-        {/* Toggle */}
-        {toggleDisabled && disabledReason ? (
-          <Tooltip content={disabledReason}>
-            <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <Switch
-                color="gray"
-                size="1"
-                variant="classic"
-                checked={state.enabled}
-                disabled={toggleDisabled}
-                onCheckedChange={() => onToggle(state.type)}
-                style={switchStyle}
-              />
-            </span>
-          </Tooltip>
-        ) : (
-          <Switch
-            color="gray"
-            size="1"
-            variant="classic"
-            checked={state.enabled}
-            disabled={toggleDisabled}
-            onCheckedChange={() => onToggle(state.type)}
-            style={switchStyle}
-          />
-        )}
+        {/* Toggle — avoid `disabled` prop to prevent Radix muted styling */}
+        {(() => {
+          const toggle = (
+            <Switch
+              color="jade"
+              size="2"
+              checked={state.enabled}
+              onCheckedChange={toggleDisabled ? undefined : () => onToggle(state.type)}
+              style={toggleDisabled ? { pointerEvents: 'none' } : undefined}
+              {...(toggleDisabled && { tabIndex: -1, 'aria-disabled': true })}
+            />
+          );
+          if (disabledReason) {
+            return (
+              <Tooltip content={disabledReason}>
+                <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  {toggle}
+                </span>
+              </Tooltip>
+            );
+          }
+          return toggle;
+        })()}
       </Flex>
     </Flex>
   );
