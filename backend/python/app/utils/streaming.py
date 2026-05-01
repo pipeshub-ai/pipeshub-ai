@@ -779,22 +779,33 @@ async def stream_llm_response(
             # Capture emit_upto once: match positions are relative to the
             # substring start, so the same base must be used for every match.
             start_emit_upto = emit_upto
+            # consumed_pos tracks how far we've actually consumed (including
+            # citation blocks appended after a word), so that WORD_ITER matches
+            # that overlap with an already-consumed citation block are skipped.
+            consumed_pos = emit_upto
             for match in WORD_ITER(content_buf[start_emit_upto:]):
+                # Skip words that fall inside a citation block consumed by a
+                # prior iteration of this loop.
+                if start_emit_upto + match.start() < consumed_pos:
+                    continue
+
                 words_in_chunk += 1
-                if words_in_chunk == target_words_per_chunk:
+                if words_in_chunk >= target_words_per_chunk:
                     char_end = start_emit_upto + match.end()
 
                     # Include any citation blocks that immediately follow
                     if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
                         char_end += m.end()
 
-                    emit_upto = char_end
-                    words_in_chunk = 0
-
-                    current_raw = content_buf[:emit_upto]
-                    # Skip if we have incomplete citations
+                    current_raw = content_buf[:char_end]
+                    # If the citation is incomplete, don't advance emit_upto;
+                    # continue so remaining words in this token can complete it.
                     if INCOMPLETE_CITE_RE.search(current_raw):
                         continue
+
+                    emit_upto = char_end
+                    consumed_pos = char_end
+                    words_in_chunk = 0
 
                     normalized, cites = normalize_citations_and_chunks_for_agent(
                         current_raw, final_results, virtual_record_id_to_result, records,
@@ -1385,22 +1396,33 @@ async def call_aiter_llm_stream_simple(
             # relative to the substring passed to WORD_ITER, so we must add the
             # same base offset for every match — not the updated emit_upto.
             start_emit_upto = emit_upto
+            # consumed_pos tracks how far we've actually consumed (including
+            # citation blocks appended after a word), so that WORD_ITER matches
+            # that overlap with an already-consumed citation block are skipped.
+            consumed_pos = emit_upto
             for match in WORD_ITER(content_buf[start_emit_upto:]):
+                # Skip words that fall inside a citation block consumed by a
+                # prior iteration of this loop.
+                if start_emit_upto + match.start() < consumed_pos:
+                    continue
+
                 words_in_chunk += 1
-                if words_in_chunk == target_words_per_chunk:
+                if words_in_chunk >= target_words_per_chunk:
                     char_end = start_emit_upto + match.end()
 
                     # Include any citation blocks that immediately follow
                     if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
                         char_end += m.end()
 
-                    emit_upto = char_end
-                    words_in_chunk = 0
-
-                    current_raw = content_buf[:emit_upto]
-                    # Skip if we have incomplete citations
+                    current_raw = content_buf[:char_end]
+                    # If the citation is incomplete, don't advance emit_upto;
+                    # continue so remaining words in this token can complete it.
                     if INCOMPLETE_CITE_RE.search(current_raw):
                         continue
+
+                    emit_upto = char_end
+                    consumed_pos = char_end
+                    words_in_chunk = 0
 
                     clean_answer, confidence = parse_confidence_from_answer(current_raw)
                     normalized, cites = normalize_citations_and_chunks(
