@@ -617,8 +617,7 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit =
-    (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading && !isStreaming;
+  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
