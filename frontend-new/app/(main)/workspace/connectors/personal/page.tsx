@@ -307,31 +307,6 @@ function PersonalConnectorsPageContent() {
     [openInstancePanel]
   );
 
-  const handleStartSync = useCallback(
-    async (instance: ConnectorInstance) => {
-      if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
-      try {
-        await startConnectorSync({
-          _key: instance._key,
-          type: instance.type,
-        });
-        addToast({
-          variant: 'success',
-          title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'Connector' }),
-          description: t('workspace.connectors.toasts.syncStartedDescription'),
-          duration: 3000,
-        });
-        await refreshConnectorRowQuiet(instance._key);
-      } catch {
-        addToast({
-          variant: 'error',
-          title: t('workspace.connectors.toasts.syncError'),
-        });
-      }
-    },
-    [connectorTypeInfo, addToast, refreshConnectorRowQuiet]
-  );
-
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
@@ -413,7 +388,6 @@ function PersonalConnectorsPageContent() {
           onAddInstance={handleAddInstance}
           onOpenDocs={handleOpenDocs}
           onManageInstance={handleManageInstance}
-          onStartSync={handleStartSync}
           onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
         />

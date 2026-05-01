@@ -446,7 +446,7 @@ export function AdminManageActionPanel({
           const k = Object.keys(next)[0];
           if (k) {
             document
-              .querySelector(`[data-ph-auth-field="${k}"]`)
+              .querySelector(`[data-ph-field="${k}"]`)
               ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }

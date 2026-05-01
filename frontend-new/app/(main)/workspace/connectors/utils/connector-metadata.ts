@@ -1,4 +1,4 @@
-import type { Connector } from '../types';
+import type { Connector, DocumentationLink } from '../types';
 
 /** Plain-string info from `@Connector(..., connector_info="...")` for UI callouts. */
 export function getConnectorInfoText(connector: Connector | null | undefined): string | null {
@@ -9,21 +9,26 @@ export function getConnectorInfoText(connector: Connector | null | undefined): s
 }
 
 /**
- * Prefer config.documentationLinks; rare legacy shape stores `documentationUrl` on a connectorInfo object.
+ * Resolves the connector documentation URL for the "open documentation" action.
+ * Prefers `documentationLinks` with type `pipeshub`, then the first non-empty link,
+ * then legacy `connectorInfo.documentationUrl` when `connectorInfo` is an object.
  */
 export function getConnectorDocumentationUrl(
   connector: Connector | null | undefined
 ): string | undefined {
   if (!connector) return undefined;
   const configObj = connector.config as Record<string, unknown> | undefined;
-  const docLinks = configObj?.documentationLinks as { url?: string }[] | undefined;
-  const fromLinks = docLinks?.[0]?.url;
-  if (typeof fromLinks === 'string' && fromLinks.trim()) return fromLinks.trim();
+  const links = (configObj?.documentationLinks as DocumentationLink[] | undefined) ?? [];
+
+  const pipeshub = links.find((l) => l.type === 'pipeshub' && (l.url?.trim() ?? '') !== '');
+  if (pipeshub?.url) return pipeshub.url.trim();
+  const first = links.find((l) => (l.url?.trim() ?? '') !== '');
+  if (first?.url) return first.url.trim();
 
   const ci = connector.connectorInfo;
   if (ci && typeof ci === 'object' && !Array.isArray(ci) && 'documentationUrl' in ci) {
     const u = (ci as { documentationUrl?: unknown }).documentationUrl;
-    return typeof u === 'string' && u.trim() ? u.trim() : undefined;
+    if (typeof u === 'string' && u.trim()) return u.trim();
   }
   return undefined;
 }

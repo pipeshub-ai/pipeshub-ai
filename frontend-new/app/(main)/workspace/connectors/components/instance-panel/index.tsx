@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import {
   WorkspaceRightPanel,
+  WORKSPACE_DRAWER_POPPER_Z_INDEX,
   useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { isAxiosError } from 'axios';
@@ -195,7 +196,10 @@ export function InstanceManagementPanel() {
             <MaterialIcon name="expand_more" size={16} color="var(--slate-11)" />
           </button>
         </DropdownMenu.Trigger>
-        <DropdownMenu.Content>
+        <DropdownMenu.Content
+          sideOffset={4}
+          style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+        >
           {instances.map((inst) => (
             <DropdownMenu.Item
               key={inst._key}

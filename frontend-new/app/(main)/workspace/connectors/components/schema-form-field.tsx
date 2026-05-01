@@ -251,7 +251,7 @@ export function SchemaFormField({
   };
 
   const inner = (
-    <Flex direction="column" gap="1" data-ph-auth-field={field.name}>
+    <Flex direction="column" gap="1" data-ph-field={field.name}>
       {renderField()}
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}

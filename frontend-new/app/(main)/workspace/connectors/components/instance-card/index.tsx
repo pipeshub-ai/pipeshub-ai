@@ -5,8 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { apiClient } from '@/lib/api';
 import { formatRelativeTime, formatEnabledDate } from '@/lib/utils/formatters';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { SyncStatusPill } from './sync-status';
 import {
   InfoRow,
@@ -22,7 +22,6 @@ import {
   deriveSyncStatusState,
   getSyncStrategyLabel,
   getSyncIntervalLabel,
-  getRecordsSelectedInfo,
   getTotalRecords,
   getSyncedRecords,
   getFailedRecords,
@@ -49,7 +48,6 @@ interface InstanceCardProps {
   /** Per-instance stats from GET /knowledgeBase/stats/{id} */
   stats?: ConnectorStatsResponse['data'];
   onManage?: (instance: ConnectorInstance) => void;
-  onStartSync?: (instance: ConnectorInstance) => void;
   /** POST …/toggle — flips sync `isActive` */
   onToggleSyncActive?: (instance: ConnectorInstance) => void | Promise<void>;
   onChevronClick?: (instance: ConnectorInstance) => void;
@@ -65,14 +63,13 @@ export function InstanceCard({
   config,
   stats,
   onManage,
-  onStartSync,
   onToggleSyncActive,
   onChevronClick,
 }: InstanceCardProps) {
   const { t } = useTranslation();
   // ── Org/User identity state ──
   const [identityName, setIdentityName] = useState<string>(instance.name);
-  // ── Personal header: optional creator avatar (title always uses instance name) ──
+  // ── Personal header: optional user avatar from updatedBy (title uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
 
@@ -81,47 +78,38 @@ export function InstanceCard({
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
 
-  // ── Fetch user info (identity for personal, enabled-by for all) ──
+  const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
+
+  // ── Apply directory entry → identity (personal) + enabled-by row ──
   useEffect(() => {
     setIdentityIconError(false);
     if (scope === 'personal') {
       setIdentityIcon(null);
     }
-    if (!instance.createdBy) return;
-    let cancelled = false;
-
-    async function fetchUserData() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
-
-          if (scope === 'personal' && userId) {
-            setIdentityIcon(`/api/v1/users/${userId}/dp`);
-          }
-
-          // "Viraj Gawde" → "Viraj G"
-          const parts = fullName.trim().split(/\s+/);
-          const displayName =
-            parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
-          setEnabledByName(displayName);
-          if (userId) setEnabledByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        // Silently fail
-      }
+    if (!instance.updatedBy) {
+      setIdentityIcon(null);
+      setEnabledByName(null);
+      setEnabledByAvatar(null);
+      return;
+    }
+    if (!updatedByEntry) {
+      setEnabledByName(null);
+      setEnabledByAvatar(null);
+      return;
     }
 
-    fetchUserData();
-    return () => { cancelled = true; };
-  }, [scope, instance.createdBy, instance._key]);
+    const { fullName, resolvedUserId } = updatedByEntry;
+    if (scope === 'personal' && resolvedUserId) {
+      setIdentityIcon(`/api/v1/users/${resolvedUserId}/dp`);
+    }
+
+    // "Viraj Gawde" → "Viraj G"
+    const parts = fullName.trim().split(/\s+/);
+    const displayName =
+      parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
+    setEnabledByName(displayName);
+    if (resolvedUserId) setEnabledByAvatar(`/api/v1/users/${resolvedUserId}/dp`);
+  }, [scope, instance.updatedBy, updatedByEntry]);
 
   // ── Derived data ──
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
@@ -130,7 +118,6 @@ export function InstanceCard({
   const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
   const syncStrategy = getSyncStrategyLabel(config);
   const syncInterval = getSyncIntervalLabel(config);
-  const recordsSelected = getRecordsSelectedInfo(config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
   const enabledDate = formatEnabledDate(instance.createdAtTimestamp);
 
@@ -237,7 +224,6 @@ export function InstanceCard({
             totalRecords={getTotalRecords(stats)}
             failedRecords={getFailedRecords(stats)}
             unsupportedRecords={getUnsupportedRecords(stats)}
-            onStartSync={() => onStartSync?.(instance)}
           />
 
           {/* Chevron */}
@@ -254,12 +240,6 @@ export function InstanceCard({
 
         {/* ── Separator ── */}
         <div style={{ height: 1, backgroundColor: 'var(--gray-a3)' }} />
-
-        {/* ── Records Selected ── */}
-        <InfoRow
-          label={recordsSelected?.label ?? t('workspace.connectors.instanceCard.recordsSelected')}
-          value={recordsSelected ? String(recordsSelected.count) : '-'}
-        />
 
         {/* ── Sync Strategy ── */}
         {syncStrategy ? (
@@ -312,14 +292,6 @@ export function InstanceCard({
                   {enabledByName}
                 </Text>
               </Flex>
-              {enabledDate && (
-                <>
-                  <DotSeparator />
-                  <Text size="2" style={{ color: 'var(--gray-11)' }}>
-                    {enabledDate}
-                  </Text>
-                </>
-              )}
             </Flex>
           </Flex>
         ) : (

@@ -369,7 +369,7 @@ class CountryToRegionMapper:
         .with_icon(IconPaths.connector_icon(Connectors.SHAREPOINT_ONLINE.value))
         .add_documentation_link(DocumentationLink(
             "SharePoint Online API Setup",
-            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(

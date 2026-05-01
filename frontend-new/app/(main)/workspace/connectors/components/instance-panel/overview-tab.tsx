@@ -10,7 +10,6 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { startConnectorSync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
@@ -18,6 +17,7 @@ import type {
   ConnectorStatsResponse,
   RecordsStatus,
 } from '../../types';
+import { formatSnakeCaseTitle } from '@/lib/utils/formatters';
 
 // ========================================
 // Props
@@ -77,8 +77,8 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
-  const [isStartingSync, setIsStartingSync] = useState(false);
-  const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
+  const setInstanceStats = useConnectorsStore((s) => s.setInstanceStats);
+  const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
   const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
 
@@ -86,9 +86,8 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
   const byRecordType = stats?.byRecordType ?? [];
 
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, connectorConfig);
-  const isReadyToSync  = syncStatus === 'ready_to_sync';
-  const isSyncing      = syncStatus === 'syncing';
-  const isSyncFailed   = syncStatus === 'sync_failed';
+  const isSyncing = syncStatus === 'syncing';
+  const isSyncFailed = syncStatus === 'sync_failed';
 
   // Navigate to All Records page with filters for this connector
   const navigateToRecords = useCallback(
@@ -109,38 +108,26 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
     [instance._key, setAllRecordsFilter, closeInstancePanel, router]
   );
 
-  const handleStartSync = useCallback(async () => {
+  const handleOverviewRefreshStats = useCallback(async () => {
     const connectorId = instance._key;
-    if (!connectorId || isStartingSync) return;
+    if (!connectorId || isRefreshStatsBusy) return;
     try {
-      setIsStartingSync(true);
-      await startConnectorSync({
-        _key: connectorId,
-        type: instance.type,
+      setIsRefreshStatsBusy(true);
+      const res = await ConnectorsApi.getConnectorStats(connectorId);
+      setInstanceStats(connectorId, res.data);
+      addToast({
+        variant: 'success',
+        title: t('workspace.connectors.overview.refreshStatsSuccess'),
       });
-      addToast({ variant: 'success', title: 'Sync started successfully' });
-      bumpCatalogRefresh();
     } catch {
-      addToast({ variant: 'error', title: 'Failed to start sync' });
+      addToast({
+        variant: 'error',
+        title: t('workspace.connectors.overview.refreshStatsError'),
+      });
     } finally {
-      setIsStartingSync(false);
+      setIsRefreshStatsBusy(false);
     }
-  }, [instance._key, instance.type, isStartingSync, addToast, bumpCatalogRefresh]);
-
-  const handleOverviewResync = useCallback(async () => {
-    const connectorId = instance._key;
-    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
-    try {
-      setIsHeaderSyncBusy(true);
-      await ConnectorsApi.resyncConnector(connectorId, instance.type);
-      addToast({ variant: 'success', title: 'Sync started' });
-      bumpCatalogRefresh();
-    } catch {
-      addToast({ variant: 'error', title: 'Failed to start sync' });
-    } finally {
-      setIsHeaderSyncBusy(false);
-    }
-  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
+  }, [instance._key, isRefreshStatsBusy, addToast, setInstanceStats, t]);
 
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
@@ -157,64 +144,11 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
     }
   }, [instance._key, instance.type, instance.isActive, isReindexBusy, addToast, bumpCatalogRefresh]);
 
-  // Status banner for ready_to_sync
-  const showReadyBanner = isReadyToSync;
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
-      {/* ── Ready to sync banner ── */}
-      {showReadyBanner && (
-        <Flex
-          align="center"
-          justify="between"
-          style={{
-            padding: 'var(--space-3) var(--space-4)',
-            backgroundColor: 'var(--jade-a2)',
-            border: '1px solid var(--jade-a4)',
-            borderRadius: 'var(--radius-2)',
-          }}
-        >
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.connectors.overview.readyBanner')}
-            </Text>
-            <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              {t('workspace.connectors.overview.readyBannerSub')}
-            </Text>
-          </Flex>
-          <button
-            type="button"
-            onClick={handleStartSync}
-            disabled={isStartingSync}
-            style={{
-              appearance: 'none',
-              margin: 0,
-              font: 'inherit',
-              outline: 'none',
-              border: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              height: 28,
-              padding: '0 10px',
-              borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--jade-9)',
-              color: 'white',
-              fontSize: 12,
-              fontWeight: 500,
-              cursor: isStartingSync ? 'not-allowed' : 'pointer',
-              opacity: isStartingSync ? 0.7 : 1,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <MaterialIcon name="sync" size={14} color="white" />
-            {isStartingSync ? t('workspace.connectors.overview.startSyncLoading') : t('workspace.connectors.overview.startSync')}
-          </button>
-        </Flex>
-      )}
-
       {/* ── Sync progress bar ── */}
       {showProgressBar && instance.syncProgress && (
         <Flex direction="column" gap="2">
@@ -272,11 +206,11 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
                 />
               )}
               <StatusActionButton
-                label="Sync"
-                icon="sync"
-                onClick={handleOverviewResync}
-                disabled={isHeaderSyncBusy}
-                loading={isHeaderSyncBusy}
+                label={t('action.refresh')}
+                icon="refresh"
+                onClick={() => void handleOverviewRefreshStats()}
+                disabled={isRefreshStatsBusy}
+                loading={isRefreshStatsBusy}
               />
             </Flex>
           )}
@@ -379,7 +313,7 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
                 }}
               >
                 <Text size="2" style={{ color: 'var(--gray-12)' }}>
-                  {rt.recordType}
+                  {formatSnakeCaseTitle(rt.recordType)}
                 </Text>
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
                   {rt.total}
@@ -388,25 +322,6 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
             ))}
           </Flex>
         )}
-      </Flex>
-
-      {/* ── Personal Records Indexed ── */}
-      <Flex
-        direction="column"
-        gap="2"
-        style={{
-          padding: 16,
-          backgroundColor: 'var(--gray-a2)',
-          borderRadius: 'var(--radius-2)',
-          border: '1px solid var(--gray-a3)',
-        }}
-      >
-        <Flex align="center" gap="2">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.connectors.overview.personalRecordsIndexed')}
-          </Text>
-          <MaterialIcon name="lock" size={14} color="var(--gray-9)" />
-        </Flex>
       </Flex>
     </Flex>
   );

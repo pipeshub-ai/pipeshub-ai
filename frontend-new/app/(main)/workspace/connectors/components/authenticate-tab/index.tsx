@@ -12,7 +12,7 @@ import {
   resolveOAuthFieldVisibility,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
-import { OAuthAppSelector, OAuthAppInUseReadonly } from './oauth-app-selector';
+import { OAuthAppSelector } from './oauth-app-selector';
 import { resolveAuthFields, formatAuthTypeName } from './helpers';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -304,18 +304,16 @@ export function AuthenticateTab() {
 
       {selectedAuthType === 'OAUTH' && (
         <>
-          {isCreateMode ? <OAuthAppSelector /> : <OAuthAppInUseReadonly />}
-          {isCreateMode ? (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-              {isAdmin === true
+          <OAuthAppSelector />
+          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            {isCreateMode
+              ? isAdmin === true
                 ? t('workspace.connectors.authTab.oauthCreateHelperAdmin')
-                : t('workspace.connectors.authTab.oauthCreateHelperNonAdmin')}
-            </Text>
-          ) : (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-              Re-run consent from the Authorize tab if your identity provider requires it.
-            </Text>
-          )}
+                : t('workspace.connectors.authTab.oauthCreateHelperNonAdmin')
+              : isAdmin === true
+                ? t('workspace.connectors.authTab.oauthEditHelperAdmin')
+                : t('workspace.connectors.authTab.oauthEditHelperNonAdmin')}
+          </Text>
         </>
       )}
 

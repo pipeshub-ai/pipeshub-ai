@@ -36,8 +36,6 @@ interface ConnectorDetailsLayoutProps {
   onOpenDocs?: () => void;
   /** Manage a specific instance (open panel) */
   onManageInstance: (instance: ConnectorInstance) => void;
-  /** Start syncing an instance */
-  onStartSync: (instance: ConnectorInstance) => void;
   /** Enable / disable sync (POST …/toggle with type sync) */
   onToggleSyncActive: (instance: ConnectorInstance) => void | Promise<void>;
   /** Open chevron → management panel */
@@ -60,7 +58,6 @@ export function ConnectorDetailsLayout({
   onAddInstance,
   onOpenDocs,
   onManageInstance,
-  onStartSync,
   onToggleSyncActive,
   onInstanceChevron,
 }: ConnectorDetailsLayoutProps) {
@@ -211,7 +208,6 @@ export function ConnectorDetailsLayout({
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               stats={instance._key ? instanceStats?.[instance._key] : undefined}
               onManage={onManageInstance}
-              onStartSync={onStartSync}
               onToggleSyncActive={onToggleSyncActive}
               onChevronClick={onInstanceChevron}
             />
