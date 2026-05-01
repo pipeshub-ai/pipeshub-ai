@@ -75,6 +75,7 @@ interface ElectronLocalSyncApi {
   stop: (connectorId: string) => Promise<LocalSyncStatus>;
   status: (connectorId: string) => Promise<LocalSyncStatus>;
   replay: (connectorId: string) => Promise<LocalSyncStatus>;
+  fullResync: (connectorId: string) => Promise<LocalSyncStatus>;
 }
 
 function getElectronLocalSyncApi() {
@@ -206,6 +207,14 @@ export async function replayElectronLocalSync(connectorId: string): Promise<Loca
   const api = getElectronLocalSyncApi();
   if (!api) return null;
   return api.replay(connectorId);
+}
+
+export async function fullResyncElectronLocalSync(
+  connectorId: string
+): Promise<LocalSyncStatus | null> {
+  const api = getElectronLocalSyncApi();
+  if (!api) return null;
+  return api.fullResync(connectorId);
 }
 
 export function extractLocalFsRootPath(

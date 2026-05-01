@@ -80,6 +80,39 @@ function buildFullSyncSignature(meta) {
   });
 }
 
+/**
+ * Identity for an in-flight runtime. Includes everything that requires
+ * recreating the watcher or scheduled timer; **excludes** accessToken so
+ * routine token refreshes don't tear down sync. Renderer effects often refire
+ * (Zustand connector list updates change array refs), so start() being called
+ * with an unchanged config must be a no-op — otherwise the scheduled timer is
+ * reset on every refire and never fires.
+ */
+function buildRuntimeSignature(args) {
+  const allowed = Array.isArray(args.allowedExtensions)
+    ? [...args.allowedExtensions]
+      .map((e) => String(e).toLowerCase().replace(/^\./, ''))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+    : [];
+  const sched = args.syncStrategy === 'SCHEDULED' && args.scheduledConfig
+    ? {
+        intervalMinutes: Number(args.scheduledConfig.intervalMinutes) || 0,
+        startTime: args.scheduledConfig.startTime != null ? args.scheduledConfig.startTime : null,
+        timezone: args.scheduledConfig.timezone || null,
+      }
+    : null;
+  return JSON.stringify({
+    rootPath: path.resolve(String(args.rootPath || '')),
+    apiBaseUrl: String(args.apiBaseUrl || ''),
+    includeSubfolders: args.includeSubfolders !== false,
+    allowedExtensions: allowed,
+    connectorDisplayType: String(args.connectorDisplayType || ''),
+    syncStrategy: args.syncStrategy === 'SCHEDULED' ? 'SCHEDULED' : 'MANUAL',
+    scheduledConfig: sched,
+  });
+}
+
 /** Collects file paths referenced by a single journal/replay event (non-directory). */
 function addKnownFilePathsFromEvent(ev, knownPaths) {
   if (!ev || ev.isDirectory) return;
@@ -161,6 +194,30 @@ class LocalSyncManager {
     if (!apiBaseUrl) throw new Error('apiBaseUrl is required');
     if (!accessToken) throw new Error('accessToken is required');
 
+    const startSignature = buildRuntimeSignature({
+      rootPath, apiBaseUrl, includeSubfolders, allowedExtensions,
+      connectorDisplayType, syncStrategy, scheduledConfig,
+    });
+    const existing = this.runtimes.get(connectorId);
+    if (
+      existing
+      && existing.startSignature === startSignature
+      && (existing.watcherState === 'watching' || existing.watcherState === 'starting')
+    ) {
+      // Same configuration — refresh access token in place (renderer may pass
+      // a fresh one) and keep the watcher + scheduled timer running. Without
+      // this the scheduled tick never fires: renderer effects refire faster
+      // than intervalMinutes (≥ 60s), and stop() clears the timer each time.
+      existing.accessToken = accessToken;
+      const meta = this.journal.getMeta(connectorId) || {};
+      this.journal.setMeta(connectorId, {
+        ...meta,
+        accessTokenEnc: encryptToken(accessToken),
+      });
+      this.emitStatus(connectorId);
+      return this.getStatus(connectorId);
+    }
+
     await this.stop(connectorId);
 
     const strategy = syncStrategy || 'MANUAL';
@@ -207,6 +264,7 @@ class LocalSyncManager {
       scheduledCron: cron,
       watcher: null, watcherState: 'starting', lastError: null,
       scheduleTimer: null,
+      startSignature,
     };
     this.runtimes.set(connectorId, runtime);
     const currentMeta = this.journal.getMeta(connectorId);
@@ -528,9 +586,17 @@ class LocalSyncManager {
       `[local-sync:${connectorId}] scheduled tick: starting ` +
       `(${pendingBefore} batch(es) pending before rescan)`,
     );
-    // Rescan first so any offline deltas land in the journal as 'pending'
-    // batches; then replay drains everything (including those new batches and
-    // anything held back by the SCHEDULED gate in processBatch) in one tick.
+    // Drain live events first: anything sitting in the correlator's 250ms
+    // window or the dispatcher's 1s buffer needs to reach the journal before
+    // we replay. Otherwise a change made just before the tick is invisible to
+    // both rescan (state already updated by applyEventsToState) and replay
+    // (journal hasn't received the batch yet) and slips to the next tick.
+    try { if (runtime.watcher) await runtime.watcher.drainLiveEvents(); } catch (err) {
+      runtime.lastError = err instanceof Error ? err.message : String(err);
+    }
+    // Rescan so any offline deltas land in the journal as 'pending' batches;
+    // then replay drains everything (including those new batches and anything
+    // held back by the SCHEDULED gate in processBatch) in one tick.
     try { if (runtime.watcher) await runtime.watcher.rescan(); } catch (err) {
       runtime.lastError = err instanceof Error ? err.message : String(err);
     }
