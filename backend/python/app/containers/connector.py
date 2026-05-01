@@ -163,10 +163,7 @@ async def run_connector_migration(
     Args:
         container: Connector DI container (logger, config_service).
         arango_service: Resolved ``BaseArangoService`` from ``initialize_container``
-            (same instance as ``await container.arango_service()``). Avoid resolving
-            ``graph_provider`` via ``await container.graph_provider()`` after
-            ``data_store()`` has run — that can re-await an exhausted DI ``Resource``
-            coroutine.
+            (same instance as ``await container.arango_service()``).
 
     Returns:
         bool: True if migration completed successfully or was not needed, False on error
@@ -384,6 +381,8 @@ async def initialize_container(container) -> bool:
             arango_service = None
 
         logger.info("Ensuring graph database provider is initialized")
+        # After data_store() resolves, do not await container.graph_provider() elsewhere:
+        # dependency-injector Resources can yield a coroutine that must not be re-awaited.
         data_store = await container.data_store()
         if not data_store:
             raise Exception("Failed to initialize data store")
