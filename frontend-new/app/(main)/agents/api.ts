@@ -39,6 +39,7 @@ const KB_PAGE_MAX = 100;
  * Must match `AGENT_ARCHIVES_INITIAL_AGENT_LIMIT` in es_controller.ts (not the `parseInt(..., 10)` radix).
  */
 const DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT = 5;
+const WEB_SEARCH_TOOL_FULL_NAME = 'web_search.search';
 
 /** Stable slug for `tool-*` node types; flow reconstruction matches on `full_name` first. */
 function catalogToolIdFromFullName(fullName: string): string {
@@ -115,16 +116,20 @@ export function mergeToolsFromAgentDetail(
 
 /** Collect `fullName` from GET /agents/:id `toolsets[].tools[]` for stream payloads */
 export function extractAgentToolFullNames(agent: AgentDetail | null | undefined): string[] {
-  if (!agent?.toolsets?.length) return [];
   const names: string[] = [];
-  for (const ts of agent.toolsets) {
-    if (!ts?.tools?.length) continue;
-    for (const t of ts.tools) {
-      if (typeof t.fullName === 'string') {
-        names.push(t.fullName);
+  if (agent?.toolsets?.length) {
+    for (const ts of agent.toolsets) {
+      if (!ts?.tools?.length) continue;
+      for (const t of ts.tools) {
+        if (typeof t.fullName === 'string') {
+          names.push(t.fullName);
+        }
       }
     }
   }
+  // Agent-level web search is runtime-enabled as an internal tool. Expose a
+  // stable pseudo fullName so the chat Actions panel can toggle it like other tools.
+  if (agent?.webSearch?.provider) names.push(WEB_SEARCH_TOOL_FULL_NAME);
   return names;
 }
 
@@ -182,33 +187,48 @@ export interface AgentChatToolGroupRow {
 }
 
 export function buildAgentChatToolGroups(agent: AgentDetail | null | undefined): AgentChatToolGroupRow[] {
-  if (!agent?.toolsets?.length) return [];
   const groups: AgentChatToolGroupRow[] = [];
-  for (const ts of agent.toolsets) {
-    const fullNames = (ts.tools || [])
-      .map((t) => (typeof t.fullName === 'string' ? t.fullName.trim() : ''))
-      .filter(Boolean);
-    if (fullNames.length === 0) continue;
+  if (agent?.toolsets?.length) {
+    for (const ts of agent.toolsets) {
+      const fullNames = (ts.tools || [])
+        .map((t) => (typeof t.fullName === 'string' ? t.fullName.trim() : ''))
+        .filter(Boolean);
+      if (fullNames.length === 0) continue;
 
-    const toolDescriptions: Record<string, string> = {};
-    for (const t of ts.tools || []) {
-      const fn = typeof t.fullName === 'string' ? t.fullName.trim() : '';
-      if (!fn) continue;
-      const d = typeof t.description === 'string' ? t.description.trim() : '';
-      if (d) toolDescriptions[fn] = d;
+      const toolDescriptions: Record<string, string> = {};
+      for (const t of ts.tools || []) {
+        const fn = typeof t.fullName === 'string' ? t.fullName.trim() : '';
+        if (!fn) continue;
+        const d = typeof t.description === 'string' ? t.description.trim() : '';
+        if (d) toolDescriptions[fn] = d;
+      }
+
+      const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
+      const productLabel = (ts.displayName || ts.name || 'Tools').trim();
+      const instanceId = typeof ts.instanceId === 'string' ? ts.instanceId.trim() : '';
+      groups.push({
+        label: instanceLabel || productLabel,
+        toolsetSlug: (typeof ts.name === 'string' ? ts.name : '').trim(),
+        ...(instanceId ? { instanceId } : {}),
+        iconPath:
+          typeof ts.iconPath === 'string' && ts.iconPath.trim() ? ts.iconPath.trim() : undefined,
+        fullNames,
+        toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      });
     }
+  }
 
-    const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
-    const productLabel = (ts.displayName || ts.name || 'Tools').trim();
-    const instanceId = typeof ts.instanceId === 'string' ? ts.instanceId.trim() : '';
+  if (agent?.webSearch?.provider) {
+    const provider = agent.webSearch.provider.trim();
+    const providerLabel = agent.webSearch.providerLabel?.trim();
     groups.push({
-      label: instanceLabel || productLabel,
-      toolsetSlug: (typeof ts.name === 'string' ? ts.name : '').trim(),
-      ...(instanceId ? { instanceId } : {}),
-      iconPath:
-        typeof ts.iconPath === 'string' && ts.iconPath.trim() ? ts.iconPath.trim() : undefined,
-      fullNames,
-      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      label: providerLabel || 'Web Search',
+      toolsetSlug: 'web_search',
+      instanceId: `web-search:${provider.toLowerCase()}`,
+      fullNames: [WEB_SEARCH_TOOL_FULL_NAME],
+      toolDescriptions: {
+        [WEB_SEARCH_TOOL_FULL_NAME]: `Search the web using ${providerLabel || provider}.`,
+      },
     });
   }
   return groups;

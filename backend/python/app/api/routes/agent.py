@@ -694,6 +694,22 @@ def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | Non
     return formatted
 
 
+def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+    """Whether web_search should remain enabled for this request.
+
+    `selected_tools is None` means "all actions", so web_search stays enabled.
+    When an explicit tools list is provided, require a web_search entry.
+    """
+    if selected_tools is None:
+        return True
+
+    for tool in selected_tools:
+        tool_name = str(tool).strip().lower()
+        if tool_name == "web_search" or tool_name.startswith("web_search."):
+            return True
+    return False
+
+
 async def _resolve_default_web_search_config(
     config_service: ConfigurationService,
     logger: Logger,
@@ -3004,6 +3020,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             config_service,
             logger,
         )
+        if not _is_web_search_enabled(chat_query.tools):
+            web_search_provider = None
+            web_search_tool_config = None
 
         # Build query info
         query_info = {
@@ -3413,6 +3432,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 config_service,
                 logger,
             )
+        if not _is_web_search_enabled(chat_query.tools):
+            web_search_provider = None
+            web_search_tool_config = None
 
         # Build query info
         query_info = {

@@ -9,6 +9,8 @@ export interface AgentWebSearchAttachment {
   providerKey: string;
   /** Human-readable label — cached for display (optional). */
   providerLabel?: string;
+  /** Provider logo path used by the flow node header. */
+  iconPath?: string;
 }
 
 /** Flow node payload (React Flow `data` + metadata). */

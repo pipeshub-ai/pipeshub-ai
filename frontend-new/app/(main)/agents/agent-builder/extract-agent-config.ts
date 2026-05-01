@@ -315,6 +315,7 @@ export function extractAgentConfigFromFlow(
           provider: provider as WebSearchProviderType,
           providerKey: (cfg.providerKey as string) || '',
           providerLabel: (cfg.providerLabel as string) || undefined,
+          iconPath: (cfg.iconPath as string) || undefined,
         };
       }
     }
