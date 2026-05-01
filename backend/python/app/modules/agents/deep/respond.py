@@ -1120,7 +1120,6 @@ async def _handle_direct_answer(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
