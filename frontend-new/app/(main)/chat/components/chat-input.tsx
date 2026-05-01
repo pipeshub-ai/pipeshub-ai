@@ -439,6 +439,8 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
+    if (isStreaming || isUniversalAgentLoading) return;
+
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
       executeMessageAction();
@@ -729,23 +731,37 @@ export function ChatInput({
             }}
           />
 
-          {/* Send button */}
-          <IconButton
-            variant="solid"
-            size="2"
-            onClick={handleSubmit}
-            disabled={!message.trim()}
-            style={{
-              margin: 0,
-              backgroundColor: message.trim() ? activeIconColor : 'var(--slate-a3)',
-            }}
-          >
-            <MaterialIcon
-              name="arrow_upward"
-              size={ICON_SIZES.PRIMARY}
-              color={message.trim() ? 'white' : 'var(--slate-a8)'}
-            />
-          </IconButton>
+          {/* Send / Stop — same contract as full composer */}
+          {isStreaming ? (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleStopStream}
+              style={{
+                margin: 0,
+                backgroundColor: activeToggleColor,
+              }}
+            >
+              <MaterialIcon name="stop" size={ICON_SIZES.PRIMARY} color="white" />
+            </IconButton>
+          ) : (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              style={{
+                margin: 0,
+                backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
+              }}
+            >
+              <MaterialIcon
+                name="arrow_upward"
+                size={ICON_SIZES.PRIMARY}
+                color={canSubmit ? 'white' : 'var(--slate-a8)'}
+              />
+            </IconButton>
+          )}
         </Flex>
       </Flex>
     );
@@ -1424,7 +1440,7 @@ export function ChatInput({
               onClick={handleStopStream}
               style={{
                 margin: 0,
-                backgroundColor: activeIconColor,
+                backgroundColor: activeToggleColor,
               }}
             >
               <MaterialIcon
