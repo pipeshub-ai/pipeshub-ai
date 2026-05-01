@@ -441,7 +441,7 @@ export const ChatApi = {
       chatMode: AgentStrategyApiSegment;
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
-      filters?: { apps: string[]; kb: string[] };
+      filters: { apps: string[]; kb: string[] };
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -456,7 +456,7 @@ export const ChatApi = {
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
-      ...buildAgentFiltersPayload(model.filters?.apps, model.filters?.kb),
+      ...buildAgentFiltersPayload(model.filters.apps, model.filters.kb),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
