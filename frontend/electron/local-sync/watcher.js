@@ -365,6 +365,20 @@ class ConnectorFsWatcher {
     await this.dispatcher.flush();
     return dispatchable;
   }
+
+  /**
+   * Push any live events buffered in the correlator and dispatcher all the
+   * way through to onBatch (and therefore the journal). Called at the start
+   * of a scheduled tick so a change made shortly before the tick isn't lost
+   * in the correlator's 250ms or the dispatcher's 1000ms window — without
+   * this drain, rescan() finds no diff (live events already updated state)
+   * and replay() finds nothing in the journal yet, so the change defers to
+   * the *next* tick.
+   */
+  async drainLiveEvents() {
+    await this.correlator.drain();
+    await this.dispatcher.flush();
+  }
 }
 
 module.exports = { ConnectorFsWatcher };

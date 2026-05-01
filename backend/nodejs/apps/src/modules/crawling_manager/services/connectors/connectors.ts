@@ -7,11 +7,7 @@ import {
 import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
-import {
-  localFsResyncDispatcher,
-  isLocalFsConnector,
-} from '../../../knowledge_base/services/local_fs_resync_dispatcher';
-import { localFsWatcherRegistry } from '../../../cli_rpc/socket/local_fs_watcher_registry';
+import { isLocalFsConnector } from '../../../knowledge_base/utils/local_fs_connector';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -43,26 +39,14 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
 
     try {
       if (isLocalFsConnector(connector)) {
-        if (!localFsWatcherRegistry.hasActiveWatcher(orgId, connectorId)) {
-          this.logger.debug(
-            'Skipping Local FS scheduled crawl — no active watcher. Connect the app or run `pipeshub run` for this connector.',
-            { orgId, connector, connectorId },
-          );
-          return { success: true, skipped: true };
-        }
-        await localFsResyncDispatcher.dispatch({
-          orgId,
-          connectorId,
-          connectorName: connector,
-          origin: 'CONNECTOR',
-          fullSync: false,
-        });
-        this.logger.info('Local FS scheduled resync dispatched to watcher', {
-          orgId,
-          connector,
-          connectorId,
-        });
-        return { success: true };
+        // Local FS is client-managed: the desktop app runs its own scheduler
+        // (see frontend electron/local-sync/manager.js scheduledTick). The
+        // server-side BullMQ schedule has nothing to do here.
+        this.logger.debug(
+          'Skipping Local FS scheduled crawl — client-managed connector',
+          { orgId, connector, connectorId },
+        );
+        return { success: true, skipped: true };
       }
 
       const event = constructSyncConnectorEvent(orgId, connector, connectorId);

@@ -22,10 +22,7 @@ import {
   Event as SyncEvent,
   BaseSyncEvent,
 } from './sync_events.service';
-import {
-  localFsResyncDispatcher,
-  isLocalFsConnector,
-} from './local_fs_resync_dispatcher';
+import { isLocalFsConnector } from '../utils/local_fs_connector';
 import {
   IServiceFileRecord,
   IServiceRecord
@@ -329,23 +326,20 @@ export class RecordRelationService {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
       if (isLocalFsConnector(resyncPayload.connector)) {
-        const dispatchResult = await localFsResyncDispatcher.dispatch({
-          orgId: resyncPayload.orgId,
-          connectorId: resyncPayload.connectorId,
-          connectorName: resyncPayload.connector,
-          origin: resyncPayload.origin,
-          fullSync: resyncPayload.fullSync,
-        });
-        logger.info('Dispatched Local FS resync to active watcher', {
+        // Local FS is client-managed: the desktop app owns the watcher and
+        // the rescan, and the backend has no way to push a "sync now" command
+        // to a user's filesystem. The desktop runtime triggers replay +
+        // full-sync directly via IPC (see frontend electron/local-sync), so a
+        // backend resync request is a no-op.
+        logger.info('Skipping backend resync for client-managed Local FS connector', {
           connectorId: resyncPayload.connectorId,
           orgId: resyncPayload.orgId,
-          replayedBatches: dispatchResult.replayedBatches,
-          replayedEvents: dispatchResult.replayedEvents,
         });
         return {
           success: true,
-          dispatch: 'watcher',
-          ...dispatchResult,
+          dispatch: 'client_managed',
+          message:
+            'Local FS sync is managed by the desktop app. Open Pipeshub on the machine that owns this folder to resync.',
         };
       }
       const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';

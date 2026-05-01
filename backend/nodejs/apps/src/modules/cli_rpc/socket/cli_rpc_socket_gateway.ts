@@ -3,7 +3,6 @@ import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
-import { localFsWatcherRegistry } from './local_fs_watcher_registry';
 import {
   DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
   normalizeAndAssertCliRpcProxyPath,
@@ -12,7 +11,6 @@ import {
 type CliRpcSocketData = {
   userId: string;
   orgId: string;
-  watcherConnectorId?: string;
 };
 
 type CliRpcSocket = Socket<
@@ -110,40 +108,6 @@ export class CliRpcSocketGateway {
 
     this.namespace.on('connection', (socket: CliRpcSocket) => {
       socket.on(
-        'localfs:registerWatcher',
-        (
-          payload: { connectorId?: string } | undefined,
-          ack?: (res: RpcResponse) => void,
-        ) => {
-          const responseId = 'localfs:registerWatcher';
-          try {
-            const connectorId = String(payload?.connectorId ?? '').trim();
-            if (!connectorId) {
-              throw new BadRequestError('connectorId is required');
-            }
-            localFsWatcherRegistry.register(socket, connectorId);
-            ack?.({
-              type: 'response',
-              id: responseId,
-              ok: true,
-              result: { status: 200, body: { connectorId } },
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            ack?.({
-              type: 'response',
-              id: responseId,
-              ok: false,
-              error: {
-                code: 'WATCHER_REGISTRATION_FAILED',
-                message,
-                status: (error as { statusCode?: number })?.statusCode,
-              },
-            });
-          }
-        },
-      );
-      socket.on(
         'rpc:request',
         async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
           const response = await this.handleRequest(req, socket);
@@ -154,9 +118,6 @@ export class CliRpcSocketGateway {
           }
         },
       );
-      socket.on('disconnect', () => {
-        localFsWatcherRegistry.unregister(socket);
-      });
     });
 
     this.logger.info('CLI RPC Socket.IO namespace initialized');

@@ -10,6 +10,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
+import { runConnectorResync } from '../../utils/connector-sync-actions';
 import { isElectron } from '@/lib/utils/api-base-url';
 import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
 import {
@@ -100,6 +101,7 @@ export function OverviewTab({
   const setInstanceStats = useConnectorsStore((s) => s.setInstanceStats);
   const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
 
@@ -185,6 +187,31 @@ export function OverviewTab({
     setLocalSyncStatus,
   ]);
 
+  const handleOverviewResync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
+    try {
+      setIsHeaderSyncBusy(true);
+      const outcome = await runConnectorResync({
+        connectorId,
+        connectorType: instance.type,
+      });
+      if (outcome.kind === 'requires-desktop') {
+        addToast({
+          variant: 'info',
+          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+        });
+        return;
+      }
+      addToast({ variant: 'success', title: 'Sync started' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start sync' });
+    } finally {
+      setIsHeaderSyncBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
+
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isReindexBusy) return;
@@ -262,10 +289,17 @@ export function OverviewTab({
                 />
               )}
               <StatusActionButton
+                label="Sync now"
+                icon="sync"
+                onClick={() => void handleOverviewResync()}
+                disabled={isHeaderSyncBusy || isRefreshStatsBusy}
+                loading={isHeaderSyncBusy}
+              />
+              <StatusActionButton
                 label={t('action.refresh')}
                 icon="refresh"
                 onClick={() => void handleOverviewRefreshStats()}
-                disabled={isRefreshStatsBusy}
+                disabled={isRefreshStatsBusy || isHeaderSyncBusy}
                 loading={isRefreshStatsBusy}
               />
             </Flex>
