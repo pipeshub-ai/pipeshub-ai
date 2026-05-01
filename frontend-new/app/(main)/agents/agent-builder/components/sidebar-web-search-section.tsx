@@ -45,7 +45,7 @@ export function AgentBuilderWebSearchSection({
   structureLocked = false,
 }: AgentBuilderWebSearchSectionProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [configurePanel, setConfigurePanel] = useState<{
     provider: ConfigurableProvider;
     meta: WebSearchProviderMeta;

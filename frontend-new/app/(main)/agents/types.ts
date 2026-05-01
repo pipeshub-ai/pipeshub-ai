@@ -151,6 +151,7 @@ export interface AgentDetail {
     provider: string;
     providerKey: string;
     providerLabel?: string;
+    iconPath?: string;
   } | null;
   shareWithOrg: boolean;
   access_type: string;
