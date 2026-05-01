@@ -439,7 +439,7 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
-    if (isStreaming) return;
+    if (isStreaming || isUniversalAgentLoading) return;
 
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
@@ -740,7 +740,7 @@ export function ChatInput({
               onClick={handleStopStream}
               style={{
                 margin: 0,
-                backgroundColor: activeIconColor,
+                backgroundColor: activeToggleColor,
               }}
             >
               <MaterialIcon name="stop" size={ICON_SIZES.PRIMARY} color="white" />
@@ -1441,7 +1441,7 @@ export function ChatInput({
               onClick={handleStopStream}
               style={{
                 margin: 0,
-                backgroundColor: activeIconColor,
+                backgroundColor: activeToggleColor,
               }}
             >
               <MaterialIcon
