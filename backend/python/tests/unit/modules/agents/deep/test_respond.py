@@ -2448,7 +2448,7 @@ class TestDeepRespondImplFastPathRefData:
         # completion_data should have been supplemented with referenceData
         cd = result.get("completion_data", {})
         if cd and cd.get("referenceData"):
-            assert any("jira.example.com" in ref.get("webUrl", "") for ref in cd["referenceData"])
+            assert any(ref.get("webUrl") == "https://jira.example.com/BUG-1" for ref in cd["referenceData"])
 
     @pytest.mark.asyncio
     async def test_fast_path_returns_none_falls_through(self):
@@ -3348,7 +3348,7 @@ class TestDeepRespondImplReferenceData:
         cd = result.get("completion_data", {})
         ref_data = cd.get("referenceData", [])
         # Should have deep_refs extracted from analyses/tool_results
-        assert any("jira.example.com" in r.get("webUrl", "") for r in ref_data)
+        assert any(r.get("webUrl") == "https://jira.example.com/BUG-1" for r in ref_data)
 
 
 class TestCollectToolResultsMoreBranches:

@@ -14,9 +14,11 @@ from msgraph.generated.sites.item.pages.pages_request_builder import (
 )
 from pydantic import BaseModel, Field
 
+from app.agents.actions.util.parse_file import FileContentParser
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -29,10 +31,14 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
+from app.models.entities import FileRecord, RecordType
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.sharepoint.sharepoint import SharePointDataSource
 
 logger = logging.getLogger(__name__)
+
+_MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +252,19 @@ class GetNotebookPageContentInput(BaseModel):
 class SharePoint:
     """SharePoint toolset for sites, pages, and document management. Uses MSGraphClient and SharePointDataSource."""
 
-    def __init__(self, client: MSGraphClient) -> None:
-        """Initialize with an authenticated MSGraphClient (from build_from_toolset)."""
+    def __init__(
+        self,
+        client: MSGraphClient,
+        state: Optional[ChatState] = None,
+        **kwargs,
+    ) -> None:
+        """Initialize with an authenticated MSGraphClient (from build_from_toolset).
+
+        `state` carries `model_name`, `model_key`, and `config_service` — used by
+        `get_file_content` for token-aware parsing via `FileContentParser`.
+        """
         self.client = SharePointDataSource(client)
+        self.state: Optional[ChatState] = state or kwargs.get("state")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1116,30 +1132,27 @@ class SharePoint:
         drive_id: str,
         item_id: str,
     ) -> tuple[bool, str]:
-        """Download and read the content of a SharePoint file.
+        """Download and parse a SharePoint file via the shared FileContentParser.
 
-        Supported formats are parsed into text through the shared file parser.
+        Pre-fetches metadata to enforce a 50 MB cap before downloading bytes,
+        rejects OneNote notebook files (`.one`, `.onetoc2`) with a redirect to
+        the OneNote pipeline, then runs the same async parser used by OneDrive.
         """
         try:
-            mime_type: Optional[str] = None
-            file_name: Optional[str] = None
-            try:
-                meta_response = await self.client.get_drive_item_metadata(
-                    site_id=site_id,
-                    drive_id=drive_id,
-                    item_id=item_id,
-                )
-                if meta_response.success and meta_response.data:
-                    raw_meta = meta_response.data
-                    file_facet = raw_meta.get("file") or {}
-                    if isinstance(file_facet, dict):
-                        mime_type = file_facet.get("mimeType")
-                    file_name = raw_meta.get("name")
-            except Exception:
-                # Metadata fetch is best-effort; proceed without it
-                pass
+            # 1. Metadata pre-fetch — for size cap, mime, name, extension.
+            meta = await self.client.get_drive_item_metadata(
+                site_id=site_id, drive_id=drive_id, item_id=item_id,
+            )
+            if not meta.success:
+                return False, json.dumps({"error": meta.error or "File not found"})
+            raw_meta = meta.data or {}
+            file_facet = raw_meta.get("file") or {}
+            mime_type = file_facet.get("mimeType") if isinstance(file_facet, dict) else None
+            file_name = raw_meta.get("name") or "document"
+            file_size = raw_meta.get("size")
 
-            if file_name and file_name.lower().endswith((".one", ".onetoc2")):
+            # 2. OneNote redirect — these need the OneNote API, not file content.
+            if file_name.lower().endswith((".one", ".onetoc2")):
                 return False, json.dumps({
                     "error": (
                         "OneNote notebook files (.one, .onetoc2) cannot be read with get_file_content. "
@@ -1147,35 +1160,67 @@ class SharePoint:
                     )
                 })
 
-            response = await self.client.get_drive_item_content(
-                site_id=site_id,
-                drive_id=drive_id,
-                item_id=item_id,
+            # 3. Pre-download size cap.
+            if file_size is not None and file_size > _MAX_FILE_CONTENT_BYTES:
+                return False, json.dumps({
+                    "error": f"File is too large to be processed (>{_MAX_FILE_CONTENT_BYTES // (1024 * 1024)} MB)",
+                    "size_bytes": file_size,
+                    "name": file_name,
+                })
+
+            # 4. Download raw bytes.
+            resp = await self.client.get_drive_item_content(
+                site_id=site_id, drive_id=drive_id, item_id=item_id,
             )
-            if response.success:
-                data = response.data or {}
-                if "content" in data:
-                    content = data["content"]
-                    size = data.get("size_bytes", 0)
-                    truncated = data.get("truncated", False)
-                    fmt = data.get("format", "text")
-                    return True, json.dumps({
-                        "content": content,
-                        "format": fmt,
-                        "encoding": data.get("encoding", "utf-8"),
-                        "file_name": file_name,
-                        "mime_type": mime_type,
-                        "size_bytes": size,
-                        "truncated": truncated,
-                        "truncation_note": (
-                            "Content was truncated to 512 KB. The file may have more content."
-                            if truncated else None
-                        ),
-                    })
-                else:
-                    return True, json.dumps({"content": "", "size_bytes": 0, "note": "Empty file"})
-            else:
-                return False, json.dumps({"error": response.error or "Failed to read file content"})
+            if not resp.success:
+                return False, json.dumps({"error": resp.error or "Failed to read file content"})
+
+            raw = resp.data
+            if not isinstance(raw, (bytes, bytearray)) or not raw:
+                return True, json.dumps({"content": "", "size_bytes": 0, "note": "Empty file"})
+
+            # 5. Resolve state-bound parser dependencies.
+            state = self.state or {}
+            model_name = state.get("model_name")
+            model_key = state.get("model_key")
+            config_service = state.get("config_service")
+
+            # 6. Build FileRecord. Extension may come from the Graph `file` facet
+            #    or — more reliably for SharePoint — from the file_name itself.
+            ext = ""
+            if isinstance(file_facet, dict):
+                ext = (file_facet.get("fileExtension") or "").strip().lower().lstrip(".")
+            if not ext and "." in file_name:
+                ext = file_name.rsplit(".", 1)[1].lower()
+
+            file_record = FileRecord(
+                org_id="",
+                record_name=file_name,
+                record_type=RecordType.FILE,
+                external_record_id=item_id,
+                version=1,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.SHAREPOINT_ONLINE,
+                connector_id=drive_id or "sharepoint",
+                mime_type=mime_type or "application/octet-stream",
+                extension=ext,
+                is_file=True,
+            )
+
+            # 7. Parse via shared async parser.
+            parser = FileContentParser(logger=logger, config_service=config_service)
+            ok, payload = await parser.parse(
+                file_record, bytes(raw), model_name, model_key, config_service,
+            )
+            serialized = [item.model_dump() for item in payload]
+            if ok:
+                return True, json.dumps({
+                    "content": serialized,
+                    "size_bytes": len(raw),
+                    "mime_type": mime_type,
+                    "file_name": file_name,
+                })
+            return False, json.dumps({"error": "Failed to parse file", "details": serialized})
         except Exception as e:
             return self._handle_error(e, f"get file content {item_id}")
 
