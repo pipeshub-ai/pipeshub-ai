@@ -705,11 +705,7 @@ def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
 
     for tool in selected_tools:
         tool_name = str(tool).strip().lower()
-        if (
-            tool_name == "web_search"
-            or tool_name.startswith("web_search.")
-            or "web_search" in tool_name
-        ):
+        if tool_name == "web_search" or tool_name.startswith("web_search."):
             return True
     return False
 
@@ -3436,7 +3432,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 config_service,
                 logger,
             )
-        if agent_id != "agentIdPlaceholder" and not _is_web_search_enabled(chat_query.tools):
+        if not _is_web_search_enabled(chat_query.tools):
             web_search_provider = None
             web_search_tool_config = None
 
