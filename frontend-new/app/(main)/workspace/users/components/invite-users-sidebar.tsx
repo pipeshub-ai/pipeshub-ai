@@ -215,10 +215,10 @@ export function InviteUsersSidebar({
         addToast({
           variant: 'success',
           title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-          description: t(
-            'workspace.users.invite.successDescription',
-            { email: emailDisplay, defaultValue: `${emailDisplay} has been invited` }
-          ),
+          description: t('workspace.users.invite.successDescription', {
+            email: emailDisplay,
+            defaultValue: `${emailDisplay} has been invited`,
+          }),
           duration: 3000,
         });
       }
