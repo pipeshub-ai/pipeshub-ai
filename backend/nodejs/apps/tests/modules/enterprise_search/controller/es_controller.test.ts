@@ -11723,4 +11723,447 @@ describe('Enterprise Search Controller', () => {
       expect(err.message).to.include('Conversation not found')
     })
   })
+
+  // ---------------------------------------------------------------------------
+  // assignToolsToPayload — tools forwarding (commits f12bfbfb + 64117e66)
+  //
+  // The helper only sets `payload.tools` when the caller passes a non-undefined
+  // value.  For `streamChat` / `addMessageStream` the outer `if (agentMode)`
+  // guard is also preserved, so tools must not appear in non-agent requests.
+  // ---------------------------------------------------------------------------
+
+  describe('assignToolsToPayload behavior', () => {
+    // -------------------------------------------------------------------------
+    // streamChat — agent mode guard preserved
+    // -------------------------------------------------------------------------
+    describe('streamChat', () => {
+      function stubStreamChatDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          messages: [{ messageType: 'user_query', content: 'hello' }],
+        })
+        sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when chatMode is agent but tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto', tools: 'not-an-array' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+
+      it('should NOT include tools in AI payload when chatMode is not agent', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'quick', tools: ['tool1'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageStream — agent mode guard preserved
+    // -------------------------------------------------------------------------
+    describe('addMessageStream', () => {
+      function stubAddMessageStreamDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(Conversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when chatMode is agent but tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto', tools: ['toolA', 'toolB'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['toolA', 'toolB'])
+      })
+
+      it('should coerce non-array tools to empty array in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto', tools: 99 },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // streamAgentConversation — no agentMode guard (unconditional call)
+    // -------------------------------------------------------------------------
+    describe('streamAgentConversation', () => {
+      function stubStreamAgentConversationDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({ agentKey: 'agent-1' })
+        sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello', tools: 'bad-value' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageToAgentConversation — no agentMode guard (unconditional call)
+    // The non-streaming `createAgentConversation` uses a different, older inline
+    // body that does NOT call assignToolsToPayload; only the streaming variant
+    // and addMessageToAgentConversation were updated in these commits.
+    // -------------------------------------------------------------------------
+    describe('addMessageToAgentConversation', () => {
+      function stubAddMessageToAgentConversationDeps() {
+        const mockDoc = createMockConversationDoc({
+          agentKey: 'agent-1',
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(AgentConversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        return mockDoc
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.have.property('tools')
+        expect(capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: { invalid: true } },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.have.property('tools')
+        expect(capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageStreamToAgentConversation — no agentMode guard (unconditional)
+    // -------------------------------------------------------------------------
+    describe('addMessageStreamToAgentConversation', () => {
+      function stubAddMessageStreamToAgentConversationDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          agentKey: 'agent-1',
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(AgentConversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamToAgentConversationDeps(mockStream)
+
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamToAgentConversationDeps(mockStream)
+
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: ['toolX', 'toolY'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['toolX', 'toolY'])
+      })
+    })
+  })
 })

@@ -178,13 +178,25 @@ async function fetchDeletedAgentKeysForUser(
 const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
   let chatMode: string = requestChatMode || 'quick';
   let agentMode: boolean = false;
-  
+
   if (chatMode.includes('agent')) {
     chatMode = chatMode.split(':')[1] || 'auto';
     agentMode = true;
   }
-  
+
   return { chatMode, agentMode };
+};
+
+// Forwards the user-selected tool list to the AI payload when the client
+// explicitly sent `tools`. Omitting it tells Python to use all configured
+// tools (Python receives None); sending `[]` disables tools entirely.
+const assignToolsToPayload = (
+  payload: Record<string, unknown>,
+  tools: unknown,
+): void => {
+  if (tools !== undefined) {
+    payload.tools = Array.isArray(tools) ? tools : [];
+  }
 };
 
 
@@ -450,12 +462,8 @@ export const streamChat =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
-      // For agent mode, forward the user-selected tool list so the backend
-      // can scope toolset loading to the selected instances.
-      // Only set when the client explicitly sent `tools`; omitting it means
-      // "use all configured tools" (Python receives None).
-      if (agentMode && req.body.tools !== undefined) {
-        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      if (agentMode) {
+        assignToolsToPayload(aiPayload, req.body.tools);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -1488,8 +1496,8 @@ export const addMessageStream =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
-      if (agentMode && req.body.tools !== undefined) {
-        aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+      if (agentMode) {
+        assignToolsToPayload(aiPayload, req.body.tools);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -2725,8 +2733,8 @@ async function regenerateAnswersInternal(
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
     };
-    if (regenIsAgentMode && req.body.tools !== undefined) {
-      aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
+    if (regenIsAgentMode) {
+      assignToolsToPayload(aiPayload, req.body.tools);
     }
 
     const regenEndpoint = isUniversalAgentRegen
@@ -5134,13 +5142,12 @@ export const unshareAgent =
       (res as any).flush?.();
 
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         quickMode: req.body.quickMode || false,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
-        tools: req.body.tools || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -5149,6 +5156,8 @@ export const unshareAgent =
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
       };
+
+      assignToolsToPayload(aiPayload, req.body.tools);
 
       logger.info('aiPayload', aiPayload);
 
@@ -5727,13 +5736,9 @@ export const createAgentConversation =
             filters: req.body.filters,
           },
         });
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
+        
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
             // New fields for multi-model support
@@ -5742,7 +5747,14 @@ export const createAgentConversation =
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
-          },
+        };
+        assignToolsToPayload(aiPayload, req.body.tools);
+
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiPayload
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -6074,7 +6086,7 @@ export const addMessageStreamToAgentConversation =
       );
 
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -6087,6 +6099,7 @@ export const addMessageStreamToAgentConversation =
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
       };
+      assignToolsToPayload(aiPayload, req.body.tools);
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
