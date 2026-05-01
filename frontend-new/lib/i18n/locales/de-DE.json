@@ -1520,6 +1520,8 @@
         "credentialsSubtext": "Geben Sie Ihre {{name}}-Anmeldedaten ein",
         "oauthCreateHelperAdmin": "Wenn gespeicherte OAuth-Apps vorhanden sind, wählen Sie oben eine, oder wählen Sie „Neue OAuth-App“ und tragen Sie die Client-Anmeldedaten unten ein. Tragen Sie diese Weiterleitungs-URL zuerst in Ihrem IdP ein.",
         "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Weiterleitungs-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
+        "oauthEditHelperAdmin": "Wählen Sie oben eine gespeicherte OAuth-App. Wenn Sie die App wechseln und Ihre Änderungen speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
+        "oauthEditHelperNonAdmin": "Wählen Sie oben eine gespeicherte OAuth-App (Ihr Administrator kann mehrere anbieten). Wenn Sie die App wechseln und speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
         "oauthCredentialsSubtextAdmin": "Client-Anmeldedaten eingeben oder prüfen (für eine neue Registrierung oder eine oben ausgewählte gespeicherte App).",
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
         "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
@@ -1556,14 +1558,12 @@
         "manageConfig": "Konfiguration verwalten"
       },
       "overview": {
-        "readyBanner": "Instanz konfiguriert und bereit für die Synchronisierung!",
-        "readyBannerSub": "Datensätze sind bereit zur Synchronisierung.",
-        "startSyncLoading": "Wird gestartet...",
-        "startSync": "Jetzt Synchronisierung starten",
         "progressPercent": "{{n}}% abgeschlossen",
         "recordsStatus": "Datensatzstatus",
         "reindexFailed": "Neuindizierung fehlgeschlagen",
         "syncButton": "Synchronisieren",
+        "refreshStatsSuccess": "Datensatzstatus aktualisiert",
+        "refreshStatsError": "Datensatzstatus konnte nicht aktualisiert werden",
         "statTotal": "Gesamt",
         "statTotalSub": "Datensätze insgesamt",
         "statFailedSub": "Fehler (API- / Berechtigungsprobleme)",
@@ -1581,8 +1581,7 @@
         "statEmpty": "Leer",
         "statEmptySub": "Kein extrahierbarer Inhalt",
         "recordsByType": "Datensätze nach Typ",
-        "noRecordTypes": "Keine Datensatztypen verfügbar",
-        "personalRecordsIndexed": "Persönliche Datensätze indexiert"
+        "noRecordTypes": "Keine Datensatztypen verfügbar"
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -1591,10 +1590,11 @@
         "enabledBy": "Aktiviert von",
         "member": "Mitglied",
         "date": "Datum",
-        "importDate": "Importstartdatum",
+        "createdBySection": "Erstellt von",
+        "creator": "Ersteller",
+        "createdOn": "Erstellt am",
         "syncSettings": "Synchronisierungseinstellungen",
-        "syncStrategy": "Synchronisierungsstrategie",
-        "syncStrategyHelper": "Wählen Sie, wie Daten von {{name}} synchronisiert werden",
+        "syncStrategySettingsHint": "Sie können die Synchronisierungsstrategie ändern, indem Sie zu <bold>{{manageConfig}}</bold> wechseln.",
         "syncInterval": "Synchronisierungsintervall",
         "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
       },

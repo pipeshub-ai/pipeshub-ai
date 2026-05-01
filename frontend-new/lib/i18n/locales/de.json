@@ -750,6 +750,8 @@
         "credentialsSubtext": "Enter your {{name}} authentication details",
         "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect URL in your IdP first.",
         "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
+        "oauthEditHelperAdmin": "Wählen Sie oben eine gespeicherte OAuth-App. Wenn Sie die App wechseln und Ihre Änderungen speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
+        "oauthEditHelperNonAdmin": "Wählen Sie oben eine gespeicherte OAuth-App (Ihr Administrator kann mehrere anbieten). Wenn Sie die App wechseln und speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
         "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
         "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
         "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
@@ -786,14 +788,12 @@
         "manageConfig": "Manage Configuration"
       },
       "overview": {
-        "readyBanner": "Instance configured and ready to sync!",
-        "readyBannerSub": "Records are ready to be synced.",
-        "startSyncLoading": "Starting...",
-        "startSync": "Start Syncing Now",
         "progressPercent": "{{n}}% Complete",
         "recordsStatus": "Records Status",
         "reindexFailed": "Reindex Failed",
         "syncButton": "Sync",
+        "refreshStatsSuccess": "Datensatzstatus aktualisiert",
+        "refreshStatsError": "Datensatzstatus konnte nicht aktualisiert werden",
         "statTotal": "Total",
         "statTotalSub": "Total records",
         "statFailedSub": "Errors (API / permission issues)",
@@ -811,8 +811,7 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available",
-        "personalRecordsIndexed": "Personal Records Indexed"
+        "noRecordTypes": "No record types available"
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -821,10 +820,11 @@
         "enabledBy": "Enabled By",
         "member": "Member",
         "date": "Date",
-        "importDate": "Import start date",
+        "createdBySection": "Erstellt von",
+        "creator": "Ersteller",
+        "createdOn": "Erstellt am",
         "syncSettings": "Sync Settings",
-        "syncStrategy": "Sync Strategy",
-        "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
+        "syncStrategySettingsHint": "Sie können die Synchronisierungsstrategie ändern, indem Sie zu <bold>{{manageConfig}}</bold> wechseln.",
         "syncInterval": "Sync Interval",
         "syncIntervalHelper": "Set how often {{name}} data is refreshed"
       },

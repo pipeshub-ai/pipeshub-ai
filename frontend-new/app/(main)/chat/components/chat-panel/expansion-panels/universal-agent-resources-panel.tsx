@@ -395,6 +395,8 @@ export function UniversalAgentResourcesPanel({
       } catch (err) {
         console.error('[UniversalAgentResourcesPanel] Failed to load my-toolsets page', page, err);
         if (page === 1) {
+          // Mark cache so the initial-load effect does not retry in a tight loop on failure.
+          _actionsPageCache = { ..._actionsPageCache, lastFetchedAt: Date.now() };
           setToolsError(
             t('chat.universalAgent.toolsLoadError', {
               defaultValue: 'Failed to load available actions.',
@@ -410,18 +412,20 @@ export function UniversalAgentResourcesPanel({
     [hydrateResources, setToolsLoading, setToolsError, t]
   );
 
-  // Initial load — skips re-fetch when fresh data already exists in the store
-  // (e.g. tab switches within the same session).  Refetches when the cache is
-  // older than CACHE_TTL_MS to avoid serving stale data from a prior session.
+  // Initial load — skips re-fetch when the module cache has a fresh page-1 result
+  // (including “success but zero actionable tools”, where toolGroups stay empty).
+  // Refetches when the cache is older than CACHE_TTL_MS.
   useEffect(() => {
     if (toolsLoading) return;
-    const cacheStale = Date.now() - _actionsPageCache.lastFetchedAt > CACHE_TTL_MS;
-    if (toolGroups.length > 0 && !cacheStale) {
+    const lastAt = _actionsPageCache.lastFetchedAt;
+    const cacheStale = lastAt <= 0 || Date.now() - lastAt > CACHE_TTL_MS;
+    const hasFreshPage1 = lastAt > 0 && !cacheStale;
+    if (hasFreshPage1) {
       setHasNextPage(_actionsPageCache.hasMore);
       return;
     }
     void loadPage(1);
-  }, [toolGroups.length, toolsLoading, loadPage]);
+  }, [toolsLoading, loadPage]);
 
   const handleLoadMore = useCallback(() => {
     if (!hasNextPage || isLoadingMore) return;

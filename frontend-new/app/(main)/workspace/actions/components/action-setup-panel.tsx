@@ -357,7 +357,7 @@ export function ActionSetupPanel({
           const first = schemaFieldsToRender.find((f) => next[f.name])?.name;
           if (first) {
             document
-              .querySelector(`[data-ph-auth-field="${first}"]`)
+              .querySelector(`[data-ph-field="${first}"]`)
               ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }

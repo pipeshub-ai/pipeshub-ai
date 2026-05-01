@@ -2,9 +2,8 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
+import { Flex, Tabs, Box } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
@@ -59,6 +58,20 @@ function oauthAppSelectionError(
     return 'Please select an OAuth app.';
   }
   return null;
+}
+
+/** Scroll the connector panel body to the first invalid sync custom field (matches auth step UX). */
+function scrollToFirstSyncCustomFieldError(
+  syncCustomFields: { name: string }[],
+  syncFieldErrors: Record<string, string>
+) {
+  const name = syncCustomFields.find((f) => syncFieldErrors[f.name])?.name;
+  if (!name) return;
+  requestAnimationFrame(() => {
+    document
+      .querySelector(`[data-ph-field="${name}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
 }
 
 // ========================================
@@ -397,7 +410,7 @@ export function ConnectorPanel() {
       const first = Object.keys(fieldErrs)[0];
       requestAnimationFrame(() => {
         document
-          .querySelector(`[data-ph-auth-field="${first}"]`)
+          .querySelector(`[data-ph-field="${first}"]`)
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
       return false;
@@ -584,6 +597,7 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
+      scrollToFirstSyncCustomFieldError(syncCustomFields, syncFieldErrors);
       return;
     }
 
@@ -686,6 +700,7 @@ export function ConnectorPanel() {
     mergeFormErrors(syncErrorPatch);
 
     if (Object.keys(syncFieldErrors).length > 0) {
+      scrollToFirstSyncCustomFieldError(syncCustomFields, syncFieldErrors);
       return;
     }
 
@@ -768,31 +783,6 @@ export function ConnectorPanel() {
     isOAuthPopupBusy,
   });
 
-  // ── Header ───────────────────────────────────────────────────
-
-  const headerActions = (
-    <Flex align="center" gap="1">
-      {connectorSchema?.documentationLinks?.[0]?.url && (
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={() => {
-            const url = connectorSchema?.documentationLinks?.[0]?.url;
-            if (url) window.open(url, '_blank', 'noopener,noreferrer');
-          }}
-          style={{ cursor: 'pointer' }}
-        >
-          <MaterialIcon
-            name="open_in_new"
-            size={16}
-            color="var(--gray-11)"
-          />
-        </IconButton>
-      )}
-    </Flex>
-  );
-
   // ── Render panel icon as img (connector icon) ────────────────
 
   const panelIcon = panelConnector ? (
@@ -808,7 +798,6 @@ export function ConnectorPanel() {
       }}
       title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
-      headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
       primaryLabel={footerConfig.primaryLabel}
       primaryDisabled={footerConfig.primaryDisabled}

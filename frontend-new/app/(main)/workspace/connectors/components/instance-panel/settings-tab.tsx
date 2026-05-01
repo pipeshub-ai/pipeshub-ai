@@ -1,9 +1,10 @@
 'use client';
 
 import React from 'react';
-import { useTranslation } from 'react-i18next';
+import { useTranslation, Trans } from 'react-i18next';
 import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
 
@@ -36,7 +37,18 @@ export function SettingsTab({
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
   const syncInterval = getSyncIntervalLabel(config ?? undefined);
   const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
-  const importStartDate = config?.config?.sync?.scheduledConfig?.startDateTime;
+
+  const creatorEntry = useUserDirectoryEntry(instance.createdBy);
+  const creatorNameFromDirectory =
+    creatorEntry?.fullName.trim() ? creatorEntry.fullName.trim() : null;
+  const creatorAvatarUrl = creatorEntry?.resolvedUserId
+    ? `/api/v1/users/${creatorEntry.resolvedUserId}/dp`
+    : null;
+
+  const displayCreatorName =
+    creatorNameFromDirectory ?? instance.enabledBy?.name ?? null;
+  const displayCreatorAvatar =
+    creatorAvatarUrl ?? instance.enabledBy?.avatar ?? undefined;
 
   const removeConnectorButton = onRequestRemoveConnector ? (
     <Button
@@ -68,22 +80,22 @@ export function SettingsTab({
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
-      {/* ── Enabled By ── */}
-      <SectionCard title={t('workspace.connectors.settingsTab.enabledBy')}>
+      {/* ── Created by ── */}
+      <SectionCard title={t('workspace.connectors.settingsTab.createdBySection')}>
         <Flex direction="column" gap="4">
           <InfoRow
-            label={t('workspace.connectors.settingsTab.member')}
+            label={t('workspace.connectors.settingsTab.creator')}
             value={
-              instance.enabledBy ? (
+              displayCreatorName ? (
                 <Flex align="center" gap="2">
                   <Avatar
                     size="1"
-                    fallback={instance.enabledBy.name.charAt(0)}
-                    src={instance.enabledBy.avatar}
+                    fallback={displayCreatorName.charAt(0)}
+                    src={displayCreatorAvatar}
                     radius="full"
                   />
                   <Text size="2" style={{ color: 'var(--gray-12)' }}>
-                    {instance.enabledBy.name}
+                    {displayCreatorName}
                   </Text>
                 </Flex>
               ) : (
@@ -92,7 +104,7 @@ export function SettingsTab({
             }
           />
           <InfoRow
-            label={t('workspace.connectors.settingsTab.date')}
+            label={t('workspace.connectors.settingsTab.createdOn')}
             value={
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
                 {instance.createdAtTimestamp
@@ -108,24 +120,8 @@ export function SettingsTab({
         </Flex>
       </SectionCard>
 
-      {/* ── Import start date ── */}
-      <SectionCard title={t('workspace.connectors.configTab.importDate')}>
-        <ReadOnlyField
-          value={
-            importStartDate
-              ? new Date(importStartDate).toLocaleDateString('en-GB', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                })
-              : '-'
-          }
-          leadingIcon="date_range"
-        />
-      </SectionCard>
-
       {/* ── Sync Settings ── */}
-      <SectionCard title={t('workspace.connectors.configTab.syncSettings')}>
+      <SectionCard title={t('workspace.connectors.settingsTab.syncSettings')}>
         <Flex direction="column" gap="4">
           {/* Sync Strategy */}
           <Flex direction="column" gap="1">
@@ -136,7 +132,15 @@ export function SettingsTab({
               <ReadOnlyField value={syncStrategy} />
             </Flex>
             <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
-              {t('workspace.connectors.configTab.syncStrategyHelper', { name: instance.name })}
+              <Trans
+                i18nKey="workspace.connectors.settingsTab.syncStrategySettingsHint"
+                values={{
+                  manageConfig: t('workspace.connectors.instancePanel.manageConfig'),
+                }}
+                components={{
+                  bold: <strong style={{ fontWeight: 600, color: 'var(--gray-11)' }} />,
+                }}
+              />
             </Text>
           </Flex>
 

@@ -167,7 +167,7 @@ export function UserToolsetConfigDialog({
       requestAnimationFrame(() => {
         const first = Object.keys(errors)[0];
         document
-          .querySelector(`[data-ph-auth-field="${first}"]`)
+          .querySelector(`[data-ph-field="${first}"]`)
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
     }
