@@ -464,20 +464,25 @@ function ChatContent() {
           const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
+            // Legacy chats stored the KB/Collections root ID in apps. With the new
+            // behavior, KB roots are never added to apps — drop them for compat.
+            const legacyFilteredApps = af.apps.filter(
+              (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
+            );
             if (urlAgentId) {
               store.setAgentKnowledgeScope({
-                apps: af.apps.map((n) => n.id),
+                apps: legacyFilteredApps.map((n) => n.id),
                 kb: af.kb.map((n) => n.id),
               });
             } else {
               store.setFilters({
-                apps: af.apps.map((n) => n.id),
+                apps: legacyFilteredApps.map((n) => n.id),
                 kb: af.kb.map((n) => n.id),
               });
             }
             const namesCache: Record<string, string> = {};
             const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-            for (const node of [...af.apps, ...af.kb]) {
+            for (const node of [...legacyFilteredApps, ...af.kb]) {
               namesCache[node.id] = node.name;
               metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
             }
@@ -594,21 +599,27 @@ function ChatContent() {
           const af = lastFiltered.appliedFilters;
           const store = useChatStore.getState();
 
+          // Legacy chats stored the KB/Collections root ID in apps. With the new
+          // behavior, KB roots are never added to apps — drop them for compat.
+          const legacyFilteredApps = af.apps.filter(
+            (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
+          );
+
           if (historyAndShareAgentId) {
             store.setAgentKnowledgeScope({
-              apps: af.apps.map((n) => n.id),
+              apps: legacyFilteredApps.map((n) => n.id),
               kb: af.kb.map((n) => n.id),
             });
           } else {
             store.setFilters({
-              apps: af.apps.map((n) => n.id),
+              apps: legacyFilteredApps.map((n) => n.id),
               kb: af.kb.map((n) => n.id),
             });
           }
 
           const namesCache: Record<string, string> = {};
           const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-          for (const node of [...af.apps, ...af.kb]) {
+          for (const node of [...legacyFilteredApps, ...af.kb]) {
             namesCache[node.id] = node.name;
             metaCache[node.id] = {
               name: node.name,
