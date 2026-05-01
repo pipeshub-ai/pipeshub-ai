@@ -205,7 +205,14 @@ export async function streamMessageForSlot(
                 },
               },
             }
-          : {metadata: { custom: { createdAt: new Date().toISOString() } }}),
+          : {
+              metadata: {
+                custom: {
+                  createdAt: new Date().toISOString(),
+                  ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                },
+              },
+            }),
       },
       {
         role: 'assistant' as const,

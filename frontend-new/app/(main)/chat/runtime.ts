@@ -271,7 +271,9 @@ export function buildExternalStoreConfig(
             apps: buildAppliedFilterNodes(resolvedFilters.apps),
             kb: buildAppliedFilterNodes(resolvedFilters.kb),
           }
-        : undefined;
+        : isAgent
+          ? { apps: [], kb: [] }
+          : undefined;
 
       const request: StreamChatRequest = {
         query,
