@@ -340,6 +340,7 @@ async def _execute_simple_sub_agent(
             query=state.get("query", ""),
             log=log,
             recent_conversations=state.get("previous_conversations", [])[-3:],
+            user_attachment_appendix=state.get("user_attachment_prompt_appendix"),
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
@@ -533,6 +534,7 @@ async def _execute_complex_sub_agent(
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        user_attachment_appendix=state.get("user_attachment_prompt_appendix"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -834,6 +836,7 @@ async def _execute_multi_step_sub_agent(
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        user_attachment_appendix=state.get("user_attachment_prompt_appendix"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)

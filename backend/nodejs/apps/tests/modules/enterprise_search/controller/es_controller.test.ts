@@ -62,6 +62,7 @@ import { Conversation } from '../../../../src/modules/enterprise_search/schema/c
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
+import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -379,7 +380,7 @@ describe('Enterprise Search Controller', () => {
         await handler(req, res)
         expect.fail('Expected an error to be thrown')
       } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
+        expect(error.message).to.equal('Query or attachmentDocumentIds is required')
       }
     })
 
@@ -392,7 +393,7 @@ describe('Enterprise Search Controller', () => {
         await handler(req, res)
         expect.fail('Expected an error to be thrown')
       } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
+        expect(error.message).to.equal('Query or attachmentDocumentIds is required')
       }
     })
 
@@ -526,6 +527,144 @@ describe('Enterprise Search Controller', () => {
       // The token event should be forwarded, but the complete event intercepted
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('token')
+    })
+
+    it('should accept empty query when attachmentDocumentIds resolves successfully', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const documentId = 'a'.repeat(24)
+      const orgIdHex = 'b'.repeat(24)
+
+      // Storage lookup returns one matching, non-deleted document for this org.
+      const findChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves([
+          {
+            _id: new mongoose.Types.ObjectId(documentId),
+            documentName: 'spec',
+            extension: 'pdf',
+            sizeInBytes: 1234,
+          },
+        ]),
+      }
+      sinon.stub(DocumentModel, 'find').returns(findChain)
+
+      const mockDoc = createMockConversationDoc({
+        title: 'spec.pdf',
+        messages: [
+          {
+            messageType: 'user_query',
+            content: '',
+            attachments: [{ documentId, fileName: 'spec.pdf', sizeInBytes: 1234 }],
+          },
+        ],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: '', attachmentDocumentIds: [documentId] },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(orgIdHex),
+        },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // No 400 was thrown — SSE was set up and executeStream was reached.
+      expect(res.writeHead.calledOnce).to.be.true
+      expect(executeStreamStub.calledOnce).to.be.true
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const connectedEvent = res.write.args.map((a: any) => a[0]).join('')
+      expect(connectedEvent).to.include('connected')
+      await promise.catch(() => undefined)
+    })
+
+    it('should reject the request when an attachmentDocumentId is malformed', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const req = createMockRequest({
+        body: { query: '', attachmentDocumentIds: ['not-an-objectid'] },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+
+      try {
+        await handler(req, res)
+        expect.fail('Expected the handler to reject the malformed documentId')
+      } catch (error: any) {
+        expect(error.message).to.match(/Invalid attachment documentId/)
+      }
+    })
+
+    it('should forward attachmentDocumentIds to the Python AI service payload', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const documentId = 'c'.repeat(24)
+      const findChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves([
+          {
+            _id: new mongoose.Types.ObjectId(documentId),
+            documentName: 'notes',
+            extension: '.md',
+            sizeInBytes: 42,
+          },
+        ]),
+      }
+      sinon.stub(DocumentModel, 'find').returns(findChain)
+
+      const mockDoc = createMockConversationDoc()
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      // Stub executeStream so we can capture `this.body` on the command instance.
+      // The controller stores the aiPayload under `body` in the constructor, so the
+      // bound `this` here is the AIServiceCommand built from aiCommandOptions.
+      const mockStream = createMockStream()
+      let capturedBody: any
+      sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .callsFake(async function (this: any) {
+          capturedBody = this.body
+          return mockStream as any
+        })
+
+      const req = createMockRequest({
+        body: { query: 'summarize', attachmentDocumentIds: [documentId] },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // The command stringifies the body via sanitizeBody, so parse before asserting.
+      expect(capturedBody, 'aiPayload should have been built').to.be.a('string')
+      const parsed = JSON.parse(capturedBody)
+      expect(parsed.attachmentDocumentIds).to.deep.equal([documentId])
+      expect(parsed.query).to.equal('summarize')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise.catch(() => undefined)
     })
   })
 
@@ -708,7 +847,7 @@ describe('Enterprise Search Controller', () => {
         await handler(req, res)
         expect.fail('Expected an error to be thrown')
       } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
+        expect(error.message).to.equal('Query or attachmentDocumentIds is required')
       }
     })
 
@@ -3104,7 +3243,7 @@ describe('Enterprise Search Controller', () => {
         await handler(req, res)
         expect.fail('Expected error')
       } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
+        expect(error.message).to.equal('Query or attachmentDocumentIds is required')
       }
     })
 
@@ -5400,7 +5539,7 @@ describe('Enterprise Search Controller', () => {
         await handler(req, res)
         expect.fail('Expected an error to be thrown')
       } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
+        expect(error.message).to.equal('Query or attachmentDocumentIds is required')
       }
     })
 

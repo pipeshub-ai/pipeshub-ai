@@ -162,6 +162,7 @@ async def _deep_respond_impl(
     all_tool_results = state.get("all_tool_results") or state.get("tool_results") or []
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
+    user_attachment_appendix = (state.get("user_attachment_prompt_appendix") or "").strip()
 
     # ================================================================
     # FAST PATH: API-only results with sub-agent analyses
@@ -181,7 +182,7 @@ async def _deep_respond_impl(
     if has_web_tools:
         log.info("Fast-path skipped: web_search/fetch_url results require standard citation path")
 
-    if analyses and not final_results and not virtual_record_map and not has_web_tools:
+    if analyses and not final_results and not virtual_record_map and not has_web_tools and not user_attachment_appendix:
         log.info("Fast-path: API-only results with sub-agent analysis, using lightweight response")
         try:
             from app.modules.agents.qna.nodes import _generate_fast_api_response
@@ -210,7 +211,7 @@ async def _deep_respond_impl(
     # Build qna_message_content using get_message_content() — identical
     # to what the chatbot uses — for consistent R-label block numbers.
     # ================================================================
-    if final_results and virtual_record_map:
+    if (final_results and virtual_record_map) or user_attachment_appendix:
         from app.utils.chat_helpers import get_message_content as _get_msg_content
 
         user_data = ""
@@ -236,8 +237,19 @@ async def _deep_respond_impl(
 
         from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
         _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        fr_for_prompt = final_results if (final_results and virtual_record_map) else []
+        vr_for_prompt = virtual_record_map if (final_results and virtual_record_map) else {}
         qna_content, _ref_mapper = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper, has_sql_connector=state.get("has_sql_connector", False) and state.get("has_sql_knowledge", False),
+            fr_for_prompt,
+            vr_for_prompt,
+            user_data,
+            query,
+            "json",
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            ref_mapper=_ref_mapper,
+            has_sql_connector=state.get("has_sql_connector", False)
+            and state.get("has_sql_knowledge", False),
+            user_attachment_appendix=user_attachment_appendix,
         )
         state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content

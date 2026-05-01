@@ -65,6 +65,7 @@ import {
   extractModelInfo,
   formatPreviousConversations,
   getPaginationParams,
+  resolveAndAuthorizeAttachments,
   sortMessages,
   attachPopulatedCitations,
 } from '../utils/utils';
@@ -371,9 +372,26 @@ export const streamChat =
 
     const modelInfo = extractModelInfo(req.body);
 
-    if (!req.body.query) {
-      throw new BadRequestError('Query is required');
+    const rawQuery = typeof req.body.query === 'string' ? req.body.query : '';
+    const trimmedQuery = rawQuery.trim();
+    const hasAttachments =
+      Array.isArray(req.body.attachmentDocumentIds) &&
+      req.body.attachmentDocumentIds.length > 0;
+    if (!trimmedQuery && !hasAttachments) {
+      throw new BadRequestError('Query or attachmentDocumentIds is required');
     }
+
+    if (trimmedQuery) {
+      validateNoXSS(rawQuery, 'query');
+      validateNoFormatSpecifiers(rawQuery, 'query');
+    }
+
+    // Validate + resolve attachments BEFORE writing anything to Mongo so a
+    // forged documentId can never persist on a conversation.
+    const attachments = await resolveAndAuthorizeAttachments(
+      req.body.attachmentDocumentIds,
+      orgId,
+    );
 
     try {
       // Set SSE headers
@@ -387,13 +405,21 @@ export const streamChat =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        rawQuery,
+        req.body.appliedFilters,
+        attachments,
+      );
+
+      const titleSource = trimmedQuery
+        ? rawQuery.slice(0, 100)
+        : attachments[0]?.fileName || 'Attached files';
 
       const userConversationData: Partial<IConversation> = {
         orgId,
         userId,
         initiator: userId,
-        title: req.body.query.slice(0, 100),
+        title: titleSource,
         messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
@@ -437,7 +463,7 @@ export const streamChat =
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
+        query: rawQuery,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
@@ -449,6 +475,7 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        attachmentDocumentIds: attachments.map((a) => a.documentId),
       };
       // For agent mode, forward the user-selected tool list so the backend
       // can scope toolset loading to the selected instances.
@@ -1363,9 +1390,24 @@ export const addMessageStream =
 
     const modelInfo = extractModelInfo(req.body);
 
-    if (!req.body.query) {
-      throw new BadRequestError('Query is required');
+    const rawQuery = typeof req.body.query === 'string' ? req.body.query : '';
+    const trimmedQuery = rawQuery.trim();
+    const hasAttachments =
+      Array.isArray(req.body.attachmentDocumentIds) &&
+      req.body.attachmentDocumentIds.length > 0;
+    if (!trimmedQuery && !hasAttachments) {
+      throw new BadRequestError('Query or attachmentDocumentIds is required');
     }
+
+    if (trimmedQuery) {
+      validateNoXSS(rawQuery, 'query');
+      validateNoFormatSpecifiers(rawQuery, 'query');
+    }
+
+    const attachments = await resolveAndAuthorizeAttachments(
+      req.body.attachmentDocumentIds,
+      orgId,
+    );
 
     // Helper function that contains the common conversation operations
     async function performAddMessageStream(
@@ -1404,7 +1446,11 @@ export const addMessageStream =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
+        buildUserQueryMessage(
+          rawQuery,
+          req.body.appliedFilters,
+          attachments,
+        ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -1476,7 +1522,7 @@ export const addMessageStream =
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
+        query: rawQuery,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
         // New fields for multi-model support
@@ -1487,6 +1533,7 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        attachmentDocumentIds: attachments.map((a) => a.documentId),
       };
       if (agentMode && req.body.tools !== undefined) {
         aiPayload.tools = Array.isArray(req.body.tools) ? req.body.tools : [];
@@ -5066,9 +5113,24 @@ export const unshareAgent =
 
     const modelInfo = extractModelInfo(req.body);
 
-    if (!req.body.query) {
-      throw new BadRequestError('Query is required');
+    const rawQuery = typeof req.body.query === 'string' ? req.body.query : '';
+    const trimmedQuery = rawQuery.trim();
+    const hasAttachments =
+      Array.isArray(req.body.attachmentDocumentIds) &&
+      req.body.attachmentDocumentIds.length > 0;
+    if (!trimmedQuery && !hasAttachments) {
+      throw new BadRequestError('Query or attachmentDocumentIds is required');
     }
+
+    if (trimmedQuery) {
+      validateNoXSS(rawQuery, 'query');
+      validateNoFormatSpecifiers(rawQuery, 'query');
+    }
+
+    const attachments = await resolveAndAuthorizeAttachments(
+      req.body.attachmentDocumentIds,
+      orgId,
+    );
 
     try {
       // Set SSE headers
@@ -5082,13 +5144,21 @@ export const unshareAgent =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        rawQuery,
+        req.body.appliedFilters,
+        attachments,
+      );
+
+      const titleSource = trimmedQuery
+        ? rawQuery.slice(0, 100)
+        : attachments[0]?.fileName || 'Attached files';
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
         userId,
         initiator: userId,
-        title: req.body.query.slice(0, 100),
+        title: titleSource,
         messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
@@ -5135,7 +5205,7 @@ export const unshareAgent =
 
       // Prepare AI payload
       const aiPayload = {
-        query: req.body.query,
+        query: rawQuery,
         quickMode: req.body.quickMode || false,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
@@ -5148,6 +5218,7 @@ export const unshareAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        attachmentDocumentIds: attachments.map((a) => a.documentId),
       };
 
       logger.info('aiPayload', aiPayload);
@@ -5961,9 +6032,24 @@ export const addMessageStreamToAgentConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
-    if (!req.body.query) {
-      throw new BadRequestError('Query is required');
+    const rawQuery = typeof req.body.query === 'string' ? req.body.query : '';
+    const trimmedQuery = rawQuery.trim();
+    const hasAttachments =
+      Array.isArray(req.body.attachmentDocumentIds) &&
+      req.body.attachmentDocumentIds.length > 0;
+    if (!trimmedQuery && !hasAttachments) {
+      throw new BadRequestError('Query or attachmentDocumentIds is required');
     }
+
+    if (trimmedQuery) {
+      validateNoXSS(rawQuery, 'query');
+      validateNoFormatSpecifiers(rawQuery, 'query');
+    }
+
+    const attachments = await resolveAndAuthorizeAttachments(
+      req.body.attachmentDocumentIds,
+      orgId,
+    );
 
     // Helper function that contains the common conversation operations
     async function performAddMessageStream(
@@ -6002,7 +6088,11 @@ export const addMessageStreamToAgentConversation =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
+        buildUserQueryMessage(
+          rawQuery,
+          req.body.appliedFilters,
+          attachments,
+        ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -6073,12 +6163,14 @@ export const addMessageStreamToAgentConversation =
         ) as IMessage[],
       );
 
-      // Prepare AI payload
+      // Prepare AI payload (mirror streamAgentConversation / new-agent stream)
       const aiPayload = {
-        query: req.body.query,
+        query: rawQuery,
+        quickMode: req.body.quickMode || false,
         previousConversations: previousConversations,
+        recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
-        // New fields for multi-model support
+        tools: Array.isArray(req.body.tools) ? req.body.tools : [],
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
@@ -6086,6 +6178,7 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        attachmentDocumentIds: attachments.map((a) => a.documentId),
       };
 
       const aiCommandOptions: AICommandOptions = {

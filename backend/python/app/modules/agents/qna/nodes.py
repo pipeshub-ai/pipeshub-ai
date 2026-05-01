@@ -6453,6 +6453,7 @@ async def respond_node(
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
     query = state.get("query", "")
+    user_attachment_appendix = (state.get("user_attachment_prompt_appendix") or "").strip()
     org_id = state.get("org_id", "")
 
     # ================================================================
@@ -6499,6 +6500,7 @@ async def respond_node(
         and not final_results
         and not virtual_record_map
         and not _prior_web_records
+        and not user_attachment_appendix
     ):
         log.info("⚡ Fast-path: API-only results with sub-agent analysis, using lightweight response")
         try:
@@ -6527,7 +6529,7 @@ async def respond_node(
     # The formatted content is stored in state["qna_message_content"]
     # and consumed by create_response_messages() below.
     # ================================================================
-    if final_results and virtual_record_map:
+    if (final_results and virtual_record_map) or user_attachment_appendix:
         from app.utils.chat_helpers import get_message_content as _get_msg_content
 
         # Build user_data string (same logic as chatbot's askAIStream)
@@ -6554,8 +6556,19 @@ async def respond_node(
 
         from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
         _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        fr_for_prompt = final_results if (final_results and virtual_record_map) else []
+        vr_for_prompt = virtual_record_map if (final_results and virtual_record_map) else {}
         qna_content, _ref_mapper = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper, has_sql_connector=state.get("has_sql_connector", False) and state.get("has_sql_knowledge", False)
+            fr_for_prompt,
+            vr_for_prompt,
+            user_data,
+            query,
+            "json",
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            ref_mapper=_ref_mapper,
+            has_sql_connector=state.get("has_sql_connector", False)
+            and state.get("has_sql_knowledge", False),
+            user_attachment_appendix=user_attachment_appendix,
         )
         state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content

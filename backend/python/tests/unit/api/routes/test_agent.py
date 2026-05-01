@@ -17,6 +17,12 @@ class TestChatQueryModel:
         assert q.previousConversations == []
         assert q.quickMode is False
         assert q.chatMode == "auto"
+        assert q.attachmentDocumentIds == []
+
+    def test_attachment_document_ids(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="", attachmentDocumentIds=["507f1f77bcf86cd799439011"])
+        assert q.attachmentDocumentIds == ["507f1f77bcf86cd799439011"]
 
     def test_all_fields(self) -> None:
         from app.api.routes.agent import ChatQuery

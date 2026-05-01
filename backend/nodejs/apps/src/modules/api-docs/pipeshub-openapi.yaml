@@ -2731,17 +2731,30 @@ components:
         <li>Generates a response with citations to source materials</li>
         <li>Suggests follow-up questions based on the conversation</li>
         </ul>
-      required:
-        - query
+        <b>Note:</b><br>
+        At least one of <code>query</code> or <code>attachmentDocumentIds</code> must be
+        provided. Sending only attachments is supported for "summarize this file" use cases.
       properties:
         query:
           type: string
-          minLength: 1
           maxLength: 100000
           description: |
             The user's question or prompt to start the conversation.
-            Supports natural language queries of any complexity.
+            Supports natural language queries of any complexity. May be empty
+            when <code>attachmentDocumentIds</code> contains at least one entry.
           example: "What are the key findings from our Q4 financial report?"
+        attachmentDocumentIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Storage <code>documentId</code>s previously returned by
+            <code>POST /api/v1/document/upload</code>. Each ID is verified to belong
+            to the caller's organization before being persisted on the user message
+            and forwarded to the Python query service. The query service fetches
+            each file, parses it to blocks, and adds it to the LLM context.
+          example: ["507f1f77bcf86cd799439011"]
         recordIds:
           type: array
           items:
@@ -2809,15 +2822,28 @@ components:
 
     AddMessageRequest:
       type: object
-      description: Request body for adding a message to an existing conversation
-      required:
-        - query
+      description: |
+        Request body for adding a message to an existing conversation.<br><br>
+        At least one of <code>query</code> or <code>attachmentDocumentIds</code> must be
+        provided.
       properties:
         query:
           type: string
-          minLength: 1
-          description: The follow-up question or message content
+          description: |
+            The follow-up question or message content. May be empty when
+            <code>attachmentDocumentIds</code> contains at least one entry.
           example: "Can you elaborate on the revenue trends?"
+        attachmentDocumentIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Storage <code>documentId</code>s previously returned by
+            <code>POST /api/v1/document/upload</code>. Each ID is verified to belong
+            to the caller's organization before being persisted on the user message
+            and forwarded to the Python query service.
+          example: ["507f1f77bcf86cd799439011"]
         filters:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
@@ -14687,8 +14713,8 @@ paths:
             by the node proxy (`multer` `fileSize`).
         '500':
           description: |
-            Runtime error — for example the optional `faster-whisper`
-            package is not installed for the `whisper` provider, or
+            Runtime error — for example `faster-whisper` failed to import
+            (broken or partial Python install) for the `whisper` provider, or
             `ffmpeg` is missing on the host for the `wispr` provider
             (required to transcode audio to 16 kHz WAV).
         '502':

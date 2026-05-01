@@ -6,9 +6,11 @@ import {
   IConversation,
   IConversationDocument,
   IMessage,
+  IMessageAttachment,
   IMessageCitation,
   IMessageDocument,
 } from '../types/conversation.interfaces';
+import { DocumentModel } from '../../storage/schema/document.schema';
 import { IAIResponse } from '../types/conversation.interfaces';
 import mongoose, { ClientSession } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -61,14 +63,82 @@ export const extractModelInfo = (
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+  attachments?: IMessageAttachment[],
 ): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
   ...(appliedFilters ? { appliedFilters } : {}),
+  ...(attachments && attachments.length > 0 ? { attachments } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
+
+/**
+ * Validate that every storage `documentId` the client claims as an attachment
+ * actually belongs to the calling org and is not soft-deleted, then return the
+ * canonical metadata (filename, mimeType, size) we want to persist on the
+ * message. Throws BadRequestError with a precise reason on the first failure
+ * so the caller can short-circuit before saving anything.
+ */
+export const resolveAndAuthorizeAttachments = async (
+  rawIds: unknown,
+  orgId: mongoose.Types.ObjectId | string | undefined,
+): Promise<IMessageAttachment[]> => {
+  if (rawIds === undefined || rawIds === null) return [];
+  if (!Array.isArray(rawIds)) {
+    throw new BadRequestError('attachmentDocumentIds must be an array of strings');
+  }
+  const cleaned = Array.from(
+    new Set(
+      rawIds.filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0,
+      ),
+    ),
+  );
+  if (cleaned.length === 0) return [];
+  if (!orgId) {
+    throw new BadRequestError('Organization ID is required to validate attachments');
+  }
+
+  const orgObjectId =
+    typeof orgId === 'string' ? new mongoose.Types.ObjectId(orgId) : orgId;
+
+  for (const id of cleaned) {
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError(`Invalid attachment documentId: ${id}`);
+    }
+  }
+
+  const docs = await DocumentModel.find({
+    _id: { $in: cleaned.map((id) => new mongoose.Types.ObjectId(id)) },
+    orgId: orgObjectId,
+    isDeleted: false,
+  })
+    .select({ _id: 1, documentName: 1, extension: 1, sizeInBytes: 1 })
+    .lean();
+
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+  const missing = cleaned.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    throw new BadRequestError(
+      `Attachment documentId(s) not found or not accessible: ${missing.join(', ')}`,
+    );
+  }
+
+  return cleaned.map((id) => {
+    const d = byId.get(id)!;
+    const fileName =
+      d.documentName && d.extension
+        ? `${d.documentName}${d.extension.startsWith('.') ? d.extension : `.${d.extension}`}`
+        : d.documentName ?? undefined;
+    return {
+      documentId: id,
+      ...(fileName ? { fileName } : {}),
+      ...(typeof d.sizeInBytes === 'number' ? { sizeInBytes: d.sizeInBytes } : {}),
+    };
+  });
+};
 
 /**
  * Safely extracts and validates a search parameter from query string

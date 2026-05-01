@@ -28,62 +28,80 @@ const appliedFiltersSchema = z
   .optional();
 
 export const enterpriseSearchCreateSchema = z.object({
-  body: z.object({
-    query: z
-      .string({ required_error: 'Query is required' })
-      .min(1, { message: 'Query is required' })
-      .max(100000, {
-        message: 'Query exceeds maximum length of 100000 characters',
-      }),
-    recordIds: z
-      .array(
-        z
-          .string()
-          .regex(objectIdRegex, { message: 'Invalid record ID format' }),
-      )
-      .optional(),
-    departments: z
-      .array(
-        z
-          .string()
-          .regex(objectIdRegex, { message: 'Invalid department ID format' }),
-      )
-      .optional(),
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
-    appliedFilters: appliedFiltersSchema,
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
-    timezone: z
-      .string()
-      .min(1, { message: 'Timezone must be a non-empty string' })
-      .optional(),
-    currentTime: z
-      .string()
-      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
-      .optional(),
-    tools: z
-      .array(z.string().min(1))
-      .optional(),
-  }),
+  body: z
+    .object({
+      // `query` is allowed to be empty when `attachmentDocumentIds` is non-empty
+      // (attachment-only sends). The controller still enforces "query OR
+      // attachments" via `BadRequestError('Query or attachmentDocumentIds is required')`.
+      query: z
+        .string({ required_error: 'Query is required' })
+        .max(100000, {
+          message: 'Query exceeds maximum length of 100000 characters',
+        }),
+      recordIds: z
+        .array(
+          z
+            .string()
+            .regex(objectIdRegex, { message: 'Invalid record ID format' }),
+        )
+        .optional(),
+      departments: z
+        .array(
+          z
+            .string()
+            .regex(objectIdRegex, { message: 'Invalid department ID format' }),
+        )
+        .optional(),
+      filters: z
+        .object({
+          apps: z.array(appOrKbIdSchema).optional(),
+          kb: z.array(appOrKbIdSchema).optional(),
+        })
+        .optional(),
+      appliedFilters: appliedFiltersSchema,
+      modelKey: z
+        .string()
+        .min(1, { message: 'Model key is required' })
+        .optional(),
+      modelName: z
+        .string()
+        .min(1, { message: 'Model name is required' })
+        .optional(),
+      chatMode: z
+        .string()
+        .min(1, { message: 'Chat mode is required' })
+        .optional(),
+      modelFriendlyName: z
+        .string()
+        .min(1, { message: 'Model friendly name is required' })
+        .optional(),
+      timezone: z
+        .string()
+        .min(1, { message: 'Timezone must be a non-empty string' })
+        .optional(),
+      currentTime: z
+        .string()
+        .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
+        .optional(),
+      tools: z.array(z.string().min(1)).optional(),
+      // Storage `documentId`s for files attached to this turn. The controller
+      // resolves+authorizes them via `resolveAndAuthorizeAttachments` before
+      // forwarding to the AI service, so we accept any 24-char hex string here
+      // and let that helper produce the precise error message on lookup miss.
+      attachmentDocumentIds: z
+        .array(
+          z
+            .string()
+            .regex(objectIdRegex, { message: 'Invalid attachment documentId' }),
+        )
+        .optional(),
+    })
+    .refine(
+      (b) =>
+        (b.query?.trim().length ?? 0) > 0 ||
+        (Array.isArray(b.attachmentDocumentIds) && b.attachmentDocumentIds.length > 0),
+      { message: 'Query or attachmentDocumentIds is required', path: ['query'] },
+    ),
 });
 
 export const conversationIdParamsSchema = z.object({
@@ -129,49 +147,68 @@ export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
   }),
 });
 
-export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
+export const addMessageParamsSchema = z.object({
   params: z.object({
     conversationId: z.string().regex(objectIdRegex, {
       message: 'Invalid conversation ID format',
     }),
   }),
-  body: z.object({
-    query: z.string().min(1, { message: 'Query is required' }),
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
-    appliedFilters: appliedFiltersSchema,
-    timezone: z
-      .string()
-      .min(1, { message: 'Timezone must be a non-empty string' })
-      .optional(),
-    currentTime: z
-      .string()
-      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
-      .optional(),
-    tools: z
-      .array(z.string().min(1))
-      .optional(),
-  }),
+  // Same shape as `enterpriseSearchCreateSchema.body` — including
+  // `attachmentDocumentIds` and the "query OR attachments" refinement — so
+  // follow-up messages can attach files just like the first message does.
+  body: z
+    .object({
+      query: z
+        .string({ required_error: 'Query is required' })
+        .max(100000, {
+          message: 'Query exceeds maximum length of 100000 characters',
+        }),
+      filters: z
+        .object({
+          apps: z.array(appOrKbIdSchema).optional(),
+          kb: z.array(appOrKbIdSchema).optional(),
+        })
+        .optional(),
+      modelKey: z
+        .string()
+        .min(1, { message: 'Model key is required' })
+        .optional(),
+      modelName: z
+        .string()
+        .min(1, { message: 'Model name is required' })
+        .optional(),
+      chatMode: z
+        .string()
+        .min(1, { message: 'Chat mode is required' })
+        .optional(),
+      modelFriendlyName: z
+        .string()
+        .min(1, { message: 'Model friendly name is required' })
+        .optional(),
+      appliedFilters: appliedFiltersSchema,
+      timezone: z
+        .string()
+        .min(1, { message: 'Timezone must be a non-empty string' })
+        .optional(),
+      currentTime: z
+        .string()
+        .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
+        .optional(),
+      tools: z.array(z.string().min(1)).optional(),
+      attachmentDocumentIds: z
+        .array(
+          z
+            .string()
+            .regex(objectIdRegex, { message: 'Invalid attachment documentId' }),
+        )
+        .optional(),
+    })
+    .refine(
+      (b) =>
+        (b.query?.trim().length ?? 0) > 0 ||
+        (Array.isArray(b.attachmentDocumentIds) && b.attachmentDocumentIds.length > 0),
+      { message: 'Query or attachmentDocumentIds is required', path: ['query'] },
+    ),
 });
 
 export const messageIdParamsSchema = z.object({

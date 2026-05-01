@@ -7,7 +7,12 @@ import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
-import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
+import {
+  buildAssistantApiFilters,
+  type ChatCollectionAttachment,
+  type SearchRequest,
+  type UploadedFile,
+} from '@/chat/types';
 import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
@@ -100,14 +105,25 @@ export function ChatInputWrapper() {
     }
   };
 
-  const handleSend = (message: string) => {
-    if (!message.trim()) return;
+  const handleSend = (message: string, files?: UploadedFile[]) => {
+    /** Storage documentIds for files that finished uploading. */
+    const attachments = (files ?? [])
+      .filter((f) => f.uploadStatus === 'uploaded' && typeof f.documentId === 'string' && f.documentId.length > 0)
+      .map((f) => ({
+        documentId: f.documentId as string,
+        fileName: f.name,
+        mimeType: f.type,
+        sizeInBytes: f.size,
+      }));
+    const trimmed = message.trim();
+    if (!trimmed && attachments.length === 0) return;
 
     const store = useChatStore.getState();
 
     // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
     if (store.settings.mode === 'search' && !isAgentChat) {
-      handleSearchSubmit(message.trim());
+      if (!trimmed) return;
+      handleSearchSubmit(trimmed);
       return;
     }
 
@@ -160,10 +176,11 @@ export function ChatInputWrapper() {
     // startRun: true triggers the runtime's onNew callback
     threadRuntime.append({
       role: 'user',
-      content: [{ type: 'text', text: message }],
+      content: [{ type: 'text', text: trimmed }],
       metadata: {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
+          attachments: attachments.length > 0 ? attachments : undefined,
         },
       },
       startRun: true,

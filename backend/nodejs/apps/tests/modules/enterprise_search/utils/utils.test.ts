@@ -27,7 +27,9 @@ import {
   buildAgentConversationSortOptions,
   addErrorToConversation,
   handleRegenerationStreamData,
+  resolveAndAuthorizeAttachments,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -172,6 +174,131 @@ describe('Enterprise Search Utils', () => {
     it('should handle special characters in query', () => {
       const result = buildUserQueryMessage('What about <script>alert("xss")</script>?')
       expect(result.content).to.include('<script>')
+    })
+
+    it('should attach storage documentIds when supplied', () => {
+      const attachments = [
+        { documentId: 'doc-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeInBytes: 10 },
+        { documentId: 'doc-2' },
+      ]
+      const result = buildUserQueryMessage('with files', undefined, attachments)
+      expect(result.attachments).to.deep.equal(attachments)
+    })
+
+    it('should omit attachments when none are passed', () => {
+      const result = buildUserQueryMessage('plain text')
+      expect(result.attachments).to.be.undefined
+    })
+
+    it('should omit attachments when an empty array is passed', () => {
+      const result = buildUserQueryMessage('plain text', undefined, [])
+      expect(result.attachments).to.be.undefined
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // resolveAndAuthorizeAttachments
+  // -----------------------------------------------------------------------
+  describe('resolveAndAuthorizeAttachments', () => {
+    it('should return [] when input is undefined or null', async () => {
+      expect(await resolveAndAuthorizeAttachments(undefined as any, VALID_OID2)).to.deep.equal([])
+      expect(await resolveAndAuthorizeAttachments(null as any, VALID_OID2)).to.deep.equal([])
+    })
+
+    it('should reject non-array input', async () => {
+      let err: any
+      try {
+        await resolveAndAuthorizeAttachments('not-an-array' as any, VALID_OID2)
+      } catch (e) {
+        err = e
+      }
+      expect(err).to.exist
+      expect(err.message).to.include('attachmentDocumentIds')
+    })
+
+    it('should reject malformed ObjectIds', async () => {
+      let err: any
+      try {
+        await resolveAndAuthorizeAttachments(['not-an-oid'], VALID_OID2)
+      } catch (e) {
+        err = e
+      }
+      expect(err).to.exist
+      expect(err.message).to.match(/Invalid attachment documentId/)
+    })
+
+    it('should resolve metadata when documents exist for the org', async () => {
+      const docId = new mongoose.Types.ObjectId().toString()
+      const findStub = sinon.stub(DocumentModel, 'find' as any).returns({
+        select: () => ({
+          lean: () =>
+            Promise.resolve([
+              {
+                _id: new mongoose.Types.ObjectId(docId),
+                documentName: 'report',
+                extension: '.pdf',
+                sizeInBytes: 1024,
+              },
+            ]),
+        }),
+      } as any)
+
+      const result = await resolveAndAuthorizeAttachments([docId], VALID_OID2)
+      expect(findStub.calledOnce).to.be.true
+      expect(result).to.have.length(1)
+      expect(result[0].documentId).to.equal(docId)
+      expect(result[0].fileName).to.equal('report.pdf')
+      expect(result[0].sizeInBytes).to.equal(1024)
+    })
+
+    it('should reject when any documentId is missing or belongs to another org', async () => {
+      const docIdA = new mongoose.Types.ObjectId().toString()
+      const docIdB = new mongoose.Types.ObjectId().toString()
+      sinon.stub(DocumentModel, 'find' as any).returns({
+        select: () => ({
+          lean: () =>
+            Promise.resolve([
+              {
+                _id: new mongoose.Types.ObjectId(docIdA),
+                documentName: 'a',
+                extension: '.txt',
+                sizeInBytes: 1,
+              },
+            ]),
+        }),
+      } as any)
+
+      let err: any
+      try {
+        await resolveAndAuthorizeAttachments([docIdA, docIdB], VALID_OID2)
+      } catch (e) {
+        err = e
+      }
+      expect(err).to.exist
+      expect(err.message).to.include(docIdB)
+    })
+
+    it('should de-duplicate documentIds before querying', async () => {
+      const docId = new mongoose.Types.ObjectId().toString()
+      const findStub = sinon.stub(DocumentModel, 'find' as any).returns({
+        select: () => ({
+          lean: () =>
+            Promise.resolve([
+              {
+                _id: new mongoose.Types.ObjectId(docId),
+                documentName: 'doc',
+                extension: '.txt',
+                sizeInBytes: 5,
+              },
+            ]),
+        }),
+      } as any)
+
+      const result = await resolveAndAuthorizeAttachments([docId, docId], VALID_OID2)
+      expect(findStub.calledOnce).to.be.true
+      const filterArg = findStub.firstCall.args[0] as any
+      expect(filterArg._id.$in).to.have.length(1)
+      expect(result).to.have.length(1)
     })
   })
 

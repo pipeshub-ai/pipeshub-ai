@@ -95,6 +95,24 @@ class TestBuildInitialState:
         assert state["is_multimodal_llm"] is False
         assert state["model_name"] == "gpt-test"
         assert state["model_key"] == "test-model-key"
+        assert state["user_attachment_prompt_appendix"] == ""
+
+    def test_user_attachment_prompt_appendix_from_chat_query(
+        self, mock_deps, minimal_user_info,
+    ):
+        cq = {
+            "query": "summarize",
+            "instructions": "Base hint.",
+            "attachmentDocumentIds": ["507f1f77bcf86cd799439011"],
+            "user_attachment_prompt_appendix": "#### file.md\n\nHello",
+        }
+        state = build_initial_state(
+            chat_query=cq,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state.get("instructions") == "Base hint."
+        assert state["user_attachment_prompt_appendix"] == "#### file.md\n\nHello"
 
     def test_custom_chat_query_fields(self, mock_deps, minimal_user_info):
         cq = {

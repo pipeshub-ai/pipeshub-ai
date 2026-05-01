@@ -1371,9 +1371,8 @@ class _WhisperLocalSTTAdapter(STTAdapter):
         except ImportError as exc:
             raise RuntimeError(
                 "The 'whisper' STT provider requires the 'faster-whisper' "
-                "package. Install the optional extra: "
-                "pip install 'pipeshub-ai[whisper]' or "
-                "pip install faster-whisper"
+                "package. Reinstall Python dependencies from backend/python "
+                "(pip install -e .) or: pip install faster-whisper"
             ) from exc
 
         logger.info(
