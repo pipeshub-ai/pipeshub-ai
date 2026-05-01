@@ -846,42 +846,46 @@ class TestBuildInternalContextImageOnlyNoBlockNumber:
 
 
 class TestFormatReferenceData:
+    """Tests for _format_reference_data_for_response — now groups by `app` (not `type`)."""
+
     def test_empty_list(self):
         assert _format_reference_data_for_response([]) == ""
 
     def test_jira_issues(self):
-        data = [{"type": "jira_issue", "key": "PA-123"}]
+        data = [{"type": "jira_issue", "key": "PA-123", "app": "jira"}]
         result = _format_reference_data_for_response(data)
         assert "PA-123" in result
+        assert "**Jira**" in result
 
     def test_confluence_spaces(self):
-        data = [{"type": "confluence_space", "name": "Engineering", "id": "123"}]
+        data = [{"type": "confluence_space", "name": "Engineering", "id": "123", "app": "confluence"}]
         result = _format_reference_data_for_response(data)
         assert "Engineering" in result
-        assert "Confluence Spaces" in result
+        assert "**Confluence**" in result
 
     def test_jira_projects(self):
-        data = [{"type": "jira_project", "name": "MyProj", "key": "MP"}]
+        data = [{"type": "jira_project", "name": "MyProj", "key": "MP", "app": "jira"}]
         result = _format_reference_data_for_response(data)
         assert "MyProj" in result
-        assert "Jira Projects" in result
+        assert "**Jira**" in result
 
     def test_confluence_pages(self):
-        data = [{"type": "confluence_page", "title": "Getting Started", "id": "456"}]
+        # Use `name` (not `title`) — the new formatter looks at the canonical `name` field.
+        data = [{"type": "confluence_page", "name": "Getting Started", "id": "456", "app": "confluence"}]
         result = _format_reference_data_for_response(data)
         assert "Getting Started" in result
 
     def test_caps_at_ten_items(self):
-        data = [{"type": "jira_issue", "key": f"PA-{i}"} for i in range(20)]
+        data = [{"type": "jira_issue", "key": f"PA-{i}", "app": "jira"} for i in range(20)]
         result = _format_reference_data_for_response(data)
         assert "PA-9" in result
         assert "PA-10" not in result
 
-    def test_mixed_types(self):
+    def test_mixed_apps(self):
         data = [
-            {"type": "jira_issue", "key": "PA-1"},
-            {"type": "confluence_page", "title": "Page", "id": "1"},
+            {"type": "jira_issue", "key": "PA-1", "app": "jira"},
+            {"type": "confluence_page", "name": "Page", "id": "1", "app": "confluence"},
         ]
         result = _format_reference_data_for_response(data)
-        assert "Jira Issues" in result
-        assert "Confluence Pages" in result
+        assert "**Jira**" in result
+        assert "**Confluence**" in result

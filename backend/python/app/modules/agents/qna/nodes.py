@@ -30,7 +30,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
-from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.capability_summary import (
+    build_capability_summary,
+    build_connector_routing_rules,
+    classify_knowledge_sources,
+)
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
 from app.modules.agents.qna.reference_data import (
     format_reference_data,

@@ -407,7 +407,7 @@ class TestExtractReferenceLinks:
         tool_results: list[dict[str, Any]] = []
         result = _extract_reference_links(analyses, tool_results)
         assert len(result) == 1
-        assert result[0]["url"] == "https://jira.example.com/browse/BUG-1"
+        assert result[0]["webUrl"] == "https://jira.example.com/browse/BUG-1"
 
     def test_empty_analyses_and_results(self):
         result = _extract_reference_links([], [])
@@ -420,7 +420,7 @@ class TestExtractReferenceLinks:
         ]
         result = _extract_reference_links(analyses, tool_results)
         assert len(result) == 1
-        assert result[0]["url"] == "https://example.com/page"
+        assert result[0]["webUrl"] == "https://example.com/page"
 
     def test_deduplication(self):
         analyses = [
@@ -435,7 +435,7 @@ class TestExtractReferenceLinks:
             "Link: https://example.com/other,",
         ]
         result = _extract_reference_links(analyses, [])
-        urls = [r["url"] for r in result]
+        urls = [r["webUrl"] for r in result]
         assert "https://example.com/page" in urls
         assert "https://example.com/other" in urls
 
@@ -464,7 +464,7 @@ class TestExtractReferenceLinks:
             },
         ]
         result = _extract_reference_links(analyses, tool_results)
-        urls = [r["url"] for r in result]
+        urls = [r["webUrl"] for r in result]
         assert "https://example.com/item1" in urls
         assert "https://example.com/item2" in urls
 
@@ -574,7 +574,7 @@ class TestExtractUrlsFromValue:
         links: list = []
         _extract_urls_from_value("Visit https://example.com/page for details", seen, links)
         assert len(links) == 1
-        assert links[0]["url"] == "https://example.com/page"
+        assert links[0]["webUrl"] == "https://example.com/page"
 
     def test_dict_with_url_field(self):
         from app.modules.agents.deep.respond import _extract_urls_from_value
@@ -1210,7 +1210,7 @@ class TestExtractReferenceLinksAdditional:
             }
         ]
         result = _extract_reference_links(analyses, tool_results)
-        urls = [r["url"] for r in result]
+        urls = [r["webUrl"] for r in result]
         assert "https://example.com/weblink" in urls
         assert "https://example.com/html" in urls
         assert "https://example.com/perma" in urls
@@ -1360,7 +1360,7 @@ class TestExtractReferenceLinksExtended:
         analyses = ["Check https://example.com for details"]
         result = _extract_reference_links(analyses, [])
         assert len(result) == 1
-        assert result[0]["url"] == "https://example.com"
+        assert result[0]["webUrl"] == "https://example.com"
 
     def test_duplicate_urls_deduplicated(self):
         from app.modules.agents.deep.respond import _extract_reference_links
@@ -1379,7 +1379,7 @@ class TestExtractReferenceLinksExtended:
         ]
         result = _extract_reference_links([], tool_results)
         assert len(result) == 1
-        assert result[0]["url"] == "https://tool.example.com"
+        assert result[0]["webUrl"] == "https://tool.example.com"
 
     def test_max_100_links(self):
         from app.modules.agents.deep.respond import _extract_reference_links
@@ -1399,7 +1399,7 @@ class TestExtractReferenceLinksExtended:
 
         analyses = ["Visit https://example.com."]
         result = _extract_reference_links(analyses, [])
-        assert result[0]["url"] == "https://example.com"
+        assert result[0]["webUrl"] == "https://example.com"
 
 
 # ============================================================================
@@ -2448,7 +2448,7 @@ class TestDeepRespondImplFastPathRefData:
         # completion_data should have been supplemented with referenceData
         cd = result.get("completion_data", {})
         if cd and cd.get("referenceData"):
-            assert any("jira.example.com" in ref["url"] for ref in cd["referenceData"])
+            assert any("jira.example.com" in ref.get("webUrl", "") for ref in cd["referenceData"])
 
     @pytest.mark.asyncio
     async def test_fast_path_returns_none_falls_through(self):
@@ -3348,7 +3348,7 @@ class TestDeepRespondImplReferenceData:
         cd = result.get("completion_data", {})
         ref_data = cd.get("referenceData", [])
         # Should have deep_refs extracted from analyses/tool_results
-        assert any("jira.example.com" in r["url"] for r in ref_data)
+        assert any("jira.example.com" in r.get("webUrl", "") for r in ref_data)
 
 
 class TestCollectToolResultsMoreBranches:
