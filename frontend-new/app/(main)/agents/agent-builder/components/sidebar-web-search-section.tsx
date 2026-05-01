@@ -156,7 +156,7 @@ export function AgentBuilderWebSearchSection({
                       }),
                     );
                   } else if (attached) {
-                    onNotify(t('agentBuilder.webSearchOnlyOne'));
+                    onNotify(t('Only One Web Search Provider Allowed'));
                   }
                 }}
                 isAdmin={Boolean(isAdmin)}
@@ -216,7 +216,7 @@ function ProviderRow({
         px="2"
         py="1"
         mx="1"
-        draggable={!dragBlocked}
+        draggable
         onDragStart={(e) => {
           if (dragBlocked) {
             e.preventDefault();
