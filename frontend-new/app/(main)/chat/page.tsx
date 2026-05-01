@@ -385,6 +385,14 @@ function ChatContent() {
                   apps: af.apps.map((n) => n.id),
                   kb: af.kb.map((n) => n.id),
                 });
+                const namesCache: Record<string, string> = {};
+                const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
+                for (const node of [...af.apps, ...af.kb]) {
+                  namesCache[node.id] = node.name;
+                  metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
+                }
+                freshStore.setCollectionNamesCache(namesCache);
+                freshStore.setCollectionMetaCache(metaCache);
               }
             }
           }

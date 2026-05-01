@@ -231,7 +231,6 @@ export const ChatApi = {
         tools: [...(request.agentStreamTools ?? [])],
         ...buildFiltersPayload(f?.apps, f?.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
-
       };
     } else {
       endpoint = request.conversationId
