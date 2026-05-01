@@ -229,10 +229,13 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         try:
                             result = json.loads(value)
                         except (json.JSONDecodeError, TypeError):
-                            # Legacy fallback: unencrypted values may have been
-                            # stored via Python's str() (single quotes,
-                            # True/False/None) instead of json.dumps().
-                            result = ast.literal_eval(value)
+                            try:
+                                # Legacy fallback: unencrypted values may have been
+                                # stored via Python's str() (single quotes,
+                                # True/False/None) instead of json.dumps().
+                                result = ast.literal_eval(value)
+                            except (ValueError, SyntaxError):
+                                result = value
                     else:
                         result = json.loads(value)
 
