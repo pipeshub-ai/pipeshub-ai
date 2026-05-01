@@ -74,7 +74,6 @@ MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
 
-
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
 ) -> str:
@@ -750,7 +749,6 @@ async def stream_llm_response(
     final_results,
     logger,
     target_words_per_chunk: int = 1,
-    mode: str | None = "json",
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     records: list[dict[str, Any]] | None = None,
     citation_reflection_retry_count: int = 0,
@@ -759,279 +757,106 @@ async def stream_llm_response(
     """
     Incrementally stream the answer portion of an LLM response.
     For each chunk we also emit the citations visible so far.
-    Supports both JSON mode (with structured output) and simple mode (direct streaming).
+    simple mode (direct streaming).
     """
     if records is None:
         records = []
 
-    if mode == "json":
-        # Original streaming logic for the final answer
-        full_json_buf: str = ""         # whole JSON as it trickles in
-        answer_buf: str = ""            # the running "answer" value (no quotes)
-        answer_done = False
-        ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-        # Match both regular and Chinese brackets for citations (with proper bracket pairing)
+    
+    # Simple mode: stream content directly without JSON parsing
+    logger.debug("stream_llm_response: simple mode - streaming raw content")
+    content_buf: str = ""
+    WORD_ITER = re.compile(r'\S+').finditer
+    prev_norm_len = 0
+    emit_upto = 0
+    words_in_chunk = 0
+    # Stream directly from LLM
+    try:
+        async for token in aiter_llm_stream(llm, messages):
+            content_buf += token
 
-        WORD_ITER = re.compile(r'\S+').finditer
-        prev_norm_len = 0  # length of the previous normalised answer
-        emit_upto = 0
-        words_in_chunk = 0
+            # Stream content in word-based chunks.
+            # Capture emit_upto once: match positions are relative to the
+            # substring start, so the same base must be used for every match.
+            start_emit_upto = emit_upto
+            for match in WORD_ITER(content_buf[start_emit_upto:]):
+                words_in_chunk += 1
+                if words_in_chunk == target_words_per_chunk:
+                    char_end = start_emit_upto + match.end()
 
+                    # Include any citation blocks that immediately follow
+                    if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
+                        char_end += m.end()
 
-        try:
-            async for token in aiter_llm_stream(llm, messages):
-                full_json_buf += token
+                    emit_upto = char_end
+                    words_in_chunk = 0
 
-                # Look for the start of the "answer" field
-                if not answer_buf:
-                    match = ANSWER_KEY_RE.search(full_json_buf)
-                    if match:
-                        after_key = full_json_buf[match.end():]
-                        answer_buf += after_key
+                    current_raw = content_buf[:emit_upto]
+                    # Skip if we have incomplete citations
+                    if INCOMPLETE_CITE_RE.search(current_raw):
+                        continue
 
-                elif not answer_done:
-                    answer_buf += token
-
-                # Check if we've reached the end of the answer field
-                if not answer_done:
-                    end_idx = find_unescaped_quote(answer_buf)
-                    if end_idx != -1:
-                        answer_done = True
-                        answer_buf = answer_buf[:end_idx]
-
-                # Stream answer in word-based chunks
-                if answer_buf:
-                    for match in WORD_ITER(answer_buf[emit_upto:]):
-                        words_in_chunk += 1
-                        if words_in_chunk == target_words_per_chunk:
-                            char_end = emit_upto + match.end()
-
-                            # Include any citation blocks that immediately follow
-                            if m := CITE_BLOCK_RE.match(answer_buf[char_end:]):
-                                char_end += m.end()
-
-                            emit_upto = char_end
-                            words_in_chunk = 0
-
-                            current_raw = answer_buf[:emit_upto]
-                            # Skip if we have incomplete citations
-                            if INCOMPLETE_CITE_RE.search(current_raw):
-                                continue
-
-                            normalized, cites = normalize_citations_and_chunks_for_agent(
-                                current_raw, final_results, virtual_record_id_to_result, records,
-                                ref_to_url=ref_to_url,
-                            )
-
-                            # CRITICAL DEBUG: Log citation generation
-                            if not cites:
-                                logger.warning(f"   - final_results count: {len(final_results)}")
-                                logger.warning(f"   - virtual_record_id_to_result count: {len(virtual_record_id_to_result) if virtual_record_id_to_result else 0}")
-                                logger.warning(f"   - records count: {len(records) if records else 0}")
-
-                            chunk_text = normalized[prev_norm_len:]
-                            prev_norm_len = len(normalized)
-
-                            yield {
-                                "event": "answer_chunk",
-                                "data": {
-                                    "chunk": chunk_text,
-                                    "accumulated": normalized,
-                                    "citations": cites,
-                                },
-                            }
-
-            # Final processing
-            try:
-                parsed = json.loads(escape_ctl(full_json_buf))
-                final_answer = parsed.get("answer", answer_buf)
-
-                # Citation URL reflection: detect hallucinated URLs and ask LLM to fix
-                if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-                    hallucinated = detect_hallucinated_citation_urls(
-                        final_answer, records, final_results,
-                        virtual_record_id_to_result=virtual_record_id_to_result,
+                    normalized, cites = normalize_citations_and_chunks_for_agent(
+                        current_raw, final_results, virtual_record_id_to_result, records,
                         ref_to_url=ref_to_url,
                     )
-                    if hallucinated:
-                        logger.warning(
-                            "Citation reflection (agent JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection. URLs: %s",
-                            len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                        )
-                        yield {"event": "restreaming", "data": {}}
-                        yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                        reflection_content = _build_citation_reflection_message(hallucinated)
-                        updated_messages = list(messages)
-                        updated_messages.append(AIMessage(content=final_answer))
-                        updated_messages.append(HumanMessage(content=reflection_content))
-                        async for event in stream_llm_response(
-                            llm, updated_messages, final_results, logger,
-                            target_words_per_chunk, mode, virtual_record_id_to_result, records,
-                            citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                            ref_to_url=ref_to_url,
-                        ):
-                            yield event
-                        return
 
-                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
+                    chunk_text = normalized[prev_norm_len:]
+                    prev_norm_len = len(normalized)
 
-                # CRITICAL DEBUG: Log final citation count
-                logger.info("📊 CITATION DEBUG - Final complete event:")
-                logger.info(f"   - Citations generated: {len(c)}")
-                if not c:
-                    logger.error(f"   - final_results: {len(final_results)}")
-                    logger.error(f"   - virtual_record_id_to_result: {len(virtual_record_id_to_result) if virtual_record_id_to_result else 0}")
-                    logger.error(f"   - records: {len(records) if records else 0}")
-
-                complete_data = {
-                        "answer": normalized,
-                        "citations": c,  # Use normalized citations
-                        "reason": parsed.get("reason"),
-                        "confidence": parsed.get("confidence"),
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                        },
                     }
-                # Include referenceData if present (IDs for follow-up queries)
-                if parsed.get("referenceData"):
-                    complete_data["referenceData"] = parsed.get("referenceData")
-                yield {
-                    "event": "complete",
-                    "data": complete_data,
-                }
-            except Exception:
-                # Fallback if JSON parsing fails — also check for hallucinated citations
-                fallback_answer = answer_buf
-                if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-                    hallucinated = detect_hallucinated_citation_urls(
-                        fallback_answer, records, final_results,
-                        virtual_record_id_to_result=virtual_record_id_to_result,
-                        ref_to_url=ref_to_url,
-                    )
-                    if hallucinated:
-                        logger.warning(
-                            "Citation reflection (agent JSON fallback): %d hallucinated URLs (attempt %d). URLs: %s",
-                            len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                        )
-                        yield {"event": "restreaming", "data": {}}
-                        yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                        reflection_content = _build_citation_reflection_message(hallucinated)
-                        updated_messages = list(messages)
-                        updated_messages.append(AIMessage(content=fallback_answer))
-                        updated_messages.append(HumanMessage(content=reflection_content))
-                        async for event in stream_llm_response(
-                            llm, updated_messages, final_results, logger,
-                            target_words_per_chunk, mode, virtual_record_id_to_result, records,
-                            citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                            ref_to_url=ref_to_url,
-                        ):
-                            yield event
-                        return
 
-                normalized, c = normalize_citations_and_chunks_for_agent(fallback_answer, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
-                yield {
-                    "event": "complete",
-                    "data": {
-                        "answer": normalized,
-                        "citations": c,
-                        "reason": None,
-                        "confidence": None,
-                    },
-                }
-        except Exception as exc:
-            yield {
-                "event": "error",
-                "data": {"error": f"Error in LLM streaming: {exc}"},
-            }
-    else:
-        # Simple mode: stream content directly without JSON parsing
-        logger.debug("stream_llm_response: simple mode - streaming raw content")
-        content_buf: str = ""
-        WORD_ITER = re.compile(r'\S+').finditer
-        prev_norm_len = 0
-        emit_upto = 0
-        words_in_chunk = 0
-        # Stream directly from LLM
-        try:
-            async for token in aiter_llm_stream(llm, messages):
-                content_buf += token
-
-                # Stream content in word-based chunks
-                for match in WORD_ITER(content_buf[emit_upto:]):
-                    words_in_chunk += 1
-                    if words_in_chunk == target_words_per_chunk:
-                        char_end = emit_upto + match.end()
-
-                        # Include any citation blocks that immediately follow
-                        if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
-                            char_end += m.end()
-
-                        emit_upto = char_end
-                        words_in_chunk = 0
-
-                        current_raw = content_buf[:emit_upto]
-                        # Skip if we have incomplete citations
-                        if INCOMPLETE_CITE_RE.search(current_raw):
-                            continue
-
-                        normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results, virtual_record_id_to_result, records,
-                            ref_to_url=ref_to_url,
-                        )
-
-                        chunk_text = normalized[prev_norm_len:]
-                        prev_norm_len = len(normalized)
-
-                        yield {
-                            "event": "answer_chunk",
-                            "data": {
-                                "chunk": chunk_text,
-                                "accumulated": normalized,
-                                "citations": cites,
-                            },
-                        }
-
-            # Citation URL reflection before final normalization
-            if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-                hallucinated = detect_hallucinated_citation_urls(
-                    content_buf, records, final_results,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                    ref_to_url=ref_to_url,
+        # Citation URL reflection before final normalization
+        if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
+            hallucinated = detect_hallucinated_citation_urls(
+                content_buf, records, final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=ref_to_url,
+            )
+            if hallucinated:
+                logger.warning(
+                    "Citation reflection (agent simple): %d hallucinated URLs (attempt %d). URLs: %s",
+                    len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                 )
-                if hallucinated:
-                    logger.warning(
-                        "Citation reflection (agent simple): %d hallucinated URLs (attempt %d). URLs: %s",
-                        len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                    )
-                    yield {"event": "restreaming", "data": {}}
-                    yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                    reflection_content = _build_citation_reflection_message(hallucinated)
-                    updated_messages = list(messages)
-                    updated_messages.append(AIMessage(content=content_buf))
-                    updated_messages.append(HumanMessage(content=reflection_content))
-                    async for event in stream_llm_response(
-                        llm, updated_messages, final_results, logger,
-                        target_words_per_chunk, mode, virtual_record_id_to_result, records,
-                        citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                        ref_to_url=ref_to_url,
-                    ):
-                        yield event
-                    return
+                yield {"event": "restreaming", "data": {}}
+                yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
+                reflection_content = _build_citation_reflection_message(hallucinated)
+                updated_messages = list(messages)
+                updated_messages.append(AIMessage(content=content_buf))
+                updated_messages.append(HumanMessage(content=reflection_content))
+                async for event in stream_llm_response(
+                    llm, updated_messages, final_results, logger,
+                    target_words_per_chunk, virtual_record_id_to_result, records,
+                    citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                    ref_to_url=ref_to_url,
+                ):
+                    yield event
+                return
 
-            # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
-            yield {
-                "event": "complete",
-                "data": {
-                    "answer": normalized,
-                    "citations": cites,
-                    "reason": None,
-                    "confidence": None,
-                },
-            }
-        except Exception as exc:
-            logger.error("Error in simple mode LLM streaming", exc_info=True)
-            yield {
-                "event": "error",
-                "data": {"error": f"Error in LLM streaming: {exc}"},
-            }
+        # Final normalization and emit complete
+        normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
+        yield {
+            "event": "complete",
+            "data": {
+                "answer": normalized,
+                "citations": cites,
+                "reason": None,
+                "confidence": None,
+            },
+        }
+    except Exception as exc:
+        logger.error("Error in simple mode LLM streaming", exc_info=True)
+        yield {
+            "event": "error",
+            "data": {"error": f"Error in LLM streaming: {exc}"},
+        }
 
 
 
@@ -1555,11 +1380,15 @@ async def call_aiter_llm_stream_simple(
 
             content_buf += token
 
-            # Stream content in word-based chunks (same as handle_simple_mode)
-            for match in WORD_ITER(content_buf[emit_upto:]):
+            # Stream content in word-based chunks.
+            # Capture emit_upto once before the loop: match.end() positions are
+            # relative to the substring passed to WORD_ITER, so we must add the
+            # same base offset for every match — not the updated emit_upto.
+            start_emit_upto = emit_upto
+            for match in WORD_ITER(content_buf[start_emit_upto:]):
                 words_in_chunk += 1
                 if words_in_chunk == target_words_per_chunk:
-                    char_end = emit_upto + match.end()
+                    char_end = start_emit_upto + match.end()
 
                     # Include any citation blocks that immediately follow
                     if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
@@ -1583,7 +1412,6 @@ async def call_aiter_llm_stream_simple(
 
                     chunk_text = normalized[prev_norm_len:]
                     prev_norm_len = len(normalized)
-
                     yield {
                         "event": "answer_chunk",
                         "data": {
@@ -1751,10 +1579,12 @@ async def call_aiter_llm_stream(
             if end_idx != -1:
                 state.answer_done = True
                 state.answer_buf = state.answer_buf[:end_idx]
-        # Stream answer in word-based chunks
+        # Stream answer in word-based chunks.
+        # Capture emit_upto once: match positions are relative to the
+        # substring start, so the same base must be used for every match.
         if state.answer_buf:
-            # Process words from current emit position
-            words_to_process = list(word_iter(state.answer_buf[state.emit_upto:]))
+            start_emit_upto = state.emit_upto
+            words_to_process = list(word_iter(state.answer_buf[start_emit_upto:]))
 
             if words_to_process:
                 # Process words until we reach the threshold
@@ -1764,7 +1594,7 @@ async def call_aiter_llm_stream(
 
                     # Check if we've reached the threshold
                     if state.words_in_chunk >= target_words_per_chunk:
-                        char_end = state.emit_upto + match.end()
+                        char_end = start_emit_upto + match.end()
 
                         # Include any citation blocks that immediately follow
                         if m := cite_block_re.match(state.answer_buf[char_end:]):
