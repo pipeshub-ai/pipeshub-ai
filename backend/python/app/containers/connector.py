@@ -161,14 +161,12 @@ async def initialize_container(container) -> bool:
         # Conditionally initialize ArangoDB service based on DATA_STORE
         if data_store_type == "arangodb":
             logger.info("Ensuring ArangoDB service is initialized")
-            # Arango_service is needed for migrations
             arango_service = await container.arango_service()
             if not arango_service:
                 raise Exception("Failed to initialize ArangoDB service")
             logger.info("✅ ArangoDB service initialized")
         else:
             logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store_type})")
-            arango_service = None
 
         logger.info("Ensuring graph database provider is initialized")
         data_store = await container.data_store()
@@ -208,12 +206,6 @@ async def initialize_container(container) -> bool:
                 logger.error(f"❌ All team migration failed: {error_msg}")
         except Exception as e:
             logger.error(f"❌ All team migration error: {e}")
-
-        # Skip ArangoDB-specific migrations if Neo4j is configured
-        if data_store_type != "arangodb":
-            logger.info(f"⏭️ Skipping ArangoDB-specific migrations (DATA_STORE={data_store_type})")
-            return True
-
 
         return True
 

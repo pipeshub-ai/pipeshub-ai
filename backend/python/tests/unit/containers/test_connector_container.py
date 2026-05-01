@@ -368,14 +368,13 @@ class TestNonArangoDBDataStore:
     @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
     @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
     @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
-    async def test_neo4j_skips_arangodb_specific_migrations(self, mock_all_team, mock_health):
+    async def test_neo4j_still_returns_true(self, mock_all_team, mock_health):
         container, logger, _ = _make_mock_container()
         mock_all_team.return_value = {"success": True, "skipped": True}
 
         result = await initialize_container(container)
 
         assert result is True
-        logger.info.assert_any_call("⏭️ Skipping ArangoDB-specific migrations (DATA_STORE=neo4j)")
 
 
 # ===========================================================================
