@@ -122,6 +122,170 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(blockedUsers)).to.be.true;
     });
+
+    it('should apply hasLoggedIn=true and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'true',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439021' },
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(true);
+      expect(filter._id.$nin).to.be.an('array').with.length(2);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439021');
+      expect(filter._id.$nin[1].toString()).to.equal('507f1f77bcf86cd799439022');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should apply hasLoggedIn=false and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'false',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ userId: '507f1f77bcf86cd799439023' }]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(false);
+      expect(filter._id.$nin).to.be.an('array').with.length(1);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439023');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should constrain to blocked users when isBlocked=true and zero blocked users exist', async () => {
+      // Regression: when only "Blocked" status is selected and there are no
+      // blocked users in the org, the response must be empty rather than
+      // the entire org's user list.
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(0);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('should match blocked users by id when isBlocked=true and blocked users exist', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439031' },
+              { userId: '507f1f77bcf86cd799439032' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(2);
+      expect(filter.$or[0]._id.$in[0].toString()).to.equal('507f1f77bcf86cd799439031');
+      expect(filter.$or[0]._id.$in[1].toString()).to.equal('507f1f77bcf86cd799439032');
+    });
   });
 
   describe('getAllUsersWithGroups', () => {
@@ -1853,7 +2017,12 @@ describe('UserController', () => {
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
 
-      const existingUser = { _id: 'eu1', email: 'existing@test.com', isDeleted: false };
+      const existingUser = {
+        _id: 'eu1',
+        email: 'existing@test.com',
+        isDeleted: false,
+        hasLoggedIn: true,
+      };
       const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
 
       sinon.stub(Users, 'find')
@@ -1893,7 +2062,9 @@ describe('UserController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
-      sinon.stub(Users, 'find').resolves([{ _id: 'eu1', email: 'existing@test.com', isDeleted: false }] as any);
+      sinon.stub(Users, 'find').resolves([
+        { _id: 'eu1', email: 'existing@test.com', isDeleted: false, hasLoggedIn: true },
+      ] as any);
       sinon.stub(Users, 'create').resolves([] as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
@@ -1948,6 +2119,83 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('array of email');
+    });
+
+    it('should resend invite email for existing pending non-blocked users', async () => {
+      req.body = {
+        emails: ['pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439021',
+          email: 'pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+    });
+
+    it('should not resend invite for pending blocked users', async () => {
+      req.body = {
+        emails: ['blocked-pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439022',
+          email: 'blocked-pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].errorMessage).to.include('already have active accounts');
     });
   });
 
