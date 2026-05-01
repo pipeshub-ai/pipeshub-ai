@@ -377,7 +377,7 @@ export function OAuthAppSelector() {
           >
             <input
               type="text"
-              value={typeof oauthInstanceName === 'string' ? oauthInstanceName : ''}
+              value={oauthInstanceName ?? ''}
               onChange={(e) => setAuthFormValue('oauthInstanceName', e.target.value)}
               placeholder={t('workspace.connectors.authTab.oauthAppNamePlaceholder', {
                 name: panelConnector.name,
