@@ -393,12 +393,7 @@ export function ConnectorPanel() {
       return false;
     }
 
-    if (
-      selectedAuthType === 'OAUTH' &&
-      isCreateMode &&
-      isAdmin === true &&
-      !oauthConfigIdStr
-    ) {
+    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
       const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
       if (!oauthAppName) {
         mergeFormErrors({

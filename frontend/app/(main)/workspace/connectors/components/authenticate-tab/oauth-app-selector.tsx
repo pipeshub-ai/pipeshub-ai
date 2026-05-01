@@ -186,20 +186,19 @@ export function OAuthAppSelector() {
 
   const selectedIdTrimmed = (selectedId ?? '').trim();
 
-  /** Create new OAuth registration: no linked `oauthConfigId` (explicit "Create new" or no saved apps yet). */
-  const showNewOAuthAppName =
-    isAdmin === true && !isExistingConnector && !selectedIdTrimmed;
+  /** New OAuth registration: no `oauthConfigId` (Create new, or empty list with implicit new app). */
+  const showNewOAuthAppName = isAdmin === true && !selectedIdTrimmed;
 
   /**
-   * When there are no saved apps yet, mirror legacy behavior: default OAuth registration name
-   * from the connector instance name until the user edits the field.
+   * When there are no saved apps yet, default OAuth registration name from the create flow
+   * instance name field, or from the connector row name when editing.
    */
   useEffect(() => {
-    if (selectedAuthType !== 'OAUTH' || isExistingConnector || isAdmin !== true) return;
+    if (selectedAuthType !== 'OAUTH' || isAdmin !== true) return;
     if (selectedIdTrimmed) return;
     if (loading || fetchError) return;
     if (oauthApps.length !== 0) return;
-    const inst = instanceName.trim();
+    const inst = (instanceName.trim() || panelConnector?.name?.trim() || '').trim();
     if (!inst) return;
     const cur = String(useConnectorsStore.getState().formData.auth.oauthInstanceName ?? '').trim();
     if (!cur) {
@@ -207,13 +206,13 @@ export function OAuthAppSelector() {
     }
   }, [
     selectedAuthType,
-    isExistingConnector,
     isAdmin,
     selectedIdTrimmed,
     loading,
     fetchError,
     oauthApps.length,
     instanceName,
+    panelConnector?.name,
     setAuthFormValue,
   ]);
 
@@ -231,14 +230,22 @@ export function OAuthAppSelector() {
   }, [selectedIdTrimmed, loading, oauthApps]);
 
   const showOAuthSelect =
-    loading || oauthApps.length > 0 || showUnlistedRegistrationItem;
+    loading ||
+    oauthApps.length > 0 ||
+    showUnlistedRegistrationItem ||
+    (isAdmin === true &&
+      isExistingConnector &&
+      !loading &&
+      !fetchError &&
+      oauthApps.length === 0 &&
+      !showUnlistedRegistrationItem);
 
   const radixValue = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return undefined;
     if (selectedIdTrimmed) return selectedIdTrimmed;
-    if (isAdmin === true && !isExistingConnector) return MANUAL_VALUE;
+    if (isAdmin === true) return MANUAL_VALUE;
     return undefined;
-  }, [selectedAuthType, selectedIdTrimmed, isAdmin, isExistingConnector]);
+  }, [selectedAuthType, selectedIdTrimmed, isAdmin]);
 
   const handleValueChange = (value: string) => {
     if (value === MANUAL_VALUE) {
@@ -283,9 +290,6 @@ export function OAuthAppSelector() {
             return 'No OAuth apps are registered yet. Ask an administrator to add one in workspace connector settings.';
           }
           if (isAdmin === true) {
-            if (isExistingConnector) {
-              return 'No other saved OAuth apps are listed for this connector. You can keep using the linked registration if shown above, or ask an administrator to add more.';
-            }
             return null;
           }
           return 'Enter OAuth client credentials below, or pick a saved app once one is available.';
@@ -334,9 +338,7 @@ export function OAuthAppSelector() {
               }}
               placeholder={
                 isAdmin === true
-                  ? isExistingConnector
-                    ? 'Select OAuth app…'
-                    : 'Select OAuth app or create new…'
+                  ? 'Select OAuth app or create new…'
                   : 'Select an OAuth app (required)…'
               }
             />
@@ -345,7 +347,7 @@ export function OAuthAppSelector() {
               style={{ zIndex: 10000 }}
               container={panelBodyPortal ?? undefined}
             >
-              {isAdmin === true && !isExistingConnector ? (
+              {isAdmin === true ? (
                 <Select.Item value={MANUAL_VALUE}>Create new OAuth app</Select.Item>
               ) : null}
               {oauthApps.map((app) => (
