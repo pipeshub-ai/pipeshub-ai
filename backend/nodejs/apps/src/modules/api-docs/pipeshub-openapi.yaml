@@ -17,6 +17,8 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator**, sets the authenticated user accordingly, and forwards **`x-oauth-user-id`** to Python services on proxied calls. Do not send **`x-oauth-user-id`** yourself—the gateway removes untrusted values on ingress. See the **OAuth Provider** tag for full behavior.
+
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
   version: 1.0.0
@@ -67,6 +69,13 @@ tags:
       - ID tokens with standard claims
       - UserInfo endpoint for profile data
       - Discovery endpoint for automatic configuration
+
+      **Machine tokens (`client_credentials`) — gateway and downstream identity:**
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator and may attach **`x-oauth-user-id`** (resolved user id) on **outbound** HTTP calls to Python microservices so authorization and retrieval match the same principal. **Inbound** `x-oauth-user-id` from external clients is **removed** at the gateway to prevent spoofing.
+
+      **Python services:** Validate `Authorization: Bearer` as today. When **`x-oauth-user-id`** is present (normally only when the Node gateway added it), use it as the effective **`userId`** for scopes and user-scoped logic; otherwise use the JWT payload’s **`userId`** as-is (which may still equal **`client_id`** if the caller bypassed the gateway).
+
+      **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
     description: |
       Manage OAuth 2.0 client applications registered with PipesHub.
@@ -76,6 +85,10 @@ tags:
 
       **Who can see which apps**
       - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
+
+      **Who authorizes vs. client credentials**
+      - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
+      - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -286,6 +299,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator and forwards **`x-oauth-user-id`** to Python where applicable — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -5982,8 +5996,6 @@ paths:
         Initiates the authorization code flow. Users are redirected here by OAuth clients
         to authorize access to their account.
         <br><br>
-        **Only the user who registered the OAuth application** (the app creator) may complete consent for that `client_id`; other signed-in users receive `access_denied`.
-        <br><br>
         <b>Flow:</b><br>
         1. Client redirects user to this endpoint with required parameters<br>
         2. If not logged in, user is redirected to PipesHub login<br>
@@ -6135,7 +6147,7 @@ paths:
         - `client_credentials`: Get tokens for machine-to-machine auth<br>
         - `refresh_token`: Get new access token using refresh token
         <br><br>
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client), not an arbitrary header-supplied user.
+        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) and must not trust client-supplied **`x-oauth-user-id`** (stripped on ingress). Downstream Python services accept **`x-oauth-user-id`** only when set by the gateway — see **OAuth Provider** tag.
         <br><br>
         <b>Client Authentication:</b><br>
         Can be provided via:<br>
@@ -6635,7 +6647,7 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Get details of a specific OAuth app you may access (**org admin** or **creator** of the app).
+        Get details of an OAuth app **you created** (creator-only; org admins do not access other members' apps).
         <br><br>
         Returns app configuration without the client secret.
       operationId: getOAuthApp
@@ -6659,9 +6671,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6670,7 +6682,7 @@ paths:
         - OAuth Apps
       summary: Update OAuth app
       description: |
-        Update an OAuth app's configuration (**org admin** or **creator**).
+        Update an OAuth app's configuration (**creator only** — the user who registered the app).
         <br><br>
         <b>Scopes:</b> When changing `allowedScopes`, values must remain allowed for your role (same rules as `GET /oauth-clients/scopes`).
         <br><br>
@@ -6708,9 +6720,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6719,7 +6731,7 @@ paths:
         - OAuth Apps
       summary: Delete OAuth app
       description: |
-        Delete (soft delete) an OAuth app (**org admin** or **creator**).
+        Delete (soft delete) an OAuth app (**creator only**).
         <br><br>
         This marks the app as deleted and revokes all its tokens.
         The app cannot be restored after deletion.
@@ -6750,9 +6762,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6769,7 +6781,7 @@ paths:
         <br><br>
         <b>Important:</b> The new secret is only returned once. Store it securely.
         <br><br>
-        Caller must be **org admin** or **creator** of the app.
+        Caller must be the **creator** (registered owner) of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: regenerateOAuthAppSecret
@@ -6793,9 +6805,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6810,7 +6822,7 @@ paths:
         Existing tokens remain valid until they expire, but no new tokens can
         be obtained. Use this for temporary access suspension.
         <br><br>
-        Caller must be **org admin** or **creator** of the app.
+        Caller must be the **creator** (registered owner) of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: suspendOAuthApp
@@ -6834,9 +6846,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6848,7 +6860,7 @@ paths:
       description: |
         Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
         <br><br>
-        Caller must be **org admin** or **creator** of the app.
+        Caller must be the **creator** (registered owner) of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: activateOAuthApp
@@ -6872,9 +6884,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6888,7 +6900,7 @@ paths:
         <br><br>
         Useful for monitoring app usage and identifying tokens to revoke.
         <br><br>
-        Caller must be **org admin** or **creator** of the app.
+        Caller must be the **creator** (registered owner) of the app.
       operationId: listOAuthAppTokens
       security:
         - bearerAuth: []
@@ -6912,9 +6924,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 
@@ -6928,7 +6940,7 @@ paths:
         <br><br>
         Use this for emergency access removal or when rotating credentials.
         <br><br>
-        Caller must be **org admin** or **creator** of the app.
+        Caller must be the **creator** (registered owner) of the app.
         <br><br>
         <b>Rate Limited:</b> 10 requests per minute.
       operationId: revokeAllOAuthAppTokens
@@ -6959,9 +6971,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden — caller cannot access this OAuth app or action in the current workspace (see OAuth Apps tag for org-admin vs creator visibility).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
         '404':
-          description: OAuth app not found or not visible to this caller (non-admins only see apps they created)
+          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
         '429':
           description: Rate limit exceeded
 

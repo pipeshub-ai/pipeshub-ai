@@ -61,25 +61,19 @@ describe('OAuthAppController', () => {
       mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
       await controller.listApps(mockReq, mockRes, mockNext)
       const callArgs = mockOAuthAppService.listApps.firstCall.args
-      const query = callArgs[3] as { page?: number; limit?: number }
+      const query = callArgs[2] as { page?: number; limit?: number }
       expect(query.page).to.equal(2)
       expect(query.limit).to.equal(10)
     })
 
-    it('should pass orgId, userId, isAdmin true to service when user is org admin', async () => {
+    it('should pass orgId, userId, and query to listApps without org-admin lookup', async () => {
       mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
       await controller.listApps(mockReq, mockRes, mockNext)
+      expect((userAdminService.isUserOrgAdmin as sinon.SinonStub).called).to.be.false
       const args = mockOAuthAppService.listApps.firstCall.args
       expect(args[0]).to.equal('org-1')
       expect(args[1]).to.equal('user-1')
-      expect(args[2]).to.equal(true)
-    })
-
-    it('should pass isAdmin false when user is not org admin', async () => {
-      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
-      mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
-      await controller.listApps(mockReq, mockRes, mockNext)
-      expect(mockOAuthAppService.listApps.firstCall.args[2]).to.equal(false)
+      expect(args[2]).to.be.an('object')
     })
 
     it('should call next on error', async () => {

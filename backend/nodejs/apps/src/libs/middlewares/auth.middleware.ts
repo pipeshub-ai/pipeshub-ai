@@ -12,6 +12,7 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
+import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
@@ -136,13 +137,37 @@ export class AuthMiddleware {
 
     const tokenScopes = payload.scope.split(' ');
 
-    const userId = payload.userId;
+    let userId = payload.userId;
     const orgId = payload.orgId;
     let { fullName, accountType } = payload;
 
-    // Deprecated JWT shape (pre–app-creator subject); re-issue tokens after revocation/migration.
-    if (userId === payload.client_id) {
-      throw new UnauthorizedError('Invalid or expired token');
+    // for client_credentials tokens (userId === client_id), resolve the app owner
+    const isClientCredentials = userId === payload.client_id;
+    if (isClientCredentials) {
+      if (payload.createdBy) {
+        userId = payload.createdBy;
+      } else {
+        try {
+          const app = await OAuthApp.findOne({
+            clientId: payload.client_id,
+            isDeleted: false,
+          })
+            .select('createdBy')
+            .lean()
+            .exec();
+          if (app) {
+            userId = app.createdBy.toString();
+          } else {
+            throw new UnauthorizedError('OAuth app not found or revoked');
+          }
+        } catch (err) {
+          if (err instanceof UnauthorizedError) {
+            throw err;
+          }
+          this.logger.error('Failed to look up OAuth app owner', err);
+          throw new UnauthorizedError('Failed to look up OAuth app owner');
+        }
+      }
     }
 
     let email: string | undefined;
@@ -168,7 +193,7 @@ export class AuthMiddleware {
       }
     }
 
-    if (!accountType && payload.orgId) {
+    if (!accountType && isClientCredentials) {
       try {
         const org = await Org.findOne({
           _id: orgId,
@@ -196,6 +221,12 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+
+    // for client_credentials grants, the token's userId is the client_id (not a real user).
+    // pass the resolved app owner userId via header so Python services can use it.
+    if (isClientCredentials) {
+      req.headers['x-oauth-user-id'] = userId;
+    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,

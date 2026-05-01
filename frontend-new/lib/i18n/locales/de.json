@@ -1213,6 +1213,7 @@
         "clientIdLabel": "Client-ID",
         "clientSecretLabel": "Client-Secret",
         "hideSecretAria": "Client-Secret ausblenden",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow.",
         "showSecretAria": "Client-Secret anzeigen"
       },
       "manageApplication": {

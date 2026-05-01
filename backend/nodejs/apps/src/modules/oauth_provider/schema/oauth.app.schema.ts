@@ -115,6 +115,8 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
 )
 
 OAuthAppSchema.index({ orgId: 1, isDeleted: 1 })
+/** Supports creator-scoped listing (`buildAppFilter`) with `sort({ createdAt: -1 })` — deploy with syncIndexes/migrate as needed. */
+OAuthAppSchema.index({ orgId: 1, createdBy: 1, isDeleted: 1, createdAt: -1 })
 OAuthAppSchema.index({ clientId: 1, status: 1 })
 
 OAuthAppSchema.pre<IOAuthApp>('save', async function (next) {

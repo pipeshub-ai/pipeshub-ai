@@ -1018,6 +1018,7 @@
         "clientIdLabel": "ID de cliente",
         "clientSecretLabel": "Secreto del cliente",
         "hideSecretAria": "Ocultar secreto del cliente",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow.",
         "returnToAppsButton": "Volver a aplicaciones OAuth 2.0",
         "showSecretAria": "Mostrar secreto del cliente",
         "successPanelTitle": "Aplicación OAuth creada",

@@ -37,7 +37,10 @@ export class OAuthAppService {
     private scopeValidatorService: ScopeValidatorService,
   ) {}
 
-  /** Every org member (including org admins) only sees OAuth apps they created. */
+  /**
+   * Every org member (including org admins) only sees OAuth apps they created.
+   * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
+   */
   private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
     return {
       orgId: new Types.ObjectId(orgId),
@@ -114,7 +117,6 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -157,7 +159,6 @@ export class OAuthAppService {
   async listApps(
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
     query: ListAppsQuery,
   ): Promise<PaginatedResponse<OAuthAppResponse>> {
     const page = query.page || 1
@@ -277,7 +278,6 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
   ): Promise<void> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -307,7 +307,6 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
   ): Promise<OAuthAppWithSecret> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -340,7 +339,6 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -373,7 +371,6 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
-    _isAdmin: boolean,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),

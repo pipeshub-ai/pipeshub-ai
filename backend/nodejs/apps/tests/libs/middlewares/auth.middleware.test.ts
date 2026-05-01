@@ -9,6 +9,7 @@ import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema'
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
+import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 
 // ---------------------------------------------------------------------------
@@ -361,7 +362,7 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
-    it('should reject deprecated OAuth JWTs where userId equals client_id', async () => {
+    it('should resolve client_credentials JWT via createdBy and set x-oauth-user-id', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -374,7 +375,11 @@ describe('AuthMiddleware', () => {
         client_id: 'client123',
         scope: 'kb:read',
         createdBy: 'real-owner-id',
+        accountType: 'premium',
       })
+
+      const userQuery = createMockQuery({ email: 'owner@example.com', fullName: 'Owner' })
+      sinon.stub(Users, 'findOne').returns(userQuery)
 
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
       const res = createMockResponse()
@@ -382,13 +387,12 @@ describe('AuthMiddleware', () => {
 
       await authMiddleware.authenticate(req, res, next)
 
-      expect(next.calledOnce).to.be.true
-      const error = next.firstCall.args[0]
-      expect(error).to.be.instanceOf(UnauthorizedError)
-      expect(error.message).to.equal('Invalid or expired token')
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('real-owner-id')
+      expect(req.headers['x-oauth-user-id']).to.equal('real-owner-id')
     })
 
-    it('should throw UnauthorizedError when Org lookup fails for OAuth token', async () => {
+    it('should resolve client_credentials via OAuthApp when createdBy absent', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -396,11 +400,72 @@ describe('AuthMiddleware', () => {
       })
 
       mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'owner-id',
+        userId: 'client123',
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
-        // accountType not set
+        accountType: 'premium',
+      })
+
+      const appQuery = createMockQuery({ createdBy: { toString: () => 'db-owner-id' } })
+      sinon.stub(OAuthApp, 'findOne').returns(appQuery)
+
+      const userQuery = createMockQuery({ email: 'o@example.com', fullName: 'O' })
+      sinon.stub(Users, 'findOne').returns(userQuery)
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('db-owner-id')
+      expect(req.headers['x-oauth-user-id']).to.equal('db-owner-id')
+    })
+
+    it('should throw when OAuth app missing for client_credentials without createdBy', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+      })
+
+      const appQuery = createMockQuery(null)
+      sinon.stub(OAuthApp, 'findOne').returns(appQuery)
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect((next.firstCall.args[0] as UnauthorizedError).message).to.equal(
+        'OAuth app not found or revoked',
+      )
+    })
+
+    it('should throw UnauthorizedError when Org lookup fails for client_credentials missing accountType', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+        createdBy: 'owner-id',
       })
 
       const userQuery = createMockQuery({ email: 'user@test.com', fullName: 'User' })

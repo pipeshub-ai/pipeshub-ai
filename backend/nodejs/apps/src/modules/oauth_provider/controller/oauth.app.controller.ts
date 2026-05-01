@@ -37,7 +37,6 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const query: ListAppsQuery = {
         page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
         limit: req.query.limit
@@ -47,7 +46,7 @@ export class OAuthAppController {
         search: req.query.search as string,
       }
 
-      const result = await this.oauthAppService.listApps(orgId, userId, isAdmin, query)
+      const result = await this.oauthAppService.listApps(orgId, userId, query)
 
       res.json(result)
     } catch (error) {
@@ -98,10 +97,9 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.getAppById(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
 
       res.json(app)
     } catch (error) {
@@ -151,15 +149,14 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
       // Revoke all tokens first
-      const app = await this.oauthAppService.getAppById(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       // Then delete the app
-      await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin)
+      await this.oauthAppService.deleteApp(appId, orgId, userId)
 
       this.logger.info('OAuth app deleted via API', {
         appId,
@@ -186,10 +183,9 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId)
 
       this.logger.info('OAuth app secret regenerated via API', {
         appId,
@@ -217,10 +213,9 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.suspendApp(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.suspendApp(appId, orgId, userId)
 
       this.logger.info('OAuth app suspended via API', {
         appId,
@@ -247,10 +242,9 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.activateApp(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.activateApp(appId, orgId, userId)
 
       this.logger.info('OAuth app activated via API', {
         appId,
@@ -299,11 +293,10 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
       // Verify app belongs to org
-      const app = await this.oauthAppService.getAppById(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       const tokens = await this.oauthTokenService.listTokensForApp(app.clientId)
 
       res.json({
@@ -325,11 +318,10 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
       const appId = req.params.appId!
 
       // Verify app belongs to org
-      const app = await this.oauthAppService.getAppById(appId, orgId, userId, isAdmin)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       this.logger.info('All tokens revoked for OAuth app via API', {

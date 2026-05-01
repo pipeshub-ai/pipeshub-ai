@@ -1010,6 +1010,7 @@
         "returnToAppsButton": "Zurück zu OAuth-2.0-Apps",
         "showSecretAria": "Client-Geheimnis anzeigen",
         "hideSecretAria": "Client-Geheimnis ausblenden",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow.",
         "successTitle": "Anwendung erstellt",
         "successDescription": "Ihre OAuth-Anwendung wurde erfolgreich erstellt.",
         "errorCreateTitle": "Anwendung konnte nicht erstellt werden",

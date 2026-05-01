@@ -65,11 +65,9 @@ export class OAuthTokenService {
     const jti = uuidv4()
     const now = Math.floor(Date.now() / 1000)
 
-    const subjectUserId = userId ?? app.createdBy.toString()
-
     // Generate access token
     const accessTokenPayload: OAuthTokenPayload = {
-      userId: subjectUserId,
+      userId: userId || app.clientId,
       orgId,
       iss: this.issuer,
       exp: now + app.accessTokenLifetime,
@@ -94,7 +92,7 @@ export class OAuthTokenService {
     await OAuthAccessToken.create({
       tokenHash: accessTokenHash,
       clientId: app.clientId,
-      userId: new Types.ObjectId(subjectUserId),
+      userId: userId ? new Types.ObjectId(userId) : undefined,
       orgId: new Types.ObjectId(orgId),
       scopes,
       expiresAt: new Date((now + app.accessTokenLifetime) * 1000),
@@ -107,11 +105,11 @@ export class OAuthTokenService {
       scope: scopes.join(' '),
     }
 
-    // Refresh tokens only for delegated grants (caller passes resource owner id), not client_credentials.
-    if (includeRefreshToken && userId != null && scopes.includes('offline_access')) {
+    // Generate refresh token if requested and user is present
+    if (includeRefreshToken && userId && scopes.includes('offline_access')) {
       const refreshJti = uuidv4()
       const refreshTokenPayload: OAuthTokenPayload = {
-        userId: subjectUserId,
+        userId: userId,
         orgId,
         iss: this.issuer,
         exp: now + app.refreshTokenLifetime,
@@ -133,7 +131,7 @@ export class OAuthTokenService {
       await OAuthRefreshToken.create({
         tokenHash: refreshTokenHash,
         clientId: app.clientId,
-        userId: new Types.ObjectId(subjectUserId),
+        userId: new Types.ObjectId(userId),
         orgId: new Types.ObjectId(orgId),
         scopes,
         expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
@@ -144,7 +142,7 @@ export class OAuthTokenService {
 
     this.logger.info('OAuth tokens generated', {
       clientId: app.clientId,
-      userId: subjectUserId,
+      userId,
       scopes,
       hasRefreshToken: !!result.refreshToken,
     })

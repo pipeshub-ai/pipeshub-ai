@@ -363,10 +363,10 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_deprecated_user_id_equals_client_id_raises_401(
+    async def test_oauth_client_credentials_uses_x_oauth_user_id_header(
         self, mock_jwt_decode, mock_get_config
     ):
-        """Deprecated OAuth JWTs used client_id as userId; reject (re-issue after revocation)."""
+        """Node gateway sets x-oauth-user-id to resolved app owner for machine tokens."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -379,13 +379,41 @@ class TestIsJwtTokenValid:
             "tokenType": "oauth",
             "scope": "admin",
             "client_id": "client-xyz",
-            "createdBy": "owner-from-jwt",
+        }
+
+        request = _make_fake_request(
+            authorization="Bearer oauth.jwt.token",
+            extra_headers={"x-oauth-user-id": "resolved-owner-id"},
+        )
+        result = await isJwtTokenValid(request)
+        assert result["isOAuth"] is True
+        assert result["userId"] == "resolved-owner-id"
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_client_credentials_keeps_jwt_user_id_without_gateway_header(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """Direct Python calls without Node keep JWT userId (e.g. client_id subject)."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        mock_jwt_decode.return_value = {
+            "userId": "client-xyz",
+            "tokenType": "oauth",
+            "scope": "admin",
+            "client_id": "client-xyz",
         }
 
         request = _make_fake_request(authorization="Bearer oauth.jwt.token")
-        with pytest.raises(HTTPException) as exc_info:
-            await isJwtTokenValid(request)
-        assert exc_info.value.status_code == 401
+        result = await isJwtTokenValid(request)
+        assert result["isOAuth"] is True
+        assert result["userId"] == "client-xyz"
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")

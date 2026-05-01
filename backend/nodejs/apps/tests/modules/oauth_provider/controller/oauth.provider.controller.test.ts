@@ -95,27 +95,6 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.requiresConsent).to.be.true
     })
-
-    it('should return access_denied redirect when user is not the app creator', async () => {
-      const mockApp = {
-        name: 'App', description: 'Desc', allowedScopes: ['org:read'],
-        isConfidential: true, logoUrl: null, homepageUrl: null, privacyPolicyUrl: null,
-        createdBy: { toString: () => 'creator-id' },
-      }
-      mockOAuthAppService.getAppByClientId.resolves(mockApp)
-      const req = {
-        query: {
-          client_id: 'cid', redirect_uri: 'https://example.com/cb',
-          scope: 'org:read', state: 'state1',
-        },
-        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com', fullName: 'Test User' },
-      } as any
-
-      await controller.authorize(req, mockRes, mockNext)
-      const response = mockRes.json.firstCall.args[0]
-      expect(response.redirectUrl).to.include('error=access_denied')
-      expect(response.redirectUrl).to.include('state=state1')
-    })
   })
 
   describe('authorizeConsent', () => {
@@ -136,6 +115,25 @@ describe('OAuthProviderController', () => {
       await controller.authorizeConsent(req, mockRes, mockNext)
       const response = mockRes.json.firstCall.args[0]
       expect(response.redirectUrl).to.include('code=auth-code-123')
+    })
+
+    it('should issue a code for any authenticated user (not limited to app creator)', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({
+        allowedScopes: ['org:read'],
+        createdBy: { toString: () => 'other-user' },
+      })
+      mockAuthCodeService.generateCode.resolves('code-for-member')
+      const req = {
+        body: {
+          client_id: 'cid', redirect_uri: 'https://example.com/cb',
+          scope: 'org:read', state: 'state1', consent: 'granted',
+        },
+        user: { userId: 'u1', orgId: 'o1' },
+      } as any
+
+      await controller.authorizeConsent(req, mockRes, mockNext)
+      const response = mockRes.json.firstCall.args[0]
+      expect(response.redirectUrl).to.include('code=code-for-member')
     })
 
     it('should return error redirect when consent denied', async () => {
@@ -477,25 +475,6 @@ describe('OAuthProviderController', () => {
       const args = mockAuthCodeService.generateCode.firstCall.args
       expect(args[5]).to.equal('ch')
       expect(args[6]).to.equal('S256')
-    })
-
-    it('should return access_denied when user is not the app creator', async () => {
-      mockOAuthAppService.getAppByClientId.resolves({
-        allowedScopes: ['org:read'],
-        createdBy: { toString: () => 'creator-id' },
-      })
-      const req = {
-        body: {
-          client_id: 'cid', redirect_uri: 'https://example.com/cb',
-          scope: 'org:read', state: 'state1', consent: 'granted',
-        },
-        user: { userId: 'u1', orgId: 'o1' },
-      } as any
-
-      await controller.authorizeConsent(req, mockRes, mockNext)
-      const response = mockRes.json.firstCall.args[0]
-      expect(response.redirectUrl).to.include('error=access_denied')
-      expect(response.redirectUrl).to.include('state=state1')
     })
   })
 

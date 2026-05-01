@@ -1013,6 +1013,7 @@
         "returnToAppsButton": "OAuth 2.0 ऐप्स पर लौटें",
         "showSecretAria": "क्लाइंट सीक्रेट दिखाएँ",
         "hideSecretAria": "क्लाइंट सीक्रेट छिपाएँ",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow.",
         "successTitle": "अनुप्रयोग बनाया गया",
         "successDescription": "आपका OAuth अनुप्रयोग सफलतापूर्वक बनाया गया।",
         "errorCreateTitle": "अनुप्रयोग नहीं बनाया जा सका",

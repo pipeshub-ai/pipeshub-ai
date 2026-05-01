@@ -87,22 +87,6 @@ export class OAuthProviderController {
     }
 
     try {
-      const user = req.user!
-      const creatorId = app.createdBy?.toString()
-      if (!creatorId || creatorId !== user.userId) {
-        const redirectUrl = new URL(validatedRedirectUri!)
-        redirectUrl.searchParams.set('error', 'access_denied')
-        redirectUrl.searchParams.set(
-          'error_description',
-          'Only the user who registered this OAuth application may authorize it',
-        )
-        if (query.state) {
-          redirectUrl.searchParams.set('state', query.state)
-        }
-        res.json({ redirectUrl: redirectUrl.toString() })
-        return
-      }
-
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(query.scope)
       this.scopeValidatorService.validateScopesForApp(
@@ -204,18 +188,6 @@ export class OAuthProviderController {
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri)
 
       const user = req.user!
-      const creatorId = app.createdBy?.toString()
-      if (!creatorId || creatorId !== user.userId) {
-        const redirectUrl = new URL(redirect_uri)
-        redirectUrl.searchParams.set('error', 'access_denied')
-        redirectUrl.searchParams.set(
-          'error_description',
-          'Only the user who registered this OAuth application may authorize it',
-        )
-        redirectUrl.searchParams.set('state', state)
-        res.json({ redirectUrl: redirectUrl.toString() })
-        return
-      }
 
       // Check consent
       if (consent !== 'granted') {

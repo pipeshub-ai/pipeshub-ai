@@ -107,7 +107,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
 
       try {
-        await service.getAppById(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.getAppById(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -127,7 +127,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'find').returns({ sort: mockSort } as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      const result = await service.listApps(VALID_ORG_ID, VALID_USER_ID, true, {})
+      const result = await service.listApps(VALID_ORG_ID, VALID_USER_ID, {})
       expect(result.pagination.page).to.equal(1)
       expect(result.pagination.limit).to.equal(20)
     })
@@ -140,7 +140,7 @@ describe('OAuthAppService - branch coverage', () => {
       const findStub = sinon.stub(OAuthApp, 'find').returns({ sort: mockSort } as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      await service.listApps(VALID_ORG_ID, VALID_USER_ID, true, { status: OAuthAppStatus.ACTIVE })
+      await service.listApps(VALID_ORG_ID, VALID_USER_ID, { status: OAuthAppStatus.ACTIVE })
       // Check the filter contains status
       const filterArg = findStub.firstCall.args[0]
       expect(filterArg.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
@@ -154,7 +154,7 @@ describe('OAuthAppService - branch coverage', () => {
       const findStub = sinon.stub(OAuthApp, 'find').returns({ sort: mockSort } as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(0)
 
-      await service.listApps(VALID_ORG_ID, VALID_USER_ID, true, { search: 'test.app' })
+      await service.listApps(VALID_ORG_ID, VALID_USER_ID, { search: 'test.app' })
       // Check the filter contains $or with regex
       const filterArg = findStub.firstCall.args[0]
       expect(filterArg.$or).to.exist
@@ -169,7 +169,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'find').returns({ sort: mockSort } as any)
       sinon.stub(OAuthApp, 'countDocuments').resolves(45)
 
-      const result = await service.listApps(VALID_ORG_ID, VALID_USER_ID, true, { page: 1, limit: 10 })
+      const result = await service.listApps(VALID_ORG_ID, VALID_USER_ID, { page: 1, limit: 10 })
       expect(result.pagination.totalPages).to.equal(5)
       expect(result.pagination.total).to.equal(45)
     })
@@ -307,7 +307,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
 
       try {
-        await service.suspendApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.suspendApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -322,7 +322,7 @@ describe('OAuthAppService - branch coverage', () => {
       } as any)
 
       try {
-        await service.suspendApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.suspendApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
@@ -339,7 +339,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
 
       try {
-        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -354,7 +354,7 @@ describe('OAuthAppService - branch coverage', () => {
       } as any)
 
       try {
-        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
@@ -370,7 +370,7 @@ describe('OAuthAppService - branch coverage', () => {
       } as any)
 
       try {
-        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.activateApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
@@ -505,7 +505,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
 
       try {
-        await service.deleteApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.deleteApp(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
@@ -521,7 +521,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
 
       try {
-        await service.regenerateSecret(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID, true)
+        await service.regenerateSecret(VALID_APP_ID, VALID_ORG_ID, VALID_USER_ID)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
