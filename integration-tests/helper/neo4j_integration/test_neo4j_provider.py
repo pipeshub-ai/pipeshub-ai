@@ -77,6 +77,19 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return int(result[0]["c"]) if result else 0
 
+    async def count_record_groups_by_type(self, connector_id: str, group_type: str) -> int:
+        """Return the number of RecordGroup nodes for a connector with the given ``groupType``."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (g:RecordGroup {connectorId: $cid, groupType: $gt})
+            RETURN count(g) AS c
+            """,
+            {"cid": connector_id, "gt": group_type},
+        )
+        return int(result[0]["c"]) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.client:
@@ -146,6 +159,33 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return int(result[0]["c"]) if result else 0
 
+    async def count_app_users(self, connector_id: str) -> int:
+        """Count User nodes linked to this connector's App via USER_APP_RELATION."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (u:User)-[:USER_APP_RELATION]->(a:App {id: $cid})
+            RETURN count(DISTINCT u) AS c
+            """,
+            {"cid": connector_id},
+        )
+        return int(result[0]["c"]) if result else 0
+
+    async def app_user_linked_by_email(self, connector_id: str, email: str) -> bool:
+        """True if a User with this email is linked to the connector App via USER_APP_RELATION."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (u:User)-[:USER_APP_RELATION]->(a:App {id: $cid})
+            WHERE toLower(u.email) = toLower($email)
+            RETURN count(u) AS c
+            """,
+            {"cid": connector_id, "email": email},
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
     # =========================================================================
     # Test Helper Methods - Record Lookups
     # =========================================================================
@@ -180,6 +220,19 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return [rec["name"] for rec in result if rec.get("name")]
 
+    async def fetch_record_group_names(self, connector_id: str) -> List[str]:
+        """Return RecordGroup display names for a connector."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (g:RecordGroup {connectorId: $cid})
+            RETURN coalesce(g.groupName, g.name, g.recordName) AS name
+            """,
+            {"cid": connector_id},
+        )
+        return [rec["name"] for rec in result if rec.get("name")]
+
     async def get_record_by_name(
         self, connector_id: str, name: str
     ) -> Optional[Dict[str, Any]]:
@@ -208,7 +261,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r:Record {connectorId: $cid})
             WHERE coalesce(r.recordName, r.name) = $name
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
-            RETURN g.name AS group_name
+            RETURN coalesce(g.groupName, g.name, g.recordName) AS group_name
             LIMIT 1
             """,
             {"cid": connector_id, "name": record_name}
@@ -343,6 +396,7 @@ class TestNeo4jProvider(Neo4jProvider):
         return {
             "records": await self.count_records(connector_id),
             "record_groups": await self.count_record_groups(connector_id),
+            "app_users": await self.count_app_users(connector_id),
             "belongs_to_edges": await self.count_record_group_edges(connector_id),
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),
@@ -408,7 +462,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
             OPTIONAL MATCH path = (g)-[:BELONGS_TO*0..5]->(root:RecordGroup)
             WITH r, g, root, nodes(path) AS ns
-            WITH r, [x IN ns | coalesce(x.name, '')] AS parts
+            WITH r, [x IN ns | coalesce(x.groupName, x.name, '')] AS parts
             WITH r, reduce(s = '', p IN [p IN parts WHERE p <> ''] | 
                 CASE WHEN s = '' THEN p ELSE s + '/' + p END
             ) AS parent_path
