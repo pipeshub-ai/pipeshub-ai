@@ -1,10 +1,9 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useBreakpoint } from '@/lib/hooks/use-breakpoint';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
@@ -17,9 +16,7 @@ import { OAuthApplicationCard } from './components/oauth-application-card';
 
 function Oauth2PageContent() {
   const { t } = useTranslation();
-  const router = useRouter();
   const breakpoint = useBreakpoint();
-  const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [clients, setClients] = useState<OAuthClient[]>([]);
@@ -33,12 +30,6 @@ function Oauth2PageContent() {
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [managePanelOpen, setManagePanelOpen] = useState(false);
   const [manageClientId, setManageClientId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -79,9 +70,9 @@ function Oauth2PageContent() {
   }, [page, limit, debouncedSearchQuery, t]);
 
   useEffect(() => {
-    if (!isProfileInitialized || isAdmin === false) return;
+    if (!isProfileInitialized) return;
     void fetchClients();
-  }, [isProfileInitialized, isAdmin, fetchClients]);
+  }, [isProfileInitialized, fetchClients]);
 
   const handleNewApplication = useCallback(() => {
     setCreatePanelOpen(true);
@@ -112,7 +103,7 @@ function Oauth2PageContent() {
     pagination.total === 0 &&
     hasSearchQuery;
 
-  if (!isProfileInitialized || isAdmin === false) {
+  if (!isProfileInitialized) {
     return null;
   }
 

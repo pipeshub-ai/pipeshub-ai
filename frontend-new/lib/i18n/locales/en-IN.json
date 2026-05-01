@@ -1013,6 +1013,7 @@
         "returnToAppsButton": "Return to OAuth 2.0 Apps",
         "showSecretAria": "Show client secret",
         "hideSecretAria": "Hide client secret",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow.",
         "successTitle": "Application created",
         "successDescription": "Your OAuth application was created successfully.",
         "errorCreateTitle": "Failed to create application",

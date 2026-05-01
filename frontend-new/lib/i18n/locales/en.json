@@ -1193,7 +1193,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0 Applications",
-      "subtitle": "Manage OAuth 2.0 applications that can access Pipeshub APIs on behalf of users",
+      "subtitle": "Create and manage OAuth apps you registered. Only you see your apps here.",
       "searchPlaceholder": "Search applications…",
       "newApplication": "New Application",
       "docsOpenLabel": "Open documentation",
@@ -1252,7 +1252,8 @@
         "clientIdLabel": "Client ID",
         "clientSecretLabel": "Client Secret",
         "hideSecretAria": "Hide client secret",
-        "showSecretAria": "Show client secret"
+        "showSecretAria": "Show client secret",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow."
       },
       "manageApplication": {
         "panelTitle": "Manage Application",
