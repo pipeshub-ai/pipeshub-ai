@@ -12,13 +12,20 @@ export function getConnectorInfoText(connector: Connector | null | undefined): s
  * Resolves the connector documentation URL for the "open documentation" action.
  * Prefers `documentationLinks` with type `pipeshub`, then the first non-empty link,
  * then legacy `connectorInfo.documentationUrl` when `connectorInfo` is an object.
+ *
+ * Pass `documentationLinksOverride` when the UI has schema-fetched links that are not
+ * yet on `connector.config` (e.g. connector panel before/without merged config).
  */
 export function getConnectorDocumentationUrl(
-  connector: Connector | null | undefined
+  connector: Connector | null | undefined,
+  documentationLinksOverride?: DocumentationLink[]
 ): string | undefined {
   if (!connector) return undefined;
   const configObj = connector.config as Record<string, unknown> | undefined;
-  const links = (configObj?.documentationLinks as DocumentationLink[] | undefined) ?? [];
+  const links =
+    documentationLinksOverride !== undefined
+      ? documentationLinksOverride
+      : ((configObj?.documentationLinks as DocumentationLink[] | undefined) ?? []);
 
   const pipeshub = links.find((l) => l.type === 'pipeshub' && (l.url?.trim() ?? '') !== '');
   if (pipeshub?.url) return pipeshub.url.trim();

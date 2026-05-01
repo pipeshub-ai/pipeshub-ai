@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
+import { Flex, Tabs, Box, Button, Text } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -38,7 +38,7 @@ import {
   hasAnySyncFiltersSelected,
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
-import type { DocumentationLink, PanelTab } from '../types';
+import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
@@ -786,44 +786,26 @@ export function ConnectorPanel() {
 
   // ── Header ───────────────────────────────────────────────────
 
-  const documentationLinks: DocumentationLink[] =
-    connectorSchema != null
-      ? (connectorSchema.documentationLinks ?? [])
-      : ((panelConnector?.config as { documentationLinks?: DocumentationLink[] } | undefined)
-          ?.documentationLinks ?? []);
   const documentationUrl = getConnectorDocumentationUrl(
-    panelConnector
-      ? {
-          ...panelConnector,
-          config: {
-            ...((panelConnector.config as Record<string, unknown> | undefined) ?? {}),
-            documentationLinks,
-          },
-        }
-      : null
+    panelConnector,
+    connectorSchema != null ? (connectorSchema.documentationLinks ?? []) : undefined
   );
 
-  const headerActions = (
-    <Flex align="center" gap="1">
-      {documentationUrl && (
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={() => {
-            if (documentationUrl) window.open(documentationUrl, '_blank', 'noopener,noreferrer');
-          }}
-          style={{ cursor: 'pointer' }}
-        >
-          <MaterialIcon
-            name="open_in_new"
-            size={16}
-            color="var(--gray-11)"
-          />
-        </IconButton>
-      )}
-    </Flex>
-  );
+  const headerActions = documentationUrl ? (
+    <Button
+      variant="outline"
+      color="gray"
+      size="1"
+      aria-label={t('workspace.actions.documentation')}
+      onClick={() => {
+        window.open(documentationUrl, '_blank', 'noopener,noreferrer');
+      }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
+    >
+      <MaterialIcon name="open_in_new" size={14} color="var(--gray-11)" />
+      <Text size="1">{t('workspace.actions.documentation')}</Text>
+    </Button>
+  ) : null;
 
   // ── Render panel icon as img (connector icon) ────────────────
 
