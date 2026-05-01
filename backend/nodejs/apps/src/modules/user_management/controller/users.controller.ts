@@ -146,17 +146,16 @@ export class UserController {
           if (hasLoggedInFilter) {
             statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
           }
-          if (blockedIds.length > 0) {
-            statusConditions.push({ _id: { $in: blockedIds } });
-          }
-          if (statusConditions.length > 0) {
-            // Merge with any existing $or (search) using $and
-            if (filter.$or) {
-              filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-              delete filter.$or;
-            } else {
-              filter.$or = statusConditions;
-            }
+          // Always include the blocked constraint when isBlocked=true; an empty
+          // $in correctly matches nothing so "Blocked" with zero blocked users
+          // returns an empty list rather than the entire org.
+          statusConditions.push({ _id: { $in: blockedIds } });
+          // Merge with any existing $or (search) using $and
+          if (filter.$or) {
+            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+            delete filter.$or;
+          } else {
+            filter.$or = statusConditions;
           }
         } else {
           if (hasLoggedInFilter) {

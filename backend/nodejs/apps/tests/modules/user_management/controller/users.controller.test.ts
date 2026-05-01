@@ -206,6 +206,86 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
     });
+
+    it('should constrain to blocked users when isBlocked=true and zero blocked users exist', async () => {
+      // Regression: when only "Blocked" status is selected and there are no
+      // blocked users in the org, the response must be empty rather than
+      // the entire org's user list.
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(0);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('should match blocked users by id when isBlocked=true and blocked users exist', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439031' },
+              { userId: '507f1f77bcf86cd799439032' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(2);
+      expect(filter.$or[0]._id.$in[0].toString()).to.equal('507f1f77bcf86cd799439031');
+      expect(filter.$or[0]._id.$in[1].toString()).to.equal('507f1f77bcf86cd799439032');
+    });
   });
 
   describe('getAllUsersWithGroups', () => {
