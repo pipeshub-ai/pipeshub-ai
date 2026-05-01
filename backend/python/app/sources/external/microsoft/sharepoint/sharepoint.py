@@ -48,7 +48,6 @@ from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
 
-from app.agents.actions.util.parse_file import FileContentParser
 from app.sources.client.microsoft.microsoft import MSGraphClient
 
 
@@ -1527,21 +1526,16 @@ class SharePointDataSource:
         site_id: str,
         drive_id: str,
         item_id: str,
-        max_bytes: int = 512_000,
     ) -> SharePointResponse:
-        """Download the content of a drive item as readable text.
-
-        Downloads raw drive item bytes and parses them through the shared
-        FileContentParser helper for supported text, PDF, and OOXML formats.
+        """Download raw drive-item bytes. Parsing happens in the action layer.
 
         Args:
-            site_id:   SharePoint site ID (unused in URL but kept for API consistency)
-            drive_id:  Drive ID
-            item_id:   DriveItem ID
-            max_bytes: Maximum bytes to read (default 512 KB)
+            site_id:  SharePoint site ID (unused in URL but kept for API consistency)
+            drive_id: Drive ID
+            item_id:  DriveItem ID
 
         Returns:
-            SharePointResponse with data={"content": str, "encoding": str, ...}
+            SharePointResponse with `data` set to the raw `bytes` (or empty bytes for empty files).
         """
         try:
             url = (
@@ -1558,37 +1552,10 @@ class SharePointDataSource:
             )
 
             if not raw:
-                return SharePointResponse(
-                    success=True,
-                    data={"content": "", "encoding": "utf-8", "size_bytes": 0},
-                    message="Empty file",
-                )
+                return SharePointResponse(success=True, data=b"", message="Empty file")
 
-            parser = FileContentParser()
-            parsed_success, parsed_json = parser.parse(raw, max_bytes=max_bytes)
-            if not parsed_success:
-                return SharePointResponse(success=False, error=json.loads(parsed_json).get("error", "Failed to parse file content"))
-
-            parsed = json.loads(parsed_json)
-            content = parsed.get("content", "")
-            truncated = bool(parsed.get("truncated", False))
-            format_label = parsed.get("format", "text")
-            size_bytes = parsed.get("bytes_read", len(raw))
-
-            logger.info(
-                f"✅ get_drive_item_content: {item_id}, {size_bytes} bytes, format={format_label}"
-            )
-            return SharePointResponse(
-                success=True,
-                data={
-                    "content": content,
-                    "encoding": "utf-8",
-                    "format": format_label,
-                    "size_bytes": size_bytes,
-                    "truncated": truncated,
-                },
-                message=f"Content parsed as {format_label} ({size_bytes} bytes{', truncated' if truncated else ''})",
-            )
+            logger.info(f"✅ get_drive_item_content: {item_id}, {len(raw)} bytes downloaded")
+            return SharePointResponse(success=True, data=raw)
         except Exception as e:
             logger.error(f"❌ get_drive_item_content failed: {e}")
             return SharePointResponse(success=False, error=str(e))
