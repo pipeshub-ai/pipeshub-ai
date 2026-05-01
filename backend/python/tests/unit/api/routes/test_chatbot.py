@@ -25,6 +25,15 @@ class TestChatQueryModel:
         assert q.chatMode == "internal_search"
         assert q.mode == "json"
         assert q.conversationId is None
+        assert q.attachmentDocumentIds == []
+
+    def test_attachment_document_ids(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(
+            query="read this",
+            attachmentDocumentIds=["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"],
+        )
+        assert len(q.attachmentDocumentIds) == 2
 
     def test_all_fields(self):
         from app.api.routes.chatbot import ChatQuery

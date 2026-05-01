@@ -105,6 +105,17 @@ const referenceDataItemSchema = new Schema(
   { _id: false },
 );
 
+// Storage documentIds + metadata for files the user attached on a user_query.
+const messageAttachmentSchema = new Schema(
+  {
+    documentId: { type: String, required: true },
+    fileName: { type: String },
+    mimeType: { type: String },
+    sizeInBytes: { type: Number },
+  },
+  { _id: false },
+);
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
@@ -140,6 +151,8 @@ const messageSchema = new Schema<IMessage>(
     },
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
+    // Files the user attached on this user_query (empty for assistant turns).
+    attachments: [messageAttachmentSchema],
   },
   { timestamps: true },
 );

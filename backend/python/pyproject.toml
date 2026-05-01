@@ -195,6 +195,7 @@ dependencies = [
     "fastapi==0.115.6",
     "fastmcp==3.2.0",
     "fastembed==0.5.1",
+    "faster-whisper>=1.0.0",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
     "html-to-markdown==2.3.0",
@@ -296,11 +297,6 @@ module = "app.indexing_main:run"
 
 [project.optional-dependencies]
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
-# Optional: enable self-hosted Whisper Speech-to-Text (runs locally via faster-whisper + CTranslate2).
-# Not installed by default because the runtime pulls in CTranslate2 binaries and downloads
-# multi-hundred-MB model weights on first use. Enable with:
-#   pip install -e '.[whisper]'
-whisper = ["faster-whisper>=1.0.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"

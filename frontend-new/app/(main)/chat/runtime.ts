@@ -22,6 +22,7 @@ import {
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ConversationMessage,
+  type MessageAttachment,
   type StreamChatRequest,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
@@ -47,6 +48,30 @@ function extractTextContent(content: ThreadMessageLike['content']): string {
 /** Plain text of a thread message (used by streaming + message list). */
 export function getThreadMessagePlainText(message: ThreadMessageLike): string {
   return extractTextContent(message.content);
+}
+
+/** Read storage-document attachments from message metadata (see chat input wrapper). */
+function readAttachmentsFromMessage(
+  message: ThreadMessageLike
+): MessageAttachment[] | undefined {
+  const raw = message.metadata?.custom?.attachments;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: MessageAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const documentId = (item as { documentId?: unknown }).documentId;
+    if (typeof documentId !== 'string' || documentId.trim().length === 0) continue;
+    const fileName = (item as { fileName?: unknown }).fileName;
+    const mimeType = (item as { mimeType?: unknown }).mimeType;
+    const sizeInBytes = (item as { sizeInBytes?: unknown }).sizeInBytes;
+    out.push({
+      documentId,
+      ...(typeof fileName === 'string' ? { fileName } : {}),
+      ...(typeof mimeType === 'string' ? { mimeType } : {}),
+      ...(typeof sizeInBytes === 'number' ? { sizeInBytes } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** KB collections attached on send (see chat input metadata). */
@@ -105,10 +130,13 @@ export function loadHistoricalMessages(
               // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }
-        : msg.messageType === 'user_query' && msg.appliedFilters
+        : msg.messageType === 'user_query'
         ? {
             custom: {
-              appliedFilters: msg.appliedFilters,
+              ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
+              ...(msg.attachments && msg.attachments.length > 0
+                ? { attachments: msg.attachments }
+                : {}),
               createdAt: msg.createdAt,
             },
           }
@@ -152,7 +180,9 @@ export function buildExternalStoreConfig(
       if (!targetSlotId) return;
 
       const query = extractTextContent(message.content);
-      if (!query.trim()) return;
+      const msgAttachments = readAttachmentsFromMessage(message);
+      // Allow attachment-only sends: a non-empty query OR at least one attached document.
+      if (!query.trim() && (!msgAttachments || msgAttachments.length === 0)) return;
 
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
@@ -271,6 +301,10 @@ export function buildExternalStoreConfig(
           }
         : undefined;
 
+      const attachmentDocumentIds = (msgAttachments ?? [])
+        .map((a) => a.documentId)
+        .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
@@ -279,6 +313,7 @@ export function buildExternalStoreConfig(
         currentTime: getClientCurrentTime(),
         filters: resolvedFilters,
         ...(appliedFilters ? { appliedFilters } : {}),
+        ...(attachmentDocumentIds.length > 0 ? { attachmentDocumentIds } : {}),
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {

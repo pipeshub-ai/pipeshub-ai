@@ -1608,3 +1608,94 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Error retrieving reconciliation metadata: %s", str(e))
             return None
+
+    async def get_raw_document_metadata(
+        self, document_id: str, org_id: str,
+    ) -> dict | None:
+        """
+        Fetch the storage metadata for a *raw* user-uploaded document
+        (e.g. chat attachments saved via POST /api/v1/document/upload).
+
+        Unlike `get_record_from_storage`, this does NOT consult the virtual-
+        record mapping collection — it talks directly to the storage service's
+        internal GET endpoint. Returns the parsed Mongo document JSON
+        (`_id`, `documentName`, `extension`, `mimeType`, `sizeInBytes`, …) or
+        ``None`` if the document is not found / not authorized for ``org_id``.
+        """
+        if not document_id or not org_id:
+            return None
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            url = (
+                f"{nodejs_endpoint}/api/v1/document/internal/"
+                f"{document_id}"
+            )
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != HttpStatusCode.SUCCESS.value:
+                        self.logger.warning(
+                            "Failed to fetch document metadata: status=%s, documentId=%s",
+                            resp.status, document_id,
+                        )
+                        return None
+                    return await resp.json()
+        except Exception as exc:
+            self.logger.exception(
+                "Error fetching document metadata for documentId=%s: %s",
+                document_id, exc,
+            )
+            return None
+
+    async def get_raw_document_bytes(
+        self, document_id: str, org_id: str,
+    ) -> bytes | None:
+        """
+        Download the raw bytes for a user-uploaded ``documentId``.
+
+        The internal download endpoint either streams the file directly
+        (Local storage) or returns ``{ "signedUrl": ... }`` (S3 / Azure Blob).
+        Returns ``None`` if the file cannot be retrieved.
+        """
+        if not document_id or not org_id:
+            return None
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            download_url = (
+                f"{nodejs_endpoint}"
+                f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+            )
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_url, headers=headers) as resp:
+                    if resp.status != HttpStatusCode.SUCCESS.value:
+                        self.logger.warning(
+                            "Failed to start raw download: status=%s, documentId=%s",
+                            resp.status, document_id,
+                        )
+                        return None
+                    content_type = (resp.headers.get("Content-Type") or "").lower()
+                    # JSON response → S3 / Azure signed URL flow.
+                    if "application/json" in content_type:
+                        data = await resp.json()
+                        signed_url = data.get("signedUrl") if isinstance(data, dict) else None
+                        if not signed_url:
+                            self.logger.warning(
+                                "Raw download JSON missing signedUrl for documentId=%s",
+                                document_id,
+                            )
+                            return None
+                        async with session.get(URL(signed_url, encoded=True)) as signed_resp:
+                            if signed_resp.status != HttpStatusCode.SUCCESS.value:
+                                self.logger.warning(
+                                    "Signed URL fetch failed: status=%s, documentId=%s",
+                                    signed_resp.status, document_id,
+                                )
+                                return None
+                            return await signed_resp.read()
+                    # Anything else (Local storage stream) → bytes directly.
+                    return await resp.read()
+        except Exception as exc:
+            self.logger.exception(
+                "Error fetching raw bytes for documentId=%s: %s",
+                document_id, exc,
+            )
+            return None

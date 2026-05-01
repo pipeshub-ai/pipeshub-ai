@@ -5,6 +5,22 @@ All prompt templates for the orchestrator and sub-agents.
 Kept in one file for easy maintenance.
 """
 
+# Appended to the orchestrator's final HumanMessage (after the raw query) when
+# ``state["user_attachment_prompt_appendix"]`` is non-empty — see orchestrator.py.
+ORCHESTRATOR_USER_ATTACHMENT_PREFIX = (
+    "\n\n---\n"
+    "### User-attached file excerpts\n"
+    "Text below was extracted from files the user attached this turn. It is not "
+    "from KB retrieval—treat it as direct user context. Plan tasks that use it "
+    "when it answers the question; do not assume `fetch_full_record` applies.\n\n"
+)
+
+# Prepended before attachment markdown in sub-agent isolated context (see
+# context_manager.build_sub_agent_context).
+DEEP_SUB_AGENT_USER_ATTACHMENT_HEADER = (
+    "\n---\nUser-attached file excerpts (uploaded this turn; not KB chunks):\n"
+)
+
 # ---------------------------------------------------------------------------
 # Orchestrator prompt - decomposes query into sub-tasks
 # ---------------------------------------------------------------------------
@@ -18,6 +34,8 @@ When users ask about capabilities, available tools, knowledge sources, or what a
 If the user's underlying intent is to get real information, find something, or understand an external system or topic — regardless of how the question is phrased — it is a task, not a capability question. Set can_answer_directly: false.
 
 {capability_summary}
+
+When the user's final message includes a **User-attached file excerpts** section, that text is from uploads—not from knowledge retrieval. Use it in planning when it already answers the question; do not treat those excerpts as indexed KB virtual records.
 
 ## Available Tool Domains & Capabilities
 {tool_domains}

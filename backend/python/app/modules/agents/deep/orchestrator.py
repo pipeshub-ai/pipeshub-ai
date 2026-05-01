@@ -24,7 +24,10 @@ from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
     compact_conversation_history_async,
 )
-from app.modules.agents.deep.prompts import ORCHESTRATOR_SYSTEM_PROMPT
+from app.modules.agents.deep.prompts import (
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    ORCHESTRATOR_USER_ATTACHMENT_PREFIX,
+)
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
 from app.modules.agents.deep.tool_router import (
     build_domain_description,
@@ -154,6 +157,10 @@ async def orchestrator_node(
         user_ctx = _build_user_context(state)
         if user_ctx:
             user_content += f"\n\n{user_ctx}"
+
+        uap = (state.get("user_attachment_prompt_appendix") or "").strip()
+        if uap:
+            user_content += ORCHESTRATOR_USER_ATTACHMENT_PREFIX + uap
 
         messages.append(HumanMessage(content=user_content))
 

@@ -157,6 +157,7 @@ class ChatState(TypedDict):
     blob_store: Any | None  # BlobStorage instance for processing results
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
+    user_attachment_prompt_appendix: str  # Markdown from uploads; injected via prompts, not final_results
 
     # Reflection and retry fields (for intelligent error recovery)
     reflection: dict[str, Any] | None  # Reflection analysis result from reflect_node
@@ -552,6 +553,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "blob_store": None,
         "is_multimodal_llm": False,
         "citation_ref_mapper": None,
+        "user_attachment_prompt_appendix": (chat_query.get("user_attachment_prompt_appendix") or "").strip(),
 
         # Reflection and retry fields (for intelligent error recovery)
         "reflection": None,

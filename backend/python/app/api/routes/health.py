@@ -1029,8 +1029,8 @@ async def perform_stt_health_check(
                             "status": "error",
                             "message": (
                                 "The 'faster-whisper' package is not installed. "
-                                "Install the optional extra to use the local "
-                                "Whisper STT provider."
+                                "Reinstall from backend/python: pip install -e . "
+                                "(or pip install faster-whisper)."
                             ),
                             "details": {"provider": provider, "model": model_name},
                         },

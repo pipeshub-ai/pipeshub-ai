@@ -35,7 +35,9 @@ from app.modules.agents.qna.memory_optimizer import (
 )
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.chat_attachment_loader import load_chat_attachments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
@@ -59,7 +61,7 @@ NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 # ============================================================================
 
 class ChatQuery(BaseModel):
-    query: str
+    query: str = ""
     limit: int | None = 50
     previousConversations: list[dict] = []
     quickMode: bool = False
@@ -74,6 +76,8 @@ class ChatQuery(BaseModel):
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+    # Storage `documentId`s for files the user attached to this turn (see chatbot.ChatQuery).
+    attachmentDocumentIds: list[str] = []
 
 
 class RouteDecision(BaseModel):
@@ -1389,10 +1393,34 @@ async def stream_response(
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
         )
+
+        attachment_prompt_appendix = ""
+        attachment_ids = query_info.get("attachmentDocumentIds") or []
+        if attachment_ids:
+            try:
+                blob_store = BlobStorage(
+                    logger=logger,
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                )
+                _, _, attachment_prompt_appendix = await load_chat_attachments(
+                    document_ids=attachment_ids,
+                    org_id=user_info.get("orgId", ""),
+                    user_id=user_info.get("userId", ""),
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+            except Exception as exc:
+                logger.warning("Failed to load chat attachments for prompt: %s", exc)
+
+        query_for_state = {**query_info, "user_attachment_prompt_appendix": attachment_prompt_appendix}
+
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
-                query_info,
+                query_for_state,
                 user_info,
                 llm,
                 logger,
@@ -1408,7 +1436,7 @@ async def stream_response(
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
             initial_state = build_initial_state(
-                query_info,
+                query_for_state,
                 user_info,
                 llm,
                 logger,
@@ -3026,7 +3054,31 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "is_service_account": is_service_account,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachmentDocumentIds": chat_query.attachmentDocumentIds or [],
         }
+
+        attachment_prompt_appendix = ""
+        att_ids = chat_query.attachmentDocumentIds or []
+        if att_ids:
+            try:
+                blob_store = BlobStorage(
+                    logger=logger,
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                )
+                _, _, attachment_prompt_appendix = await load_chat_attachments(
+                    document_ids=list(att_ids),
+                    org_id=enriched_user_info.get("orgId", ""),
+                    user_id=enriched_user_info.get("userId", ""),
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+            except Exception as exc:
+                logger.warning("Failed to load chat attachments for prompt: %s", exc)
+        query_info = {**query_info, "user_attachment_prompt_appendix": attachment_prompt_appendix}
+
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
         has_sql_connector = await has_sql_connector_configured(
@@ -3439,6 +3491,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "modelKey": model_key,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachmentDocumentIds": chat_query.attachmentDocumentIds or [],
         }
 
         return StreamingResponse(

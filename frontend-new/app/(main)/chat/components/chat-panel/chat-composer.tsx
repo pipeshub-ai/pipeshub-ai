@@ -10,10 +10,9 @@ export function ChatComposer() {
     <ComposerPrimitive.Root>
       <ChatInput
         onSend={(_message: string, _files?: UploadedFile[]) => {
-          // The message will be sent through the runtime adapter
-          // This integration allows us to keep the existing ChatInput UI
-          // while using assistant-ui's runtime for message handling
-          // console.log('ChatInput onSend:', message, files);
+          // Wired through ChatInputWrapper in the live chat surface; this
+          // legacy composer wrapper remains a no-op since assistant-ui's
+          // runtime handles message dispatch elsewhere.
         }}
       />
     </ComposerPrimitive.Root>

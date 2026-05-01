@@ -16,6 +16,7 @@ import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-p
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
+import { ChatApi } from '@/chat/api';
 import {
   ModeSwitcher,
   AgentStrategyModeSwitcher,
@@ -551,9 +552,40 @@ export function ChatInput({
     }
   };
 
+  const uploadAttachment = useCallback(async (entry: UploadedFile) => {
+    setUploadedFiles((prev) =>
+      prev.map((f) => (f.id === entry.id ? { ...f, uploadStatus: 'uploading', uploadError: undefined } : f)),
+    );
+    try {
+      const result = await ChatApi.uploadAttachment(entry.file);
+      setUploadedFiles((prev) =>
+        prev.map((f) =>
+          f.id === entry.id
+            ? { ...f, uploadStatus: 'uploaded', documentId: result.documentId, uploadError: undefined }
+            : f,
+        ),
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'Upload failed';
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === entry.id ? { ...f, uploadStatus: 'error', uploadError: reason } : f)),
+      );
+      toast.error(t('chat.attachmentUploadFailed', { defaultValue: 'Failed to upload {{name}}', name: entry.name }));
+    }
+  }, [t]);
+
   const processFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
     const validFiles = fileArray.filter(isFileTypeSupported);
+    const rejectedCount = fileArray.length - validFiles.length;
+    if (rejectedCount > 0) {
+      toast.error(
+        t('chat.attachmentUnsupportedType', {
+          defaultValue: '{{count}} file(s) skipped — unsupported file type',
+          count: rejectedCount,
+        }),
+      );
+    }
 
     const newUploadedFiles: UploadedFile[] = validFiles.map((file) => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
@@ -561,13 +593,21 @@ export function ChatInput({
       name: file.name,
       size: file.size,
       type: file.type,
+      uploadStatus: 'pending',
     }));
 
     setUploadedFiles((prev) => [...prev, ...newUploadedFiles]);
     if (newUploadedFiles.length > 0) {
       setShowUploadArea(false);
+      if (variant === 'widget' && !isExpanded) {
+        setIsExpanded(true);
+      }
     }
-  }, []);
+    // Kick off uploads in parallel — each updates its own row independently.
+    newUploadedFiles.forEach((entry) => {
+      void uploadAttachment(entry);
+    });
+  }, [t, uploadAttachment, variant, isExpanded]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -615,7 +655,16 @@ export function ChatInput({
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
+  /** Block submit while any attachment is still uploading; failed/pending also block. */
+  const hasAttachmentsInFlight = uploadedFiles.some(
+    (f) => f.uploadStatus === 'pending' || f.uploadStatus === 'uploading',
+  );
+  const hasFailedAttachments = uploadedFiles.some((f) => f.uploadStatus === 'error');
+  const canSubmit =
+    (hasContent || activeMessageAction !== null) &&
+    !isUniversalAgentLoading &&
+    !hasAttachmentsInFlight &&
+    !hasFailedAttachments;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -672,6 +721,15 @@ export function ChatInput({
   }, [settings.queryMode, isCollectionsPanelOpen, setExpansionViewMode]);
 
   if (!showFullUI) {
+    const widgetHasReadyAttachments = uploadedFiles.some(
+      (f) => f.uploadStatus === 'uploaded' && typeof f.documentId === 'string' && f.documentId.length > 0,
+    );
+    const widgetSendEnabled =
+      (Boolean(message.trim()) || widgetHasReadyAttachments) &&
+      !hasAttachmentsInFlight &&
+      !hasFailedAttachments &&
+      !isUniversalAgentLoading;
+
     return (
       <Flex
         direction="column"
@@ -684,7 +742,18 @@ export function ChatInput({
           padding: 'var(--space-1)',
         }}
       >
-        {/* Single row: mode-switcher + input + send */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={[
+            ...Object.keys(ACCEPTED_MIME_TYPES),
+            ...ACCEPTED_EXTENSIONS.map((e) => `.${e}`),
+          ].join(',')}
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
+        />
+        {/* Single row: mode-switcher + input + attach + send */}
         <Flex align="center" justify="between" gap="3">
           {isAgentChat ? (
             <AgentStrategyModeSwitcher
@@ -729,21 +798,34 @@ export function ChatInput({
             }}
           />
 
+          <Tooltip content={t('chat.attachmentTooltip')} side="top">
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              disabled={isRegenerateMode}
+              onClick={() => fileInputRef.current?.click()}
+              style={{ margin: 0, flexShrink: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+            >
+              <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+            </IconButton>
+          </Tooltip>
+
           {/* Send button */}
           <IconButton
             variant="solid"
             size="2"
             onClick={handleSubmit}
-            disabled={!message.trim()}
+            disabled={!widgetSendEnabled}
             style={{
               margin: 0,
-              backgroundColor: message.trim() ? activeIconColor : 'var(--slate-a3)',
+              backgroundColor: widgetSendEnabled ? activeIconColor : 'var(--slate-a3)',
             }}
           >
             <MaterialIcon
               name="arrow_upward"
               size={ICON_SIZES.PRIMARY}
-              color={message.trim() ? 'white' : 'var(--slate-a8)'}
+              color={widgetSendEnabled ? 'white' : 'var(--slate-a8)'}
             />
           </IconButton>
         </Flex>
@@ -817,7 +899,15 @@ export function ChatInput({
           className="no-scrollbar"
         >
           <Flex gap="2" style={{ minWidth: 'max-content' }}>
-            {uploadedFiles.map((file) => (
+            {uploadedFiles.map((file) => {
+              const isUploading = file.uploadStatus === 'pending' || file.uploadStatus === 'uploading';
+              const hasError = file.uploadStatus === 'error';
+              const statusLabel = hasError
+                ? t('chat.attachmentUploadFailedShort', { defaultValue: 'Upload failed' })
+                : isUploading
+                  ? t('chat.attachmentUploading', { defaultValue: 'Uploading…' })
+                  : null;
+              return (
               <Box
                 key={file.id}
                 style={{
@@ -825,8 +915,9 @@ export function ChatInput({
                   width: '196px',
                   padding: 'var(--space-2)',
                   backgroundColor: 'var(--olive-a2)',
-                  border: '1px solid var(--olive-3)',
+                  border: hasError ? '1px solid var(--red-7)' : '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
+                  opacity: isUploading ? 0.85 : 1,
                 }}
               >
                 <Flex direction="column" gap="2">
@@ -862,13 +953,14 @@ export function ChatInput({
                     >
                       {file.name}
                     </Text>
-                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                      {formatFileSize(file.size)}
+                    <Text size="1" style={{ color: hasError ? 'var(--red-11)' : 'var(--slate-11)' }}>
+                      {statusLabel ?? formatFileSize(file.size)}
                     </Text>
                   </Flex>
                 </Flex>
               </Box>
-            ))}
+              );
+            })}
 
             {/* Add Button */}
             <Box
@@ -1200,10 +1292,7 @@ export function ChatInput({
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
           {isMobile ? (
-            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline.
-               NOTE: Attach button is temporarily hidden until the upload flow is
-               wired up end-to-end. Keep the JSX commented so it can be restored
-               alongside the rest of the upload UI. */
+            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline. */
             <Flex align="center" gap="1">
               <IconButton
                 variant="ghost"
@@ -1214,7 +1303,6 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
               <IconButton
                 variant={showUploadArea ? 'soft' : 'ghost'}
                 color="gray"
@@ -1225,7 +1313,6 @@ export function ChatInput({
               >
                 <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
               </IconButton>
-              */}
               <IconButton
                 variant="ghost"
                 color="gray"
@@ -1359,10 +1446,6 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                {/* Attach button — temporarily hidden until the upload flow is
-                    wired up end-to-end. Keep the JSX commented so it can be
-                    restored alongside the rest of the upload UI. */}
-                {/*
                 <Tooltip content={t('chat.attachmentTooltip')} side="top">
                   <IconButton
                     variant={showUploadArea ? 'soft' : 'ghost'}
@@ -1375,7 +1458,6 @@ export function ChatInput({
                     <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                   </IconButton>
                 </Tooltip>
-                */}
                 <Tooltip
                   content={
                     !isSpeechSupported

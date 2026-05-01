@@ -96,9 +96,10 @@ qna_prompt_instructions_1 = """
   Rephrased queries are AI-generated to provide more context to what the user might mean.
 
   Every entity is a resource:
-  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
-  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section).
-  - **Block**: The smallest unit of content within a record or block group. Has a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
+  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app indexed in the internal knowledge base. Appears in `<record>` sections with a "Record ID" and "Web URL" in its metadata.
+  - **Attachment**: A file uploaded by the user directly in this conversation. Appears in `<user_attached_files>` as `<attachment>` blocks. Has Block Index and Block Type but **no Citation ID** — attachments are not in the retrieval index and cannot be cited or fetched via `fetch_full_record`.
+  - **Block Group**: A logical grouping of blocks within a record or attachment (e.g., a table, a section, a list).
+  - **Block**: The smallest unit of content within a record/attachment or block group. Blocks inside `<record>` sections have a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks from records, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
 </task>
 
 <tools>
@@ -159,6 +160,27 @@ qna_prompt_instructions_1 = """
   Query from user: {{ query }}
   Rephrased queries: {{ rephrased_queries }}
 
+{% if user_attachment_appendix %}
+  <user_attached_files>
+  The following `<attachment>` sections contain files the user attached
+  directly to this message. They are formatted as structured blocks
+  (`* Block Index`, `* Block Type`, `* Block Content`, plus `* Block Group ...`
+  for tables/lists) — the **same shape** as `<record>` sections below — but
+  they are **NOT** part of the internal knowledge-base retrieval index:
+
+  - Attachment blocks have **no Citation IDs** (no `ref1`, `ref2`, …). Do
+    NOT invent Citation IDs for them and do NOT cite them with
+    `[source](refN)`. Refer to attachments by name in prose if needed.
+  - Do **NOT** call `fetch_full_record` for attachments. That tool only
+    applies to `<record>` sections (which are the knowledge base).
+  - Prefer attachment content when the user's question is about the file
+    they uploaded; otherwise treat them as additional context alongside
+    `<record>` blocks.
+
+{{ user_attachment_appendix }}
+  </user_attached_files>
+
+{% endif %}
   ** These instructions are applicable even for followup conversations **
   Context for Current Query:
 """
@@ -192,6 +214,8 @@ Answer the query clearly and comprehensively using relevant context.
 - Place citations immediately after the claim (not at paragraph end)
 - If you are unsure which block a fact came from, omit the citation rather than guessing
 - Limit to the most relevant citations. Do NOT cite every sentence.
+- **Citation IDs only exist on `<record>` blocks.** `<attachment>` blocks have no Citation ID and MUST NOT be cited with `[source](refN)`.
+- If a fact comes only from an `<attachment>`, write it without any citation. Never borrow a refN from an unrelated `<record>`.
 
 
 
@@ -204,6 +228,10 @@ Answer the query clearly and comprehensively using relevant context.
 ### Relevance
 - Only cite entities directly relevant to the query
 - Ignore unrelated retrieved content
+
+### Answer Source Priority
+- If the user's question is about an attached file and the `<attachment>` blocks fully answer it, answer from the attachment alone. Do NOT pull supporting claims from `<record>` blocks just to add citations.
+- Cite a `<record>` block only when the specific claim it supports actually came from that block.
 
 ### Output Quality
 - Be comprehensive, structured, and easy to read
@@ -271,6 +299,17 @@ Relevant blocks of the records are provided in the context below.
 <query>
 Query: {{ query }}
 </query>
+{% if user_attachment_appendix %}
+<user_attached_files>
+The `<attachment>` sections below are files the user attached directly to this
+message. They use the same block structure as `<record>` sections but are NOT
+in the knowledge-base retrieval index. They have **no Citation IDs** — do NOT
+cite them with `[source](refN)`. Treat them as additional context for the
+current query only.
+
+{{ user_attachment_appendix }}
+</user_attached_files>
+{% endif %}
 <context>
 {% for chunk in chunks %}
 - Record Name: {{ chunk.metadata.recordName }}

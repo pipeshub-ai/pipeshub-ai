@@ -21,6 +21,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
+from app.utils.chat_attachment_loader import load_chat_attachments
 from app.utils.chat_helpers import (
     CitationRefMapper,
     enrich_virtual_record_id_to_result_with_fk_children,
@@ -45,7 +46,7 @@ router = APIRouter()
 
 # Pydantic models
 class ChatQuery(BaseModel):
-    query: str
+    query: str = ""
     limit: int | None = 50
     previousConversations: list[dict] = []
     filters: dict[str, Any] | None = None
@@ -59,6 +60,11 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    # Storage `documentId`s for files the user attached to this turn. Each one is
+    # downloaded from the storage service, parsed via FileContentParser, and merged
+    # into the LLM context alongside KB retrieval blocks. Empty when the user did
+    # not attach files.
+    attachmentDocumentIds: list[str] = []
 
 
 # Dependency injection functions
@@ -143,10 +149,12 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
             "max_tokens": 4096,
             "system_prompt": (
                 "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
-                "You MUST ONLY answer based on the provided internal knowledge base documents. "
+                "You MUST answer ONLY from the context provided in the user message. Two source types are valid: "
+                "(1) <record> blocks from the internal knowledge base (these have Citation IDs like ref1, ref2), and "
+                "(2) <attachment> blocks inside <user_attached_files> (files the user uploaded for this turn; these have NO Citation IDs). "
                 "Do NOT use your own training knowledge. "
-                "If the answer is not present in the provided context blocks, respond with: "
-                "'This information is not available in the internal knowledge base.'"
+                "If neither <record> blocks nor <attachment> blocks contain the answer, respond with: "
+                "'This information is not available in the provided context.'"
             )
         },
         "web_search": {
@@ -166,6 +174,8 @@ _CITATION_SYSTEM_RULES = (
     "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
     "- Do NOT manually assign citation numbers — the system numbers them automatically.\n"
     "- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.\n"
+    "- **Citation IDs (refN) only exist on blocks inside `<record>` sections.** `<attachment>` blocks (under `<user_attached_files>`) have NO Citation IDs.\n"
+    "- If a claim is supported only by an `<attachment>` block, emit NO citation for it. Do NOT pick a refN from an unrelated `<record>` just because the topic looks similar — that is a hallucination.\n"
 )
 
 
@@ -217,6 +227,7 @@ def _build_chat_llm_messages(
     logger: Any,
     is_multimodal_llm: bool=False,
     has_sql_connector: bool=False,
+    user_attachment_appendix: str = "",
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     system_prompt = _build_system_prompt(
@@ -233,9 +244,28 @@ def _build_chat_llm_messages(
     _append_conversation_history(messages, query_info.previousConversations)
 
     content, ref_mapper = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False, has_sql_connector=has_sql_connector
+        final_results,
+        virtual_record_id_to_result,
+        user_data,
+        query_info.query,
+        query_info.mode,
+        is_multimodal_llm=is_multimodal_llm,
+        from_tool=False,
+        has_sql_connector=has_sql_connector,
+        user_attachment_appendix=user_attachment_appendix,
     )
     messages.append({"role": "user", "content": content})
+    print("user_attachment_appendix", user_attachment_appendix)
+    print("================================================")
+    print("================================================")
+    print("================================================")
+
+    print(messages)
+
+    print("================================================")
+    print("================================================")
+    print("================================================")
+
     return messages, ref_mapper
 
 
@@ -442,26 +472,57 @@ async def _generate_internal_search_stream(
             org_id = request.state.user.get("orgId")
             user_id = request.state.user.get("userId")
 
+            blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
+
+            # Load any user-attached files first so the stream can keep going
+            # even when retrieval returns nothing — attachments are valid sole
+            # context for an attachment-only message.
+            attachment_prompt_appendix = ""
+            if query_info.attachmentDocumentIds:
+                yield create_sse_event(
+                    "status",
+                    {"status": "loading_attachments", "message": "Loading attached files..."},
+                )
+                _, _, attachment_prompt_appendix = await load_chat_attachments(
+                    document_ids=query_info.attachmentDocumentIds,
+                    org_id=org_id,
+                    user_id=user_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                print("================================================")
+                print("attachment_prompt_appendix")
+                print(attachment_prompt_appendix)
+                print("================================================")
+                print("================================================")
             yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
 
-            result = await retrieval_service.search_with_filters(
-                queries=all_queries,
-                org_id=org_id,
-                user_id=user_id,
-                limit=query_info.limit,
-                filter_groups=query_info.filters,
-            )
+            search_results: list[dict[str, Any]] = []
+            virtual_to_record_map: dict[str, Any] = {}
+            # Only search the KB when there is an actual query text. Attachment-
+            # only sends should not waste a retrieval call returning every
+            # blank-string nearest neighbour.
+            if query_info.query.strip():
+                result = await retrieval_service.search_with_filters(
+                    queries=all_queries,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                )
 
-            search_results = result.get("searchResults", [])
-            virtual_to_record_map = result.get("virtual_to_record_map", {})
-            status_code = result.get("status_code", 500)
+                search_results = result.get("searchResults", [])
+                virtual_to_record_map = result.get("virtual_to_record_map", {})
+                status_code = result.get("status_code", 500)
 
-            if status_code in [202, 500, 503, 404]:
-                raise HTTPException(status_code=status_code, detail=result)
+                # When attachments are present we ignore "no accessible documents"
+                # results because the user gave us context directly.
+                if status_code in [202, 500, 503, 404] and not attachment_prompt_appendix:
+                    raise HTTPException(status_code=status_code, detail=result)
 
             yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-
-            blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
 
             virtual_record_id_to_result: dict[str, Any] = {}
             flattened_results = await get_flattened_results(
@@ -501,6 +562,7 @@ async def _generate_internal_search_stream(
                 logger,
                 is_multimodal_llm=is_multimodal_llm,
                 has_sql_connector=has_sql_connector,
+                user_attachment_appendix=attachment_prompt_appendix,
             )
 
             fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)

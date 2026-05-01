@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.modules.agents.deep.prompts import DEEP_SUB_AGENT_USER_ATTACHMENT_HEADER
+
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -481,6 +483,7 @@ def build_sub_agent_context(
     query: str,
     log: logging.Logger,
     recent_conversations: Optional[List[Dict[str, Any]]] = None,
+    user_attachment_appendix: Optional[str] = None,
 ) -> str:
     """
     Build isolated context for a sub-agent.
@@ -498,6 +501,10 @@ def build_sub_agent_context(
 
     # Original query
     parts.append(f"Original user query: {query}")
+
+    uap = (user_attachment_appendix or "").strip()
+    if uap:
+        parts.append(DEEP_SUB_AGENT_USER_ATTACHMENT_HEADER + uap)
 
     # Recent conversation turns (for retrieval tasks — helps the LLM
     # understand follow-up queries and formulate meaningful search terms)

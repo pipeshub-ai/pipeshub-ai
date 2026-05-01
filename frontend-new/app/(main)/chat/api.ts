@@ -204,6 +204,54 @@ export const ChatApi = {
   },
 
   /**
+   * Upload a chat attachment via the existing storage API. Returns the storage
+   * `documentId`, which is then forwarded to the conversation stream so the
+   * Python query service can fetch + parse the file.
+   *
+   * The storage upload route accepts a single `file` field per request and a
+   * matching `documentName` for the saved record (no extension, per
+   * `validateFileAndDocumentName`). We split the original name into
+   * `documentName` + `extension` before sending.
+   */
+  async uploadAttachment(
+    file: File,
+    options?: { signal?: AbortSignal }
+  ): Promise<{ documentId: string; fileName: string; mimeType: string; sizeInBytes: number }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    // UploadNewSchema (POST /api/v1/document/upload) requires this multipart field.
+    formData.append('isVersionedFile', 'false');
+
+    const lastDot = file.name.lastIndexOf('.');
+    const documentName = lastDot > 0 ? file.name.slice(0, lastDot) : file.name;
+    if (documentName) {
+      formData.append('documentName', documentName);
+    }
+
+    const { data } = await apiClient.post<{
+      _id: string;
+      documentName?: string;
+      extension?: string;
+      sizeInBytes?: number;
+      mimeType?: string;
+    }>(`/api/v1/document/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      signal: options?.signal,
+    });
+
+    if (!data?._id) {
+      throw new Error('Upload succeeded but the server response did not include a documentId');
+    }
+
+    return {
+      documentId: data._id,
+      fileName: file.name,
+      mimeType: data.mimeType || file.type || 'application/octet-stream',
+      sizeInBytes: data.sizeInBytes ?? file.size,
+    };
+  },
+
+  /**
    * Stream a chat message with SSE
    * Handles new conversation creation and existing conversation messages
    */
@@ -213,6 +261,10 @@ export const ChatApi = {
   ): Promise<void> {
     let endpoint: string;
     let payload: Record<string, unknown>;
+
+    const attachmentDocumentIds = (request.attachmentDocumentIds ?? []).filter(
+      (id): id is string => typeof id === 'string' && id.trim().length > 0,
+    );
 
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
@@ -230,6 +282,7 @@ export const ChatApi = {
         currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
         ...buildFiltersPayload(f?.apps, f?.kb),
+        ...(attachmentDocumentIds.length > 0 ? { attachmentDocumentIds } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -237,11 +290,12 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
-      const { agentStreamTools, filters: reqFilters, ...rest } = request;
+      const { agentStreamTools, filters: reqFilters, attachmentDocumentIds: _ignored, ...rest } = request;
       payload = {
         ...rest,
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
         ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+        ...(attachmentDocumentIds.length > 0 ? { attachmentDocumentIds } : {}),
       };
     }
 

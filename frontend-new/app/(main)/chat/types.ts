@@ -273,6 +273,12 @@ export interface UploadedFile {
   size: number;
   type: string;
   preview?: string;
+  /** Storage `documentId` returned by POST /api/v1/document/upload — set once the upload succeeds. */
+  documentId?: string;
+  /** Upload progress state for the per-file UI. */
+  uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'error';
+  /** Error message when `uploadStatus === 'error'`. */
+  uploadError?: string;
 }
 
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
@@ -417,6 +423,14 @@ export interface ReferenceData {
   type: string;
 }
 
+/** Persisted descriptor for a file the user attached to a turn. */
+export interface MessageAttachment {
+  documentId: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeInBytes?: number;
+}
+
 export interface ConversationMessage {
   _id: string;
   messageType: 'user_query' | 'bot_response';
@@ -431,6 +445,8 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  /** Files the user attached on this user_query (empty/undefined for bot responses). */
+  attachments?: MessageAttachment[];
 }
 
 export interface ConversationCompleteData {
@@ -505,6 +521,13 @@ export interface StreamChatRequest {
   timezone?: string;
   /** ISO-8601 timestamp of when the request was built. */
   currentTime?: string;
+  /**
+   * Storage `documentId`s for files the user attached to this turn. The Node.js
+   * backend persists them on the user message and forwards them to Python, which
+   * fetches each blob, creates a `FileRecord` with permission edges, parses to
+   * blocks, and merges those blocks into the LLM context.
+   */
+  attachmentDocumentIds?: string[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

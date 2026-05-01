@@ -78,6 +78,17 @@ export interface IAppliedFilterNode {
   connector: string;
 }
 
+/**
+ * Persisted descriptor for a file the user attached to a turn. The actual file
+ * bytes live in the storage service — `documentId` is the storage primary key.
+ */
+export interface IMessageAttachment {
+  documentId: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeInBytes?: number;
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system';
   content: string;
@@ -96,6 +107,8 @@ export interface IMessage {
   };
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  /** Files attached on this user_query (storage documentIds + display metadata). */
+  attachments?: IMessageAttachment[];
 }
 
 export interface IConversation {
