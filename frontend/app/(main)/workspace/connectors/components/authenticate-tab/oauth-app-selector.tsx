@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Flex, Text, Select, Spinner } from '@radix-ui/themes';
+import { Flex, Text, Select, Spinner, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
@@ -198,7 +198,7 @@ export function OAuthAppSelector() {
     if (selectedIdTrimmed) return;
     if (loading || fetchError) return;
     if (oauthApps.length !== 0) return;
-    const inst = (instanceName.trim() || panelConnector?.name?.trim() || '').trim();
+    const inst = instanceName.trim() || panelConnector?.name?.trim() || '';
     if (!inst) return;
     const cur = String(useConnectorsStore.getState().formData.auth.oauthInstanceName ?? '').trim();
     if (!cur) {
@@ -233,12 +233,7 @@ export function OAuthAppSelector() {
     loading ||
     oauthApps.length > 0 ||
     showUnlistedRegistrationItem ||
-    (isAdmin === true &&
-      isExistingConnector &&
-      !loading &&
-      !fetchError &&
-      oauthApps.length === 0 &&
-      !showUnlistedRegistrationItem);
+    (isAdmin === true && isExistingConnector && !fetchError);
 
   const radixValue = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return undefined;
@@ -248,13 +243,12 @@ export function OAuthAppSelector() {
   }, [selectedAuthType, selectedIdTrimmed, isAdmin]);
 
   const handleValueChange = (value: string) => {
+    setAuthFormValue('oauthInstanceName', '');
     if (value === MANUAL_VALUE) {
       setAuthFormValue('oauthConfigId', undefined);
-      setAuthFormValue('oauthInstanceName', '');
       clearOAuthCredentialFields();
       return;
     }
-    setAuthFormValue('oauthInstanceName', '');
     setAuthFormValue('oauthConfigId', value);
     const app = oauthApps.find((a) => a._id === value);
     if (app?.config && typeof app.config === 'object') {
@@ -375,7 +369,8 @@ export function OAuthAppSelector() {
             required
             error={oauthInstanceNameError ?? undefined}
           >
-            <input
+            <TextField.Root
+              size="2"
               type="text"
               value={oauthInstanceName ?? ''}
               onChange={(e) => setAuthFormValue('oauthInstanceName', e.target.value)}
@@ -383,21 +378,8 @@ export function OAuthAppSelector() {
                 name: panelConnector.name,
               })}
               aria-invalid={oauthInstanceNameError ? true : undefined}
-              style={{
-                height: 32,
-                width: '100%',
-                padding: '6px 8px',
-                backgroundColor: oauthInstanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
-                border: oauthInstanceNameError
-                  ? '1px solid var(--red-9)'
-                  : '1px solid var(--gray-a5)',
-                borderRadius: 'var(--radius-2)',
-                fontSize: 14,
-                fontFamily: 'var(--default-font-family)',
-                color: 'var(--gray-12)',
-                boxSizing: 'border-box',
-                outline: 'none',
-              }}
+              color={oauthInstanceNameError ? 'red' : undefined}
+              style={{ width: '100%' }}
             />
           </FormField>
           <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
