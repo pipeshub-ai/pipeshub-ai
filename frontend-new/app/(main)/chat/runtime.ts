@@ -157,6 +157,8 @@ export function buildExternalStoreConfig(
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
+      // Safety net: ChatInputWrapper blocks user sends while streaming; only programmatic api call `threadRuntime.append` reaches here.
+      if (currentSlot.isStreaming) return;
 
       // Extract KB / collection-root scope from message metadata (attached at send-time)
       const msgCollections = readKbCollectionsFromMessage(message);
