@@ -53,6 +53,11 @@ export interface ChatPreviewFile {
    */
   webUrl?: string;
   /**
+   * Whether a downloadable file is available for this record.
+   * When false, the "Download File" button is hidden in UnknownPreview.
+   */
+  previewRenderable?: boolean;
+  /**
    * Hide the "File Details" tab in the preview shell. Set for previews that
    * don't correspond to a KB record (e.g. chat-generated artifacts).
    */
