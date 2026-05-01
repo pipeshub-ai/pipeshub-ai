@@ -2,7 +2,9 @@
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Flex, Text, Select, Spinner } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ConnectorsApi } from '../../api';
 import { useConnectorsStore } from '../../store';
@@ -43,6 +45,7 @@ function oauthConfigPayload(full: Record<string, unknown>): Record<string, unkno
 // ========================================
 
 export function OAuthAppSelector() {
+  const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -52,9 +55,14 @@ export function OAuthAppSelector() {
   const panelConnectorId = useConnectorsStore((s) => s.panelConnectorId);
   const connectorConfig = useConnectorsStore((s) => s.connectorConfig);
   const selectedAuthType = useConnectorsStore((s) => s.selectedAuthType);
+  const instanceName = useConnectorsStore((s) => s.instanceName);
   const selectedId = useConnectorsStore(
     (s) => s.formData.auth.oauthConfigId as string | undefined
   );
+  const oauthInstanceName = useConnectorsStore(
+    (s) => s.formData.auth.oauthInstanceName as string | undefined
+  );
+  const oauthInstanceNameError = useConnectorsStore((s) => s.formErrors.oauthInstanceName);
   const setAuthFormValue = useConnectorsStore((s) => s.setAuthFormValue);
   const oauthConfigError = useConnectorsStore((s) => s.formErrors.oauthConfigId);
 
@@ -178,6 +186,37 @@ export function OAuthAppSelector() {
 
   const selectedIdTrimmed = (selectedId ?? '').trim();
 
+  /** Create new OAuth registration: no linked `oauthConfigId` (explicit "Create new" or no saved apps yet). */
+  const showNewOAuthAppName =
+    isAdmin === true && !isExistingConnector && !selectedIdTrimmed;
+
+  /**
+   * When there are no saved apps yet, mirror legacy behavior: default OAuth registration name
+   * from the connector instance name until the user edits the field.
+   */
+  useEffect(() => {
+    if (selectedAuthType !== 'OAUTH' || isExistingConnector || isAdmin !== true) return;
+    if (selectedIdTrimmed) return;
+    if (loading || fetchError) return;
+    if (oauthApps.length !== 0) return;
+    const inst = instanceName.trim();
+    if (!inst) return;
+    const cur = String(useConnectorsStore.getState().formData.auth.oauthInstanceName ?? '').trim();
+    if (!cur) {
+      setAuthFormValue('oauthInstanceName', inst);
+    }
+  }, [
+    selectedAuthType,
+    isExistingConnector,
+    isAdmin,
+    selectedIdTrimmed,
+    loading,
+    fetchError,
+    oauthApps.length,
+    instanceName,
+    setAuthFormValue,
+  ]);
+
   /** Name comes from persisted GET /config auth only — form `auth` has oauthConfigId + credentials, not instance name. */
   const unlistedRegistrationLabel = useMemo(() => {
     const name = resolveOAuthInstanceName(
@@ -204,9 +243,11 @@ export function OAuthAppSelector() {
   const handleValueChange = (value: string) => {
     if (value === MANUAL_VALUE) {
       setAuthFormValue('oauthConfigId', undefined);
+      setAuthFormValue('oauthInstanceName', '');
       clearOAuthCredentialFields();
       return;
     }
+    setAuthFormValue('oauthInstanceName', '');
     setAuthFormValue('oauthConfigId', value);
     const app = oauthApps.find((a) => a._id === value);
     if (app?.config && typeof app.config === 'object') {
@@ -242,9 +283,10 @@ export function OAuthAppSelector() {
             return 'No OAuth apps are registered yet. Ask an administrator to add one in workspace connector settings.';
           }
           if (isAdmin === true) {
-            return isExistingConnector
-              ? 'No other saved OAuth apps are listed for this connector. You can keep using the linked registration if shown above, or ask an administrator to add more.'
-              : 'No saved OAuth apps for this connector yet. Enter client credentials in the fields below to use a new OAuth app.';
+            if (isExistingConnector) {
+              return 'No other saved OAuth apps are listed for this connector. You can keep using the linked registration if shown above, or ask an administrator to add more.';
+            }
+            return null;
           }
           return 'Enter OAuth client credentials below, or pick a saved app once one is available.';
         })()
@@ -321,6 +363,44 @@ export function OAuthAppSelector() {
               {oauthConfigError}
             </Text>
           ) : null}
+        </Flex>
+      ) : null}
+
+      {showNewOAuthAppName ? (
+        <Flex direction="column" gap="1" style={{ width: '100%' }} data-ph-oauth-app-name>
+          <FormField
+            label={t('workspace.connectors.authTab.oauthAppNameLabel')}
+            required
+            error={oauthInstanceNameError ?? undefined}
+          >
+            <input
+              type="text"
+              value={typeof oauthInstanceName === 'string' ? oauthInstanceName : ''}
+              onChange={(e) => setAuthFormValue('oauthInstanceName', e.target.value)}
+              placeholder={t('workspace.connectors.authTab.oauthAppNamePlaceholder', {
+                name: panelConnector.name,
+              })}
+              aria-invalid={oauthInstanceNameError ? true : undefined}
+              style={{
+                height: 32,
+                width: '100%',
+                padding: '6px 8px',
+                backgroundColor: oauthInstanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
+                border: oauthInstanceNameError
+                  ? '1px solid var(--red-9)'
+                  : '1px solid var(--gray-a5)',
+                borderRadius: 'var(--radius-2)',
+                fontSize: 14,
+                fontFamily: 'var(--default-font-family)',
+                color: 'var(--gray-12)',
+                boxSizing: 'border-box',
+                outline: 'none',
+              }}
+            />
+          </FormField>
+          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            {t('workspace.connectors.authTab.oauthAppNameHelper')}
+          </Text>
         </Flex>
       ) : null}
     </Flex>

@@ -1527,7 +1527,11 @@
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
         "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
         "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
-        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
+        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
+        "oauthAppNameLabel": "OAuth-App-Name",
+        "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
+        "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
+        "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein."
       },
       "docSection": {
         "title": "Einrichtungsdokumentation",
