@@ -45,6 +45,11 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import {
+  OAuthApp,
+  OAuthAppStatus,
+} from '../../oauth_provider/schema/oauth.app.schema';
+import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 
 @injectable()
 export class UserController {
@@ -1110,6 +1115,67 @@ export class UserController {
     }
   }
 
+  /**
+   * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
+   */
+  private async softDeleteOAuthAppsForUser(
+    orgId: unknown,
+    createdByUserId: unknown,
+    actorUser: Record<string, unknown>,
+  ): Promise<void> {
+    const orgOid =
+      orgId instanceof mongoose.Types.ObjectId
+        ? orgId
+        : new mongoose.Types.ObjectId(String(orgId));
+    const creatorOid =
+      createdByUserId instanceof mongoose.Types.ObjectId
+        ? createdByUserId
+        : new mongoose.Types.ObjectId(String(createdByUserId));
+
+    const apps = await OAuthApp.find({
+      orgId: orgOid,
+      createdBy: creatorOid,
+      isDeleted: false,
+    })
+      .select('clientId')
+      .lean()
+      .exec();
+
+    const oauthTokenService = resolveOAuthTokenService();
+    if (oauthTokenService && apps.length > 0) {
+      for (const app of apps) {
+        if (!app?.clientId) {
+          continue;
+        }
+        try {
+          await oauthTokenService.revokeAllTokensForApp(app.clientId);
+        } catch (err) {
+          this.logger.error(
+            'Failed to revoke OAuth tokens when deleting user',
+            { clientId: app.clientId, err },
+          );
+        }
+      }
+    }
+
+    const actorIdRaw = actorUser.userId ?? actorUser._id;
+    const deletedBy =
+      actorIdRaw != null
+        ? new mongoose.Types.ObjectId(String(actorIdRaw))
+        : creatorOid;
+
+    await OAuthApp.updateMany(
+      { orgId: orgOid, createdBy: creatorOid, isDeleted: false },
+      {
+        $set: {
+          isDeleted: true,
+          status: OAuthAppStatus.REVOKED,
+          deletedBy,
+        },
+      },
+    );
+  }
+
   async deleteUser(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1154,6 +1220,8 @@ export class UserController {
         { orgId, users: userId },
         { $pull: { users: userId } },
       );
+
+      await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
 
       user.isDeleted = true;
       user.hasLoggedIn = false;

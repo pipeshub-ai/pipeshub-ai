@@ -284,7 +284,7 @@ describe('OAuthAppService', () => {
       }
     })
 
-    it('should include createdBy in findOne filter for non-admin', async () => {
+    it('should include createdBy in findOne filter (creator-scoped access)', async () => {
       const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
         await service.getAppById(fakeAppId, fakeOrgId, fakeUserId)
@@ -295,15 +295,19 @@ describe('OAuthAppService', () => {
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
 
-    it('should include createdBy in findOne filter for org admin (creator-only visibility)', async () => {
-      const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
+    it('should throw NotFoundError when app is not visible to caller (e.g. different creator in same org)', async () => {
+      const callerUserId = new Types.ObjectId().toString()
+      sinon.stub(OAuthApp, 'findOne').callsFake((filter: Record<string, unknown>) => {
+        expect(filter.createdBy).to.deep.equal(new Types.ObjectId(callerUserId))
+        return Promise.resolve(null)
+      })
       try {
-        await service.getAppById(fakeAppId, fakeOrgId, fakeUserId)
-      } catch {
-        // expected NotFoundError
+        await service.getAppById(fakeAppId, fakeOrgId, callerUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+        expect((error as NotFoundError).message).to.equal('OAuth app not found')
       }
-      const filter = findStub.firstCall.args[0] as Record<string, unknown>
-      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
 

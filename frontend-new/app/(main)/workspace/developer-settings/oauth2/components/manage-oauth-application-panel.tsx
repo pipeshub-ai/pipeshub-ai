@@ -583,7 +583,6 @@ export function ManageOAuthApplicationPanel({
         homepageUrl: optionalUrlOrEmpty(homepageUrl),
         privacyPolicyUrl: optionalUrlOrEmpty(privacyPolicyUrl),
         termsOfServiceUrl: optionalUrlOrEmpty(termsOfServiceUrl),
-        logoUrl: null,
         isConfidential: detail.isConfidential ?? true,
       };
 

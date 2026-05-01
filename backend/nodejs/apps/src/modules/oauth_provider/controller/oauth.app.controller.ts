@@ -14,10 +14,6 @@ import { isUserOrgAdmin } from '../../user_management/services/user-admin.servic
 
 @injectable()
 export class OAuthAppController {
-  private async isOrgAdmin(userId: string, orgId: string): Promise<boolean> {
-    return isUserOrgAdmin(userId, orgId)
-  }
-
   constructor(
     @inject('Logger') private logger: Logger,
     @inject('OAuthAppService') private oauthAppService: OAuthAppService,
@@ -65,7 +61,7 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
       const data: CreateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
@@ -118,7 +114,7 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
       const appId = req.params.appId!
       const data: UpdateOAuthAppRequest = req.body
 
@@ -271,7 +267,7 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await this.isOrgAdmin(userId, orgId)
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
       const scopesByCategory = this.scopeValidatorService.getScopesGroupedByCategoryForRole(isAdmin)
 
       res.json({

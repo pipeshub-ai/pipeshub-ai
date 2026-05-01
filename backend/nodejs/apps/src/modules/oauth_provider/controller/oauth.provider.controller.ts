@@ -110,7 +110,7 @@ export class OAuthProviderController {
       }
 
       // Build consent data
-      const consentUser = req.user!
+      const user = req.user!
       const scopeDefinitions =
         this.scopeValidatorService.getScopeDefinitions(requestedScopes)
 
@@ -128,8 +128,8 @@ export class OAuthProviderController {
           category: s.category,
         })),
         user: {
-          email: consentUser.email,
-          name: consentUser.fullName,
+          email: user.email,
+          name: user.fullName,
         },
         redirectUri: query.redirect_uri,
         state: query.state,
@@ -187,8 +187,6 @@ export class OAuthProviderController {
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri)
 
-      const user = req.user!
-
       // Check consent
       if (consent !== 'granted') {
         const redirectUrl = new URL(redirect_uri)
@@ -201,6 +199,8 @@ export class OAuthProviderController {
         res.json({ redirectUrl: redirectUrl.toString() })
         return
       }
+
+      const user = req.user!
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope)
