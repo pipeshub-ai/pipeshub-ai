@@ -79,6 +79,7 @@ describe('OAuthProviderController', () => {
       const mockApp = {
         name: 'App', description: 'Desc', allowedScopes: ['org:read'],
         isConfidential: true, logoUrl: null, homepageUrl: null, privacyPolicyUrl: null,
+        createdBy: { toString: () => 'u1' },
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       const req = {
@@ -98,7 +99,10 @@ describe('OAuthProviderController', () => {
 
   describe('authorizeConsent', () => {
     it('should return redirect URL with code when consent granted', async () => {
-      mockOAuthAppService.getAppByClientId.resolves({ allowedScopes: ['org:read'] })
+      mockOAuthAppService.getAppByClientId.resolves({
+        allowedScopes: ['org:read'],
+        createdBy: { toString: () => 'u1' },
+      })
       mockAuthCodeService.generateCode.resolves('auth-code-123')
       const req = {
         body: {
@@ -113,8 +117,30 @@ describe('OAuthProviderController', () => {
       expect(response.redirectUrl).to.include('code=auth-code-123')
     })
 
+    it('should issue a code for any authenticated user (not limited to app creator)', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({
+        allowedScopes: ['org:read'],
+        createdBy: { toString: () => 'other-user' },
+      })
+      mockAuthCodeService.generateCode.resolves('code-for-member')
+      const req = {
+        body: {
+          client_id: 'cid', redirect_uri: 'https://example.com/cb',
+          scope: 'org:read', state: 'state1', consent: 'granted',
+        },
+        user: { userId: 'u1', orgId: 'o1' },
+      } as any
+
+      await controller.authorizeConsent(req, mockRes, mockNext)
+      const response = mockRes.json.firstCall.args[0]
+      expect(response.redirectUrl).to.include('code=code-for-member')
+    })
+
     it('should return error redirect when consent denied', async () => {
-      mockOAuthAppService.getAppByClientId.resolves({ allowedScopes: ['org:read'] })
+      mockOAuthAppService.getAppByClientId.resolves({
+        allowedScopes: ['org:read'],
+        createdBy: { toString: () => 'u1' },
+      })
       const req = {
         body: {
           client_id: 'cid', redirect_uri: 'https://example.com/cb',
@@ -197,6 +223,7 @@ describe('OAuthProviderController', () => {
         orgId: { toString: () => 'org-1' },
         allowedScopes: ['org:read'],
         isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
       }
       mockOAuthAppService.verifyClientCredentials.resolves(mockApp)
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
@@ -314,6 +341,7 @@ describe('OAuthProviderController', () => {
       const mockApp = {
         name: 'App', description: 'Desc', allowedScopes: ['org:read'],
         isConfidential: false,
+        createdBy: { toString: () => 'u1' },
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       const req = {
@@ -334,6 +362,7 @@ describe('OAuthProviderController', () => {
       const mockApp = {
         name: 'App', description: 'Desc', allowedScopes: ['org:read'],
         isConfidential: false,
+        createdBy: { toString: () => 'u1' },
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       const req = {
@@ -355,6 +384,7 @@ describe('OAuthProviderController', () => {
       const mockApp = {
         name: 'App', description: 'Desc', allowedScopes: ['org:read'],
         isConfidential: true,
+        createdBy: { toString: () => 'u1' },
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       mockScopeValidatorService.parseScopes.throws(new ISE('bad scope'))
@@ -376,6 +406,7 @@ describe('OAuthProviderController', () => {
       const mockApp = {
         name: 'App', description: 'Desc', allowedScopes: ['org:read'],
         isConfidential: true, logoUrl: null, homepageUrl: null, privacyPolicyUrl: null,
+        createdBy: { toString: () => 'u1' },
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       const req = {
@@ -425,7 +456,10 @@ describe('OAuthProviderController', () => {
     })
 
     it('should include PKCE params in code generation', async () => {
-      mockOAuthAppService.getAppByClientId.resolves({ allowedScopes: ['org:read'] })
+      mockOAuthAppService.getAppByClientId.resolves({
+        allowedScopes: ['org:read'],
+        createdBy: { toString: () => 'u1' },
+      })
       mockAuthCodeService.generateCode.resolves('code-1')
       const req = {
         body: {
@@ -599,6 +633,7 @@ describe('OAuthProviderController', () => {
         orgId: { toString: () => 'org-1' },
         allowedScopes: ['org:read', 'openid', 'profile', 'email', 'offline_access'],
         isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
       }
       mockOAuthAppService.verifyClientCredentials.resolves(mockApp)
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
@@ -627,6 +662,7 @@ describe('OAuthProviderController', () => {
         orgId: { toString: () => 'org-1' },
         allowedScopes: ['org:read', 'document:read'],
         isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
       }
       mockOAuthAppService.verifyClientCredentials.resolves(mockApp)
       mockOAuthAppService.isGrantTypeAllowed.returns(true)

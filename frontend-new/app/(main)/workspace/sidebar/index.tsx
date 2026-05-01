@@ -30,7 +30,7 @@ const OVERVIEW_ITEMS: NavItem[] = [
   { icon: 'science', labelKey: 'workspace.sidebar.nav.labs', route: '/workspace/labs', adminOnly: true },
 ];
 const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
-  { icon: 'code', labelKey: 'workspace.sidebar.nav.oauth2', route: '/workspace/developer-settings/oauth2', adminOnly: true },
+  { icon: 'code', labelKey: 'workspace.sidebar.nav.oauth2', route: '/workspace/developer-settings/oauth2' },
 ];
 
 const PEOPLE_SUB_ITEMS = [
@@ -87,7 +87,7 @@ export default function WorkspaceSidebar() {
   const allRoutes = [
     ...OVERVIEW_ITEMS.map((item) => item.route),
     ...(isAdmin ? WORKSPACE_ITEMS.map((item) => item.route) : []),
-    ...(isAdmin ? DEVELOPER_SETTINGS_ITEMS.map((item) => item.route) : []),
+    ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
     ...PERSONAL_ITEMS.map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
     '/workspace/actions',
@@ -170,20 +170,18 @@ export default function WorkspaceSidebar() {
             ))}
           </Flex>
         )}
-        {isAdmin && (
-          <Flex direction="column" gap="1">
-            <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
-            {DEVELOPER_SETTINGS_ITEMS.map((item) => (
-              <WorkspaceSidebarItem
-                key={item.route}
-                icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-                label={t(item.labelKey)}
-                href={`${item.route}/`}
-                isActive={isActive(item.route)}
-              />
-            ))}
-          </Flex>
-        )}
+        <Flex direction="column" gap="1">
+          <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
+          {DEVELOPER_SETTINGS_ITEMS.map((item) => (
+            <WorkspaceSidebarItem
+              key={item.route}
+              icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+              label={t(item.labelKey)}
+              href={`${item.route}/`}
+              isActive={isActive(item.route)}
+            />
+          ))}
+        </Flex>
 
         {/* ── Personal section ── */}
         <Flex direction="column" gap="1">

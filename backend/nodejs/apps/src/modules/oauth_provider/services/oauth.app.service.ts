@@ -38,15 +38,31 @@ export class OAuthAppService {
   ) {}
 
   /**
+   * Every org member (including org admins) only sees OAuth apps they created.
+   * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
+   */
+  private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
+    return {
+      orgId: new Types.ObjectId(orgId),
+      isDeleted: false,
+      createdBy: new Types.ObjectId(userId),
+    }
+  }
+
+  /**
    * Create a new OAuth app
    */
   async createApp(
     orgId: string,
     createdBy: string,
+    isAdmin: boolean,
     data: CreateOAuthAppRequest,
   ): Promise<OAuthAppWithSecret> {
     // Validate scopes
-    this.scopeValidatorService.validateRequestedScopes(data.allowedScopes)
+    this.scopeValidatorService.validateRequestedScopes(
+      data.allowedScopes,
+      this.scopeValidatorService.getAllowedScopeNamesForRole(isAdmin),
+    )
 
     // Validate grant types
     const allowedGrantTypes = data.allowedGrantTypes || [
@@ -97,11 +113,14 @@ export class OAuthAppService {
   /**
    * Get OAuth app by ID
    */
-  async getAppById(appId: string, orgId: string): Promise<OAuthAppResponse> {
+  async getAppById(
+    appId: string,
+    orgId: string,
+    userId: string,
+  ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -139,16 +158,14 @@ export class OAuthAppService {
    */
   async listApps(
     orgId: string,
+    userId: string,
     query: ListAppsQuery,
   ): Promise<PaginatedResponse<OAuthAppResponse>> {
     const page = query.page || 1
     const limit = query.limit || 20
     const skip = (page - 1) * limit
 
-    const filter: Record<string, unknown> = {
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
-    }
+    const filter: Record<string, unknown> = this.buildAppFilter(orgId, userId)
 
     if (query.status) {
       filter.status = { $eq: query.status }
@@ -189,12 +206,13 @@ export class OAuthAppService {
   async updateApp(
     appId: string,
     orgId: string,
+    userId: string,
+    isAdmin: boolean,
     data: UpdateOAuthAppRequest,
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -203,7 +221,10 @@ export class OAuthAppService {
 
     // Validate scopes if provided
     if (data.allowedScopes) {
-      this.scopeValidatorService.validateRequestedScopes(data.allowedScopes)
+      this.scopeValidatorService.validateRequestedScopes(
+        data.allowedScopes,
+        this.scopeValidatorService.getAllowedScopeNamesForRole(isAdmin),
+      )
     }
 
     // Validate redirect URIs if provided
@@ -253,11 +274,14 @@ export class OAuthAppService {
   /**
    * Delete OAuth app (soft delete)
    */
-  async deleteApp(appId: string, orgId: string, deletedBy: string): Promise<void> {
+  async deleteApp(
+    appId: string,
+    orgId: string,
+    userId: string,
+  ): Promise<void> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -265,14 +289,14 @@ export class OAuthAppService {
     }
 
     app.isDeleted = true
-    app.deletedBy = new Types.ObjectId(deletedBy)
+    app.deletedBy = new Types.ObjectId(userId)
     app.status = OAuthAppStatus.REVOKED
     await app.save()
 
     this.logger.info('OAuth app deleted', {
       appId: (app._id as Types.ObjectId).toString(),
       orgId,
-      deletedBy,
+      userId,
     })
   }
 
@@ -282,11 +306,11 @@ export class OAuthAppService {
   async regenerateSecret(
     appId: string,
     orgId: string,
+    userId: string,
   ): Promise<OAuthAppWithSecret> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -311,11 +335,14 @@ export class OAuthAppService {
   /**
    * Suspend OAuth app
    */
-  async suspendApp(appId: string, orgId: string): Promise<OAuthAppResponse> {
+  async suspendApp(
+    appId: string,
+    orgId: string,
+    userId: string,
+  ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {
@@ -340,11 +367,14 @@ export class OAuthAppService {
   /**
    * Activate OAuth app
    */
-  async activateApp(appId: string, orgId: string): Promise<OAuthAppResponse> {
+  async activateApp(
+    appId: string,
+    orgId: string,
+    userId: string,
+  ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
+      ...this.buildAppFilter(orgId, userId),
     })
 
     if (!app) {

@@ -10,6 +10,7 @@ import {
   ListAppsQuery,
 } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service'
 
 @injectable()
 export class OAuthAppController {
@@ -31,6 +32,7 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const query: ListAppsQuery = {
         page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
         limit: req.query.limit
@@ -40,7 +42,7 @@ export class OAuthAppController {
         search: req.query.search as string,
       }
 
-      const result = await this.oauthAppService.listApps(orgId, query)
+      const result = await this.oauthAppService.listApps(orgId, userId, query)
 
       res.json(result)
     } catch (error) {
@@ -59,9 +61,10 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
       const data: CreateOAuthAppRequest = req.body
 
-      const app = await this.oauthAppService.createApp(orgId, userId, data)
+      const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
 
       this.logger.info('OAuth app created', {
         appId: app.id,
@@ -89,9 +92,10 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.getAppById(appId, orgId)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
 
       res.json(app)
     } catch (error) {
@@ -109,10 +113,12 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
       const appId = req.params.appId!
       const data: UpdateOAuthAppRequest = req.body
 
-      const app = await this.oauthAppService.updateApp(appId, orgId, data)
+      const app = await this.oauthAppService.updateApp(appId, orgId, userId, isAdmin, data)
 
       this.logger.info('OAuth app updated via API', {
         appId,
@@ -142,7 +148,7 @@ export class OAuthAppController {
       const appId = req.params.appId!
 
       // Revoke all tokens first
-      const app = await this.oauthAppService.getAppById(appId, orgId)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       // Then delete the app
@@ -172,9 +178,10 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.regenerateSecret(appId, orgId)
+      const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId)
 
       this.logger.info('OAuth app secret regenerated via API', {
         appId,
@@ -201,9 +208,10 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.suspendApp(appId, orgId)
+      const app = await this.oauthAppService.suspendApp(appId, orgId, userId)
 
       this.logger.info('OAuth app suspended via API', {
         appId,
@@ -229,9 +237,10 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.activateApp(appId, orgId)
+      const app = await this.oauthAppService.activateApp(appId, orgId, userId)
 
       this.logger.info('OAuth app activated via API', {
         appId,
@@ -251,12 +260,15 @@ export class OAuthAppController {
    * List available scopes
    */
   async listScopes(
-    _req: AuthenticatedUserRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     try {
-      const scopesByCategory = this.scopeValidatorService.getScopesGroupedByCategory()
+      const orgId = req.user!.orgId
+      const userId = req.user!.userId
+      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const scopesByCategory = this.scopeValidatorService.getScopesGroupedByCategoryForRole(isAdmin)
 
       res.json({
         scopes: scopesByCategory,
@@ -276,10 +288,11 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
       // Verify app belongs to org
-      const app = await this.oauthAppService.getAppById(appId, orgId)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       const tokens = await this.oauthTokenService.listTokensForApp(app.clientId)
 
       res.json({
@@ -300,10 +313,11 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
       // Verify app belongs to org
-      const app = await this.oauthAppService.getAppById(appId, orgId)
+      const app = await this.oauthAppService.getAppById(appId, orgId, userId)
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       this.logger.info('All tokens revoked for OAuth app via API', {

@@ -749,6 +749,21 @@ export function CreateOAuthApplicationPanel({
                     </Flex>
                   ))}
                 </Flex>
+                {grantTypes.has('client_credentials') && (
+                  <Box
+                    style={{
+                      marginTop: 'var(--space-3)',
+                      backgroundColor: 'var(--amber-2)',
+                      border: '1px solid var(--amber-6)',
+                      borderRadius: 'var(--radius-2)',
+                      padding: 'var(--space-3)',
+                    }}
+                  >
+                    <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                      {t('workspace.oauth2.create.clientCredentialsWarning')}
+                    </Text>
+                  </Box>
+                )}
               </Box>
 
               {usesAuthorizationCode && (

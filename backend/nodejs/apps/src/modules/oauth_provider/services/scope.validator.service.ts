@@ -4,6 +4,8 @@ import {
   ScopeDefinition,
   validateScopes,
   getAllScopesGroupedByCategory,
+  getAllowedScopeNamesForRole,
+  getScopesGroupedByCategoryForRole,
   getScopeDefinition,
 } from '../config/scopes.config'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
@@ -14,13 +16,27 @@ export class ScopeValidatorService {
   /**
    * Validate requested scopes against available scopes
    */
-  validateRequestedScopes(requestedScopes: string[]): void {
+  validateRequestedScopes(
+    requestedScopes: string[],
+    allowedScopeNames?: string[],
+  ): void {
     const result = validateScopes(requestedScopes)
     if (!result.valid) {
       throw new InvalidScopeError(
         `Invalid scopes: ${result.invalid.join(', ')}`,
         { invalidScopes: result.invalid },
       )
+    }
+
+    if (allowedScopeNames) {
+      const allowed = new Set(allowedScopeNames)
+      const disallowed = requestedScopes.filter((scope) => !allowed.has(scope))
+      if (disallowed.length > 0) {
+        throw new InvalidScopeError(
+          `Scopes not allowed for this role: ${disallowed.join(', ')}`,
+          { disallowedScopes: disallowed },
+        )
+      }
     }
   }
 
@@ -79,6 +95,16 @@ export class ScopeValidatorService {
    */
   getScopesGroupedByCategory(): Record<string, ScopeDefinition[]> {
     return getAllScopesGroupedByCategory()
+  }
+
+  getScopesGroupedByCategoryForRole(
+    isAdmin: boolean,
+  ): Record<string, ScopeDefinition[]> {
+    return getScopesGroupedByCategoryForRole(isAdmin)
+  }
+
+  getAllowedScopeNamesForRole(isAdmin: boolean): string[] {
+    return getAllowedScopeNamesForRole(isAdmin)
   }
 
   /**

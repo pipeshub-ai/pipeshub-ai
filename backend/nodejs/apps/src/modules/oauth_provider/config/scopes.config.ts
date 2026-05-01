@@ -255,6 +255,20 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
 };
 
+/** Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes). */
+export const AdminOnlyScopes = new Set<string>([
+  'org:write',
+  'org:admin',
+  'user:invite',
+  'user:delete',
+  'usergroup:write',
+  'team:write',
+  'config:read',
+  'config:write',
+  'crawl:write',
+  'crawl:delete',
+]);
+
 export const DefaultMcpScopes = [
   'openid',
   'profile',
@@ -314,6 +328,27 @@ export function getAllScopesGroupedByCategory(): Record<
     grouped[category] = getScopesByCategory(category);
   }
   return grouped;
+}
+
+export function getAllowedScopeNamesForRole(isAdmin: boolean): string[] {
+  if (isAdmin) {
+    return Object.keys(OAuthScopes);
+  }
+  return Object.keys(OAuthScopes).filter((scope) => !AdminOnlyScopes.has(scope));
+}
+
+export function getScopesGroupedByCategoryForRole(
+  isAdmin: boolean,
+): Record<string, ScopeDefinition[]> {
+  const allowedScopeNames = new Set(getAllowedScopeNamesForRole(isAdmin));
+  const grouped = getAllScopesGroupedByCategory();
+  const filtered: Record<string, ScopeDefinition[]> = {};
+
+  for (const [category, scopes] of Object.entries(grouped)) {
+    filtered[category] = scopes.filter((scope) => allowedScopeNames.has(scope.name));
+  }
+
+  return filtered;
 }
 
 export function isValidScope(scope: string): boolean {

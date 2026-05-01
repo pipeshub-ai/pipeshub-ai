@@ -167,4 +167,52 @@ describe('ScopeValidatorService', () => {
       expect(result).to.deep.equal([])
     })
   })
+
+  describe('getAllowedScopeNamesForRole', () => {
+    it('should include admin-only scope names for org admin', () => {
+      const names = service.getAllowedScopeNamesForRole(true)
+      expect(names).to.include('org:write')
+      expect(names).to.include('org:admin')
+    })
+
+    it('should exclude admin-only scope names for non-admin', () => {
+      const names = service.getAllowedScopeNamesForRole(false)
+      expect(names).to.include('org:read')
+      expect(names).to.not.include('org:write')
+      expect(names).to.not.include('org:admin')
+    })
+  })
+
+  describe('getScopesGroupedByCategoryForRole', () => {
+    it('should omit admin-only scopes from grouped output for non-admin', () => {
+      const grouped = service.getScopesGroupedByCategoryForRole(false)
+      const orgNames = (grouped['Organization'] ?? []).map((s) => s.name)
+      expect(orgNames).to.include('org:read')
+      expect(orgNames).to.not.include('org:write')
+    })
+
+    it('should include admin-only scopes in grouped output for org admin', () => {
+      const grouped = service.getScopesGroupedByCategoryForRole(true)
+      const orgNames = (grouped['Organization'] ?? []).map((s) => s.name)
+      expect(orgNames).to.include('org:write')
+    })
+  })
+
+  describe('validateRequestedScopes with role allow-list', () => {
+    it('should reject admin-only scope when allow-list is for non-admin', () => {
+      const allowed = service.getAllowedScopeNamesForRole(false)
+      try {
+        service.validateRequestedScopes(['org:write'], allowed)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidScopeError)
+        expect((error as InvalidScopeError).message).to.match(/not allowed|role/i)
+      }
+    })
+
+    it('should allow org:read when allow-list is for non-admin', () => {
+      const allowed = service.getAllowedScopeNamesForRole(false)
+      expect(() => service.validateRequestedScopes(['org:read'], allowed)).to.not.throw()
+    })
+  })
 })

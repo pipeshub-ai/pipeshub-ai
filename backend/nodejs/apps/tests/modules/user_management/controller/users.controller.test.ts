@@ -8,6 +8,24 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import {
+  OAuthApp,
+  OAuthAppStatus,
+} from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
+
+/** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
+function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
+  const chain = {
+    select: sinon.stub(),
+    lean: sinon.stub(),
+    exec: sinon.stub().resolves(appsLeResult),
+  };
+  chain.select.returns(chain);
+  chain.lean.returns(chain);
+  sinon.stub(OAuthApp, 'find').returns(chain as unknown as ReturnType<typeof OAuthApp.find>);
+  sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
+}
 
 describe('UserController', () => {
   let controller: UserController;
@@ -874,6 +892,7 @@ describe('UserController', () => {
         select: sinon.stub().resolves([{ type: 'standard' }]),
       } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
@@ -2752,6 +2771,7 @@ describe('UserController', () => {
         ]),
       } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
@@ -2762,6 +2782,267 @@ describe('UserController', () => {
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // deleteUser - OAuth apps soft-delete cascade
+  // -----------------------------------------------------------------------
+  describe('deleteUser - OAuth apps cascade', () => {
+    function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
+      const chain = {
+        select: sinon.stub(),
+        lean: sinon.stub(),
+        exec: sinon.stub().resolves(appsFromExec),
+      };
+      chain.select.returns(chain);
+      chain.lean.returns(chain);
+      return chain;
+    }
+
+    it('should query and soft-delete OAuth apps by orgId and createdBy', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      const orgOid = new mongoose.Types.ObjectId('507f1f77bcf86cd799439012');
+      const deletedUserOid = new mongoose.Types.ObjectId(
+        '507f1f77bcf86cd799439013',
+      );
+
+      const mockUser = {
+        _id: deletedUserOid,
+        orgId: orgOid,
+        email: 'oauth-owner@test.com',
+        fullName: 'OAuth Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({
+        modifiedCount: 0,
+      } as any);
+
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns(null);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(findStub.calledOnce).to.be.true;
+      const findFilter = findStub.firstCall.args[0] as {
+        orgId: mongoose.Types.ObjectId;
+        createdBy: mongoose.Types.ObjectId;
+        isDeleted: boolean;
+      };
+      expect(findFilter.isDeleted).to.equal(false);
+      expect(findFilter.orgId.equals(orgOid)).to.be.true;
+      expect(findFilter.createdBy.equals(deletedUserOid)).to.be.true;
+
+      expect(updateManyStub.calledOnce).to.be.true;
+      const [updFilter, updDoc] = updateManyStub.firstCall.args as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown> },
+      ];
+      expect((updFilter as { isDeleted: boolean }).isDeleted).to.equal(false);
+      expect(
+        (updFilter as { orgId: mongoose.Types.ObjectId }).orgId.equals(orgOid),
+      ).to.be.true;
+      expect(
+        (updFilter as { createdBy: mongoose.Types.ObjectId }).createdBy.equals(
+          deletedUserOid,
+        ),
+      ).to.be.true;
+      expect(updDoc.$set.isDeleted).to.equal(true);
+      expect(updDoc.$set.status).to.equal(OAuthAppStatus.REVOKED);
+      expect(
+        (updDoc.$set.deletedBy as mongoose.Types.ObjectId).equals(
+          new mongoose.Types.ObjectId(String(req.user.userId)),
+        ),
+      ).to.be.true;
+
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should revoke tokens per app when OAuth token service is registered', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () =>
+          stubOAuthAppQueryChain([
+            { clientId: 'client-a' },
+            { clientId: 'client-b' },
+          ]) as any,
+      );
+      sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 2 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(revokeStub.calledTwice).to.be.true;
+      expect(revokeStub.firstCall.args[0]).to.equal('client-a');
+      expect(revokeStub.secondCall.args[0]).to.equal('client-b');
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should skip revoke for rows without clientId and still complete delete', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () =>
+          stubOAuthAppQueryChain([
+            {},
+            { clientId: 'only-valid' },
+          ]) as any,
+      );
+      sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(revokeStub.calledOnce).to.be.true;
+      expect(revokeStub.firstCall.args[0]).to.equal('only-valid');
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should complete user delete when token revocation fails', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().rejects(new Error('revoke failed'));
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () => stubOAuthAppQueryChain([{ clientId: 'client-x' }]) as any,
+      );
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves(
+        {} as any,
+      );
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(mockLogger.error.called).to.be.true;
+      expect(updateManyStub.calledOnce).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0].message).to.equal(
+        'User deleted successfully',
+      );
+    });
+
+    it('should set deletedBy to creator when actor has no userId or _id', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      req.user = {
+        orgId: '507f1f77bcf86cd799439012',
+        fullName: 'Actor',
+      };
+
+      const orgOid = new mongoose.Types.ObjectId(req.user.orgId);
+      const deletedUserOid = new mongoose.Types.ObjectId(
+        '507f1f77bcf86cd799439013',
+      );
+
+      const mockUser = {
+        _id: deletedUserOid,
+        orgId: orgOid,
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns(null);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      const [, updDoc] = updateManyStub.firstCall.args as [
+        unknown,
+        { $set: { deletedBy: mongoose.Types.ObjectId } },
+      ];
+      expect(updDoc.$set.deletedBy.equals(deletedUserOid)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
     });
   });
 

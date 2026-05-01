@@ -878,7 +878,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Manage OAuth 2.0 applications that can access your organization via Pipeshub",
+      "subtitle": "Create and manage OAuth apps you registered. Only you see your apps here.",
       "searchPlaceholder": "Search...",
       "newApplication": "New OAuth application",
       "emptyTitle": "No OAuth 2.0 applications",
@@ -1017,7 +1017,8 @@
         "errorScopeRequired": "Select at least one permission scope.",
         "errorOptionalUrlInvalid": "Optional URLs must be valid http(s) addresses when provided.",
         "grantRequiredTitle": "Grant type required",
-        "grantRequiredDescription": "At least one grant type must stay selected."
+        "grantRequiredDescription": "At least one grant type must stay selected.",
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow."
       }
     },
     "aiModels": {

@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { OAuthAppController } from '../../../../src/modules/oauth_provider/controller/oauth.app.controller'
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service'
 
 describe('OAuthAppController', () => {
   let controller: OAuthAppController
@@ -14,6 +15,7 @@ describe('OAuthAppController', () => {
   let mockNext: any
 
   beforeEach(() => {
+    sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
     mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
       listApps: sinon.stub(),
@@ -31,6 +33,7 @@ describe('OAuthAppController', () => {
     }
     mockScopeValidatorService = {
       getScopesGroupedByCategory: sinon.stub().returns({}),
+      getScopesGroupedByCategoryForRole: sinon.stub().returns({}),
     }
     controller = new OAuthAppController(
       mockLogger,
@@ -58,8 +61,19 @@ describe('OAuthAppController', () => {
       mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
       await controller.listApps(mockReq, mockRes, mockNext)
       const callArgs = mockOAuthAppService.listApps.firstCall.args
-      expect(callArgs[1].page).to.equal(2)
-      expect(callArgs[1].limit).to.equal(10)
+      const query = callArgs[2] as { page?: number; limit?: number }
+      expect(query.page).to.equal(2)
+      expect(query.limit).to.equal(10)
+    })
+
+    it('should pass orgId, userId, and query to listApps without org-admin lookup', async () => {
+      mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
+      await controller.listApps(mockReq, mockRes, mockNext)
+      expect((userAdminService.isUserOrgAdmin as sinon.SinonStub).called).to.be.false
+      const args = mockOAuthAppService.listApps.firstCall.args
+      expect(args[0]).to.equal('org-1')
+      expect(args[1]).to.equal('user-1')
+      expect(args[2]).to.be.an('object')
     })
 
     it('should call next on error', async () => {
@@ -77,6 +91,14 @@ describe('OAuthAppController', () => {
       await controller.createApp(mockReq, mockRes, mockNext)
       expect(mockRes.status.calledWith(201)).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
+    })
+
+    it('should call createApp with isAdmin false when user is not org admin', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockOAuthAppService.createApp.resolves({ id: 'a', clientId: 'c', clientSecret: 's' })
+      mockReq.body = { name: 'Test', allowedScopes: ['org:read'] }
+      await controller.createApp(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.createApp.firstCall.args[2]).to.equal(false)
     })
 
     it('should call next on error', async () => {
@@ -153,10 +175,20 @@ describe('OAuthAppController', () => {
   })
 
   describe('listScopes', () => {
-    it('should return scopes grouped by category', async () => {
-      mockScopeValidatorService.getScopesGroupedByCategory.returns({ Organization: [] })
+    it('should return scopes grouped by category for org admin', async () => {
+      mockScopeValidatorService.getScopesGroupedByCategoryForRole.returns({ Organization: [] })
       await controller.listScopes(mockReq, mockRes, mockNext)
+      expect(mockScopeValidatorService.getScopesGroupedByCategoryForRole.calledWith(true)).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
+      const payload = mockRes.json.firstCall.args[0] as { scopes: unknown }
+      expect(payload.scopes).to.deep.equal({ Organization: [] })
+    })
+
+    it('should use member scope grouping when user is not org admin', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockScopeValidatorService.getScopesGroupedByCategoryForRole.returns({ Organization: [] })
+      await controller.listScopes(mockReq, mockRes, mockNext)
+      expect(mockScopeValidatorService.getScopesGroupedByCategoryForRole.calledWith(false)).to.be.true
     })
   })
 

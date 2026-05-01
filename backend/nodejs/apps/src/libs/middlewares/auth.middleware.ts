@@ -144,11 +144,9 @@ export class AuthMiddleware {
     // for client_credentials tokens (userId === client_id), resolve the app owner
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      // prefer createdBy from JWT payload (embedded at token generation time)
       if (payload.createdBy) {
         userId = payload.createdBy;
       } else {
-        // fallback for tokens generated before createdBy was embedded
         try {
           const app = await OAuthApp.findOne({
             clientId: payload.client_id,
@@ -163,6 +161,9 @@ export class AuthMiddleware {
             throw new UnauthorizedError('OAuth app not found or revoked');
           }
         } catch (err) {
+          if (err instanceof UnauthorizedError) {
+            throw err;
+          }
           this.logger.error('Failed to look up OAuth app owner', err);
           throw new UnauthorizedError('Failed to look up OAuth app owner');
         }
