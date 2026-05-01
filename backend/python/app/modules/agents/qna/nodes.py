@@ -6988,7 +6988,6 @@ async def _generate_direct_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -7045,8 +7044,6 @@ async def _generate_fast_api_response(
     analyses_text = "\n\n".join(sub_agent_analyses)
 
     # Include raw API data for reference
-    from app.utils.citations import display_url_for_llm
-    from app.utils.chat_helpers import generate_text_fragment_url
 
     non_retrieval = [
         r for r in tool_results
@@ -7058,45 +7055,7 @@ async def _generate_fast_api_response(
     for r in non_retrieval[:5]:
         tool_name = r.get("tool_name", "unknown")
         content = ToolResultExtractor.extract_data_from_result(r.get("result", ""))
-
-        result_type = content.get("result_type", "") if isinstance(content, dict) else ""
-        # if isinstance(content, dict) and (
-        #     result_type == "web_search" or "web_results" in content
-        # ):
-        #     query = content.get("query", "")
-        #     lines = [f"### {tool_name}", f"web_search_query: {query}", "Blocks retrieved from web search:\n"]
-        #     for wr in content.get("web_results", []):
-        #         if not isinstance(wr, dict):
-        #             continue
-        #         title = wr.get("title", "")
-        #         link = wr.get("link", "")
-        #         snippet = wr.get("snippet", "")
-        #         d_url = display_url_for_llm(link, ref_mapper)
-        #         lines.append(f"title: {title}\nurl/citation id: {d_url}\ncontent: {snippet}")
-        #     raw_data_parts.append("\n".join(lines))
-        # elif isinstance(content, dict) and (
-        #     result_type == "url_content"
-        # ):
-        #     url = content.get("url", "")
-        #     lines = [f"### {tool_name}", "Blocks of content from the URL:\n"]
-        #     for block in content.get("blocks", []):
-        #         if hasattr(block, "type"):
-        #             if block.type == "image":
-        #                 continue
-        #             block_content = getattr(block, "content", "")
-        #             block_url = generate_text_fragment_url(url, block_content)
-        #         elif isinstance(block, dict):
-        #             if block.get("type") == "image":
-        #                 continue
-        #             block_content = block.get("content", "")
-        #             block_url = generate_text_fragment_url(url, block_content)
-        #         else:
-        #             continue
-        #         if block_content:
-        #             d_url = display_url_for_llm(block_url, ref_mapper)
-        #             lines.append(f"url/citation id: {d_url}\ncontent: {block_content}")
-        #     raw_data_parts.append("\n".join(lines))
-        # else:
+        
         if isinstance(content, (dict, list)):
             content_str = json.dumps(content, indent=2, default=str)
         else:
@@ -7177,7 +7136,6 @@ async def _generate_fast_api_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
-            mode="simple",
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
