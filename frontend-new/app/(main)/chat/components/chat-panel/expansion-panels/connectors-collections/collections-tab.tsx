@@ -216,6 +216,8 @@ export function CollectionsTab({
   const loadedChildrenRef = useRef<Set<string>>(new Set());
   // Tracks every in-flight loadChildren call; prevents duplicate concurrent fetches per ID
   const loadingChildRootRef = useRef<Set<string>>(new Set());
+  // Prevents re-running the auto-expand logic on every re-render after initial load
+  const autoExpandedAfterFetchRef = useRef(false);
 
   const setCollectionNamesCache = useChatStore((s) => s.setCollectionNamesCache);
   const setCollectionMetaCache = useChatStore((s) => s.setCollectionMetaCache);
@@ -227,6 +229,7 @@ export function CollectionsTab({
       setHasError(false);
       loadedChildrenRef.current.clear();
       loadingChildRootRef.current.clear();
+      autoExpandedAfterFetchRef.current = false;
       setChildrenByRootId({});
       setChildrenMetaByRootId({});
       setExpandedRootIds({});
@@ -416,6 +419,21 @@ export function CollectionsTab({
     return () => { cancelled = true; };
   }, [collections, filterMode, loadChildren]);
 
+  // Auto-expand KB/Collections connector rows once after each fetch cycle completes.
+  // Uses a ref to ensure this only runs once per fetch, not on every re-render.
+  useEffect(() => {
+    if (isLoading || autoExpandedAfterFetchRef.current || filterMode === 'collections') return;
+    const kbRows = collections.filter(isKbCollectionsConnectorRow);
+    if (kbRows.length === 0) return;
+    autoExpandedAfterFetchRef.current = true;
+    setExpandedRootIds((prev) => {
+      const next = { ...prev };
+      for (const row of kbRows) next[row.id] = true;
+      return next;
+    });
+    kbRows.forEach((row) => void loadChildren(row));
+  }, [collections, isLoading, filterMode, loadChildren]);
+
   const loadMoreChildren = useCallback(
     async (row: CollectionSelectItem) => {
       const meta = childrenMetaByRootId[row.id];
@@ -486,20 +504,38 @@ export function CollectionsTab({
 
   const toggleRoot = useCallback(
     (rootId: string) => {
-      if (apps.includes(rootId)) {
-        const childIds = new Set((childrenByRootId[rootId] ?? []).map((c) => c.id));
-        onSelectionChange({
-          apps: apps.filter((x) => x !== rootId),
-          kb: kb.filter((id) => !childIds.has(id)),
-        });
+      const row = collections.find((c) => c.id === rootId);
+      const isKbRow = row ? isKbCollectionsConnectorRow(row) : false;
+
+      if (isKbRow) {
+        // KB/Collections root: toggle all children in kb, never add root to apps
+        const children = childrenByRootId[rootId] ?? [];
+        const childIds = children.map((c) => c.id);
+        const allSelected =
+          childIds.length > 0 && childIds.every((id) => kb.includes(id));
+        if (allSelected) {
+          const childIdSet = new Set(childIds);
+          onSelectionChange({ apps, kb: kb.filter((id) => !childIdSet.has(id)) });
+        } else {
+          onSelectionChange({ apps, kb: [...new Set([...kb, ...childIds])] });
+        }
       } else {
-        onSelectionChange({
-          apps: [...apps, rootId],
-          kb,
-        });
+        // Original behavior for connector app roots
+        if (apps.includes(rootId)) {
+          const childIds = new Set((childrenByRootId[rootId] ?? []).map((c) => c.id));
+          onSelectionChange({
+            apps: apps.filter((x) => x !== rootId),
+            kb: kb.filter((id) => !childIds.has(id)),
+          });
+        } else {
+          onSelectionChange({
+            apps: [...apps, rootId],
+            kb,
+          });
+        }
       }
     },
-    [childrenByRootId, apps, onSelectionChange, kb]
+    [childrenByRootId, apps, onSelectionChange, kb, collections]
   );
 
   const toggleRecordGroup = useCallback(
@@ -712,6 +748,22 @@ export function CollectionsTab({
                 const childErr = childrenErrorByRootId[col.id];
                 const canExpand = showExpandChevron(col);
 
+                // For KB/Collections rows, derive checked/indeterminate from children in kb
+                const isKbRow = isKbCollectionsConnectorRow(col);
+                const kbRowChildIds = isKbRow ? children.map((c) => c.id) : [];
+                const kbRowSelectedCount = isKbRow
+                  ? kbRowChildIds.filter((id) => kb.includes(id)).length
+                  : 0;
+                const kbRowChecked: boolean | 'indeterminate' = isKbRow
+                  ? kbRowChildIds.length === 0
+                    ? false
+                    : kbRowSelectedCount === kbRowChildIds.length
+                      ? true
+                      : kbRowSelectedCount > 0
+                        ? 'indeterminate'
+                        : false
+                  : apps.includes(col.id);
+
                 return (
                   <Flex key={col.id} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
                     <Flex
@@ -734,7 +786,7 @@ export function CollectionsTab({
                           <Checkbox
                             size="1"
                             variant="classic"
-                            checked={apps.includes(col.id)}
+                            checked={kbRowChecked}
                             onCheckedChange={() => toggleRoot(col.id)}
                             onClick={(e) => e.stopPropagation()}
                           />
