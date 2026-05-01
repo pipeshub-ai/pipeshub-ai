@@ -360,6 +360,42 @@ function ChatContent() {
             knowledgeDefaults: knowledgeDefaultsForStore,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
+
+          // hydrateAgentChatResources always resets agentKnowledgeScope to null.
+          // On page reload with an existing conversationId, loadHistory may have
+          // already set the scope from the last message's appliedFilters before
+          // getAgent resolved. Re-apply it so the race doesn't wipe it out.
+          if (conversationId) {
+            const freshStore = useChatStore.getState();
+            const existing = freshStore.getSlotByConvId(conversationId, { forAgentId: agentId });
+            if (existing?.slot.isInitialized) {
+              const lastWithFilters = [...existing.slot.messages].reverse().find(
+                (msg) =>
+                  msg.role === 'user' &&
+                  (msg.metadata as { custom?: { appliedFilters?: import('./types').AppliedFilters } })
+                    ?.custom?.appliedFilters != null
+              );
+              const af = (
+                lastWithFilters?.metadata as {
+                  custom?: { appliedFilters?: import('./types').AppliedFilters };
+                }
+              )?.custom?.appliedFilters;
+              if (af) {
+                freshStore.setAgentKnowledgeScope({
+                  apps: af.apps.map((n) => n.id),
+                  kb: af.kb.map((n) => n.id),
+                });
+                const namesCache: Record<string, string> = {};
+                const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
+                for (const node of [...af.apps, ...af.kb]) {
+                  namesCache[node.id] = node.name;
+                  metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
+                }
+                freshStore.setCollectionNamesCache(namesCache);
+                freshStore.setCollectionMetaCache(metaCache);
+              }
+            }
+          }
         } catch (error) {
           if (!cancelled) {
             console.error('Failed to fetch agent details:', error);
