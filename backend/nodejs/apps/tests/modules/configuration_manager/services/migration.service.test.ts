@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
+import * as oauthOrphanMigration from '../../../../src/modules/oauth_provider/migrations/soft-delete-oauth-apps-orphan-creators.migration'
 import { MigrationService } from '../../../../src/modules/configuration_manager/services/migration.service'
 
 describe('MigrationService', () => {
@@ -39,6 +40,13 @@ describe('MigrationService', () => {
 
     loadConfigStub = sinon.stub(cmConfig, 'loadConfigurationManagerConfig').returns(fakeConfig as any)
     sinon.stub(encryptorModule.EncryptionService, 'getInstance').returns(mockEncService)
+    sinon.stub(oauthOrphanMigration, 'runSoftDeleteOAuthAppsOrphanCreators').resolves({
+      skipped: true,
+      foundCount: 0,
+      matchedCount: 0,
+      modifiedCount: 0,
+      dryRun: false,
+    })
   })
 
   afterEach(() => {
@@ -53,11 +61,26 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call aiModelsMigration', async () => {
+    it('should call aiModelsMigration and oauth orphan creators migration', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       await service.runMigration()
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
+      expect(
+        (oauthOrphanMigration.runSoftDeleteOAuthAppsOrphanCreators as sinon.SinonStub).calledOnce,
+      ).to.be.true
+    })
+  })
+
+  describe('oauthOrphanCreatorsMigration', () => {
+    it('should invoke runSoftDeleteOAuthAppsOrphanCreators with logger', async () => {
+      const stub = oauthOrphanMigration.runSoftDeleteOAuthAppsOrphanCreators as sinon.SinonStub
+      stub.resetHistory()
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.oauthOrphanCreatorsMigration()
+
+      expect(stub.calledOnce).to.be.true
+      expect(stub.firstCall.args[0]).to.have.property('logger', mockLogger)
     })
   })
 

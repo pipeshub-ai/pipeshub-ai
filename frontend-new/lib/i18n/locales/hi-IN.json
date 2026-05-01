@@ -987,6 +987,7 @@
         "grantAuthorizationCode": "Authorization Code",
         "grantRefreshToken": "Refresh Token",
         "grantClientCredentials": "Client Credentials",
+        "clientCredentialsNoConsentTooltip": "क्लाइंट क्रेडेंशियल ग्रांट के लिए अंतिम उपयोगकर्ता की सहमति आवश्यक नहीं है; इस फ़्लो के लिए कोई अधिकरण या सहमति पृष्ठ नहीं दिखाया जाता।",
         "redirectHeading": "रीडायरेक्ट URI",
         "redirectHelper": "कम से कम एक कॉलबैक URL आवश्यक है। प्रोडक्शन में HTTPS आवश्यक है।",
         "redirectPlaceholder": "https://yourapp.com/callback",

@@ -986,6 +986,7 @@
         "grantAuthorizationCode": "Authorization Code",
         "grantRefreshToken": "Refresh Token",
         "grantClientCredentials": "Client Credentials",
+        "clientCredentialsNoConsentTooltip": "El flujo de credenciales de cliente no requiere el consentimiento del usuario final. No se muestra una página de autorización ni de consentimiento.",
         "redirectHeading": "Redirect URI",
         "redirectHelper": "At least one callback URL is required. HTTPS is required in production.",
         "redirectPlaceholder": "https://yourapp.com/callback",
