@@ -673,7 +673,14 @@ export function useAgentBuilderReconstruction(): {
         const wsNode: Node<FlowNodeData> = {
           id: nodeId,
           type: 'flowNode',
-          position: calculateOptimalPosition('tools', counts.toolsets, Math.max(counts.toolsets + 1, 1)),
+          position:
+            counts.toolsets > 0
+              ? {
+                  x: layout.layers.tools.x,
+                  y:
+                    calculateOptimalPosition('tools', counts.toolsets - 1, counts.toolsets).y + 440,
+                }
+              : calculateOptimalPosition('tools', 0, 1),
           data: {
             id: nodeId,
             type: 'web-search',
