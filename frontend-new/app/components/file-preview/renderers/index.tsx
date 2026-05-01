@@ -97,7 +97,7 @@ export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRend
   );
 }
 
-export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl }: FilePreviewRendererProps) {
+export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl, previewRenderable }: FilePreviewRendererProps) {
   const [blobUrl, setBlobUrl] = useState('');
 
   useEffect(() => {
@@ -154,7 +154,7 @@ export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl }: FilePrev
         Preview not available for this file type
       </Text>
       <Flex gap="3">
-        {downloadHref && downloadHref.trim() !== '' && (
+        {previewRenderable !== false && downloadHref && downloadHref.trim() !== '' && (
           <a
             href={downloadHref}
             download={fileName}

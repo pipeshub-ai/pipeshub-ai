@@ -167,6 +167,7 @@ export function useCitationActions(): CitationCallbacks {
           isLoading: false,
           recordDetails,
           webUrl,
+          previewRenderable: recordDetails.record.previewRenderable,
           initialPage,
           highlightBox,
           citations: recordCitations,

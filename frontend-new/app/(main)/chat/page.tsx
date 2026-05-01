@@ -1086,6 +1086,7 @@ function ChatContent() {
             type: previewFile.type,
             size: previewFile.size,
             webUrl: previewFile.webUrl,
+            previewRenderable: previewFile.previewRenderable,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -1115,6 +1116,7 @@ function ChatContent() {
             type: previewFile.type,
             size: previewFile.size,
             webUrl: previewFile.webUrl,
+            previewRenderable: previewFile.previewRenderable,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}

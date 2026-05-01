@@ -10,6 +10,7 @@ import {
   Callout,
   Flex,
   IconButton,
+  Select,
   Separator,
   Text,
   TextField,
@@ -105,14 +106,18 @@ export function AdminManageActionPanel({
   const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
 
   const [instanceName, setInstanceName] = useState(instance.instanceName || instance.displayName || '');
+  const [selectedOauthConfigId, setSelectedOauthConfigId] = useState(instance.oauthConfigId ?? '');
   const [oauthFieldValues, setOauthFieldValues] = useState<Record<string, unknown>>({});
-  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState('');
+  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState(stableStringifyRecord({}));
   const [clientSecretWasSet, setClientSecretWasSet] = useState(false);
 
   const [nonOauthValues, setNonOauthValues] = useState<Record<string, unknown>>({});
   /** Instance document `auth` from GET /instances/:id (admin); my-toolsets rows often omit this. */
   const [instanceAuthFromGet, setInstanceAuthFromGet] = useState<Record<string, unknown> | null>(null);
   const [instanceAuthLoading, setInstanceAuthLoading] = useState(false);
+
+  const [initialNonOauthSnapshot, setInitialNonOauthSnapshot] = useState(stableStringifyRecord({}));
+  const [initialOauthConfigId, setInitialOauthConfigId] = useState(instance.oauthConfigId ?? '');
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -122,6 +127,7 @@ export function AdminManageActionPanel({
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const lastOauthHydrateKeyRef = useRef<string>('');
+  const oauthConfigIdInitializedRef = useRef(false);
 
   const toolNames = useMemo(() => {
     const fromSchema = toolNamesFromSchema(schemaRaw);
@@ -150,22 +156,41 @@ export function AdminManageActionPanel({
     return toolsetRedirectUri(window.location.origin, toolsetType);
   }, [toolsetType]);
 
-  const linkedOauthRow = useMemo(
-    () =>
-      resolveLinkedOauthConfig(oauthConfigs, {
-        oauthConfigId: instance.oauthConfigId,
-        instanceName: instance.instanceName,
-        displayName: instance.displayName,
-      }),
-    [oauthConfigs, instance.oauthConfigId, instance.instanceName, instance.displayName]
-  );
+  // Reset selected OAuth app when the panel switches to a different instance.
+  useEffect(() => {
+    setSelectedOauthConfigId(instance.oauthConfigId ?? '');
+    setInitialOauthConfigId(instance.oauthConfigId ?? '');
+  }, [instance.instanceId, instance.oauthConfigId]);
 
-  const linkedOauthName = useMemo(() => {
-    return linkedOauthRow?.oauthInstanceName || instance.instanceName || instance.displayName || '';
-  }, [linkedOauthRow, instance.instanceName, instance.displayName]);
+  // Once OAuth configs finish loading, resolve the linked app if nothing is selected yet.
+  useEffect(() => {
+    if (!oauth || oauthConfigsLoading || !oauthConfigs.length) return;
+    if (selectedOauthConfigId) return;
+    const resolved = resolveLinkedOauthConfig(oauthConfigs, {
+      oauthConfigId: instance.oauthConfigId,
+      instanceName: instance.instanceName,
+      displayName: instance.displayName,
+    });
+    if (resolved) setSelectedOauthConfigId(resolved._id);
+  }, [
+    oauth,
+    oauthConfigs,
+    oauthConfigsLoading,
+    selectedOauthConfigId,
+    instance.oauthConfigId,
+    instance.instanceName,
+    instance.displayName,
+  ]);
+
+  // The OAuth app row that drives field hydration (follows the dropdown selection).
+  const selectedOauthRow = useMemo(
+    () => oauthConfigs.find((c) => c._id === selectedOauthConfigId),
+    [oauthConfigs, selectedOauthConfigId]
+  );
 
   useEffect(() => {
     lastOauthHydrateKeyRef.current = '';
+    oauthConfigIdInitializedRef.current = false;
   }, [instance.instanceId]);
 
   useEffect(() => {
@@ -249,21 +274,26 @@ export function AdminManageActionPanel({
   useEffect(() => {
     if (!oauth || !oauthFields.length) return;
     if (oauthConfigsLoading) return;
-    const row = linkedOauthRow;
+    const row = selectedOauthRow;
     const hydrateKey = `${instance.instanceId}:${row?._id ?? 'none'}:${oauthFields.map((f) => f.name).join(',')}`;
     if (hydrateKey === lastOauthHydrateKeyRef.current) return;
     const seeded = oauthConfigureSeedValuesFromListRow(row, oauthFields);
     setOauthFieldValues(seeded);
     setInitialOauthSnapshot(stableStringifyRecord(seeded));
+    if (!oauthConfigIdInitializedRef.current) {
+      setInitialOauthConfigId(row?._id ?? '');
+      oauthConfigIdInitializedRef.current = true;
+    }
     setClientSecretWasSet(
       Boolean(row?.clientSecretSet) || Boolean(String(seeded.clientSecret ?? '').trim())
     );
     lastOauthHydrateKeyRef.current = hydrateKey;
-  }, [oauth, oauthFields, linkedOauthRow, instance.instanceId, oauthConfigsLoading]);
+  }, [oauth, oauthFields, selectedOauthRow, instance.instanceId, oauthConfigsLoading]);
 
   useEffect(() => {
     if (oauth || !nonOauthConfigureFields.length) {
       setNonOauthValues({});
+      setInitialNonOauthSnapshot(stableStringifyRecord({}));
       return;
     }
     const src = resolvedStoredAuth(instanceAuthFromGet, instance.auth);
@@ -275,6 +305,7 @@ export function AdminManageActionPanel({
       }
     }
     setNonOauthValues(next);
+    setInitialNonOauthSnapshot(stableStringifyRecord(next));
   }, [oauth, nonOauthConfigureFields, instance.instanceId, instance.auth, instanceAuthFromGet]);
 
   const verifyOAuthComplete = useCallback(async (): Promise<boolean> => {
@@ -307,7 +338,7 @@ export function AdminManageActionPanel({
 
   const oauthFieldForDisplay = useCallback(
     (f: AuthSchemaField): AuthSchemaField => {
-      if (!linkedOauthRow) return f;
+      if (!selectedOauthRow) return f;
       const ln = f.name.toLowerCase();
       if (ln === 'clientid' || ln === 'clientsecret') {
         return {
@@ -319,7 +350,7 @@ export function AdminManageActionPanel({
       }
       return f;
     },
-    [linkedOauthRow, t]
+    [selectedOauthRow, t]
   );
 
   const showOauthImpactCallout =
@@ -329,6 +360,29 @@ export function AdminManageActionPanel({
     (oauth && oauthConfigsLoading) ||
     (!oauth && instanceAuthLoading);
   const showPersonalActionsCta = !isNoneAuthType(authType) && !oauth && Boolean(toolsetType);
+
+  const hasChanges = useMemo(() => {
+    const originalName = instance.instanceName || instance.displayName || '';
+    if (instanceName !== originalName) return true;
+    if (oauth) {
+      if (selectedOauthConfigId !== initialOauthConfigId) return true;
+      if (stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot) return true;
+    } else {
+      if (stableStringifyRecord(nonOauthValues) !== initialNonOauthSnapshot) return true;
+    }
+    return false;
+  }, [
+    instance.instanceName,
+    instance.displayName,
+    instanceName,
+    oauth,
+    selectedOauthConfigId,
+    initialOauthConfigId,
+    oauthFieldValues,
+    initialOauthSnapshot,
+    nonOauthValues,
+    initialNonOauthSnapshot,
+  ]);
 
   const copyRedirect = useCallback(async () => {
     if (!redirectUri) return;
@@ -445,6 +499,7 @@ export function AdminManageActionPanel({
         const res = await ToolsetsApi.updateToolsetInstance(instanceId, {
           instanceName: name,
           authConfig,
+          ...(selectedOauthConfigId ? { oauthConfigId: selectedOauthConfigId } : {}),
         });
         const n = res.deauthenticatedUserCount ?? 0;
         if (n > 0) {
@@ -513,6 +568,7 @@ export function AdminManageActionPanel({
     onNotify,
     onSaved,
     runManageValidation,
+    selectedOauthConfigId,
     t,
   ]);
 
@@ -595,14 +651,39 @@ export function AdminManageActionPanel({
 
           <Separator size="4" />
 
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" color="gray">
-              {t('workspace.actions.manage.oauthAppHeading')}
-            </Text>
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {linkedOauthName}
-            </Text>
-          </Flex>
+          <FormField label={t('workspace.actions.manage.oauthAppHeading')}>
+            {oauthConfigsLoading ? (
+              <Text size="2" color="gray">
+                {t('workspace.actions.manage.loadingOauthApps', 'Loading OAuth apps…')}
+              </Text>
+            ) : oauthConfigs.length === 0 ? (
+              <Text size="2" color="gray">
+                {t('workspace.actions.manage.noOauthApps', 'No OAuth apps configured')}
+              </Text>
+            ) : (
+              <Select.Root
+                size="2"
+                value={selectedOauthConfigId}
+                onValueChange={(val) => {
+                  lastOauthHydrateKeyRef.current = '';
+                  setSelectedOauthConfigId(val);
+                }}
+              >
+                <Select.Trigger style={{ width: '100%' }} />
+                <Select.Content
+                  position="popper"
+                  container={nestedModalHost ?? undefined}
+                  style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+                >
+                  {oauthConfigs.map((c) => (
+                    <Select.Item key={c._id} value={c._id}>
+                      {c.oauthInstanceName || c._id}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Root>
+            )}
+          </FormField>
         </>
       ) : null}
 
@@ -791,7 +872,13 @@ export function AdminManageActionPanel({
             {t('workspace.actions.cta.authenticate')}
           </Button>
         ) : null}
-        <Button type="button" color="jade" loading={saving} onClick={() => void handleSave()}>
+        <Button
+          type="button"
+          color="jade"
+          loading={saving}
+          disabled={!hasChanges}
+          onClick={() => void handleSave()}
+        >
           {t('action.save')}
         </Button>
       </Flex>
