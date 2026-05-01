@@ -17,6 +17,7 @@ import {
 let currentSearchAbort: AbortController | null = null;
 /** Increments on each submit so superseded requests never clear loading for a newer search. */
 let searchSubmitGeneration = 0;
+let lastEffectiveAgentIdForQueryMode: string | null = null;
 
 /**
  * Wrapper component that connects ChatInput to assistant-ui runtime.
@@ -28,14 +29,22 @@ export function ChatInputWrapper() {
   const isAgentChat = Boolean(effectiveAgentId);
 
   useEffect(() => {
-    if (!isAgentChat) return;
-    const store = useChatStore.getState();
-    store.setQueryMode('agent');
-    if (store.settings.mode === 'search') {
-      store.setMode('chat');
-      store.clearSearchResults();
+    if (effectiveAgentId) {
+      lastEffectiveAgentIdForQueryMode = effectiveAgentId;
+      const store = useChatStore.getState();
+      store.setQueryMode('agent');
+      if (store.settings.mode === 'search') {
+        store.setMode('chat');
+        store.clearSearchResults();
+      }
+      return;
     }
-  }, [isAgentChat]);
+
+    if (lastEffectiveAgentIdForQueryMode !== null) {
+      lastEffectiveAgentIdForQueryMode = null;
+      useChatStore.getState().setQueryMode('chat');
+    }
+  }, [effectiveAgentId]);
 
   // Make sure models for the EFFECTIVE context (URL or slot agent) are loaded
   // and validated, regardless of which URL the page was opened on. This keeps
