@@ -2,9 +2,9 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box } from '@radix-ui/themes';
+import { Flex, Tabs, Box, IconButton } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { ConnectorIcon } from '@/app/components/ui';
+import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   WorkspaceRightPanel,
@@ -38,7 +38,8 @@ import {
   hasAnySyncFiltersSelected,
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
-import type { PanelTab } from '../types';
+import type { DocumentationLink, PanelTab } from '../types';
+import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
@@ -783,6 +784,47 @@ export function ConnectorPanel() {
     isOAuthPopupBusy,
   });
 
+  // ── Header ───────────────────────────────────────────────────
+
+  const documentationLinks: DocumentationLink[] =
+    connectorSchema != null
+      ? (connectorSchema.documentationLinks ?? [])
+      : ((panelConnector?.config as { documentationLinks?: DocumentationLink[] } | undefined)
+          ?.documentationLinks ?? []);
+  const documentationUrl = getConnectorDocumentationUrl(
+    panelConnector
+      ? {
+          ...panelConnector,
+          config: {
+            ...((panelConnector.config as Record<string, unknown> | undefined) ?? {}),
+            documentationLinks,
+          },
+        }
+      : null
+  );
+
+  const headerActions = (
+    <Flex align="center" gap="1">
+      {documentationUrl && (
+        <IconButton
+          variant="ghost"
+          color="gray"
+          size="1"
+          onClick={() => {
+            if (documentationUrl) window.open(documentationUrl, '_blank', 'noopener,noreferrer');
+          }}
+          style={{ cursor: 'pointer' }}
+        >
+          <MaterialIcon
+            name="open_in_new"
+            size={16}
+            color="var(--gray-11)"
+          />
+        </IconButton>
+      )}
+    </Flex>
+  );
+
   // ── Render panel icon as img (connector icon) ────────────────
 
   const panelIcon = panelConnector ? (
@@ -798,6 +840,7 @@ export function ConnectorPanel() {
       }}
       title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
+      headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
       primaryLabel={footerConfig.primaryLabel}
       primaryDisabled={footerConfig.primaryDisabled}

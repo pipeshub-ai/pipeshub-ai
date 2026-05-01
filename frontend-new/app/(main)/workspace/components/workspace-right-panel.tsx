@@ -35,7 +35,7 @@ interface WorkspaceRightPanelProps {
   /** Optional React node to replace the plain title text (e.g. an instance switcher dropdown) */
   titleNode?: React.ReactNode;
 
-  /** Optional action buttons rendered in the header (e.g. Import CSV) */
+  /** Optional controls rendered in the header next to the title (e.g. docs link, metadata). */
   headerActions?: React.ReactNode;
 
   /** Panel body content */
@@ -300,15 +300,26 @@ export function WorkspaceRightPanel({
                 ? <MaterialIcon name={icon} size={iconSize} color="var(--slate-12)"/>
                 : icon
             )}
-            {titleNode ?? (
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
+            {titleNode != null ? (
+              <Flex align="center" style={{ minWidth: 0, flex: '0 1 auto' }}>
+                {titleNode}
+              </Flex>
+            ) : (
+              <Text
+                size="2"
+                weight="medium"
+                style={{ color: 'var(--slate-12)', minWidth: 0, flex: '0 1 auto' }}
+                truncate
+              >
                 {title}
               </Text>
             )}
+            {headerActions != null ? (
+              <Box style={{ flexShrink: 0 }}>{headerActions}</Box>
+            ) : null}
           </Flex>
 
-          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-            {headerActions}
+          <Flex align="center" style={{ flexShrink: 0 }}>
             <IconButton
               variant="ghost"
               color="gray"
