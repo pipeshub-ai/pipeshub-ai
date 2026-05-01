@@ -2017,7 +2017,12 @@ describe('UserController', () => {
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
 
-      const existingUser = { _id: 'eu1', email: 'existing@test.com', isDeleted: false };
+      const existingUser = {
+        _id: 'eu1',
+        email: 'existing@test.com',
+        isDeleted: false,
+        hasLoggedIn: true,
+      };
       const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
 
       sinon.stub(Users, 'find')
@@ -2057,7 +2062,9 @@ describe('UserController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
-      sinon.stub(Users, 'find').resolves([{ _id: 'eu1', email: 'existing@test.com', isDeleted: false }] as any);
+      sinon.stub(Users, 'find').resolves([
+        { _id: 'eu1', email: 'existing@test.com', isDeleted: false, hasLoggedIn: true },
+      ] as any);
       sinon.stub(Users, 'create').resolves([] as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
