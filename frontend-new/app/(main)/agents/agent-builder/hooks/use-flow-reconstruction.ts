@@ -8,6 +8,7 @@ import {
   normalizeDisplayName,
   formattedProvider,
 } from '../display-utils';
+import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
 import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
@@ -661,6 +662,12 @@ export function useAgentBuilderReconstruction(): {
       // 4b. Web search node (if the agent has one attached)
       const webSearchNodes: Node<FlowNodeData>[] = [];
       if (agent.webSearch?.provider) {
+        const webSearchMeta = WEB_SEARCH_PROVIDER_META.find(
+          (meta) => meta.type === agent.webSearch?.provider,
+        );
+        const webSearchIconPath =
+          agent.webSearch.iconPath ||
+          (webSearchMeta?.iconType === 'image' ? webSearchMeta.icon : undefined);
         nodeCounter += 1;
         const nodeId = `web-search-${nodeCounter}`;
         const wsNode: Node<FlowNodeData> = {
@@ -678,6 +685,7 @@ export function useAgentBuilderReconstruction(): {
               provider: agent.webSearch.provider,
               providerKey: agent.webSearch.providerKey || '',
               providerLabel: agent.webSearch.providerLabel || '',
+              iconPath: webSearchIconPath || '',
             },
             inputs: ['query'],
             outputs: ['results'],
