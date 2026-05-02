@@ -2,9 +2,9 @@
 
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Tabs, Box } from '@radix-ui/themes';
+import { Flex, Tabs, Box, Button, Text } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { ConnectorIcon } from '@/app/components/ui';
+import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   WorkspaceRightPanel,
@@ -39,6 +39,7 @@ import {
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
+import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
@@ -783,6 +784,29 @@ export function ConnectorPanel() {
     isOAuthPopupBusy,
   });
 
+  // ── Header ───────────────────────────────────────────────────
+
+  const documentationUrl = getConnectorDocumentationUrl(
+    panelConnector,
+    connectorSchema != null ? (connectorSchema.documentationLinks ?? []) : undefined
+  );
+
+  const headerActions = documentationUrl ? (
+    <Button
+      variant="outline"
+      color="gray"
+      size="1"
+      aria-label={t('workspace.actions.documentation')}
+      onClick={() => {
+        window.open(documentationUrl, '_blank', 'noopener,noreferrer');
+      }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
+    >
+      <MaterialIcon name="open_in_new" size={14} color="var(--gray-11)" />
+      <Text size="1">{t('workspace.actions.documentation')}</Text>
+    </Button>
+  ) : null;
+
   // ── Render panel icon as img (connector icon) ────────────────
 
   const panelIcon = panelConnector ? (
@@ -798,6 +822,7 @@ export function ConnectorPanel() {
       }}
       title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
+      headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
       primaryLabel={footerConfig.primaryLabel}
       primaryDisabled={footerConfig.primaryDisabled}
