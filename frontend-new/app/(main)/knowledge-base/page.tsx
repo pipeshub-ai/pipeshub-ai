@@ -1359,67 +1359,113 @@ function KnowledgeBasePageContent() {
       // Mark all files as uploading immediately so the tray shows activity
       fileEntries.forEach((entry) => startUpload(entry.storeId));
 
-      // Upload in batches of BATCH_SIZE so large folders are handled gracefully
       const BATCH_SIZE = 10;
+      const CONCURRENCY = 5;
       let anySuccess = false;
 
+      const batches: FileEntry[][] = [];
       for (let i = 0; i < fileEntries.length; i += BATCH_SIZE) {
-        const batch = fileEntries.slice(i, i + BATCH_SIZE);
-
-        try {
-          const batchFiles = batch.map((e) => e.file);
-          // Always use files_metadata format so folder hierarchy is preserved
-          const batchMetadata: FileMetadata[] = batch.map((e) => ({
-            file_path: e.filePath,
-            last_modified: e.file.lastModified,
-          }));
-
-          // Route progress updates to every file in this batch in a single store update
-          const batchIds = batch.map((e) => e.storeId);
-          const onBatchProgress = (progress: number) => {
-            bulkUpdateItemStatus(batchIds, 'uploading', progress);
-          };
-
-          let responseData: Record<string, unknown>;
-          if (newParentId) {
-            responseData = await KnowledgeBaseApi.uploadToFolder(
-              selectedKbId,
-              newParentId,
-              batchFiles,
-              batchMetadata,
-              onBatchProgress
-            );
-          } else {
-            responseData = await KnowledgeBaseApi.uploadToRoot(
-              selectedKbId,
-              batchFiles,
-              batchMetadata,
-              onBatchProgress
-            );
-          }
-
-          applyKnowledgeBaseUploadBatchResult(
-            batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
-            responseData,
-            completeUpload,
-            failUpload
-          );
-
-          anySuccess = true;
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
-        }
+        batches.push(fileEntries.slice(i, i + BATCH_SIZE));
       }
 
-      // Refresh data if any uploads succeeded
+      const sendBatch = async (batch: FileEntry[]) => {
+        const batchFiles = batch.map((e) => e.file);
+        const batchMetadata: FileMetadata[] = batch.map((e) => ({
+          file_path: e.filePath,
+          last_modified: e.file.lastModified,
+        }));
+
+        const batchIds = batch.map((e) => e.storeId);
+        const onBatchProgress = (progress: number) => {
+          bulkUpdateItemStatus(batchIds, 'uploading', progress);
+        };
+
+        let responseData: Record<string, unknown>;
+        if (newParentId) {
+          responseData = await KnowledgeBaseApi.uploadToFolder(
+            selectedKbId,
+            newParentId,
+            batchFiles,
+            batchMetadata,
+            onBatchProgress
+          );
+        } else {
+          responseData = await KnowledgeBaseApi.uploadToRoot(
+            selectedKbId,
+            batchFiles,
+            batchMetadata,
+            onBatchProgress
+          );
+        }
+
+        applyKnowledgeBaseUploadBatchResult(
+          batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
+          responseData,
+          completeUpload,
+          failUpload
+        );
+
+        anySuccess = true;
+      };
+
+      const isFolderUpload = items.some((item) => item.type === 'folder');
+
+      if (isFolderUpload && batches.length > 1) {
+        // Folder uploads: send the first batch alone so the backend creates
+        // the folder node, then upload remaining batches concurrently.
+        // Without this, concurrent requests each create a separate folder.
+        try {
+          await sendBatch(batches[0]);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+          batches[0].forEach((entry) => failUpload(entry.storeId, errorMessage));
+        }
+
+        let nextBatchIndex = 1;
+        const worker = async () => {
+          while (true) {
+            const idx = nextBatchIndex;
+            nextBatchIndex += 1;
+            if (idx >= batches.length) break;
+            try {
+              await sendBatch(batches[idx]);
+            } catch (error) {
+              const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+              batches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            }
+          }
+        };
+
+        const workers = Array.from(
+          { length: Math.min(CONCURRENCY, batches.length - 1) },
+          () => worker()
+        );
+        await Promise.all(workers);
+      } else {
+        let nextBatchIndex = 0;
+        const worker = async () => {
+          while (true) {
+            const idx = nextBatchIndex;
+            nextBatchIndex += 1;
+            if (idx >= batches.length) break;
+            try {
+              await sendBatch(batches[idx]);
+            } catch (error) {
+              const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+              batches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            }
+          }
+        };
+
+        const workers = Array.from(
+          { length: Math.min(CONCURRENCY, batches.length) },
+          () => worker()
+        );
+        await Promise.all(workers);
+      }
+
       if (anySuccess) {
         await refreshData();
-
-        // Clear completed items from upload tray after a short delay (so user sees completion)
-        setTimeout(() => {
-          clearCompleted();
-        }, 3000);
       }
     },
     [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData, clearCompleted]

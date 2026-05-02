@@ -6,6 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
+import { toast } from '@/lib/store/toast-store';
 
 // Supported file types
 const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX', 'MD', 'MDX'];
@@ -60,11 +61,12 @@ export interface UploadFileItem {
 interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
+  onSkippedFiles?: (skipped: number, reason: 'unsupported' | 'oversized' | 'mixed') => void;
   isEmpty: boolean;
   maxFileSizeBytes: number;
 }
 
-function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
+function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -84,6 +86,7 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
     (files: FileList | File[]) => {
       const items: UploadFileItem[] = [];
       const fileArray = Array.from(files);
+      let skipped = 0;
 
       if (type === 'file') {
         fileArray.forEach((file) => {
@@ -95,6 +98,8 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
               type: 'file',
               file,
             });
+          } else {
+            skipped++;
           }
         });
       }
@@ -102,8 +107,11 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
       if (items.length > 0) {
         onDrop(items);
       }
+      if (skipped > 0 && onSkippedFiles) {
+        onSkippedFiles(skipped, 'mixed');
+      }
     },
-    [type, onDrop]
+    [type, onDrop, onSkippedFiles, maxFileSizeBytes]
   );
 
   const handleDrop = useCallback(
@@ -116,6 +124,7 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
 
       if (type === 'folder' && items) {
         const folderItems: UploadFileItem[] = [];
+        let totalSkipped = 0;
 
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
@@ -124,42 +133,59 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
           if (entry?.isDirectory) {
             const folderFiles: FileWithPath[] = [];
             let totalSize = 0;
+            let skippedInFolder = 0;
+
+            const readAllEntries = (reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> => {
+              return new Promise((resolve, reject) => {
+                const allEntries: FileSystemEntry[] = [];
+                const readBatch = () => {
+                  reader.readEntries((entries) => {
+                    if (entries.length === 0) {
+                      resolve(allEntries);
+                    } else {
+                      allEntries.push(...entries);
+                      readBatch();
+                    }
+                  }, reject);
+                };
+                readBatch();
+              });
+            };
 
             const readDirectory = async (
               dirEntry: FileSystemDirectoryEntry,
               currentPath: string = ''
             ): Promise<void> => {
-              return new Promise((resolve) => {
-                const reader = dirEntry.createReader();
-                reader.readEntries(async (entries) => {
-                  for (const entry of entries) {
-                    if (entry.isFile) {
-                      const fileEntry = entry as FileSystemFileEntry;
-                      const file = await new Promise<File>((res) => {
-                        fileEntry.file((f) => res(f));
-                      });
-                      // Build relative path
-                      const relativePath = currentPath
-                        ? `${currentPath}/${file.name}`
-                        : file.name;
-                      folderFiles.push({ file, relativePath });
-                      totalSize += file.size;
-                    } else if (entry.isDirectory) {
-                      // Recurse with updated path
-                      const newPath = currentPath
-                        ? `${currentPath}/${entry.name}`
-                        : entry.name;
-                      await readDirectory(entry as FileSystemDirectoryEntry, newPath);
-                    }
+              const reader = dirEntry.createReader();
+              const entries = await readAllEntries(reader);
+              for (const entry of entries) {
+                if (entry.isFile) {
+                  const fileEntry = entry as FileSystemFileEntry;
+                  const file = await new Promise<File>((res, rej) => {
+                    fileEntry.file((f) => res(f), rej);
+                  });
+                  if (file.size > maxFileSizeBytes || !isSupportedFile(file)) {
+                    skippedInFolder++;
+                    continue;
                   }
-                  resolve();
-                });
-              });
+                  const relativePath = currentPath
+                    ? `${currentPath}/${file.name}`
+                    : file.name;
+                  folderFiles.push({ file, relativePath });
+                  totalSize += file.size;
+                } else if (entry.isDirectory) {
+                  const newPath = currentPath
+                    ? `${currentPath}/${entry.name}`
+                    : entry.name;
+                  await readDirectory(entry as FileSystemDirectoryEntry, newPath);
+                }
+              }
             };
 
             await readDirectory(entry as FileSystemDirectoryEntry);
+            totalSkipped += skippedInFolder;
 
-            if (totalSize <= maxFileSizeBytes) {
+            if (folderFiles.length > 0) {
               folderItems.push({
                 id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 name: entry.name,
@@ -174,11 +200,14 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
         if (folderItems.length > 0) {
           onDrop(folderItems);
         }
+        if (totalSkipped > 0 && onSkippedFiles) {
+          onSkippedFiles(totalSkipped, 'mixed');
+        }
       } else if (type === 'file' && files) {
         processFiles(files);
       }
     },
-    [type, onDrop, processFiles]
+    [type, onDrop, onSkippedFiles, processFiles, maxFileSizeBytes]
   );
 
   const handleClick = useCallback(() => {
@@ -191,11 +220,15 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
       if (files) {
         if (type === 'folder') {
           const folderMap = new Map<string, FileWithPath[]>();
+          let skipped = 0;
 
           Array.from(files).forEach((file) => {
+            if (file.size > maxFileSizeBytes || !isSupportedFile(file)) {
+              skipped++;
+              return;
+            }
             const pathParts = file.webkitRelativePath.split('/');
             const folderName = pathParts[0];
-            // Get path after root folder name (e.g., "subfolder/file.pdf")
             const relativePath = pathParts.slice(1).join('/');
 
             if (!folderMap.has(folderName)) {
@@ -206,20 +239,22 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
 
           const items: UploadFileItem[] = [];
           folderMap.forEach((folderFiles, folderName) => {
+            if (folderFiles.length === 0) return;
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
-            if (totalSize <= maxFileSizeBytes) {
-              items.push({
-                id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                name: folderName,
-                size: totalSize,
-                type: 'folder',
-                filesWithPaths: folderFiles,
-              });
-            }
+            items.push({
+              id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: folderName,
+              size: totalSize,
+              type: 'folder',
+              filesWithPaths: folderFiles,
+            });
           });
 
           if (items.length > 0) {
             onDrop(items);
+          }
+          if (skipped > 0 && onSkippedFiles) {
+            onSkippedFiles(skipped, 'mixed');
           }
         } else {
           processFiles(files);
@@ -227,7 +262,7 @@ function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
       }
       e.target.value = '';
     },
-    [type, onDrop, processFiles]
+    [type, onDrop, onSkippedFiles, processFiles, maxFileSizeBytes]
   );
 
   const inputProps =
@@ -490,6 +525,9 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
           </Text>
           <Text size="1" style={{ color: 'var(--slate-9)' }}>
             {formatSize(item.size)}
+            {item.type === 'folder' && item.filesWithPaths && (
+              <> · {item.filesWithPaths.length} {item.filesWithPaths.length === 1 ? 'file' : 'files'}</>
+            )}
           </Text>
         </Flex>
       </Flex>
@@ -530,6 +568,12 @@ export function UploadDataSidebar({
   const handleAddFolders = useCallback((items: UploadFileItem[]) => {
     setFolderItems((prev) => [...prev, ...items]);
   }, []);
+
+  const handleSkippedFiles = useCallback((skipped: number, _reason: 'unsupported' | 'oversized' | 'mixed') => {
+    toast.warning(`${skipped} file${skipped > 1 ? 's' : ''} skipped`, {
+      description: `Unsupported file types or files exceeding ${maxFileSizeMB} MB were excluded.`,
+    });
+  }, [maxFileSizeMB]);
 
   const handleRemoveFile = useCallback((id: string) => {
     setFileItems((prev) => prev.filter((item) => item.id !== id));
@@ -698,7 +742,7 @@ export function UploadDataSidebar({
 
             {/* File drop zone - expands when empty, compact when has items */}
             <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
+              <DropZone type="file" onDrop={handleAddFiles} onSkippedFiles={handleSkippedFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
 
@@ -765,7 +809,7 @@ export function UploadDataSidebar({
 
             {/* Folder drop zone - expands when empty, compact when has items */}
             <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
+              <DropZone type="folder" onDrop={handleAddFolders} onSkippedFiles={handleSkippedFiles} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
         </Box>
