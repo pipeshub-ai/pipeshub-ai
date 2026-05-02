@@ -43,6 +43,12 @@ _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
+# User-facing guidance when the graph/permissions yield no searchable corpus
+ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
+    "No documents are available for you to search yet. Upload files in Collections "
+    "and/or connect a data source under Connectors so content can be indexed."
+)
+
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -309,7 +315,7 @@ class RetrievalService:
 
             if not accessible_virtual_id_to_record_id:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
@@ -343,7 +349,7 @@ class RetrievalService:
             self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # Resolve only the permission-verified recordIds for the returned virtual IDs.
             # This prevents cross-connector leakage: if multiple connectors share the same
@@ -361,7 +367,7 @@ class RetrievalService:
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -381,7 +387,7 @@ class RetrievalService:
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
             if not unique_record_ids:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
