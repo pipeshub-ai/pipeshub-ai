@@ -91,6 +91,7 @@ export interface HealthStatus {
     kvStoreType: string;
     messageBrokerType: string;
     graphDbType: string;
+    vectorDbType: string;
   };
 }
 
@@ -143,9 +144,7 @@ export function createHealthRouter(
       };
 
       const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
-      const graphDbName = deployment.dataStoreType
-        ? (deployment.dataStoreType === 'neo4j' ? 'Neo4j' : 'ArangoDB')
-        : 'Unknown';
+      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
 
       const serviceNames: Record<string, string> = {
         redis: 'Redis',
@@ -204,7 +203,7 @@ export function createHealthRouter(
       if (!deployment.dataStoreType) {
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
-        logger.warn('dataStoreType not yet available in deployment config — Python backend may not have started');
+        logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
       } else if (deployment.dataStoreType === 'neo4j') {
         try {
           const neo4jHttpUrl = buildNeo4jHttpUrl(
@@ -214,6 +213,8 @@ export function createHealthRouter(
           const neo4jPass = process.env.NEO4J_PASSWORD;
           const neo4jResp = await axios.get(neo4jHttpUrl, {
             timeout: 3000,
+            // GET / is public in stock Neo4j, but pass creds anyway so deployments
+            // that restrict the HTTP discovery endpoint still return 200.
             auth: neo4jPass ? { username: neo4jUser, password: neo4jPass } : undefined,
             validateStatus: () => true,
           });
@@ -225,6 +226,9 @@ export function createHealthRouter(
         }
       } else {
         try {
+          // Arango's /_api/version requires Basic Auth when server authentication
+          // is enabled (the default). Without credentials it returns 401 and the
+          // probe falsely reports unhealthy even though the DB is fine.
           const arangoResp = await axios.get(`${appConfig.arango.url}/_api/version`, {
             timeout: 3000,
             auth:
@@ -263,6 +267,7 @@ export function createHealthRouter(
           kvStoreType: deployment.kvStoreType,
           messageBrokerType: deployment.messageBrokerType,
           graphDbType: deployment.dataStoreType || 'pending',
+          vectorDbType: deployment.vectorDbType || 'pending',
         },
       };
 
