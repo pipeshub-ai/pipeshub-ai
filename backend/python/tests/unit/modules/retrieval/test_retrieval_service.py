@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 from qdrant_client import models
 
 from app.exceptions.fastapi_responses import Status
+from app.modules.retrieval.retrieval_service import ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +534,7 @@ class TestSearchWithFilters:
         )
         assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
         assert result["status_code"] == 404
+        assert result["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_search_results(

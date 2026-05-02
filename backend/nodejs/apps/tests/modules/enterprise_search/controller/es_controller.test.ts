@@ -65,6 +65,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -461,6 +462,48 @@ describe('Enterprise Search Controller', () => {
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
+    })
+
+    it('should not emit generic incomplete SSE error when AI already sent an error event', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const upstreamMessage =
+        'No documents are available for you to search yet. Upload files in Collections'
+      const errorChunk = `event: error\ndata: ${JSON.stringify({
+        status: 'accessible_records_not_found',
+        message: upstreamMessage,
+      })}\n\n`
+      mockStream.emit('data', Buffer.from(errorChunk))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
+      expect(writeArgs).to.include(upstreamMessage)
+      expect(writeArgs).not.to.include('No complete response received from AI service')
+      const markStub = searchUtils.markConversationFailed as sinon.SinonStub
+      expect(markStub.calledOnce).to.be.true
+      expect(markStub.firstCall.args[1]).to.equal(upstreamMessage)
     })
 
     it('should handle AI service stream start failure', async () => {

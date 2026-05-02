@@ -487,6 +487,8 @@ export const streamChat =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -538,8 +540,60 @@ export const streamChat =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'error' && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.error === 'string' && errorData.error) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const meta =
+                    errorData.metadata && typeof errorData.metadata === 'object'
+                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                      : undefined;
+                  void markConversationFailed(
+                    savedConversation as IConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    meta,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse error event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  void markConversationFailed(
+                    savedConversation as IConversationDocument,
+                    parseFailMsg,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              }
             } else {
-              // Forward all non-complete events
+              // Forward all other non-complete events
               filteredChunk += event + '\n\n';
             }
           }
@@ -588,8 +642,8 @@ export const streamChat =
                 duration: Date.now() - startTime,
               },
             );
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             await markConversationFailed(
               savedConversation as IConversationDocument,
               'No complete response received from AI service',
@@ -1523,6 +1577,8 @@ export const addMessageStream =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -1577,9 +1633,10 @@ export const addMessageStream =
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
-                  errorData.error ||
                   errorData.message ||
+                  errorData.error ||
                   'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
                 markConversationFailed(
                   existingConversation as IConversationDocument,
                   errorMessage,
@@ -1597,6 +1654,7 @@ export const addMessageStream =
                   parseError: parseError.message,
                   dataLine,
                 });
+                upstreamAiErrorEventForwarded = true;
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
                   markConversationFailed(
@@ -1738,33 +1796,33 @@ export const addMessageStream =
               }
               throw error;
             }
-          } else {
-            // Mark as failed if no complete data received
-            if (existingConversation) {
-              existingConversation.status = CONVERSATION_STATUS.FAILED;
-              existingConversation.failReason =
-                'No complete response received from AI service';
-              existingConversation.lastActivityAt = Date.now();
+          } else if (!upstreamAiErrorEventForwarded) {
+          // Mark as failed if no complete data received (and AI did not already send error SSE)
+          if (existingConversation) {
+            existingConversation.status = CONVERSATION_STATUS.FAILED;
+            existingConversation.failReason =
+              'No complete response received from AI service';
+            existingConversation.lastActivityAt = Date.now();
 
-              const savedWithError = session
-                ? await existingConversation.save({ session })
-                : await existingConversation.save();
+            const savedWithError = session
+              ? await existingConversation.save({ session })
+              : await existingConversation.save();
 
-              if (!savedWithError) {
-                logger.error('Failed to save conversation error state', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                });
-              }
+            if (!savedWithError) {
+              logger.error('Failed to save conversation error state', {
+                requestId,
+                conversationId: existingConversation._id,
+              });
             }
-
-            // Send error event
-            res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
-            );
           }
+
+          // Send error event
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              error: 'No complete response received from AI service',
+            })}\n\n`,
+          );
+        }
         } catch (dbError: any) {
           logger.error('Failed to save AI response to conversation', {
             requestId,
@@ -5184,6 +5242,8 @@ export const unshareAgent =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -5236,8 +5296,60 @@ export const unshareAgent =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'error' && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.error === 'string' && errorData.error) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const meta =
+                    errorData.metadata && typeof errorData.metadata === 'object'
+                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                      : undefined;
+                  void markAgentConversationFailed(
+                    savedConversation as IAgentConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    meta,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse error event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  void markAgentConversationFailed(
+                    savedConversation as IAgentConversationDocument,
+                    parseFailMsg,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              }
             } else {
-              // Forward all non-complete events
+              // Forward all other non-complete events
               filteredChunk += event + '\n\n';
             }
           }
@@ -5287,8 +5399,8 @@ export const unshareAgent =
                 agentKey,
               },
             );
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             await markAgentConversationFailed(
               savedConversation as IAgentConversationDocument,
               'No complete response received from AI service',
@@ -6124,6 +6236,8 @@ export const addMessageStreamToAgentConversation =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -6177,10 +6291,20 @@ export const addMessageStreamToAgentConversation =
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
+                const errorMessage =
+                  errorData.message ||
+                  errorData.error ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
                 markAgentConversationFailed(
                   existingConversation as IAgentConversationDocument,
-                  errorData.error,
+                  errorMessage,
                   session,
+                  'streaming_error',
+                  errorData.stack,
+                  errorData.metadata
+                    ? new Map(Object.entries(errorData.metadata))
+                    : undefined,
                 );
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
@@ -6189,6 +6313,16 @@ export const addMessageStreamToAgentConversation =
                   parseError: parseError.message,
                   dataLine,
                 });
+                upstreamAiErrorEventForwarded = true;
+                if (existingConversation) {
+                  markAgentConversationFailed(
+                    existingConversation as IAgentConversationDocument,
+                    `Failed to parse error event: ${parseError.message}`,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  );
+                }
                 filteredChunk += event + '\n\n';
               }
             } else {
@@ -6320,8 +6454,8 @@ export const addMessageStreamToAgentConversation =
               }
               throw error;
             }
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (existingConversation) {
               existingConversation.status = CONVERSATION_STATUS.FAILED as any;
               existingConversation.failReason =
