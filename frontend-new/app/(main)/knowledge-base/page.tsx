@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -20,7 +20,6 @@ import {
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
-  ChatWidgetWrapper,
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
@@ -252,6 +251,8 @@ function KnowledgeBasePageContent() {
 
   const hasHydratedFromUrl = useRef(false);
   const isFirstUrlSyncRender = useRef(true);
+  /** Prevents URL sync from router.replace()-ing before router.push applies (drill-down race). */
+  const skipNextUrlReplaceRef = useRef(false);
 
   // Hydration: Parse URL params into store once the URL is readable.
   // useSearchParams() can mount empty before the real query is available; defer until it matches
@@ -310,6 +311,13 @@ function KnowledgeBasePageContent() {
     }
     if (!hasHydratedFromUrl.current) return;
 
+    // Avoid replacing the URL in the same turn as clearing filters + router.push: searchParams still
+    // reflect the old location, so baseParams would omit nodeType/nodeId and strip drill-down.
+    if (skipNextUrlReplaceRef.current) {
+      skipNextUrlReplaceRef.current = false;
+      return;
+    }
+
     // Always read the latest store snapshot here. This effect can run in the same commit as
     // hydration; React closures may still hold the pre-hydration filter, which would serialize
     // an empty filter and router.replace() would strip connectorIds / indexingStatus from the URL.
@@ -351,6 +359,8 @@ function KnowledgeBasePageContent() {
     filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
     allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
+    searchParams,
+    router,
   ]);
 
   // Check if any filters are active (for empty state messaging)
@@ -1659,6 +1669,7 @@ function KnowledgeBasePageContent() {
         if (isNavigableContainer) {
           // Reset filters and search when navigating into a container
           if (isAllRecordsMode) {
+            skipNextUrlReplaceRef.current = true;
             clearAllRecordsFilter();
             setAllRecordsSearchQuery('');
           } else {
@@ -1775,6 +1786,7 @@ function KnowledgeBasePageContent() {
     (breadcrumb: Breadcrumb) => {
       // Reset filters and search when navigating via breadcrumbs
       if (isAllRecordsMode) {
+        skipNextUrlReplaceRef.current = true;
         clearAllRecordsFilter();
         setAllRecordsSearchQuery('');
       } else {
