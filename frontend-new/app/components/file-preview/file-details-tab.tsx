@@ -143,6 +143,9 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         </Text>
         
         <Flex direction="column" gap="2">
+          {record.origin !== 'UPLOAD' && (
+            <LinkRow label="Web URL" href={record.webUrl || record.fileRecord?.webUrl} />
+          )}
           <DetailRow label="Name" value={record.recordName} />
           <DetailRow label="Record ID" value={record.id} />
           <DetailRow label="Record Type" value={record.recordType} />
@@ -153,9 +156,6 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
           <DetailRow label="Updated At" value={updatedDate} />
           <DetailRow label="Knowledge Base" value={knowledgeBase?.name} />
           <DetailRow label="Permissions" value={permissions?.[0]?.relationship || 'Owner'} />
-          {record.origin !== 'UPLOAD' && (
-            <LinkRow label="Web URL" href={record.webUrl || record.fileRecord?.webUrl} />
-          )}
         </Flex>
       </Flex>
 
