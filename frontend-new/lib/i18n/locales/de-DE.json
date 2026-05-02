@@ -984,6 +984,7 @@
         "grantAuthorizationCode": "Authorization Code",
         "grantRefreshToken": "Refresh Token",
         "grantClientCredentials": "Client Credentials",
+        "clientCredentialsNoConsentTooltip": "Der Grant-Typ Client Credentials erfordert keine Zustimmung (Consent) des Endbenutzers; es wird kein Autorisierungs- oder Zustimmungsdialog angezeigt.",
         "redirectHeading": "Redirect-URI",
         "redirectHelper": "Mindestens eine Callback-URL ist erforderlich. In Produktion ist HTTPS erforderlich.",
         "redirectPlaceholder": "https://ihreapp.de/callback",

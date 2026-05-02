@@ -580,11 +580,7 @@ export class Application {
   async runMigration(): Promise<void> {
     try {
       this.logger.info('Running migration...');
-      //  migrate ai models configurations
-      this.logger.info('Migrating ai models configurations');
       await this.configurationManagerContainer.get(MigrationService).runMigration();
-      this.logger.info('✅ Ai models configurations migrated');
-
       this.logger.info('Migration completed successfully');
     } catch (error) {
       this.logger.error('Failed to run migration', {

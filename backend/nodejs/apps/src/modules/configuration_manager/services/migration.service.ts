@@ -8,6 +8,7 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { configPaths } from '../paths/paths';
 import { v4 as uuidv4 } from 'uuid';
+import { runSoftDeleteOAuthAppsOrphanCreators } from '../../oauth_provider/migrations/soft-delete-oauth-apps-orphan-creators.migration';
 
 @injectable()
 export class MigrationService {
@@ -27,6 +28,7 @@ export class MigrationService {
   async runMigration(): Promise<void> {
     this.logger.info('Running migration...');
     await this.aiModelsMigration();
+    await this.oauthOrphanCreatorsMigration();
     this.logger.info('✅ Migration completed');
   }
 
@@ -85,5 +87,14 @@ export class MigrationService {
     await this.keyValueStoreService.set(configPaths.aiModels, encryptedAiModels);
 
     this.logger.info('✅ Ai models configurations migrated');
+  }
+
+  /**
+   * Soft-delete OAuth apps whose creator user is missing or soft-deleted.
+   */
+  async oauthOrphanCreatorsMigration(): Promise<void> {
+    this.logger.info('Migrating OAuth apps with missing or deleted creators');
+    await runSoftDeleteOAuthAppsOrphanCreators({ logger: this.logger });
+    this.logger.info('✅ OAuth orphan creators migration completed');
   }
 }

@@ -12,6 +12,7 @@ import {
   Text,
   TextArea,
   TextField,
+  Tooltip,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
@@ -1043,6 +1044,31 @@ export function ManageOAuthApplicationPanel({
                         <Text size="2" style={{ color: 'var(--slate-12)' }}>
                           {t(opt.labelKey)}
                         </Text>
+                        {opt.value === 'client_credentials' ? (
+                          <Tooltip
+                            content={t(
+                              'workspace.oauth2.create.clientCredentialsNoConsentTooltip'
+                            )}
+                            side="top"
+                          >
+                            <IconButton
+                              type="button"
+                              variant="ghost"
+                              size="1"
+                              color="gray"
+                              aria-label={t(
+                                'workspace.oauth2.create.clientCredentialsNoConsentTooltip'
+                              )}
+                              style={{ cursor: 'help', flexShrink: 0 }}
+                            >
+                              <MaterialIcon
+                                name="info"
+                                size={16}
+                                color="var(--slate-10)"
+                              />
+                            </IconButton>
+                          </Tooltip>
+                        ) : null}
                       </Flex>
                     ))}
                   </Flex>
