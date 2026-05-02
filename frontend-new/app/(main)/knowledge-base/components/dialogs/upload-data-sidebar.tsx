@@ -41,6 +41,23 @@ function isSupportedFile(file: File): boolean {
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
+function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+  return new Promise((resolve, reject) => {
+    const allEntries: FileSystemEntry[] = [];
+    const readBatch = () => {
+      reader.readEntries((entries) => {
+        if (entries.length === 0) {
+          resolve(allEntries);
+        } else {
+          allEntries.push(...entries);
+          readBatch();
+        }
+      }, reject);
+    };
+    readBatch();
+  });
+}
+
 // File with relative path for folder uploads
 export interface FileWithPath {
   file: File;
@@ -61,7 +78,7 @@ export interface UploadFileItem {
 interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
-  onSkippedFiles?: (skipped: number, reason: 'unsupported' | 'oversized' | 'mixed') => void;
+  onSkippedFiles?: (skipped: number) => void;
   isEmpty: boolean;
   maxFileSizeBytes: number;
 }
@@ -92,7 +109,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         fileArray.forEach((file) => {
           if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
             items.push({
-              id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+              id: `file-${crypto.randomUUID()}`,
               name: file.name,
               size: file.size,
               type: 'file',
@@ -108,7 +125,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         onDrop(items);
       }
       if (skipped > 0 && onSkippedFiles) {
-        onSkippedFiles(skipped, 'mixed');
+        onSkippedFiles(skipped);
       }
     },
     [type, onDrop, onSkippedFiles, maxFileSizeBytes]
@@ -134,23 +151,6 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             const folderFiles: FileWithPath[] = [];
             let totalSize = 0;
             let skippedInFolder = 0;
-
-            const readAllEntries = (reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> => {
-              return new Promise((resolve, reject) => {
-                const allEntries: FileSystemEntry[] = [];
-                const readBatch = () => {
-                  reader.readEntries((entries) => {
-                    if (entries.length === 0) {
-                      resolve(allEntries);
-                    } else {
-                      allEntries.push(...entries);
-                      readBatch();
-                    }
-                  }, reject);
-                };
-                readBatch();
-              });
-            };
 
             const readDirectory = async (
               dirEntry: FileSystemDirectoryEntry,
@@ -187,7 +187,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
 
             if (folderFiles.length > 0) {
               folderItems.push({
-                id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+                id: `folder-${crypto.randomUUID()}`,
                 name: entry.name,
                 size: totalSize,
                 type: 'folder',
@@ -201,7 +201,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
           onDrop(folderItems);
         }
         if (totalSkipped > 0 && onSkippedFiles) {
-          onSkippedFiles(totalSkipped, 'mixed');
+          onSkippedFiles(totalSkipped);
         }
       } else if (type === 'file' && files) {
         processFiles(files);
@@ -242,7 +242,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             if (folderFiles.length === 0) return;
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
             items.push({
-              id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+              id: `folder-${crypto.randomUUID()}`,
               name: folderName,
               size: totalSize,
               type: 'folder',
@@ -254,7 +254,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             onDrop(items);
           }
           if (skipped > 0 && onSkippedFiles) {
-            onSkippedFiles(skipped, 'mixed');
+            onSkippedFiles(skipped);
           }
         } else {
           processFiles(files);
@@ -569,7 +569,7 @@ export function UploadDataSidebar({
     setFolderItems((prev) => [...prev, ...items]);
   }, []);
 
-  const handleSkippedFiles = useCallback((skipped: number, _reason: 'unsupported' | 'oversized' | 'mixed') => {
+  const handleSkippedFiles = useCallback((skipped: number) => {
     toast.warning(`${skipped} file${skipped > 1 ? 's' : ''} skipped`, {
       description: `Unsupported file types or files exceeding ${maxFileSizeMB} MB were excluded.`,
     });
@@ -587,12 +587,8 @@ export function UploadDataSidebar({
     const allItems = [...fileItems, ...folderItems];
     if (allItems.length > 0) {
       onSave(allItems);
-      // Reset state immediately after save
-      // TODO: remove if after save any issues faced
-      // --------------------------
       setFileItems([]);
       setFolderItems([]);
-      // ------------------------
     }
   }, [fileItems, folderItems, onSave]);
 

@@ -452,7 +452,7 @@ function KnowledgeBasePageContent() {
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
   // Upload store actions
-  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
+  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -1408,67 +1408,96 @@ function KnowledgeBasePageContent() {
         anySuccess = true;
       };
 
-      const isFolderUpload = items.some((item) => item.type === 'folder');
+      // Group entries by top-level folder so each distinct folder gets a
+      // serial "priming" batch that creates the folder node on the backend
+      // before the remaining batches for that folder run concurrently.
+      const getTopLevelFolder = (filePath: string): string | null => {
+        const idx = filePath.indexOf('/');
+        return idx !== -1 ? filePath.substring(0, idx) : null;
+      };
 
-      if (isFolderUpload && batches.length > 1) {
-        // Folder uploads: send the first batch alone so the backend creates
-        // the folder node, then upload remaining batches concurrently.
-        // Without this, concurrent requests each create a separate folder.
+      const folderGroups = new Map<string, FileEntry[]>();
+      const standaloneEntries: FileEntry[] = [];
+
+      for (const entry of fileEntries) {
+        const folder = getTopLevelFolder(entry.filePath);
+        if (folder) {
+          if (!folderGroups.has(folder)) folderGroups.set(folder, []);
+          folderGroups.get(folder)!.push(entry);
+        } else {
+          standaloneEntries.push(entry);
+        }
+      }
+
+      const primingBatches: FileEntry[][] = [];
+      const remainingBatches: FileEntry[][] = [];
+
+      for (const [, entries] of folderGroups) {
+        for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+          const batch = entries.slice(i, i + BATCH_SIZE);
+          if (i === 0) {
+            primingBatches.push(batch);
+          } else {
+            remainingBatches.push(batch);
+          }
+        }
+      }
+
+      for (let i = 0; i < standaloneEntries.length; i += BATCH_SIZE) {
+        remainingBatches.push(standaloneEntries.slice(i, i + BATCH_SIZE));
+      }
+
+      // Send priming batches sequentially to establish folder nodes
+      const failedFolders = new Set<string>();
+      for (const batch of primingBatches) {
         try {
-          await sendBatch(batches[0]);
+          await sendBatch(batch);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-          batches[0].forEach((entry) => failUpload(entry.storeId, errorMessage));
+          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
+          const folder = getTopLevelFolder(batch[0].filePath);
+          if (folder) failedFolders.add(folder);
         }
-
-        let nextBatchIndex = 1;
-        const worker = async () => {
-          while (true) {
-            const idx = nextBatchIndex;
-            nextBatchIndex += 1;
-            if (idx >= batches.length) break;
-            try {
-              await sendBatch(batches[idx]);
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-              batches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
-            }
-          }
-        };
-
-        const workers = Array.from(
-          { length: Math.min(CONCURRENCY, batches.length - 1) },
-          () => worker()
-        );
-        await Promise.all(workers);
-      } else {
-        let nextBatchIndex = 0;
-        const worker = async () => {
-          while (true) {
-            const idx = nextBatchIndex;
-            nextBatchIndex += 1;
-            if (idx >= batches.length) break;
-            try {
-              await sendBatch(batches[idx]);
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-              batches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
-            }
-          }
-        };
-
-        const workers = Array.from(
-          { length: Math.min(CONCURRENCY, batches.length) },
-          () => worker()
-        );
-        await Promise.all(workers);
       }
+
+      // Fail remaining batches whose folder priming batch failed
+      const viableBatches = remainingBatches.filter((batch) => {
+        const folder = getTopLevelFolder(batch[0]?.filePath);
+        if (folder && failedFolders.has(folder)) {
+          batch.forEach((entry) =>
+            failUpload(entry.storeId, 'Skipped: folder creation failed')
+          );
+          return false;
+        }
+        return true;
+      });
+
+      // Run viable batches concurrently via worker pool
+      let nextPoolIdx = 0;
+      const poolWorker = async () => {
+        while (true) {
+          const idx = nextPoolIdx++;
+          if (idx >= viableBatches.length) break;
+          try {
+            await sendBatch(viableBatches[idx]);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+            viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(CONCURRENCY, viableBatches.length) },
+          () => poolWorker()
+        )
+      );
 
       if (anySuccess) {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData, clearCompleted]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData]
   );
 
   // Handle folder info click
