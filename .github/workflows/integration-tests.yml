@@ -109,11 +109,14 @@ jobs:
       - name: 'Neo4j: Wait for core services'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
-          
           echo "Waiting for core services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "Core services are healthy!"
@@ -122,9 +125,13 @@ jobs:
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
           echo "Waiting for connector and query services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "All services are healthy!"
@@ -206,9 +213,13 @@ jobs:
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         run: |
           echo "Waiting for core services..."
-          timeout 120 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "Core services are healthy!"
@@ -217,9 +228,13 @@ jobs:
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         run: |
           echo "Waiting for connector and query services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "All services are healthy!"
