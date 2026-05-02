@@ -62,7 +62,7 @@ env:
 jobs:
   integration-tests:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 60
 
     environment:
@@ -111,7 +111,7 @@ jobs:
         run: |
           
           echo "Waiting for core services..."
-          timeout 120 bash -c '
+          timeout 180 bash -c '
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
               sleep 5
             done
