@@ -265,6 +265,14 @@ export async function streamSSERequest<T = unknown>(
       // Keep incomplete data in buffer
       buffer = remaining;
     }
+
+    // Flush TextDecoder internal state; parse one more time so a trailing
+    // complete event is not stranded across the final chunk boundary.
+    buffer += decoder.decode(undefined, { stream: false });
+    const { complete: tailEvents } = parseSSEBuffer(buffer);
+    for (const event of tailEvents) {
+      onEvent(event as SSEEvent<T>);
+    }
   } catch (error) {
     // Don't report abort errors as actual errors
     if (error instanceof Error && error.name === 'AbortError') {
