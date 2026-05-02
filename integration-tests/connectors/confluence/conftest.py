@@ -5,7 +5,6 @@
 import logging
 import os
 import uuid
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict
 
 import pytest
@@ -19,6 +18,10 @@ from app.sources.external.confluence.confluence import ConfluenceDataSource
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import (
     GraphProviderProtocol,  # type: ignore[import-not-found]
+)
+from connectors.confluence.constants import CONFLUENCE_TEST_SETTLE_WAIT_SEC
+from connectors.confluence.confluence_v1_test_utils import (  # type: ignore[import-not-found]
+    assert_confluence_pages_match_graph_records,
 )
 from helper.graph_provider_utils import (  # type: ignore[import-not-found]
     wait_for_sync_completion,
@@ -62,12 +65,15 @@ async def confluence_connector(
     confluence_datasource: ConfluenceDataSource,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-    sample_data_root: Path,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Module-scoped Confluence connector with full lifecycle."""
     base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
     email = os.getenv("CONFLUENCE_TEST_EMAIL")
     api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
+
+    assert email, "CONFLUENCE_TEST_EMAIL is not set"
+    assert api_token, "CONFLUENCE_TEST_API_TOKEN is not set"
+    assert base_url, "CONFLUENCE_TEST_BASE_URL is not set"
     
     custom_space_key = os.getenv("CONFLUENCE_TEST_SPACE_KEY")
     if custom_space_key:
@@ -106,77 +112,51 @@ async def confluence_connector(
         logger.info("SETUP: Created space '%s' (id=%s)", space_key, state["space_id"])
     
     page_count = 0
-    sample_files = list(sample_data_root.rglob("*.txt"))[:5] if sample_data_root.exists() else []
-    
-    if sample_files:
-        for file_path in sample_files:
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="ignore")[:5000]
-                title = file_path.stem
-                
-                from html import escape
-                safe = escape(content)
-                lines = safe.splitlines() or [safe]
-                paragraphs = [f"<p>{line if line else '&#160;'}</p>" for line in lines]
-                storage_body = "".join(paragraphs) if paragraphs else "<p></p>"
-                
-                body_payload = {
-                    "spaceId": state["space_id"],
-                    "status": "current",
-                    "title": title,
-                    "body": {
-                        "representation": "storage",
-                        "value": storage_body
-                    }
-                }
-                
-                resp = await confluence_datasource.create_page(
-                    root_level=True,
-                    body=body_payload
-                )
-                
-                page_count += 1
-            except Exception as e:
-                logger.error("SETUP: Failed to create page from %s: %s", file_path.name, e, exc_info=True)
-    
-    if page_count < 3:
-        for i in range(3 - page_count):
-            title = f"InitTestPage{i+1+page_count}-{uuid.uuid4().hex[:6]}"
-            content = f"<p>This is initial test page {i+1+page_count} for integration testing.</p>"
-            
-            body_payload = {
-                "spaceId": state["space_id"],
-                "status": "current",
-                "title": title,
-                "body": {
-                    "representation": "storage",
-                    "value": content
-                }
-            }
-            
-            resp = await confluence_datasource.create_page(
-                root_level=True,
-                body=body_payload
-            )
-            
-            if resp.status == 200:
-                page_count += 1
-            else:
-                logger.error("SETUP: Failed to create page '%s': HTTP %s", title, resp.status)
+    for i in range(3):
+        title = f"InitTestPage{i + 1}-{uuid.uuid4().hex[:6]}"
+        content = f"<p>This is initial test page {i + 1} for integration testing.</p>"
+        body_payload = {
+            "spaceId": state["space_id"],
+            "status": "current",
+            "title": title,
+            "body": {
+                "representation": "storage",
+                "value": content,
+            },
+        }
+        resp = await confluence_datasource.create_page(
+            root_level=True,
+            body=body_payload,
+        )
+        if resp.status == 200:
+            page_count += 1
+        else:
+            logger.error("SETUP: Failed to create page '%s': HTTP %s", title, resp.status)
     
     assert page_count >= 3, f"Expected at least 3 initial pages, got {page_count}"
     state["uploaded_count"] = page_count
     
-    # Create connector
+    # Create connector (filters must match etcd layout and SyncFilterKey.SPACE_KEYS — see
+    # load_connector_filters: filters.sync.values; wrong key ``filter`` is ignored by API.)
     config = {
         "auth": {
             "authType": "API_TOKEN",
             "baseUrl": base_url,
             "email": email,
             "apiToken": api_token,
-        }
+        },
+        "filters": {
+            "sync": {
+                "values": {
+                    "space_keys": {
+                        "operator": "in",
+                        "type": "list",
+                        "value": [space_key],
+                    }
+                }
+            }
+        },
     }
-    
     instance = pipeshub_client.create_connector(
         connector_type="Confluence",
         instance_name=connector_name,
@@ -188,17 +168,25 @@ async def confluence_connector(
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
 
-    pipeshub_client.wait(15)
+    pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
 
     pipeshub_client.toggle_sync(connector_id, enable=True)
     
     # Wait for sync completion
-    full_count = await wait_for_sync_completion(
+    await wait_for_sync_completion(
         pipeshub_client,
         graph_provider,
         connector_id,
-        min_records=page_count,
+        # min_records=page_count,
         timeout=180,
+    )
+
+    await assert_confluence_pages_match_graph_records(
+        confluence_datasource,
+        graph_provider,
+        connector_id,
+        space_key,
+        phase="SETUP after initial sync",
     )
 
     # One verification sync: lets the connector finish background work and leaves it
@@ -215,12 +203,15 @@ async def confluence_connector(
         connector_id,
         timeout=180,
     )
-    if verified_count != full_count:
-        logger.info(
-            "SETUP: Verification sync adjusted record count %d -> %d",
-            full_count,
-            verified_count,
-        )
+
+    await assert_confluence_pages_match_graph_records(
+        confluence_datasource,
+        graph_provider,
+        connector_id,
+        space_key,
+        phase="SETUP after verification sync",
+    )
+
     state["full_sync_count"] = verified_count
 
     yield state

@@ -41,6 +41,16 @@ from app.sources.external.confluence.confluence import (  # type: ignore[import-
     ConfluenceDataSource,
 )
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from connectors.confluence.constants import CONFLUENCE_TEST_SETTLE_WAIT_SEC  # noqa: E402
+from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
+    assert_confluence_page_in_v1_space_content_search,
+    assert_confluence_page_title_v1,
+    assert_confluence_page_v1_ancestors_contain_id,
+    assert_confluence_page_version_number_v1,
+    assert_confluence_pages_match_graph_records,
+    count_confluence_space_pages_v1_search,
+    get_confluence_page_version_number_v1,
+)
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
@@ -69,7 +79,8 @@ class TestConfluenceValidation:
         """TC-CF-004: Verify synced page has all expected properties."""
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
-        
+        space_key = confluence_connector["space_key"]
+
         # Get a sample page from Confluence
         pages_resp = await confluence_datasource.get_pages_in_space(space_id, limit=1)
         pages = pages_resp.json().get("results", [])
@@ -86,7 +97,14 @@ class TestConfluenceValidation:
             record_name=page_data["title"],
             external_record_group_id=space_id,
         )
-        
+
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            page_id,
+            context="TC-CF-004",
+        )
+
         # Assert using generic framework
         record = await connector_assertions.assert_record_exists(
             connector_id, page_id, expected
@@ -132,6 +150,12 @@ class TestConfluenceValidation:
         pages = pages_resp.json().get("results", [])
         if pages:
             page_id = str(pages[0]["id"])
+            await assert_confluence_page_in_v1_space_content_search(
+                confluence_datasource,
+                space_key,
+                page_id,
+                context="TC-CF-003",
+            )
             page = await connector_assertions.assert_record_exists(connector_id, page_id)
             assert page.external_record_group_id == space_id, (
                 f"Page should belong to space {space_id}"
@@ -150,6 +174,7 @@ class TestConfluenceValidation:
         """TC-CF-008: Verify record relationships (parent/child, permissions)."""
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
+        space_key = confluence_connector["space_key"]
         
         # Get pages to check relationships
         pages_resp = await confluence_datasource.get_pages_in_space(space_id, limit=5)
@@ -157,6 +182,14 @@ class TestConfluenceValidation:
         
         if not pages:
             pytest.skip("No pages to validate relationships")
+        
+        sample_page_id = str(pages[0]["id"])
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            sample_page_id,
+            context="TC-CF-008",
+        )
         
         # Check permission edges exist
         perm_count = await graph_provider.count_permission_edges(connector_id)
@@ -342,6 +375,7 @@ class TestConfluenceIncrementalSync:
         """TC-CF-024: Create new page, verify it appears in graph with correct properties."""
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
+        space_key = confluence_connector["space_key"]
         before_count = await graph_provider.count_records(connector_id)
         
         # Create new page
@@ -363,7 +397,13 @@ class TestConfluenceIncrementalSync:
         page_data = resp.json()
         page_id = str(page_data["id"])
         
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            page_id,
+            context="TC-CF-024 after create (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         
@@ -438,7 +478,13 @@ class TestConfluenceIncrementalSync:
             }
         )
         
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_version_number_v1(
+            confluence_datasource,
+            str(page_id),
+            old_version + 1,
+            context="TC-CF-026 after update (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         
@@ -457,6 +503,14 @@ class TestConfluenceIncrementalSync:
         )
         
         new_revision_id = record_after.external_revision_id
+        v1_after_sync = await get_confluence_page_version_number_v1(
+            confluence_datasource, str(page_id)
+        )
+        assert str(new_revision_id) == str(v1_after_sync), (
+            f"TC-CF-026: graph external_revision_id={new_revision_id!r} should match "
+            f"Confluence v1 version.number={v1_after_sync}"
+        )
+        
         logger.info(
             "✅ TC-CF-026: Page version updated from %s to %s",
             old_revision_id, new_revision_id
@@ -504,6 +558,14 @@ class TestConfluenceFilters:
             timeout=180,
         )
         
+        await assert_confluence_pages_match_graph_records(
+            confluence_datasource,
+            graph_provider,
+            connector_id,
+            space_key,
+            phase="TC-CF-036 after filter sync",
+        )
+        
         # Verify only content from filtered space exists
         record_count = await graph_provider.count_records(connector_id)
         assert record_count > 0, "Should have records from filtered space"
@@ -521,8 +583,8 @@ class TestConfluenceReindex:
     async def test_tc_cf_046_reindex_unchanged_page(
         self,
         confluence_connector: Dict[str, Any],
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
-        connector_assertions: ConnectorAssertions,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-CF-046: Reindex unchanged page - no DB update, event only."""
@@ -541,7 +603,32 @@ class TestConfluenceReindex:
         version_before = record_before.external_revision_id
         record_key = record_before.id
         
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        v1_before = await get_confluence_page_version_number_v1(
+            confluence_datasource, str(page_id)
+        )
+        if version_before is not None:
+            assert str(v1_before) == str(version_before), (
+                f"TC-CF-046: Confluence v1 version.number={v1_before} should match graph "
+                f"external_revision_id={version_before!r} before reindex"
+            )
+        
         # Trigger reindex
+        result = pipeshub_client.reindex_record(record_key)
+        assert result.get("success") or result.get("status") == "success", (
+            f"Reindex failed: {result}"
+        )
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        
+        v1_after = await get_confluence_page_version_number_v1(
+            confluence_datasource, str(page_id)
+        )
+        assert v1_after == v1_before, (
+            f"TC-CF-046: Confluence v1 version should be unchanged after reindex; "
+            f"was {v1_before}, now {v1_after}"
+        )
+        
+        # Verify version unchanged (no DB update for unchanged content)
         result = pipeshub_client.reindex_record(record_key)
         assert result.get("success") or result.get("status") == "success", (
             f"Reindex failed: {result}"
@@ -566,7 +653,6 @@ class TestConfluenceReindex:
         confluence_connector: Dict[str, Any],
         confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
-        connector_assertions: ConnectorAssertions,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-CF-047: Reindex updated page - DB should update with new version."""
@@ -604,21 +690,51 @@ class TestConfluenceReindex:
                 }
             }
         )
-        
-        pipeshub_client.wait(15)
+
+        expected_v1_version = page_data["version"]["number"] + 1
+
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_version_number_v1(
+            confluence_datasource,
+            str(page_id),
+            expected_v1_version,
+            context="TC-CF-047 after update wait (before reindex)",
+        )
+        v1_version_after_update = expected_v1_version
         result = pipeshub_client.reindex_record(record_key)
         assert result.get("success") or result.get("status") == "success"
-        
-        # Verify version changed
-        record_after = await connector_assertions.assert_record_updated(
-            connector_id,
-            str(page_id),
-            version_before,
+        # Reindex HTTP returns after publishing sync-events; graph updates asynchronously.
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+
+        v1_version_now = await get_confluence_page_version_number_v1(
+            confluence_datasource, str(page_id)
         )
-        
+        assert v1_version_now == v1_version_after_update, (
+            f"TC-CF-047: v1 version.number changed after reindex "
+            f"({v1_version_after_update} -> {v1_version_now}); unexpected."
+        )
+
+        record_after = await graph_provider.get_record_by_external_id(
+            connector_id, str(page_id)
+        )
+        assert record_after is not None, f"Page {page_id} not found in graph after reindex"
+        graph_rev = record_after.external_revision_id or record_after.version
+        assert str(graph_rev) == str(v1_version_now), (
+            f"TC-CF-047: Graph external_revision_id/version={graph_rev!r} should match "
+            f"Confluence v1 version.number={v1_version_now} (GET /wiki/rest/api/content/{{id}} "
+            f"with expand including version). graph_before={version_before!r}."
+        )
+        assert str(graph_rev) != str(version_before), (
+            f"TC-CF-047: Expected graph revision to change from {version_before!r}; "
+            f"still {graph_rev!r} while v1 API reports version.number={v1_version_now}."
+        )
+
         logger.info(
-            "✅ TC-CF-047: Reindex updated page - version changed from %s to %s",
-            version_before, record_after.external_revision_id
+            "✅ TC-CF-047: Reindex updated page - graph revision %s matches v1 version.number %s "
+            "(was %s)",
+            graph_rev,
+            v1_version_now,
+            version_before,
         )
 
 
@@ -632,15 +748,24 @@ class TestConfluenceStream:
     async def test_tc_cf_052_stream_page_html(
         self,
         confluence_connector: Dict[str, Any],
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-CF-052: Stream page HTML content."""
         connector_id = confluence_connector["connector_id"]
+        space_key = confluence_connector["space_key"]
         page_id = confluence_connector.get("test_page_id")
         
         if not page_id:
             pytest.skip("No test page ID available")
+        
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            str(page_id),
+            context="TC-CF-052 before graph/stream",
+        )
         
         # Get record
         record = await graph_provider.get_record_by_external_id(
@@ -684,8 +809,6 @@ class TestConfluenceConnector:
         uploaded = confluence_connector["uploaded_count"]
         full_count = confluence_connector["full_sync_count"]
 
-        await graph_provider.assert_min_records(connector_id, uploaded)
-
         await graph_provider.assert_record_groups_and_edges(
             connector_id,
             min_groups=1,
@@ -713,7 +836,11 @@ class TestConfluenceConnector:
         """TC-INCR-001: Create new pages, verify they appear in graph."""
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
+        space_key = confluence_connector["space_key"]
         before_count = await graph_provider.count_records(connector_id)
+        api_before = await count_confluence_space_pages_v1_search(
+            confluence_datasource, space_key
+        )
 
         # Create new pages
         title_1 = f"Integration Test Page Alpha {uuid.uuid4().hex[:8]}"
@@ -733,7 +860,7 @@ class TestConfluenceConnector:
         )
         new_page_1 = resp_1.json()
         
-        await confluence_datasource.create_page(
+        resp_2 = await confluence_datasource.create_page(
             root_level=True,
             body={
                 "spaceId": space_id,
@@ -745,26 +872,57 @@ class TestConfluenceConnector:
                 }
             }
         )
+        new_page_2 = resp_2.json()
 
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        api_after_create = await count_confluence_space_pages_v1_search(
+            confluence_datasource, space_key
+        )
+        assert api_after_create == api_before + 2, (
+            f"Confluence v1 page count should increase by 2; before={api_before}, "
+            f"after_create={api_after_create}"
+        )
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            str(new_page_1["id"]),
+            context="TC-INCR-001 alpha page (before connector resync)",
+        )
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            space_key,
+            str(new_page_2["id"]),
+            context="TC-INCR-001 beta page (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        # Wait for sync using reliable status polling
-        after_count = await wait_for_sync_completion(
+        await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
-            min_records=before_count + 2,
             timeout=180,
         )
-        assert after_count >= before_count + 2, (
-            f"Expected at least 2 new records; before={before_count}, after={after_count}"
+
+        await assert_confluence_pages_match_graph_records(
+            confluence_datasource,
+            graph_provider,
+            connector_id,
+            space_key,
+            phase="TC-INCR-001 after incremental sync",
         )
+
+        after_count = await graph_provider.count_records(connector_id)
 
         confluence_connector["test_page_id"] = str(new_page_1["id"])
         confluence_connector["test_page_title"] = new_page_1["title"]
-        logger.info("TC-INCR-001 passed: %d -> %d records (added 2 pages)", before_count, after_count)
+        logger.info(
+            "TC-INCR-001 passed: %d -> %d records (v1 pages %d -> %d)",
+            before_count,
+            after_count,
+            api_before,
+            api_after_create,
+        )
 
     # TC-UPDATE-001 — Content change detection
     @pytest.mark.order(8)
@@ -800,7 +958,13 @@ class TestConfluenceConnector:
             }
         )
 
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_version_number_v1(
+            confluence_datasource,
+            str(page_id),
+            page_data["version"]["number"] + 1,
+            context="TC-UPDATE-001 after update (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -831,7 +995,7 @@ class TestConfluenceConnector:
 
         new_title = f"Renamed-{old_title}"
         
-        resp = await confluence_datasource.update_page_title(
+        await confluence_datasource.update_page_title(
             id=page_id,
             body={
                 "status": "current",
@@ -839,7 +1003,13 @@ class TestConfluenceConnector:
             }
         )
         
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_title_v1(
+            confluence_datasource,
+            str(page_id),
+            new_title,
+            context="TC-RENAME-001 after rename (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -888,7 +1058,14 @@ class TestConfluenceConnector:
         )
         parent_page = parent_resp.json()
 
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        parent_id_str = str(parent_page["id"])
+        await assert_confluence_page_in_v1_space_content_search(
+            confluence_datasource,
+            confluence_connector["space_key"],
+            parent_id_str,
+            context="TC-MOVE-001 parent page (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -906,7 +1083,13 @@ class TestConfluenceConnector:
 
         await confluence_datasource.move_page(page_id, str(parent_page["id"]))
 
-        pipeshub_client.wait(15)
+        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        await assert_confluence_page_v1_ancestors_contain_id(
+            confluence_datasource,
+            str(page_id),
+            parent_id_str,
+            context="TC-MOVE-001 after move (before connector resync)",
+        )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
