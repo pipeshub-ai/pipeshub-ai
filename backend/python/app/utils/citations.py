@@ -48,6 +48,28 @@ _CONSECUTIVE_MD_LINKS_RE = re.compile(
     r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 4: second md link; Grp 5: second target
 )
 
+# ── Malformed citation normalization ──────────────────────────────────────────
+# Matches a markdown link whose target is a comma- or whitespace-separated list
+# of two or more refs/URLs — a common LLM slip-up e.g. [source](ref1, ref2).
+_MULTI_REF_IN_LINK_RE = re.compile(
+    r'\[([^\]]*?)\]\(('
+    r'(?:ref\d+|https?://[^\s,)]+)'
+    r'(?:(?:\s*,\s*|\s+)(?:ref\d+|https?://[^\s,)]+))+'
+    r')\)'
+)
+
+# Single-pass pattern used to wrap bare refN tokens and bare https://refN.xyz
+# URLs that the LLM emitted outside proper markdown link syntax.
+# Alternative 1 (Grp 1) matches an already-valid markdown link so the cursor
+# skips over it — preventing double-processing of refs inside `[text](refN)`.
+# Alternative 2 (Grp 2) matches a bare tiny web-ref URL.
+# Alternative 3 (Grp 3) matches a bare refN word token.
+_BARE_CITATION_NORMALIZE_RE = re.compile(
+    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: existing valid md link — skip
+    r'|(https?://ref\d+\.xyz/?)'                    # Grp 2: bare tiny URL
+    r'|\b(ref\d+)\b'                               # Grp 3: bare refN token
+)
+
 
 def extract_tiny_ref(target: str) -> str | None:
     """Return the inner refN from a tiny web-ref URL like https://ref1.xyz, else None."""
@@ -60,6 +82,60 @@ def extract_tiny_ref(target: str) -> str | None:
 def build_tiny_web_ref_url(ref: str) -> str:
     """Wrap a refN token into its LLM-facing tiny URL form (https://refN.xyz)."""
     return f"https://{ref}.xyz"
+
+
+def _expand_multi_ref_links(text: str) -> str:
+    """Split ``[label](ref1, ref2)`` style links into separate ``[label](ref1) [label](ref2)`` links.
+
+    Handles comma-separated and whitespace-separated ref lists inside a single
+    markdown link target — a common LLM formatting mistake.
+    """
+    def _replacer(m: re.Match) -> str:
+        link_text = m.group(1)
+        targets = [t.strip() for t in re.split(r'[\s,]+', m.group(2)) if t.strip()]
+        if len(targets) <= 1:
+            return m.group(0)
+        return ' '.join(f'[{link_text}]({t})' for t in targets)
+
+    return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
+
+
+def _wrap_bare_refs(text: str) -> str:
+    """Wrap bare ``refN`` tokens and bare ``https://refN.xyz`` URLs in markdown link syntax.
+
+    Already-valid markdown links are left untouched (matched by the first
+    alternative in ``_BARE_CITATION_NORMALIZE_RE`` so the cursor advances past them).
+    """
+    def _replacer(m: re.Match) -> str:
+        if m.group(1) is not None:
+            return m.group(1)   # existing valid markdown link — keep as-is
+        if m.group(2):
+            url = m.group(2)
+            inner = extract_tiny_ref(url) or url
+            return f'[source]({url})'
+        if m.group(3):
+            ref = m.group(3)
+            return f'[source]({ref})'
+        return m.group(0)
+
+    return _BARE_CITATION_NORMALIZE_RE.sub(_replacer, text)
+
+
+def normalize_malformed_citations(text: str) -> str:
+    """Coerce malformed LLM citation formats into standard ``[label](refN)`` links.
+
+    Runs before the main citation resolution pipeline so that all subsequent
+    steps see only well-formed markdown links.
+
+    Handled patterns (non-exhaustive):
+
+    * Multiple refs in one link  ``[source](ref1, ref2)``  →  ``[source](ref1) [source](ref2)``
+    * Bare refN token            ``ref5``                   →  ``[source](ref5)``
+    * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
+    """
+    text = _expand_multi_ref_links(text)
+    text = _wrap_bare_refs(text)
+    return text
 
 
 def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
@@ -343,6 +419,7 @@ def normalize_citations_and_chunks(
     if virtual_record_id_to_result is None:
         virtual_record_id_to_result = {}
 
+    answer_text = normalize_malformed_citations(answer_text)
     answer_text = _clean_duplicate_citation_links(answer_text, ref_to_url)
     md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
 
@@ -487,7 +564,6 @@ def _normalize_markdown_link_citations(
                 content = _safe_stringify_content(value=content)
 
             if not content:
-                logger.warning("🔎 [KB-CITE] normalize(chat): empty content for matched URL | url=%s", url)
                 continue
 
             new_citations.append({
@@ -560,6 +636,7 @@ def normalize_citations_and_chunks_for_agent(
     if virtual_record_id_to_result is None:
         virtual_record_id_to_result = {}
 
+    answer_text = normalize_malformed_citations(answer_text)
     answer_text = _clean_duplicate_citation_links(answer_text, ref_to_url)
     md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
 
