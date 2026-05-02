@@ -211,6 +211,20 @@ export function UploadProgressTracker() {
   const sessionSizeLabel =
     sessionUploadFileCount > 0 ? sessionUploadTotalSize : totalSize;
 
+  const hasActiveUploads = items.some(
+    (i) => i.status === 'uploading' || i.status === 'pending'
+  );
+
+  React.useEffect(() => {
+    if (!hasActiveUploads) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasActiveUploads]);
+
   if (!isVisible || items.length === 0) {
     return null;
   }
