@@ -670,10 +670,18 @@ export function useAgentBuilderReconstruction(): {
           (webSearchMeta?.iconType === 'image' ? webSearchMeta.icon : undefined);
         nodeCounter += 1;
         const nodeId = `web-search-${nodeCounter}`;
+        const WEB_SEARCH_NODE_VERTICAL_OFFSET = 440;
         const wsNode: Node<FlowNodeData> = {
           id: nodeId,
           type: 'flowNode',
-          position: calculateOptimalPosition('tools', counts.toolsets, Math.max(counts.toolsets + 1, 1)),
+          position:
+            counts.toolsets > 0
+              ? {
+                  x: layout.layers.tools.x,
+                  y:
+                    calculateOptimalPosition('tools', counts.toolsets - 1, counts.toolsets).y + WEB_SEARCH_NODE_VERTICAL_OFFSET,
+                }
+              : calculateOptimalPosition('tools', 0, 1),
           data: {
             id: nodeId,
             type: 'web-search',
