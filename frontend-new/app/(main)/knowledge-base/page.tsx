@@ -452,7 +452,7 @@ function KnowledgeBasePageContent() {
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
   // Upload store actions
-  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, bulkUpdateItemStatus } = useUploadStore();
+  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus } = useUploadStore();
 
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -1359,70 +1359,145 @@ function KnowledgeBasePageContent() {
       // Mark all files as uploading immediately so the tray shows activity
       fileEntries.forEach((entry) => startUpload(entry.storeId));
 
-      // Upload in batches of BATCH_SIZE so large folders are handled gracefully
       const BATCH_SIZE = 10;
+      const CONCURRENCY = 5;
       let anySuccess = false;
 
+      const batches: FileEntry[][] = [];
       for (let i = 0; i < fileEntries.length; i += BATCH_SIZE) {
-        const batch = fileEntries.slice(i, i + BATCH_SIZE);
+        batches.push(fileEntries.slice(i, i + BATCH_SIZE));
+      }
 
-        try {
-          const batchFiles = batch.map((e) => e.file);
-          // Always use files_metadata format so folder hierarchy is preserved
-          const batchMetadata: FileMetadata[] = batch.map((e) => ({
-            file_path: e.filePath,
-            last_modified: e.file.lastModified,
-          }));
+      const sendBatch = async (batch: FileEntry[]) => {
+        const batchFiles = batch.map((e) => e.file);
+        const batchMetadata: FileMetadata[] = batch.map((e) => ({
+          file_path: e.filePath,
+          last_modified: e.file.lastModified,
+        }));
 
-          // Route progress updates to every file in this batch in a single store update
-          const batchIds = batch.map((e) => e.storeId);
-          const onBatchProgress = (progress: number) => {
-            bulkUpdateItemStatus(batchIds, 'uploading', progress);
-          };
+        const batchIds = batch.map((e) => e.storeId);
+        const onBatchProgress = (progress: number) => {
+          bulkUpdateItemStatus(batchIds, 'uploading', progress);
+        };
 
-          let responseData: Record<string, unknown>;
-          if (newParentId) {
-            responseData = await KnowledgeBaseApi.uploadToFolder(
-              selectedKbId,
-              newParentId,
-              batchFiles,
-              batchMetadata,
-              onBatchProgress
-            );
-          } else {
-            responseData = await KnowledgeBaseApi.uploadToRoot(
-              selectedKbId,
-              batchFiles,
-              batchMetadata,
-              onBatchProgress
-            );
-          }
-
-          applyKnowledgeBaseUploadBatchResult(
-            batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
-            responseData,
-            completeUpload,
-            failUpload
+        let responseData: Record<string, unknown>;
+        if (newParentId) {
+          responseData = await KnowledgeBaseApi.uploadToFolder(
+            selectedKbId,
+            newParentId,
+            batchFiles,
+            batchMetadata,
+            onBatchProgress
           );
+        } else {
+          responseData = await KnowledgeBaseApi.uploadToRoot(
+            selectedKbId,
+            batchFiles,
+            batchMetadata,
+            onBatchProgress
+          );
+        }
 
-          anySuccess = true;
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
+        applyKnowledgeBaseUploadBatchResult(
+          batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
+          responseData,
+          completeUpload,
+          failUpload
+        );
+
+        anySuccess = true;
+      };
+
+      // Group entries by top-level folder so each distinct folder gets a
+      // serial "priming" batch that creates the folder node on the backend
+      // before the remaining batches for that folder run concurrently.
+      const getTopLevelFolder = (filePath: string): string | null => {
+        const idx = filePath.indexOf('/');
+        return idx !== -1 ? filePath.substring(0, idx) : null;
+      };
+
+      const folderGroups = new Map<string, FileEntry[]>();
+      const standaloneEntries: FileEntry[] = [];
+
+      for (const entry of fileEntries) {
+        const folder = getTopLevelFolder(entry.filePath);
+        if (folder) {
+          if (!folderGroups.has(folder)) folderGroups.set(folder, []);
+          folderGroups.get(folder)!.push(entry);
+        } else {
+          standaloneEntries.push(entry);
         }
       }
 
-      // Refresh data if any uploads succeeded
+      const primingBatches: FileEntry[][] = [];
+      const remainingBatches: FileEntry[][] = [];
+
+      for (const [, entries] of folderGroups) {
+        for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+          const batch = entries.slice(i, i + BATCH_SIZE);
+          if (i === 0) {
+            primingBatches.push(batch);
+          } else {
+            remainingBatches.push(batch);
+          }
+        }
+      }
+
+      for (let i = 0; i < standaloneEntries.length; i += BATCH_SIZE) {
+        remainingBatches.push(standaloneEntries.slice(i, i + BATCH_SIZE));
+      }
+
+      // Send priming batches sequentially to establish folder nodes
+      const failedFolders = new Set<string>();
+      for (const batch of primingBatches) {
+        try {
+          await sendBatch(batch);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
+          const folder = getTopLevelFolder(batch[0].filePath);
+          if (folder) failedFolders.add(folder);
+        }
+      }
+
+      // Fail remaining batches whose folder priming batch failed
+      const viableBatches = remainingBatches.filter((batch) => {
+        const folder = getTopLevelFolder(batch[0]?.filePath);
+        if (folder && failedFolders.has(folder)) {
+          batch.forEach((entry) =>
+            failUpload(entry.storeId, 'Skipped: folder creation failed')
+          );
+          return false;
+        }
+        return true;
+      });
+
+      // Run viable batches concurrently via worker pool
+      let nextPoolIdx = 0;
+      const poolWorker = async () => {
+        while (true) {
+          const idx = nextPoolIdx++;
+          if (idx >= viableBatches.length) break;
+          try {
+            await sendBatch(viableBatches[idx]);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+            viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(CONCURRENCY, viableBatches.length) },
+          () => poolWorker()
+        )
+      );
+
       if (anySuccess) {
         await refreshData();
-
-        // Clear completed items from upload tray after a short delay (so user sees completion)
-        setTimeout(() => {
-          clearCompleted();
-        }, 3000);
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData, clearCompleted]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData]
   );
 
   // Handle folder info click
