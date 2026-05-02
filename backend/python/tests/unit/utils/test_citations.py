@@ -883,7 +883,13 @@ class TestNormalizeCitationsAndChunksForAgent:
 # Added tests to raise coverage
 # ---------------------------------------------------------------------------
 
-from app.utils.citations import _resolve_ref, _safe_stringify_content  # noqa: E402  # pylint: disable=wrong-import-position
+from app.utils.citations import (  # noqa: E402  # pylint: disable=wrong-import-position
+    _expand_multi_ref_links,
+    _resolve_ref,
+    _safe_stringify_content,
+    _wrap_bare_refs,
+    normalize_malformed_citations,
+)
 
 
 class TestResolveRef:
@@ -1166,6 +1172,190 @@ class TestNormalizeAgentCitationsExtra:
         assert url in result_text
         assert len(citations) == 1
         assert citations[0]["content"] == "agent content"
+
+
+# ---------------------------------------------------------------------------
+# normalize_malformed_citations — pre-processing step
+# ---------------------------------------------------------------------------
+
+class TestExpandMultiRefLinks:
+    """Unit tests for _expand_multi_ref_links()."""
+
+    def test_comma_separated_refs_split(self):
+        text = "[source](ref632, ref633)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[source](ref632) [source](ref633)"
+
+    def test_three_comma_separated_refs(self):
+        text = "[source](ref1, ref2, ref3)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[source](ref1) [source](ref2) [source](ref3)"
+
+    def test_space_separated_refs_split(self):
+        text = "[source](ref5 ref6)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[source](ref5) [source](ref6)"
+
+    def test_mixed_ref_and_url_split(self):
+        text = "[source](ref1, https://example.com/page)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[source](ref1) [source](https://example.com/page)"
+
+    def test_two_tiny_urls_split(self):
+        text = "[source](https://ref1.xyz, https://ref2.xyz)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[source](https://ref1.xyz) [source](https://ref2.xyz)"
+
+    def test_single_ref_unchanged(self):
+        text = "[source](ref1)"
+        assert _expand_multi_ref_links(text) == text
+
+    def test_no_refs_unchanged(self):
+        text = "Plain text with no links."
+        assert _expand_multi_ref_links(text) == text
+
+    def test_multiple_multi_ref_links_in_text(self):
+        text = "See [a](ref1, ref2) and [b](ref3, ref4)."
+        result = _expand_multi_ref_links(text)
+        assert "[a](ref1)" in result
+        assert "[a](ref2)" in result
+        assert "[b](ref3)" in result
+        assert "[b](ref4)" in result
+
+    def test_preserves_link_text(self):
+        text = "[My Link Text](ref10, ref11)"
+        result = _expand_multi_ref_links(text)
+        assert result == "[My Link Text](ref10) [My Link Text](ref11)"
+
+
+class TestWrapBareRefs:
+    """Unit tests for _wrap_bare_refs()."""
+
+    def test_bare_ref_wrapped(self):
+        result = _wrap_bare_refs("See ref5 for details.")
+        assert "[ref5](ref5)" in result
+
+    def test_bare_tiny_url_wrapped(self):
+        result = _wrap_bare_refs("See https://ref5.xyz for details.")
+        assert "[ref5](https://ref5.xyz)" in result
+
+    def test_existing_markdown_link_untouched(self):
+        text = "See [source](ref5) here."
+        result = _wrap_bare_refs(text)
+        assert result == text
+
+    def test_existing_tiny_url_link_untouched(self):
+        text = "[source](https://ref5.xyz)"
+        result = _wrap_bare_refs(text)
+        assert result == text
+
+    def test_ref_in_word_not_matched(self):
+        # "reference5" should not be matched because 'e' follows 'ref' not a digit
+        result = _wrap_bare_refs("See reference5 here.")
+        assert "[ref" not in result
+
+    def test_multiple_bare_refs(self):
+        result = _wrap_bare_refs("Data from ref1 and ref2.")
+        assert "[ref1](ref1)" in result
+        assert "[ref2](ref2)" in result
+
+    def test_bare_ref_at_end_of_sentence(self):
+        result = _wrap_bare_refs("Supported by ref7.")
+        assert "[ref7](ref7)" in result
+
+    def test_bare_ref_in_parentheses(self):
+        result = _wrap_bare_refs("(ref8)")
+        assert "[ref8](ref8)" in result
+
+    def test_no_refs_unchanged(self):
+        text = "No citations here."
+        assert _wrap_bare_refs(text) == text
+
+
+class TestNormalizeMalformedCitations:
+    """Integration tests for normalize_malformed_citations()."""
+
+    def test_multi_ref_link_expanded_and_not_double_wrapped(self):
+        text = "[source](ref1, ref2)"
+        result = normalize_malformed_citations(text)
+        assert result == "[source](ref1) [source](ref2)"
+
+    def test_bare_ref_wrapped(self):
+        result = normalize_malformed_citations("Fact from ref3.")
+        assert "[ref3](ref3)" in result
+
+    def test_bare_tiny_url_wrapped(self):
+        result = normalize_malformed_citations("See https://ref3.xyz.")
+        assert "[ref3](https://ref3.xyz)" in result
+
+    def test_existing_valid_link_untouched(self):
+        text = "See [1](ref5) here."
+        result = normalize_malformed_citations(text)
+        assert result == text
+
+    def test_combined_malformed_and_valid(self):
+        text = "Good [1](ref1). Also [source](ref2, ref3) and bare ref4."
+        result = normalize_malformed_citations(text)
+        assert "[1](ref1)" in result           # existing link untouched
+        assert "[source](ref2)" in result      # split multi-ref
+        assert "[source](ref3)" in result
+        assert "[ref4](ref4)" in result        # bare ref wrapped
+
+    def test_end_to_end_resolution_multi_ref(self):
+        """[source](ref1, ref2) resolves both citations through the full pipeline."""
+        url1 = _url(REC1, 0)
+        url2 = _url(REC2, 3)
+        docs = [
+            _make_doc(REC1, 0, "first chunk", block_web_url=url1),
+            _make_doc(REC2, 3, "second chunk", block_web_url=url2),
+        ]
+        answer = "[source](ref1, ref2)"
+        result_text, citations = normalize_citations_and_chunks(
+            answer, docs, ref_to_url={"ref1": url1, "ref2": url2}
+        )
+        assert len(citations) == 2
+        assert citations[0]["content"] == "first chunk"
+        assert citations[1]["content"] == "second chunk"
+
+    def test_end_to_end_resolution_bare_ref(self):
+        """A bare refN in text is resolved into a proper citation."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "chunk content", block_web_url=url)]
+        answer = "Supported by ref1."
+        result_text, citations = normalize_citations_and_chunks(
+            answer, docs, ref_to_url={"ref1": url}
+        )
+        assert len(citations) == 1
+        assert citations[0]["content"] == "chunk content"
+        assert url in result_text
+
+    def test_end_to_end_resolution_bare_tiny_url(self):
+        """A bare https://refN.xyz in text is resolved into a proper citation."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "chunk content", block_web_url=url)]
+        answer = "Supported by https://ref1.xyz."
+        result_text, citations = normalize_citations_and_chunks(
+            answer, docs, ref_to_url={"ref1": url}
+        )
+        assert len(citations) == 1
+        assert citations[0]["content"] == "chunk content"
+        assert url in result_text
+
+    def test_end_to_end_agent_multi_ref(self):
+        """Multi-ref link resolves through the agent pipeline."""
+        url1 = _url(REC1, 0)
+        url2 = _url(REC2, 3)
+        docs = [
+            _make_doc(REC1, 0, "agent chunk 1", block_web_url=url1),
+            _make_doc(REC2, 3, "agent chunk 2", block_web_url=url2),
+        ]
+        answer = "Evidence [source](ref1, ref2)."
+        result_text, citations = normalize_citations_and_chunks_for_agent(
+            answer, docs, ref_to_url={"ref1": url1, "ref2": url2}
+        )
+        assert len(citations) == 2
+        assert citations[0]["content"] == "agent chunk 1"
+        assert citations[1]["content"] == "agent chunk 2"
 
 
 class _TruthyButEmptyStr:
