@@ -1233,11 +1233,11 @@ class TestWrapBareRefs:
 
     def test_bare_ref_wrapped(self):
         result = _wrap_bare_refs("See ref5 for details.")
-        assert "[ref5](ref5)" in result
+        assert "[source](ref5)" in result
 
     def test_bare_tiny_url_wrapped(self):
         result = _wrap_bare_refs("See https://ref5.xyz for details.")
-        assert "[ref5](https://ref5.xyz)" in result
+        assert "[source](https://ref5.xyz)" in result
 
     def test_existing_markdown_link_untouched(self):
         text = "See [source](ref5) here."
@@ -1256,16 +1256,16 @@ class TestWrapBareRefs:
 
     def test_multiple_bare_refs(self):
         result = _wrap_bare_refs("Data from ref1 and ref2.")
-        assert "[ref1](ref1)" in result
-        assert "[ref2](ref2)" in result
+        assert "[source](ref1)" in result
+        assert "[source](ref2)" in result
 
     def test_bare_ref_at_end_of_sentence(self):
         result = _wrap_bare_refs("Supported by ref7.")
-        assert "[ref7](ref7)" in result
+        assert "[source](ref7)" in result
 
     def test_bare_ref_in_parentheses(self):
         result = _wrap_bare_refs("(ref8)")
-        assert "[ref8](ref8)" in result
+        assert "[source](ref8)" in result
 
     def test_no_refs_unchanged(self):
         text = "No citations here."
@@ -1282,11 +1282,11 @@ class TestNormalizeMalformedCitations:
 
     def test_bare_ref_wrapped(self):
         result = normalize_malformed_citations("Fact from ref3.")
-        assert "[ref3](ref3)" in result
+        assert "[source](ref3)" in result
 
     def test_bare_tiny_url_wrapped(self):
         result = normalize_malformed_citations("See https://ref3.xyz.")
-        assert "[ref3](https://ref3.xyz)" in result
+        assert "[source](https://ref3.xyz)" in result
 
     def test_existing_valid_link_untouched(self):
         text = "See [1](ref5) here."
@@ -1299,7 +1299,7 @@ class TestNormalizeMalformedCitations:
         assert "[1](ref1)" in result           # existing link untouched
         assert "[source](ref2)" in result      # split multi-ref
         assert "[source](ref3)" in result
-        assert "[ref4](ref4)" in result        # bare ref wrapped
+        assert "[source](ref4)" in result       # bare ref wrapped
 
     def test_end_to_end_resolution_multi_ref(self):
         """[source](ref1, ref2) resolves both citations through the full pipeline."""

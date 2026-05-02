@@ -130,8 +130,8 @@ def normalize_malformed_citations(text: str) -> str:
     Handled patterns (non-exhaustive):
 
     * Multiple refs in one link  ``[source](ref1, ref2)``  →  ``[source](ref1) [source](ref2)``
-    * Bare refN token            ``ref5``                   →  ``[ref5](ref5)``
-    * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[ref5](https://ref5.xyz)``
+    * Bare refN token            ``ref5``                   →  ``[source](ref5)``
+    * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
     text = _expand_multi_ref_links(text)
     text = _wrap_bare_refs(text)
@@ -562,6 +562,9 @@ def _normalize_markdown_link_citations(
                 content = content[0]
             elif not isinstance(content, str):
                 content = _safe_stringify_content(value=content)
+
+            if not content:
+                continue
 
             new_citations.append({
                 "content": "Image" if is_base64_image(content) else content,
