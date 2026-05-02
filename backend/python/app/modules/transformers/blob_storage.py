@@ -545,7 +545,7 @@ class BlobStorage(Transformer):
             async with session.put(
                 signed_url,
                 json=data,
-                headers={"Content-Type": "application/json"}
+                skip_auto_headers={'Content-Type'}
             ) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     try:
@@ -972,7 +972,7 @@ class BlobStorage(Transformer):
                                             self.logger.debug("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
                                             if res.status == HttpStatusCode.SUCCESS.value:
                                                 signed_url_json_start_time = time.time()
-                                                data = await res.json()
+                                                data = await res.json(content_type=None)
                                                 signed_url_json_duration_ms = (time.time() - signed_url_json_start_time) * 1000
                                                 self.logger.debug("⏱️ Signed URL JSON parsing completed in %.0fms", signed_url_json_duration_ms)
                                             else:
@@ -984,7 +984,7 @@ class BlobStorage(Transformer):
                                             fallback_start = time.time()
                                             async with session.get(URL(signed_url, encoded=True)) as res:
                                                 if res.status == HttpStatusCode.SUCCESS.value:
-                                                    data = await res.json()
+                                                    data = await res.json(content_type=None)
                                                     fallback_duration_ms = (time.time() - fallback_start) * 1000
                                                     self.logger.debug("⏱️ Fallback single download completed in %.0fms", fallback_duration_ms)
                                                 else:

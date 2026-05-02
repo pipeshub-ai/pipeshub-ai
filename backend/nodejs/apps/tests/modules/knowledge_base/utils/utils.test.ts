@@ -253,7 +253,7 @@ describe('Knowledge Base Utils', () => {
       const { uploadFileToSignedUrl } = require('../../../../src/modules/knowledge_base/utils/utils')
       nock('https://storage.example.com')
         .put('/upload')
-        .reply(204)
+        .reply(403, 'Forbidden')
 
       try {
         await uploadFileToSignedUrl(
@@ -265,7 +265,7 @@ describe('Knowledge Base Utils', () => {
         )
         expect.fail('Should have thrown')
       } catch (error: any) {
-        expect(error.message).to.include('Unexpected status code')
+        expect(error.message).to.include('Upload failed with status 403')
       }
     })
 

@@ -1,4 +1,3 @@
-import { Readable } from 'stream';
 import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
@@ -164,44 +163,38 @@ export const createPlaceholderDocument = async (
  */
 export const uploadFileToSignedUrl = async (
   buffer: Buffer,
-  mimetype: string,
+  _mimetype: string,
   redirectUrl: string,
   documentId: string,
   documentName: string,
 ): Promise<void> => {
   try {
-    // Create a readable stream from the buffer
-    const bufferStream = new Readable();
-    bufferStream.push(buffer);
-    bufferStream.push(null); // Signal end of stream
-
-    const response = await axios({
-      method: 'put',
-      url: redirectUrl,
-      data: bufferStream,
+    const response = await fetch(redirectUrl, {
+      method: 'PUT',
+      body: new Uint8Array(buffer),
       headers: {
-        'Content-Type': mimetype,
-        'Content-Length': buffer.length,
+        'Content-Length': buffer.length.toString(),
       },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
     });
 
-    if (response.status === 200 || response.status === 201) {
+    if (response.ok) {
       logger.info('File uploaded to storage successfully', {
         documentId,
         documentName,
         status: response.status,
       });
     } else {
-      throw new Error(`Unexpected status code: ${response.status}`);
+      const errorBody = await response.text();
+      throw new Error(
+        `Upload failed with status ${response.status}: ${errorBody}`,
+      );
     }
   } catch (error: any) {
     logger.error('File upload to signed URL failed', {
       documentId,
       documentName,
       error: error.message,
-      status: error.response?.status,
+      status: error.status,
     });
     throw error;
   }
