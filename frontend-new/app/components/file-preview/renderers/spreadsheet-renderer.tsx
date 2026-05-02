@@ -129,13 +129,11 @@ function ensureSpreadsheetStyles(): void {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
-function renderCellValue(value: unknown, full = false): string {
+function formatCellValue(value: unknown): string {
   if (value == null) return '';
   if (value instanceof Date) return value.toLocaleDateString();
   if (typeof value === 'object') return JSON.stringify(value);
-  const s = String(value).trim();
-  if (full) return s;
-  return s.length > 50 ? `${s.substring(0, 47)}...` : s;
+  return String(value).trim();
 }
 
 function colLetter(index: number): string {
@@ -254,9 +252,7 @@ const TableCellMemo = memo(function TableCellMemo({
   highlighted: boolean;
   isDark: boolean;
 }) {
-  const display = renderCellValue(value);
-  const full = renderCellValue(value, true);
-  const isTruncated = display !== full;
+  const text = formatCellValue(value);
 
   let bg = 'transparent';
   if (isHeaderRow) {
@@ -265,7 +261,7 @@ const TableCellMemo = memo(function TableCellMemo({
     bg = 'rgba(16, 185, 129, 0.15)';
   }
 
-  const cellContent = isTruncated ? (
+  const cellContent = text ? (
     <Tooltip
       content={
         <Text
@@ -279,14 +275,14 @@ const TableCellMemo = memo(function TableCellMemo({
             lineHeight: 1.5,
           }}
         >
-          {full}
+          {text}
         </Text>
       }
     >
-      <span style={{ cursor: 'help' }}>{display}</span>
+      <span>{text}</span>
     </Tooltip>
   ) : (
-    display || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')
+    isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : ''
   );
 
   return (
@@ -395,14 +391,15 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   }, [state.workbookData, state.selectedSheet]);
 
   // ── Initialize column widths as CSS variables on the <table> ────
+  const COL_DEFAULT_WIDTH = 150;
   useEffect(() => {
     const tableEl = tableElRef.current;
     if (!tableEl || !currentSheetData.headers.length) return;
-    currentSheetData.headers.forEach((header, i) => {
-      const len = String(header || '').length;
-      const w = Math.max(50, Math.min(280, len * 8 + 24));
-      tableEl.style.setProperty(`--cw-${i}`, `${w}px`);
+    const numCols = currentSheetData.headers.length;
+    currentSheetData.headers.forEach((_header, i) => {
+      tableEl.style.setProperty(`--cw-${i}`, `${COL_DEFAULT_WIDTH}px`);
     });
+    tableEl.style.width = `${50 + numCols * COL_DEFAULT_WIDTH}px`;
   }, [currentSheetData.headers]);
 
   // ── Column resize: cursor hint on hover near any cell border ───
@@ -449,9 +446,13 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
     );
     const startX = e.clientX;
 
+    let prevWidth = currentWidth;
     const onMove = (ev: MouseEvent) => {
       const newWidth = Math.max(30, currentWidth + ev.clientX - startX);
       tableEl.style.setProperty(`--cw-${colIndex}`, `${newWidth}px`);
+      const tableWidth = parseInt(tableEl.style.width || '0', 10);
+      tableEl.style.width = `${tableWidth + (newWidth - prevWidth)}px`;
+      prevWidth = newWidth;
     };
 
     const onUp = () => {
@@ -664,7 +665,6 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
         <table
           ref={tableElRef}
           style={{
-            width: 'max-content',
             minWidth: '100%',
             tableLayout: 'fixed',
             borderCollapse: 'collapse',
