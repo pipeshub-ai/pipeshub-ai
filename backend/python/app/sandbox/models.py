@@ -51,10 +51,9 @@ DEFAULT_MEMORY_LIMIT_MB = 512
 DEFAULT_CPU_LIMIT = 0.5
 
 # Single unified Docker image for all sandbox languages.
-# This image is not published to a public registry -- it must be built locally
-# from ``deployment/sandbox/Dockerfile``. The name/tag can be overridden via
-# the ``SANDBOX_DOCKER_IMAGE`` environment variable if you push the image to
-# your own registry.
+# Default tag is for local builds from ``deployment/sandbox/Dockerfile``.
+# Override ``SANDBOX_DOCKER_IMAGE`` for a registry image (e.g. production:
+# ``pipeshubai/pipeshub-sandbox:${TAG}`` per docker-compose.prod.yml).
 SANDBOX_IMAGE = os.environ.get("SANDBOX_DOCKER_IMAGE", "pipeshub/sandbox:latest")
 
 # MIME type detection by extension
