@@ -92,7 +92,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         fileArray.forEach((file) => {
           if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
             items.push({
-              id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
               name: file.name,
               size: file.size,
               type: 'file',
@@ -187,7 +187,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
 
             if (folderFiles.length > 0) {
               folderItems.push({
-                id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
                 name: entry.name,
                 size: totalSize,
                 type: 'folder',
@@ -242,7 +242,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             if (folderFiles.length === 0) return;
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
             items.push({
-              id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
               name: folderName,
               size: totalSize,
               type: 'folder',
