@@ -91,6 +91,7 @@ export interface HealthStatus {
     kvStoreType: string;
     messageBrokerType: string;
     graphDbType: string;
+    vectorDbType: string;
   };
 }
 
@@ -107,7 +108,6 @@ export function createHealthRouter(
   );
 
   const appConfig = container.get<AppConfig>('AppConfig');
-  const defaultDeployment = { ...appConfig.deployment };
   const configService = ConfigService.getInstance();
 
   async function getDeploymentConfig() {
@@ -115,16 +115,21 @@ export function createHealthRouter(
       const fresh = await configService.readDeploymentConfig();
       if (fresh && Object.keys(fresh).length > 0) {
         return {
-          dataStoreType: fresh.dataStoreType || defaultDeployment.dataStoreType,
-          messageBrokerType: fresh.messageBrokerType || defaultDeployment.messageBrokerType,
-          kvStoreType: fresh.kvStoreType || defaultDeployment.kvStoreType,
-          vectorDbType: fresh.vectorDbType || defaultDeployment.vectorDbType,
+          dataStoreType: fresh.dataStoreType || undefined,
+          messageBrokerType: fresh.messageBrokerType || appConfig.deployment.messageBrokerType,
+          kvStoreType: fresh.kvStoreType || appConfig.deployment.kvStoreType,
+          vectorDbType: fresh.vectorDbType || undefined,
         };
       }
     } catch (error) {
       logger.error('Failed to refresh deployment config', error);
     }
-    return defaultDeployment;
+    return {
+      dataStoreType: undefined as string | undefined,
+      messageBrokerType: appConfig.deployment.messageBrokerType,
+      kvStoreType: appConfig.deployment.kvStoreType,
+      vectorDbType: undefined as string | undefined,
+    };
   }
 
   router.get('/', async (_req, res, next) => {
@@ -139,7 +144,7 @@ export function createHealthRouter(
       };
 
       const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
-      const graphDbName = deployment.dataStoreType === 'neo4j' ? 'Neo4j' : 'ArangoDB';
+      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
 
       const serviceNames: Record<string, string> = {
         redis: 'Redis',
@@ -195,7 +200,11 @@ export function createHealthRouter(
       }
 
       // Graph DB — check the one actually deployed
-      if (deployment.dataStoreType === 'neo4j') {
+      if (!deployment.dataStoreType) {
+        // Python backend hasn't written dataStoreType to KV store yet
+        services.graphDb = 'pending';
+        logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
+      } else if (deployment.dataStoreType === 'neo4j') {
         try {
           const neo4jHttpUrl = buildNeo4jHttpUrl(
             process.env.NEO4J_URI || 'bolt://localhost:7687',
@@ -204,7 +213,7 @@ export function createHealthRouter(
           const neo4jPass = process.env.NEO4J_PASSWORD;
           const neo4jResp = await axios.get(neo4jHttpUrl, {
             timeout: 3000,
-            // `GET /` is public in stock Neo4j, but pass creds anyway so deployments
+            // GET / is public in stock Neo4j, but pass creds anyway so deployments
             // that restrict the HTTP discovery endpoint still return 200.
             auth: neo4jPass ? { username: neo4jUser, password: neo4jPass } : undefined,
             validateStatus: () => true,
@@ -257,7 +266,8 @@ export function createHealthRouter(
         deployment: {
           kvStoreType: deployment.kvStoreType,
           messageBrokerType: deployment.messageBrokerType,
-          graphDbType: deployment.dataStoreType,
+          graphDbType: deployment.dataStoreType || 'pending',
+          vectorDbType: deployment.vectorDbType || 'pending',
         },
       };
 
