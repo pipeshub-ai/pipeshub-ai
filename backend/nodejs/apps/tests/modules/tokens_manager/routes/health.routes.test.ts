@@ -17,7 +17,7 @@ describe('tokens_manager/routes/health.routes', () => {
 
   beforeEach(() => {
     mockConfigService = {
-      readDeploymentConfig: sinon.stub().resolves({}),
+      readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
     sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
 
@@ -319,7 +319,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.KVStoreservice).to.be.undefined
     })
 
-    it('should fall back to default deployment config when readDeploymentConfig fails', async () => {
+    it('should fall back to appConfig for Node-owned fields and pending for Python-owned fields when readDeploymentConfig fails', async () => {
       mockConfigService.readDeploymentConfig.rejects(new Error('etcd unavailable'))
 
       const handler = findHandler('/', 'get')
@@ -334,10 +334,12 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
       expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
-      expect(jsonArg.deployment.graphDbType).to.equal('arangodb')
+      expect(jsonArg.deployment.graphDbType).to.equal('pending')
+      expect(jsonArg.services.graphDb).to.equal('pending')
+      expect(jsonArg.serviceNames.graphDb).to.equal('Neo4j')
     })
 
-    it('should fall back to default when readDeploymentConfig returns empty object', async () => {
+    it('should show graphDb as pending when readDeploymentConfig returns empty object', async () => {
       mockConfigService.readDeploymentConfig.resolves({})
 
       const handler = findHandler('/', 'get')
@@ -352,7 +354,9 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
       expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
-      expect(jsonArg.deployment.graphDbType).to.equal('arangodb')
+      expect(jsonArg.deployment.graphDbType).to.equal('pending')
+      expect(jsonArg.services.graphDb).to.equal('pending')
+      expect(jsonArg.serviceNames.graphDb).to.equal('Neo4j')
     })
 
     it('should use default values for missing fields in fresh config', async () => {
@@ -373,6 +377,81 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.graphDbType).to.equal('neo4j')
       expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
       expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
+    })
+
+    it('should transition graphDb from pending to actual type when Python writes dataStoreType', async () => {
+      // First request: Python hasn't written yet — readDeploymentConfig returns no dataStoreType
+      mockConfigService.readDeploymentConfig.resolves({
+        messageBrokerType: 'kafka',
+        kvStoreType: 'etcd',
+      })
+
+      const handler = findHandler('/', 'get')
+      const res1 = mockRes()
+      const next1 = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res1, next1)
+
+      const firstResponse = res1.json.firstCall.args[0]
+      expect(firstResponse.deployment.graphDbType).to.equal('pending')
+      expect(firstResponse.services.graphDb).to.equal('pending')
+      expect(firstResponse.serviceNames.graphDb).to.equal('Neo4j')
+
+      // Second request: Python has now written dataStoreType to KV store
+      mockConfigService.readDeploymentConfig.resolves({
+        dataStoreType: 'arangodb',
+        messageBrokerType: 'kafka',
+        kvStoreType: 'etcd',
+        vectorDbType: 'qdrant',
+      })
+
+      const res2 = mockRes()
+      const next2 = sinon.stub()
+
+      await handler({}, res2, next2)
+
+      const secondResponse = res2.json.firstCall.args[0]
+      expect(secondResponse.deployment.graphDbType).to.equal('arangodb')
+      expect(secondResponse.serviceNames.graphDb).to.equal('ArangoDB')
+      expect(secondResponse.services.graphDb).to.equal('healthy')
+    })
+
+    it('should transition graphDb from pending to neo4j when Python writes neo4j', async () => {
+      mockConfigService.readDeploymentConfig.resolves({
+        messageBrokerType: 'kafka',
+        kvStoreType: 'etcd',
+      })
+
+      const handler = findHandler('/', 'get')
+      const res1 = mockRes()
+      const next1 = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res1, next1)
+
+      expect(res1.json.firstCall.args[0].deployment.graphDbType).to.equal('pending')
+
+      // Python writes neo4j
+      mockConfigService.readDeploymentConfig.resolves({
+        dataStoreType: 'neo4j',
+        messageBrokerType: 'kafka',
+        kvStoreType: 'etcd',
+        vectorDbType: 'qdrant',
+      })
+
+      const res2 = mockRes()
+      const next2 = sinon.stub()
+
+      await handler({}, res2, next2)
+
+      const secondResponse = res2.json.firstCall.args[0]
+      expect(secondResponse.deployment.graphDbType).to.equal('neo4j')
+      expect(secondResponse.serviceNames.graphDb).to.equal('Neo4j')
     })
 
     it('should mark all services as unhealthy when all fail', async () => {
