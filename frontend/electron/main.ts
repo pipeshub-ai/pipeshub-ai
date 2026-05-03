@@ -1,23 +1,36 @@
-const { app, BrowserWindow, protocol, net, nativeImage, session, ipcMain, dialog } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const { LocalSyncManager } = require('./local-sync/manager');
+import {
+  app,
+  BrowserWindow,
+  protocol,
+  net,
+  nativeImage,
+  session,
+  ipcMain,
+  dialog,
+  type IpcMainInvokeEvent,
+  type IpcMainEvent,
+  type NativeImage,
+} from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import { LocalSyncManager, type ConnectorStatus } from './local-sync';
 
 // One ID per app process so the renderer can mark "URL confirmed for this launch"
 // in localStorage without mismatch after full page loads (preload re-runs each time).
 const APP_LAUNCH_ID = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
 // Directory where `next build` (static export) output lands after electron:copy
-const STATIC_DIR = path.join(__dirname, 'out');
+// Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
+const STATIC_DIR = path.join(__dirname, '..', 'out');
 
 // Custom protocol scheme — using a custom scheme ensures that root-relative
 // paths like /_next/static/... resolve correctly against the export directory
 // instead of the filesystem root (which is what happens with file://).
 const SCHEME = 'app';
 
-let mainWindow;
-let localSyncManager;
+let mainWindow: BrowserWindow | null = null;
+let localSyncManager: LocalSyncManager | null = null;
 let isQuitting = false;
 
 // Single-instance lock so only one app instance runs watchers / dispatch.
@@ -33,7 +46,7 @@ if (!gotLock) {
   });
 }
 
-function getAppIcon() {
+function getAppIcon(): NativeImage | undefined {
   const pngPath = path.join(STATIC_DIR, 'logo', 'pipes-hub-1024.png');
   if (fs.existsSync(pngPath)) {
     return nativeImage.createFromPath(pngPath);
@@ -54,7 +67,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-function createWindow() {
+function createWindow(): void {
   const icon = getAppIcon();
 
   mainWindow = new BrowserWindow({
@@ -84,13 +97,25 @@ function createWindow() {
   });
 }
 
+interface StreamStartPayload {
+  streamId: string;
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+interface ConnectorIdPayload {
+  connectorId?: string;
+}
+
 app.whenReady().then(() => {
   // ── CORS bypass ──────────────────────────────────────────────────────────
   // The renderer runs under the app:// origin which the backend's CORS config
   // doesn't know about. Inject permissive CORS headers on every response so
   // that fetch / XMLHttpRequest from the renderer can reach the API server.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const headers = { ...details.responseHeaders };
+    const headers: Record<string, string | string[]> = { ...details.responseHeaders };
     headers['access-control-allow-origin'] = ['*'];
     headers['access-control-allow-headers'] = ['*'];
     headers['access-control-allow-methods'] = ['GET, POST, PUT, PATCH, DELETE, OPTIONS'];
@@ -99,7 +124,7 @@ app.whenReady().then(() => {
 
   localSyncManager = new LocalSyncManager({
     app,
-    onStatusChange: (status) => {
+    onStatusChange: (status: ConnectorStatus) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.webContents.send('local-sync-status', status);
     },
@@ -108,7 +133,7 @@ app.whenReady().then(() => {
   // Handle the custom app:// protocol — map requests to static export files
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url);
-    let pathname = decodeURIComponent(url.pathname);
+    const pathname = decodeURIComponent(url.pathname);
 
     // Resolve to a file inside the static export directory
     let filePath = path.join(STATIC_DIR, pathname);
@@ -133,12 +158,13 @@ app.whenReady().then(() => {
   // Set the dock icon on macOS
   if (process.platform === 'darwin') {
     const icon = getAppIcon();
-    if (icon) app.dock.setIcon(icon);
+    if (icon && app.dock) app.dock.setIcon(icon);
   }
 
   // ── IPC handlers ─────────────────────────────────────────────────────────
   // Open a native folder picker dialog and return the selected path.
   ipcMain.handle('select-folder', async () => {
+    if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
     });
@@ -146,34 +172,23 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
-  ipcMain.handle('local-sync/start', async (_event, payload) => {
-    return localSyncManager.start(payload || {});
+  ipcMain.handle('local-sync/start', async (_event: IpcMainInvokeEvent, payload: Parameters<LocalSyncManager['start']>[0]) => {
+    if (!localSyncManager) return null;
+    return localSyncManager.start(payload || ({} as Parameters<LocalSyncManager['start']>[0]));
   });
 
-  ipcMain.handle('local-sync/stop', async (_event, payload) => {
-    return localSyncManager.stop(payload?.connectorId);
+  ipcMain.handle('local-sync/stop', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
+    if (!localSyncManager || !payload?.connectorId) return null;
+    return localSyncManager.stop(payload.connectorId);
   });
 
-  ipcMain.handle('local-sync/status', async (_event, payload) => {
+  ipcMain.handle('local-sync/status', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
+    if (!localSyncManager) return null;
     return localSyncManager.getStatus(payload?.connectorId);
   });
 
-  ipcMain.handle('local-sync/rescan', async (_event, payload) => {
-    if (!payload || !payload.connectorId) return null;
-    return localSyncManager.rescan(payload.connectorId);
-  });
-
-  ipcMain.handle('local-sync/set-schedule', async (_event, payload) => {
-    if (!payload || !payload.connectorId) return null;
-    return localSyncManager.setSchedule(payload.connectorId, {
-      syncStrategy: payload.syncStrategy,
-      scheduledConfig: payload.scheduledConfig,
-      connectorDisplayType: payload.connectorDisplayType,
-    });
-  });
-
-  ipcMain.handle('local-sync/full-resync', async (_event, payload) => {
-    if (!payload || !payload.connectorId) return null;
+  ipcMain.handle('local-sync/full-resync', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
+    if (!localSyncManager || !payload || !payload.connectorId) return null;
     try {
       const result = await localSyncManager.fullResync(payload.connectorId);
       return { ok: true, ...result, status: localSyncManager.getStatus(payload.connectorId) };
@@ -195,17 +210,17 @@ app.whenReady().then(() => {
   // `net.fetch`, which has no CORS enforcement, and forward chunks to the
   // renderer over IPC. The renderer reconstructs a ReadableStream and feeds
   // it to the existing SSE parser unchanged.
-  const activeStreams = new Map(); // streamId -> AbortController
+  const activeStreams = new Map<string, AbortController>();
 
-  ipcMain.handle('stream/start', async (event, payload) => {
-    const { streamId, url, method, headers, body } = payload || {};
+  ipcMain.handle('stream/start', async (event: IpcMainInvokeEvent, payload: StreamStartPayload) => {
+    const { streamId, url, method, headers, body } = payload || ({} as StreamStartPayload);
     if (!streamId || !url) return;
 
     const controller = new AbortController();
     activeStreams.set(streamId, controller);
 
     const wc = event.sender;
-    const send = (channel, data) => {
+    const send = (channel: string, data: unknown) => {
       if (!wc.isDestroyed()) wc.send(channel, data);
     };
 
@@ -240,27 +255,28 @@ app.whenReady().then(() => {
       }
       send('stream/end', { streamId });
     } catch (err) {
-      const isAbort = err && (err.name === 'AbortError' || controller.signal.aborted);
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted);
       send('stream/error', {
         streamId,
-        name: isAbort ? 'AbortError' : (err?.name || 'Error'),
-        message: err?.message || 'Stream request failed',
+        name: isAbort ? 'AbortError' : (err instanceof Error ? err.name : 'Error'),
+        message: err instanceof Error ? err.message : 'Stream request failed',
       });
     } finally {
       activeStreams.delete(streamId);
     }
   });
 
-  ipcMain.on('stream/abort', (_event, payload) => {
-    const controller = activeStreams.get(payload?.streamId);
+  ipcMain.on('stream/abort', (_event: IpcMainEvent, payload: { streamId?: string }) => {
+    const controller = payload?.streamId ? activeStreams.get(payload.streamId) : undefined;
     if (controller) controller.abort();
   });
 
-  ipcMain.on('pipeshub-get-launch-id', (event) => {
+  ipcMain.on('pipeshub-get-launch-id', (event: IpcMainEvent) => {
     event.returnValue = APP_LAUNCH_ID;
   });
 
-  ipcMain.handle('local-sync/replay', async (_event, payload) => {
+  ipcMain.handle('local-sync/replay', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
+    if (!localSyncManager) return null;
     if (payload?.connectorId) {
       return localSyncManager.replay(payload.connectorId);
     }
@@ -273,7 +289,7 @@ app.whenReady().then(() => {
   });
 
   createWindow();
-  localSyncManager.init().catch((error) => {
+  localSyncManager.init().catch((error: unknown) => {
     console.warn('[local-sync] initialization failed:', error);
   });
 

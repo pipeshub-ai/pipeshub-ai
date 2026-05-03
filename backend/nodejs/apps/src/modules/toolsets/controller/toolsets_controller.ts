@@ -15,7 +15,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
+import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector-service-http';
 
 const logger = Logger.getInstance({
   service: 'ToolsetsController',

@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { CliRpcSocketGateway } from '../../../../src/modules/cli_rpc/socket/cli_rpc_socket_gateway'
+import { CliRpcSocketGateway } from '../../../../src/modules/cli_rpc/socket/socket_gateway'
 
 describe('CliRpcSocketGateway', () => {
   const getPort = () => 3001

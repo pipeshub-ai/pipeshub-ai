@@ -1,12 +1,38 @@
-const fsp = require('fs/promises');
-const path = require('path');
-const crypto = require('crypto');
-const { normalizeRelKey } = require('../persistence/watcher-state-store');
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import { normalizeRelKey, type FileSnapshotEntry } from '../persistence/watcher-state-store';
+import type { WatchEvent } from './replay-event-expander';
 
 const QUICK_HASH_BYTES = 4096;
 const MAX_PENDING_UNLINK_ENTRIES = 10000;
 
-async function quickHash(absPath) {
+export type ChokidarEventName = 'add' | 'addDir' | 'unlink' | 'unlinkDir' | 'change';
+
+interface RawEvent {
+  type: ChokidarEventName;
+  absPath: string;
+  relKey: string;
+  timestamp: number;
+  inode?: number;
+  size?: number;
+  mtimeMs?: number;
+  isDirectory: boolean;
+  quickHash?: string;
+}
+
+export interface EventCorrelatorOptions {
+  syncRoot: string;
+  correlationWindowMs?: number;
+  changeDebounceMs?: number;
+  shouldSuppressModifiedChange?: (event: RawEvent) => Promise<boolean> | boolean;
+  getPreviousFileEntry?: (relKey: string) => FileSnapshotEntry | undefined;
+}
+
+export type EventListener = (events: WatchEvent[]) => void;
+
+async function quickHash(absPath: string): Promise<string | undefined> {
   try {
     const fh = await fsp.open(absPath, 'r');
     try {
@@ -29,17 +55,30 @@ async function quickHash(absPath) {
   }
 }
 
-function isValidInode(ino) {
-  return ino !== undefined && Number.isFinite(ino) && ino > 0;
+function isValidInode(ino: unknown): boolean {
+  return ino !== undefined && Number.isFinite(ino as number) && (ino as number) > 0;
 }
 
-function dirnamePosix(p) {
+function dirnamePosix(p: string): string {
   const i = p.lastIndexOf('/');
   return i <= 0 ? '' : p.slice(0, i);
 }
 
-class EventCorrelator {
-  constructor(opts) {
+export class EventCorrelator {
+  private syncRoot: string;
+  private correlationWindowMs: number;
+  private changeDebounceMs: number;
+  private shouldSuppressModifiedChange?: EventCorrelatorOptions['shouldSuppressModifiedChange'];
+  private getPreviousFileEntry: (relKey: string) => FileSnapshotEntry | undefined;
+  private pendingUnlinks: Map<string, RawEvent>;
+  private pendingAdds: Map<string, RawEvent>;
+  private changeTimers: Map<string, NodeJS.Timeout>;
+  private pendingChanges: Map<string, RawEvent>;
+  private flushTimer: NodeJS.Timeout | null;
+  private onEvents: EventListener | null;
+  private unlinkInodes: Map<number, RawEvent>;
+
+  constructor(opts: EventCorrelatorOptions) {
     this.syncRoot = path.resolve(opts.syncRoot);
     this.correlationWindowMs = opts.correlationWindowMs != null ? opts.correlationWindowMs : 250;
     this.changeDebounceMs = opts.changeDebounceMs != null ? opts.changeDebounceMs : 300;
@@ -54,15 +93,15 @@ class EventCorrelator {
     this.unlinkInodes = new Map();
   }
 
-  setListener(fn) {
+  setListener(fn: EventListener): void {
     this.onEvents = fn;
   }
 
-  async push(type, absPath, stats) {
+  async push(type: ChokidarEventName, absPath: string, stats?: fs.Stats): Promise<void> {
     const relKey = normalizeRelKey(absPath, this.syncRoot);
     if (!relKey) return;
     const isDirectory = type === 'addDir' || type === 'unlinkDir';
-    const raw = {
+    const raw: RawEvent = {
       type, absPath, relKey,
       timestamp: Date.now(),
       inode: stats ? (typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino) : undefined,
@@ -79,9 +118,9 @@ class EventCorrelator {
     }
   }
 
-  async handleUnlink(raw) {
+  private async handleUnlink(raw: RawEvent): Promise<void> {
     if (this.pendingAdds.has(raw.relKey)) {
-      const add = this.pendingAdds.get(raw.relKey);
+      const add = this.pendingAdds.get(raw.relKey)!;
       this.pendingAdds.delete(raw.relKey);
       this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: add.timestamp, size: add.size, isDirectory: raw.isDirectory }]);
       return;
@@ -89,7 +128,7 @@ class EventCorrelator {
     // Chokidar's unlink event typically lacks stats (file is already gone),
     // so recover inode/size/quickHash from the persisted watcher state. Without
     // this, rename detection in flush() can never match by inode or by hash.
-    const enriched = { ...raw };
+    const enriched: RawEvent = { ...raw };
     if (!isValidInode(enriched.inode) || enriched.quickHash === undefined) {
       const prev = this.getPreviousFileEntry(raw.relKey);
       if (prev) {
@@ -99,28 +138,28 @@ class EventCorrelator {
       }
     }
     this.pendingUnlinks.set(raw.relKey, enriched);
-    if (isValidInode(enriched.inode)) this.unlinkInodes.set(enriched.inode, enriched);
+    if (isValidInode(enriched.inode)) this.unlinkInodes.set(enriched.inode!, enriched);
     this.scheduleFlush();
     if (this.pendingUnlinks.size > MAX_PENDING_UNLINK_ENTRIES) this.flush();
   }
 
-  async handleAdd(raw) {
-    let hash;
+  private async handleAdd(raw: RawEvent): Promise<void> {
+    let hash: string | undefined;
     if (!raw.isDirectory) hash = await quickHash(raw.absPath);
-    const pending = { ...raw, quickHash: hash };
+    const pending: RawEvent = { ...raw, quickHash: hash };
 
     if (this.pendingUnlinks.has(raw.relKey)) {
-      const unlink = this.pendingUnlinks.get(raw.relKey);
+      const unlink = this.pendingUnlinks.get(raw.relKey)!;
       this.pendingUnlinks.delete(raw.relKey);
-      if (isValidInode(unlink.inode)) this.unlinkInodes.delete(unlink.inode);
+      if (isValidInode(unlink.inode)) this.unlinkInodes.delete(unlink.inode!);
       this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: raw.timestamp, size: raw.size, isDirectory: raw.isDirectory }]);
       return;
     }
 
-    if (isValidInode(raw.inode) && this.unlinkInodes.has(raw.inode)) {
-      const unlink = this.unlinkInodes.get(raw.inode);
+    if (isValidInode(raw.inode) && this.unlinkInodes.has(raw.inode!)) {
+      const unlink = this.unlinkInodes.get(raw.inode!)!;
       if (unlink.isDirectory === raw.isDirectory) {
-        this.unlinkInodes.delete(raw.inode);
+        this.unlinkInodes.delete(raw.inode!);
         this.pendingUnlinks.delete(unlink.relKey);
         const sameDir = dirnamePosix(unlink.relKey) === dirnamePosix(raw.relKey);
         const evtType = raw.isDirectory
@@ -135,7 +174,7 @@ class EventCorrelator {
     this.scheduleFlush();
   }
 
-  handleChange(raw) {
+  private handleChange(raw: RawEvent): void {
     const existing = this.changeTimers.get(raw.relKey);
     if (existing) clearTimeout(existing);
     this.pendingChanges.set(raw.relKey, raw);
@@ -147,14 +186,14 @@ class EventCorrelator {
     this.changeTimers.set(raw.relKey, timer);
   }
 
-  async flushDebouncedChange(relKey) {
+  private async flushDebouncedChange(relKey: string): Promise<void> {
     const ev = this.pendingChanges.get(relKey);
     if (!ev) return;
     this.pendingChanges.delete(relKey);
     await this.emitModifiedIfNeeded(ev);
   }
 
-  async emitModifiedIfNeeded(ev) {
+  private async emitModifiedIfNeeded(ev: RawEvent): Promise<void> {
     if (!ev.isDirectory && this.shouldSuppressModifiedChange) {
       try {
         if (await this.shouldSuppressModifiedChange(ev)) return;
@@ -163,7 +202,7 @@ class EventCorrelator {
     this.emit([{ type: 'MODIFIED', path: ev.relKey, timestamp: ev.timestamp, size: ev.size, isDirectory: ev.isDirectory }]);
   }
 
-  scheduleFlush() {
+  private scheduleFlush(): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
@@ -171,10 +210,10 @@ class EventCorrelator {
     }, this.correlationWindowMs);
   }
 
-  flush() {
-    const events = [];
+  flush(): void {
+    const events: WatchEvent[] = [];
     if (this.pendingUnlinks.size > 0 && this.pendingAdds.size > 0) {
-      const unlinksByHash = new Map();
+      const unlinksByHash = new Map<string, RawEvent[]>();
       for (const [, u] of this.pendingUnlinks) {
         if (u.quickHash) {
           const arr = unlinksByHash.get(u.quickHash) || [];
@@ -192,7 +231,7 @@ class EventCorrelator {
         matches.splice(idx, 1);
         this.pendingUnlinks.delete(unlink.relKey);
         this.pendingAdds.delete(relKey);
-        if (isValidInode(unlink.inode)) this.unlinkInodes.delete(unlink.inode);
+        if (isValidInode(unlink.inode)) this.unlinkInodes.delete(unlink.inode!);
         const sameDir = dirnamePosix(unlink.relKey) === dirnamePosix(add.relKey);
         const evtType = add.isDirectory
           ? (sameDir ? 'DIR_RENAMED' : 'DIR_MOVED')
@@ -212,11 +251,11 @@ class EventCorrelator {
     if (events.length > 0) this.emit(events);
   }
 
-  emit(events) {
+  private emit(events: WatchEvent[]): void {
     if (this.onEvents && events.length > 0) this.onEvents(events);
   }
 
-  async drain() {
+  async drain(): Promise<void> {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     for (const t of this.changeTimers.values()) clearTimeout(t);
     this.changeTimers.clear();
@@ -226,5 +265,3 @@ class EventCorrelator {
     this.flush();
   }
 }
-
-module.exports = { EventCorrelator };

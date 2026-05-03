@@ -1,4 +1,5 @@
-const IGNORED_PATTERNS = [
+/** Patterns chokidar should not emit events for. */
+export const IGNORED_PATTERNS: RegExp[] = [
   /(?:^|[/\\])\.DS_Store$/,
   /(?:^|[/\\])Thumbs\.db$/,
   /(?:^|[/\\])desktop\.ini$/,
@@ -12,5 +13,3 @@ const IGNORED_PATTERNS = [
   /(?:^|[/\\])__pycache__(?:[/\\]|$)/,
   /(?:^|[/\\])\.venv(?:[/\\]|$)/,
 ];
-
-module.exports = { IGNORED_PATTERNS };

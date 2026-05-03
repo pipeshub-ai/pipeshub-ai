@@ -1,3 +1,7 @@
+/**
+ * HTTP helpers for the Node → Python connector microservice proxy: command
+ * execution, response handling, and error mapping.
+ */
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -16,7 +20,7 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
 
 const logger = Logger.getInstance({
-  service: 'Connector Utils',
+  service: 'ConnectorServiceHTTP',
 });
 
 const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
@@ -144,7 +148,6 @@ export const handleBackendError = (error: unknown, operation: string): Error => 
   return new InternalServerError(`${operation} failed: ${fallback}`);
 };
 
-// Helper function to execute connector service commands
 export const executeConnectorCommand = async (
   uri: string,
   method: HttpMethod,
@@ -164,7 +167,6 @@ export const executeConnectorCommand = async (
   return await connectorCommand.execute();
 };
 
-// Helper function to handle common connector response logic
 export const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,

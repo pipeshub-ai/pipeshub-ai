@@ -7,7 +7,7 @@ import {
 import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
-import { isLocalFsConnector } from '../../../knowledge_base/utils/local_fs_connector';
+import { isLocalFsConnector } from '../../../knowledge_base/utils/local_fs_connector_name';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {

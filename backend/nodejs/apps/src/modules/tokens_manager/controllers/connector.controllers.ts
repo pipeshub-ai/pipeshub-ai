@@ -23,7 +23,7 @@ import {
   getConnectorErrorLogFields,
   handleBackendError,
   handleConnectorResponse,
-} from '../utils/connector.utils';
+} from '../utils/connector-service-http';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',

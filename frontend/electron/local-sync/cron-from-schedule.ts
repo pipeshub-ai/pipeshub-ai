@@ -1,8 +1,16 @@
 /**
- * Ported from CLI src/sync/cron_from_schedule.ts. Keep in sync with
- * frontend/src/sections/accountdetails/connectors/utils/cron.ts.
+ * Convert a (intervalMinutes, optional anchor time, timezone) schedule into a
+ * cron expression. Ported from CLI `src/sync/cron_from_schedule.ts` and kept in
+ * sync with the legacy frontend version under
+ * `frontend/src/sections/accountdetails/connectors/utils/cron.ts`.
  */
-function buildCronFromSchedule(cfg) {
+export interface CronScheduleConfig {
+  intervalMinutes?: number;
+  startTime?: number;
+  timezone?: string;
+}
+
+export function buildCronFromSchedule(cfg?: CronScheduleConfig | null): string {
   const interval = Math.max(1, Number((cfg && cfg.intervalMinutes) || 60));
   const startMs = Number((cfg && cfg.startTime) || 0);
 
@@ -28,5 +36,3 @@ function buildCronFromSchedule(cfg) {
   }
   return '0 * * * *';
 }
-
-module.exports = { buildCronFromSchedule };

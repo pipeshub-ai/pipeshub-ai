@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import {
   handleBackendError,
   handleConnectorResponse,
-} from '../../../../src/modules/tokens_manager/utils/connector.utils'
+} from '../../../../src/modules/tokens_manager/utils/connector-service-http'
 import {
   BadRequestError,
   UnauthorizedError,
@@ -15,7 +15,7 @@ import {
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
 
-describe('tokens_manager/utils/connector.utils', () => {
+describe('tokens_manager/utils/connector-service-http', () => {
   afterEach(() => {
     sinon.restore()
   })

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '..');
+const ROOT = join(__dirname, '..', '..');
 
 const SRC_OUT = join(ROOT, 'out');
 const ELECTRON_OUT = join(ROOT, 'electron', 'out');

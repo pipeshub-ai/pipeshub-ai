@@ -1,34 +1,47 @@
 // Stub the `electron` module before requiring the manager. Manager imports
 // safeStorage at top-level for token encryption; outside the Electron runtime
 // that would throw. Keeping it disabled forces the raw token path.
-const Module = require('module');
-const _origLoad = Module._load;
-Module._load = function patchedLoad(request, parent, isMain) {
+import Module = require('module');
+const _origLoad = (Module as unknown as { _load: (req: string, parent: unknown, isMain: unknown) => unknown })._load;
+(Module as unknown as { _load: (req: string, parent: unknown, isMain: unknown) => unknown })._load = function patchedLoad(
+  request: string,
+  parent: unknown,
+  isMain: unknown,
+): unknown {
   if (request === 'electron') {
     return { safeStorage: { isEncryptionAvailable: () => false } };
   }
-  return _origLoad.call(this, request, parent, isMain);
+  return _origLoad.call(Module, request, parent, isMain);
 };
 
-const test = require('node:test');
-const assert = require('node:assert');
-const fs = require('fs');
-const fsp = require('fs/promises');
-const path = require('path');
-const os = require('os');
-const { LocalSyncManager } = require('../manager');
+import test from 'node:test';
+import * as assert from 'node:assert';
+import * as fs from 'fs';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
+import { LocalSyncManager } from '..';
+import type { DispatchFileEventBatchArgs } from '../transport/file-event-dispatcher';
+import type { WatchEvent } from '../watcher/replay-event-expander';
+
+interface DispatchedRecord {
+  connectorId: string;
+  events: WatchEvent[];
+  resetBeforeApply: boolean;
+  batchId: string;
+}
 
 const TOKEN = 'test-token';
 // Unreachable; we never pass connectorDisplayType, so scheduleCrawlingManagerJob
-// is skipped (manager.js start() guards on connectorDisplayType + interval).
+// is skipped (manager.start() guards on connectorDisplayType + interval).
 const API_BASE = 'http://127.0.0.1:1';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function setup() {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-userdata-'));
   const syncRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-syncroot-'));
-  const dispatched = [];
-  const dispatchFileEventBatch = async (args) => {
+  const dispatched: DispatchedRecord[] = [];
+  const dispatchFileEventBatch = async (args: DispatchFileEventBatchArgs) => {
     dispatched.push({
       connectorId: args.connectorId,
       events: args.events,
@@ -42,9 +55,9 @@ function setup() {
   return { manager, dispatched, syncRoot, userData };
 }
 
-function reopen(userData) {
-  const dispatched = [];
-  const dispatchFileEventBatch = async (args) => {
+function reopen(userData: string) {
+  const dispatched: DispatchedRecord[] = [];
+  const dispatchFileEventBatch = async (args: DispatchFileEventBatchArgs) => {
     dispatched.push({
       connectorId: args.connectorId,
       events: args.events,
@@ -160,7 +173,7 @@ test('Close → reopen: full-sync sends current disk state with resetBeforeApply
     fullSync,
     `expected a full-sync dispatch with resetBeforeApply=true, got ${JSON.stringify(d2)}`,
   );
-  const paths = (fullSync.events || []).map((e) => e.path);
+  const paths = (fullSync!.events || []).map((e) => e.path);
   assert.ok(paths.includes('b.txt'), 'b.txt should be in full-sync (created while closed)');
   assert.ok(!paths.includes('a.txt'), 'a.txt should NOT be in full-sync (deleted while closed)');
 });
@@ -191,7 +204,7 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
     `expected 0 events for a.txt before close, got ${beforeClose.length}`,
   );
 
-  // Close — the scheduled timer is cleared (manager.js stop() clearInterval).
+  // Close — the scheduled timer is cleared (manager stop() clearInterval).
   await manager.shutdown();
 
   // Reopen — init's full-sync brings backend to current disk state.
@@ -204,7 +217,7 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
     fullSync,
     `expected full-sync after reopen to cover the dropped tick, got ${JSON.stringify(d2)}`,
   );
-  const created = (fullSync.events || []).filter((e) => e.type === 'CREATED' && e.path === 'a.txt');
+  const created = (fullSync!.events || []).filter((e) => e.type === 'CREATED' && e.path === 'a.txt');
   assert.equal(
     created.length,
     1,
@@ -236,12 +249,10 @@ test('Duplicate root path: one local folder is watched by at most one connector'
 
   assert.equal(starts.filter((result) => result.status === 'fulfilled').length, 1);
   assert.equal(starts.filter((result) => result.status === 'rejected').length, 1);
-  assert.match(
-    String(starts.find((result) => result.status === 'rejected').reason?.message || ''),
-    /already watched/,
-  );
+  const rejected = starts.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+  assert.match(String(rejected.reason?.message || ''), /already watched/);
 
-  const statuses = manager.getStatus();
+  const statuses = manager.getStatus() as Array<{ watcherState: string }>;
   assert.equal(
     statuses.filter((s) => s.watcherState === 'watching' || s.watcherState === 'starting').length,
     1,

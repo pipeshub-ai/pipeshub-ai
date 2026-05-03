@@ -77,7 +77,7 @@ from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import parse_timestamp
 
 from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
-from .utils import parse_sync_bool
+from .sync_bool_parse import parse_sync_bool
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 LOCAL_FS_CONNECTOR_NAME = "Local FS"

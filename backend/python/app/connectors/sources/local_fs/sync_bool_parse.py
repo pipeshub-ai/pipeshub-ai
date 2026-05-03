@@ -1,4 +1,4 @@
-"""Helpers for the Local FS connector."""
+"""Parse boolean sync flags from etcd / JSON (strings or bools)."""
 
 from typing import Any
 
