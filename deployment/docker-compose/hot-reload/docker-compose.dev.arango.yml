@@ -135,9 +135,9 @@ services:
 
       - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
 
-      # Vite frontend dev server
+      # Next.js frontend dev (browser calls Node API on host port 3000)
       - DOCKER_DEV=true
-      - VITE_BACKEND_URL=http://localhost:3000
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:3000
       
       # Frontend memory optimization - limit Node.js heap to 2GB
       - NODE_OPTIONS=--max-old-space-size=2048

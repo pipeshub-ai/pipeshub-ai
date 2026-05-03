@@ -181,9 +181,9 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## Tech Stack
 ### Frontend
-- **React** - Component-based UI library
+- **Next.js** – App Router UI (client-rendered React)
 - **TypeScript** - Strongly typed JavaScript superset
-- **Material UI** - Prebuilt React UI components
+- **Radix UI Themes** - Accessible component primitives and styling
 - **Zod** – Schema validation and parsing
 - **React Hook Form** – Flexible form state management
 

@@ -74,22 +74,19 @@ COPY backend/nodejs/apps/src ./src
 # DEV: no npm run build — runtime uses "npm run dev" (nodemon) for hot reload
 
 # -----------------------------------------------------------------------------
-# Stage 4: Frontend (DEV - no build, use npm run dev / Vite at runtime)
+# Stage 4: Frontend (DEV - source + deps; compose runs Next.js dev server)
 # Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
 # -----------------------------------------------------------------------------
 FROM node:20-slim AS frontend-dev
 WORKDIR /app/frontend
 
-RUN mkdir -p packages
 COPY frontend/package*.json ./
-COPY frontend/packages ./packages/
 
 RUN npm config set legacy-peer-deps true && \
     npm install && \
     npm cache clean --force
 
 COPY frontend/ ./
-# DEV: no npm run build — runtime uses "npm run dev" (Vite HMR) for hot reload
 
 # -----------------------------------------------------------------------------
 # Stage 5: Runtime Base - Minimal runtime dependencies only
@@ -145,7 +142,7 @@ COPY --from=python-deps /root/nltk_data /root/nltk_data
 # Copy Node.js backend (WITH devDependencies: nodemon, ts-node, typescript)
 COPY --from=nodejs-backend /app/backend/ ./backend/
 
-# Copy full frontend source + node_modules for Vite dev server at runtime
+# Copy full frontend source + node_modules for Next.js dev at runtime
 COPY --from=frontend-dev /app/frontend/ ./frontend/
 
 # Ensure backend public dir exists (used by Node when serving static in prod; ignored in dev)

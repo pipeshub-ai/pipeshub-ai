@@ -1,13 +1,4 @@
 # -----------------------------------------------------------------------------
-# Global build args
-# -----------------------------------------------------------------------------
-# FRONTEND picks which frontend implementation to ship:
-#   --build-arg FRONTEND=old  -> legacy Vite app in `frontend/`  (default)
-#   --build-arg FRONTEND=new  -> Next.js app in `frontend-new/`
-# Declared before the first FROM so it can be used in `FROM ... AS ...` stages.
-ARG FRONTEND=old
-
-# -----------------------------------------------------------------------------
 # Stage 1: Build Base - Contains all build tools (NOT in final image)
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim AS build-base
@@ -99,41 +90,19 @@ RUN npm run build && \
     npm cache clean --force
 
 # -----------------------------------------------------------------------------
-# Stage 4a: Frontend Build (Vite / legacy `frontend/`)
+# Stage 4: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
-# Selected when FRONTEND=old (default). Produces static assets at /out.
-FROM node:20-slim AS frontend-build-old
+# Static export so the Node.js API can serve files from `backend/dist/public`.
+FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
 
-RUN mkdir -p packages
 COPY frontend/package*.json ./
-COPY frontend/packages ./packages/
 
 RUN npm config set legacy-peer-deps true && \
     npm install && \
     npm cache clean --force
 
 COPY frontend/ ./
-RUN npm run build && \
-    mkdir -p /out && \
-    cp -a dist/. /out/
-
-# -----------------------------------------------------------------------------
-# Stage 4b: Frontend Build (Next.js / `frontend-new/`)
-# -----------------------------------------------------------------------------
-# Selected when FRONTEND=new. Builds the Next.js app as a static export so the
-# output can continue to be served as static files by the Node.js backend
-# from `backend/dist/public`, matching the legacy setup.
-FROM node:20-slim AS frontend-build-new
-WORKDIR /app/frontend
-
-COPY frontend-new/package*.json ./
-
-RUN npm config set legacy-peer-deps true && \
-    npm install && \
-    npm cache clean --force
-
-COPY frontend-new/ ./
 
 # Force Next.js static export regardless of what next.config.mjs ships with,
 # so the resulting assets can be served directly from disk.
@@ -145,14 +114,6 @@ RUN if grep -q "output: 'export'" next.config.mjs; then \
     npm run build && \
     mkdir -p /out && \
     cp -a out/. /out/
-
-# -----------------------------------------------------------------------------
-# Stage 4: Frontend Build (selector)
-# -----------------------------------------------------------------------------
-# Aliases the selected frontend stage (see global ARG FRONTEND above) so the
-# rest of the Dockerfile can simply reference `frontend-build`.
-ARG FRONTEND
-FROM frontend-build-${FRONTEND} AS frontend-build
 
 # -----------------------------------------------------------------------------
 # Stage 5: Runtime Base - Minimal runtime dependencies only

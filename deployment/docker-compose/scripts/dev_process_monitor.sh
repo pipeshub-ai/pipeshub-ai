@@ -38,7 +38,7 @@ watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m
 
 sleep 10
 
-log "Starting frontend (Vite dev server on port 3001)..."
+log "Starting frontend (Next.js dev server on port 3001)..."
 cd /app/frontend
 
 # Ensure NODE_OPTIONS is set for memory limit (fallback if not in env)
