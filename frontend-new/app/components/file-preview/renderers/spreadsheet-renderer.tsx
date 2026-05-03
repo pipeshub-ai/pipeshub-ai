@@ -8,6 +8,10 @@ import type { PreviewCitation } from '../types';
 
 // ─── Constants ──────────────────────────────────────────────────────
 const MAX_ROWS = 5_000;
+const COL_DEFAULT_WIDTH = 150;
+const COL_MIN_WIDTH = 30;
+const RESIZE_EDGE_PX = 5;
+const ROW_NUM_COL_WIDTH = 50;
 
 const XLSX_READ_OPTIONS = {
   type: 'array' as const,
@@ -129,19 +133,11 @@ function ensureSpreadsheetStyles(): void {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
-function renderCellValue(value: unknown, full = false): string {
+function formatCellValue(value: unknown): string {
   if (value == null) return '';
   if (value instanceof Date) return value.toLocaleDateString();
   if (typeof value === 'object') return JSON.stringify(value);
-  const s = String(value).trim();
-  if (full) return s;
-  return s.length > 50 ? `${s.substring(0, 47)}...` : s;
-}
-
-function getColumnWidth(header: string): string {
-  const len = String(header || '').length;
-  const w = Math.max(80, Math.min(280, len * 8 + 24));
-  return `${w}px`;
+  return String(value).trim();
 }
 
 function colLetter(index: number): string {
@@ -249,20 +245,18 @@ function processWorkbook(workbook: XLSX.WorkBook): { data: WorkbookData; sheets:
 // ─── Memoized table cell ────────────────────────────────────────────
 const TableCellMemo = memo(function TableCellMemo({
   value,
-  width,
+  colIndex,
   isHeaderRow,
   highlighted,
   isDark,
 }: {
   value: unknown;
-  width: string;
+  colIndex: number;
   isHeaderRow: boolean;
   highlighted: boolean;
   isDark: boolean;
 }) {
-  const display = renderCellValue(value);
-  const full = renderCellValue(value, true);
-  const isTruncated = display !== full;
+  const text = formatCellValue(value);
 
   let bg = 'transparent';
   if (isHeaderRow) {
@@ -273,11 +267,10 @@ const TableCellMemo = memo(function TableCellMemo({
 
   return (
     <td
-      title={isTruncated ? full : undefined}
+      title={text || undefined}
       style={{
-        width,
-        minWidth: width,
-        maxWidth: width,
+        width: `var(--cw-${colIndex})`,
+        minWidth: `${COL_MIN_WIDTH}px`,
         padding: '6px 10px',
         borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
         borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
@@ -292,7 +285,7 @@ const TableCellMemo = memo(function TableCellMemo({
         fontFamily: "'Manrope', sans-serif",
       }}
     >
-      {display || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')}
+      {text || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')}
     </td>
   );
 });
@@ -314,6 +307,9 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   const isDark = appearance === 'dark';
   const [state, dispatch] = useReducer(viewerReducer, INITIAL_STATE);
   const tableRef = useRef<HTMLDivElement>(null);
+  const tableElRef = useRef<HTMLTableElement>(null);
+  const resizingRef = useRef(false);
+  const sheetColWidthsRef = useRef<Map<string, number[]>>(new Map());
   // Abort any outstanding scroll-retry loop so a newer citation click doesn't
   // race with an older pending scroll.
   const scrollTokenRef = useRef(0);
@@ -375,6 +371,89 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
     }
     return state.workbookData[state.selectedSheet];
   }, [state.workbookData, state.selectedSheet]);
+
+  // ── Initialize column widths as CSS variables on the <table> ────
+  // Restores previously-saved widths when switching back to a sheet,
+  // otherwise falls back to COL_DEFAULT_WIDTH for every column.
+  useEffect(() => {
+    const tableEl = tableElRef.current;
+    if (!tableEl || !currentSheetData.headers.length) return;
+    const numCols = currentSheetData.headers.length;
+
+    const savedWidths = sheetColWidthsRef.current.get(state.selectedSheet);
+    let totalColWidth = 0;
+
+    for (let i = 0; i < numCols; i++) {
+      const w = savedWidths?.[i] ?? COL_DEFAULT_WIDTH;
+      tableEl.style.setProperty(`--cw-${i}`, `${w}px`);
+      totalColWidth += w;
+    }
+    tableEl.style.width = `${ROW_NUM_COL_WIDTH + totalColWidth}px`;
+  }, [currentSheetData.headers, state.selectedSheet]);
+
+  // ── Column resize: cursor hint on hover near any cell border ───
+  const handleResizeMove = useCallback((e: React.PointerEvent) => {
+    if (resizingRef.current) return;
+    const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
+    const container = tableRef.current;
+    if (!cell || !container) {
+      if (container) container.style.cursor = '';
+      return;
+    }
+    if (cell.cellIndex < 1) {
+      container.style.cursor = '';
+      return;
+    }
+    const rect = cell.getBoundingClientRect();
+    container.style.cursor = e.clientX > rect.right - RESIZE_EDGE_PX ? 'col-resize' : '';
+  }, []);
+
+  // ── Column resize: drag start from any cell's right edge ───────
+  const handleResizeStart = useCallback((e: React.PointerEvent) => {
+    const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
+    if (!cell) return;
+    const cellIdx = cell.cellIndex;
+    if (cellIdx < 1) return;
+    const rect = cell.getBoundingClientRect();
+    if (e.clientX <= rect.right - RESIZE_EDGE_PX) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = true;
+
+    const colIndex = cellIdx - 1;
+    const tableEl = tableElRef.current;
+    if (!tableEl) return;
+
+    const currentColWidth = parseInt(
+      tableEl.style.getPropertyValue(`--cw-${colIndex}`) || `${COL_DEFAULT_WIDTH}`, 10
+    );
+    const startX = e.clientX;
+    let prevColWidth = currentColWidth;
+    let runningTableWidth = parseInt(tableEl.style.width || '0', 10);
+
+    const onMove = (ev: PointerEvent) => {
+      const newWidth = Math.max(COL_MIN_WIDTH, currentColWidth + ev.clientX - startX);
+      tableEl.style.setProperty(`--cw-${colIndex}`, `${newWidth}px`);
+      runningTableWidth += newWidth - prevColWidth;
+      tableEl.style.width = `${runningTableWidth}px`;
+      prevColWidth = newWidth;
+    };
+
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (tableRef.current) tableRef.current.style.cursor = '';
+      requestAnimationFrame(() => { resizingRef.current = false; });
+    };
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   // ── Row → citation mapping ──────────────────────────────────────
   const rowCitationMap = useMemo(() => {
@@ -485,6 +564,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   // ── Handle row click for citation ───────────────────────────────
   const handleRowClick = useCallback(
     (rowNum: number) => {
+      if (resizingRef.current) return;
       const citationId = rowCitationMap.get(rowNum);
       if (citationId) {
         onHighlightClick?.(citationId);
@@ -495,8 +575,20 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
 
   // ── Sheet change ────────────────────────────────────────────────
   const handleSheetSelect = useCallback((sheet: string) => {
+    const tableEl = tableElRef.current;
+    if (tableEl && state.selectedSheet) {
+      const widths: number[] = [];
+      for (let i = 0; ; i++) {
+        const val = tableEl.style.getPropertyValue(`--cw-${i}`);
+        if (!val) break;
+        widths.push(parseInt(val, 10));
+      }
+      if (widths.length > 0) {
+        sheetColWidthsRef.current.set(state.selectedSheet, widths);
+      }
+    }
     dispatch({ type: 'SET_SELECTED_SHEET', sheet });
-  }, []);
+  }, [state.selectedSheet]);
 
   // ── Loading state ───────────────────────────────────────────────
   if (state.loading) {
@@ -559,6 +651,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
       {/* Table area */}
       <Box
         ref={tableRef}
+        onPointerMove={handleResizeMove}
+        onPointerDown={handleResizeStart}
         style={{
           flex: 1,
           overflow: 'auto',
@@ -566,8 +660,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
         className="no-scrollbar"
       >
         <table
+          ref={tableElRef}
           style={{
-            width: 'max-content',
             minWidth: '100%',
             tableLayout: 'fixed',
             borderCollapse: 'collapse',
@@ -580,8 +674,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
               {/* Row number column header */}
               <th
                 style={{
-                  width: '50px',
-                  minWidth: '50px',
+                  width: `${ROW_NUM_COL_WIDTH}px`,
+                  minWidth: `${ROW_NUM_COL_WIDTH}px`,
                   padding: '4px 6px',
                   fontSize: '10px',
                   fontWeight: 600,
@@ -601,8 +695,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                 <th
                   key={index}
                   style={{
-                    width: getColumnWidth(currentSheetData.headers[index]),
-                    minWidth: getColumnWidth(currentSheetData.headers[index]),
+                    width: `var(--cw-${index})`,
+                    minWidth: `${COL_MIN_WIDTH}px`,
                     padding: '4px 6px',
                     fontSize: '10px',
                     fontWeight: 600,
@@ -611,6 +705,9 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                     borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
                     borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
                     color: isDark ? '#999' : 'var(--olive-9)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {colLetter(index)}
@@ -647,8 +744,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                   {/* Row number cell (sticky left) */}
                   <td
                     style={{
-                      width: '50px',
-                      minWidth: '50px',
+                      width: `${ROW_NUM_COL_WIDTH}px`,
+                      minWidth: `${ROW_NUM_COL_WIDTH}px`,
                       padding: '4px 6px',
                       fontSize: '10px',
                       fontWeight: 500,
@@ -665,11 +762,11 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                     {rowNum}
                   </td>
 
-                  {currentSheetData.headers.map((header, colIndex) => (
+                  {currentSheetData.headers.map((_header, colIndex) => (
                     <TableCellMemo
                       key={`${state.selectedSheet}-${displayIndex}-${colIndex}`}
                       value={row[`__col_${colIndex}`]}
-                      width={getColumnWidth(header)}
+                      colIndex={colIndex}
                       isHeaderRow={isHeaderRow}
                       highlighted={isHighlighted}
                       isDark={isDark}
