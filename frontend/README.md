@@ -15,7 +15,7 @@
 ## Project Structure
 
 ```
-template/
+frontend/
 ├── app/
 │   ├── (main)/              # Authenticated routes
 │   │   ├── components/      # Shared components (Sidebar, etc.)
@@ -52,9 +52,9 @@ template/
    ```
 
 2. **Configure Environment Variables**
-   Create a `.env.local` file:
+   Create a `.env.local` file (or copy `env.template`):
    ```env
-   NEXT_PUBLIC_API_BASE_URL=https://your-api-url.com
+   NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
    ```
 
 3. **Run Development Server**

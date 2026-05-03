@@ -31,7 +31,15 @@ function isSvgPath(src: string): boolean {
 }
 
 function stripScripts(s: string): string {
-  return s.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+  // Remove `<script>...</script>` in a loop so nested / overlapping patterns cannot leave
+  // a residual `<script` after one pass; allow whitespace before `>` on the closing tag.
+  const re = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(re, '');
+  } while (s !== prev);
+  return s;
 }
 
 function svgMarkupUsesCurrentColor(svgText: string): boolean {
