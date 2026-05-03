@@ -101,9 +101,17 @@ from app.models.entities import (  # noqa: E402
 class _FakeResponse:
     """Minimal aiohttp response that supports `async with` and `.text()`."""
 
-    def __init__(self, status: int, text: str = "", *, raise_on: Optional[Exception] = None) -> None:
+    def __init__(
+        self,
+        status: int,
+        text: str = "",
+        *,
+        headers: Optional[dict[str, str]] = None,
+        raise_on: Optional[Exception] = None,
+    ) -> None:
         self.status = status
         self._text = text
+        self.headers = headers or {}
         self._raise = raise_on
 
     async def text(self) -> str:
@@ -146,8 +154,11 @@ class _FakeSession:
         )
         return response
 
-    def post(self, url, *, data=None, headers=None):
-        return self._take("post", url, data=data, headers=headers)
+    def post(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("post", url, data=data, headers=headers, **kwargs)
+
+    def put(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("put", url, data=data, headers=headers, **kwargs)
 
     def get(self, url, *, headers=None):
         return self._take("get", url, headers=headers)
@@ -428,6 +439,128 @@ class TestUploadStorageFile:
             await folder_connector._upload_storage_file(
                 rel_path="x.txt", content=b"d", mime_type=None,
                 org_id="o", storage_url="http://x", storage_token="t",
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    async def test_direct_upload_301_put_then_returns_header_doc_id(
+        self, folder_connector, monkeypatch
+    ):
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(
+                        301,
+                        "{}",
+                        headers={
+                            "Location": "https://s3.example/presigned-put",
+                            "x-document-id": "doc-presigned",
+                        },
+                    ),
+                ),
+                ("put", _FakeResponse(200, "")),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        doc_id = await folder_connector._upload_storage_file(
+            rel_path="a/b.txt",
+            content=b"payload-bytes",
+            mime_type="text/plain",
+            org_id="org-1",
+            storage_url="http://storage.local",
+            storage_token="tok",
+        )
+        assert doc_id == "doc-presigned"
+        assert session.calls[0]["method"] == "post"
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == "https://s3.example/presigned-put"
+        assert session.calls[1]["data"] == b"payload-bytes"
+
+    async def test_direct_upload_301_extracts_id_from_json_when_no_header(
+        self, folder_connector, monkeypatch
+    ):
+        body = json.dumps({"document": {"_id": "doc-from-json"}})
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(
+                        301,
+                        body,
+                        headers={"Location": "https://s3.example/p"},
+                    ),
+                ),
+                ("put", _FakeResponse(200, "")),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        doc_id = await folder_connector._upload_storage_file(
+            rel_path="x.txt",
+            content=b"x",
+            mime_type=None,
+            org_id="o",
+            storage_url="http://x",
+            storage_token="t",
+        )
+        assert doc_id == "doc-from-json"
+
+    async def test_direct_upload_301_upload_next_version_returns_existing_id(
+        self, folder_connector, monkeypatch
+    ):
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(
+                        301,
+                        "{}",
+                        headers={"Location": "https://s3.example/p"},
+                    ),
+                ),
+                ("put", _FakeResponse(200, "")),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        doc_id = await folder_connector._upload_storage_file(
+            rel_path="a.txt",
+            content=b"z",
+            mime_type="text/plain",
+            existing_document_id="keep-me",
+            org_id="org-1",
+            storage_url="http://storage.local",
+            storage_token="tok",
+        )
+        assert doc_id == "keep-me"
+
+    async def test_direct_upload_presigned_put_failure_raises_bad_gateway(
+        self, folder_connector, monkeypatch
+    ):
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(
+                        301,
+                        "{}",
+                        headers={"Location": "https://s3.example/p"},
+                    ),
+                ),
+                ("put", _FakeResponse(403, "AccessDenied")),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector._upload_storage_file(
+                rel_path="x.txt",
+                content=b"d",
+                mime_type=None,
+                org_id="o",
+                storage_url="http://x",
+                storage_token="t",
             )
         assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
