@@ -1,3 +1,4 @@
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple, Union
@@ -148,7 +149,10 @@ class QdrantService(IVectorDBService):
     async def disconnect(self) -> None:
         if self.client is not None:
             try:
-                self.client.close()
+                if isinstance(self.client, AsyncQdrantClient):
+                    await self.client.close()
+                else:
+                    self.client.close()
                 logger.info("✅ Disconnected from Qdrant successfully")
             except Exception as e:
                 logger.warning(f"⚠️ Error during disconnect (likely harmless): {e}")
@@ -168,7 +172,9 @@ class QdrantService(IVectorDBService):
         """Get all collections"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.get_collections()
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.get_collections()
+        return await asyncio.to_thread(self.client.get_collections)
 
     async def get_collection(
         self,
@@ -177,7 +183,9 @@ class QdrantService(IVectorDBService):
         """Get a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.get_collection(collection_name)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.get_collection(collection_name)
+        return await asyncio.to_thread(self.client.get_collection, collection_name)
 
     async def delete_collection(
         self,
@@ -186,7 +194,10 @@ class QdrantService(IVectorDBService):
         """Delete a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        self.client.delete_collection(collection_name)
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.delete_collection(collection_name)
+        else:
+            await asyncio.to_thread(self.client.delete_collection, collection_name)
 
     async def create_collection(
         self,
@@ -229,13 +240,23 @@ class QdrantService(IVectorDBService):
                 )
             )
 
-        self.client.create_collection(
-            collection_name=collection_name,
-            vectors_config=vectors_config,
-            sparse_vectors_config=sparse_vectors_config,
-            optimizers_config=optimizers_config,
-            quantization_config=quantization_config,
-        )
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_vectors_config,
+                optimizers_config=optimizers_config,
+                quantization_config=quantization_config,
+            )
+        else:
+            await asyncio.to_thread(
+                self.client.create_collection,
+                collection_name=collection_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_vectors_config,
+                optimizers_config=optimizers_config,
+                quantization_config=quantization_config,
+            )
         logger.info(f"✅ Created collection {collection_name}")
 
     async def create_index(
@@ -253,8 +274,10 @@ class QdrantService(IVectorDBService):
                 type=KeywordIndexType.KEYWORD,
             )
 
-        # TODO: Add handling for Async client
-        self.client.create_payload_index(collection_name, field_name, field_schema)
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.create_payload_index(collection_name, field_name, field_schema)
+        else:
+            await asyncio.to_thread(self.client.create_payload_index, collection_name, field_name, field_schema)
 
     async def filter_collection(
         self,
@@ -368,9 +391,11 @@ class QdrantService(IVectorDBService):
         """Scroll through a collection"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.scroll(collection_name, scroll_filter, limit)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.scroll(collection_name, scroll_filter, limit)
+        return await asyncio.to_thread(self.client.scroll, collection_name, scroll_filter, limit)
 
-    def overwrite_payload(
+    async def overwrite_payload(
         self,
         collection_name: str,
         payload: dict,
@@ -379,9 +404,12 @@ class QdrantService(IVectorDBService):
         """Overwrite a payload"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        self.client.overwrite_payload(collection_name, payload, points)
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.overwrite_payload(collection_name, payload, points)
+        else:
+            await asyncio.to_thread(self.client.overwrite_payload, collection_name, payload, points)
 
-    def query_nearest_points(
+    async def query_nearest_points(
         self,
         collection_name: str,
         requests: List[QueryRequest],
@@ -389,14 +417,16 @@ class QdrantService(IVectorDBService):
         """Query batch points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        return self.client.query_batch_points(collection_name, requests)
+        if isinstance(self.client, AsyncQdrantClient):
+            return await self.client.query_batch_points(collection_name, requests)
+        return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
 
-    def upsert_points(
+    async def upsert_points(
         self,
         collection_name: str,
         points: List[PointStruct],
-        batch_size: int = 1000,  # Optimal batch size for Qdrant
-        max_workers: int = 5,  # Number of parallel upload threads
+        batch_size: int = 1000,
+        max_workers: int = 5,
     ) -> None:
         """Upsert points with parallel batching for better performance"""
         if self.client is None:
@@ -406,11 +436,44 @@ class QdrantService(IVectorDBService):
         total_points = len(points)
         logger.info(f"⏱️ Starting upsert of {total_points} points to collection '{collection_name}' (batch size: {batch_size}, parallel workers: {max_workers})")
 
-        # If points fit in one batch, upload directly
+        if isinstance(self.client, AsyncQdrantClient):
+            await self._upsert_points_async(collection_name, points, batch_size)
+        else:
+            await asyncio.to_thread(
+                self._upsert_points_sync, collection_name, points, batch_size, max_workers
+            )
+
+        elapsed_time = time.perf_counter() - start_time
+        throughput = total_points / elapsed_time if elapsed_time > 0 else 0
+        logger.info(
+            f"✅ Completed upsert of {total_points} points in {elapsed_time:.2f}s "
+            f"(throughput: {throughput:.1f} points/s, avg: {elapsed_time/total_points*1000:.2f}ms per point)"
+        )
+
+    async def _upsert_points_async(
+        self,
+        collection_name: str,
+        points: List[PointStruct],
+        batch_size: int,
+    ) -> None:
+        if len(points) <= batch_size:
+            await self.client.upsert(collection_name, points)
+        else:
+            for i in range(0, len(points), batch_size):
+                batch = points[i:i + batch_size]
+                await self.client.upsert(collection_name, batch)
+
+    def _upsert_points_sync(
+        self,
+        collection_name: str,
+        points: List[PointStruct],
+        batch_size: int,
+        max_workers: int,
+    ) -> None:
+        total_points = len(points)
         if total_points <= batch_size:
             self.client.upsert(collection_name, points)
         else:
-            # Split into batches
             batches = []
             for i in range(0, total_points, batch_size):
                 batch_end = min(i + batch_size, total_points)
@@ -421,7 +484,6 @@ class QdrantService(IVectorDBService):
             total_batches = len(batches)
             completed_batches = 0
 
-            # Upload batches in parallel using ThreadPoolExecutor
             def upload_batch(batch_info: Tuple[int, List[PointStruct]]) -> Tuple[int, int, float]:
                 batch_num, batch = batch_info
                 batch_start = time.perf_counter()
@@ -446,14 +508,7 @@ class QdrantService(IVectorDBService):
                         logger.error(f"❌ Failed to upload batch {batch_info[0]}: {str(e)}")
                         raise
 
-        elapsed_time = time.perf_counter() - start_time
-        throughput = total_points / elapsed_time if elapsed_time > 0 else 0
-        logger.info(
-            f"✅ Completed upsert of {total_points} points in {elapsed_time:.2f}s "
-            f"(throughput: {throughput:.1f} points/s, avg: {elapsed_time/total_points*1000:.2f}ms per point)"
-        )
-
-    def delete_points(
+    async def delete_points(
         self,
         collection_name: str,
         filter: Filter,
@@ -461,10 +516,19 @@ class QdrantService(IVectorDBService):
         """Delete points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
-        self.client.delete(
-            collection_name=collection_name,
-            points_selector=FilterSelector(
-                filter=filter
-            ),
-        )
+        if isinstance(self.client, AsyncQdrantClient):
+            await self.client.delete(
+                collection_name=collection_name,
+                points_selector=FilterSelector(
+                    filter=filter
+                ),
+            )
+        else:
+            await asyncio.to_thread(
+                self.client.delete,
+                collection_name=collection_name,
+                points_selector=FilterSelector(
+                    filter=filter
+                ),
+            )
         logger.info(f"✅ Deleted points from collection '{collection_name}'")

@@ -84,15 +84,11 @@ class RetrievalService:
         self.llm = None
         self.graph_provider = graph_provider
         self.blob_store = blob_store
-        # Initialize sparse embeddings
-        try:
-            self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
-        except Exception as e:
-            self.logger.error("Failed to initialize sparse embeddings: " + str(e))
-            self.sparse_embeddings = None
-            raise Exception(
-                "Failed to initialize sparse embeddings: " + str(e),
-            ) from e
+        # Defer sparse embeddings init to first use — FastEmbedSparse downloads
+        # and loads an ONNX model which blocks the event loop for 30-60s on a
+        # cold cache.  Lazy-load in a worker thread via _ensure_sparse_embeddings().
+        self.sparse_embeddings = None
+        self._sparse_embeddings_lock = asyncio.Lock()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
@@ -103,6 +99,17 @@ class RetrievalService:
         # once even if multiple requests race during warmup. Safe to create at
         # import-time on Python 3.10+ (no running loop required).
         self._embedding_model_lock = asyncio.Lock()
+
+    async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
+        """Lazily initialise FastEmbedSparse in a worker thread."""
+        if self.sparse_embeddings is not None:
+            return self.sparse_embeddings
+        async with self._sparse_embeddings_lock:
+            if self.sparse_embeddings is None:
+                self.sparse_embeddings = await asyncio.to_thread(
+                    FastEmbedSparse, model_name="Qdrant/BM25"
+                )
+        return self.sparse_embeddings
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
@@ -119,7 +126,7 @@ class RetrievalService:
             for config in llm_configs:
                 if config.get("isDefault", False):
                     provider = config["provider"]
-                    self.llm = get_generator_model(provider, config)
+                    self.llm = await asyncio.to_thread(get_generator_model, provider, config)
                 if self.llm:
                     break
 
@@ -129,7 +136,7 @@ class RetrievalService:
             if not self.llm:
                 for config in llm_configs:
                     provider = config["provider"]
-                    self.llm = get_generator_model(provider, config)
+                    self.llm = await asyncio.to_thread(get_generator_model, provider, config)
                     if self.llm:
                         break
                 if not self.llm:
@@ -670,13 +677,14 @@ class RetrievalService:
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
-        if not self.sparse_embeddings:
+        sparse_embeddings = await self._ensure_sparse_embeddings()
+        if not sparse_embeddings:
             raise ValueError("No sparse embeddings found")
 
         # OPTIMIZATION: Parallelize dense and sparse embedding generation for multiple queries
         dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
         sparse_tasks = [
-            asyncio.to_thread(self.sparse_embeddings.embed_query, query) for query in queries
+            asyncio.to_thread(sparse_embeddings.embed_query, query) for query in queries
         ]
         dense_query_embeddings, sparse_query_embeddings = await asyncio.gather(
             asyncio.gather(*dense_tasks),
@@ -704,7 +712,7 @@ class RetrievalService:
             )
             for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)
         ]
-        search_results = self.vector_db_service.query_nearest_points(
+        search_results = await self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
             requests=query_requests,
         )

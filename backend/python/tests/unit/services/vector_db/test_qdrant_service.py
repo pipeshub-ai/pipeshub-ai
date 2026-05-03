@@ -52,6 +52,11 @@ from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
 
 
+async def _passthrough_to_thread(func, *args, **kwargs):
+    """Drop-in replacement for asyncio.to_thread that just calls func synchronously."""
+    return func(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -526,40 +531,49 @@ class TestFilterCollection:
 
 
 class TestUpsertPoints:
-    def test_single_batch(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_single_batch(self, connected_service):
         points = [PointStruct(id=i, vector=[0.1] * 384, payload={}) for i in range(10)]
-        connected_service.upsert_points("col", points, batch_size=100)
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await connected_service.upsert_points("col", points, batch_size=100)
         connected_service.client.upsert.assert_called_once_with("col", points)
 
-    def test_multi_batch(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_multi_batch(self, connected_service):
         points = [PointStruct(id=i, vector=[0.1] * 384, payload={}) for i in range(25)]
-        connected_service.upsert_points("col", points, batch_size=10, max_workers=2)
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await connected_service.upsert_points("col", points, batch_size=10, max_workers=2)
 
         # Should have been called 3 times (10 + 10 + 5)
         assert connected_service.client.upsert.call_count == 3
 
-    def test_not_connected(self, service):
+    @pytest.mark.asyncio
+    async def test_not_connected(self, service):
         points = [PointStruct(id=1, vector=[0.1], payload={})]
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.upsert_points("col", points)
+            await service.upsert_points("col", points)
 
-    def test_empty_points(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_empty_points(self, connected_service):
         """Empty points list triggers single-batch path (0 <= batch_size).
         The log line divides by total_points which causes ZeroDivisionError
         for 0 points. This tests the actual code behavior."""
         try:
-            connected_service.upsert_points("col", [], batch_size=100)
+            with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+                await connected_service.upsert_points("col", [], batch_size=100)
             connected_service.client.upsert.assert_called_once_with("col", [])
         except ZeroDivisionError:
             # The source code has a division by total_points for throughput logging
             # which fails for 0 points. This is expected behavior (edge case in source).
             connected_service.client.upsert.assert_called_once_with("col", [])
 
-    def test_batch_error_propagates(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_batch_error_propagates(self, connected_service):
         points = [PointStruct(id=i, vector=[0.1], payload={}) for i in range(25)]
         connected_service.client.upsert.side_effect = Exception("upload failed")
         with pytest.raises(Exception, match="upload failed"):
-            connected_service.upsert_points("col", points, batch_size=10)
+            with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+                await connected_service.upsert_points("col", points, batch_size=10)
 
 
 # ---------------------------------------------------------------------------
@@ -568,18 +582,21 @@ class TestUpsertPoints:
 
 
 class TestDeletePoints:
-    def test_delete_points_success(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_delete_points_success(self, connected_service):
         mock_filter = Filter(must=[FieldCondition(key="metadata.orgId", match=MatchValue(value="org1"))])
-        connected_service.delete_points("col", mock_filter)
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await connected_service.delete_points("col", mock_filter)
         connected_service.client.delete.assert_called_once()
         call_kwargs = connected_service.client.delete.call_args[1]
         assert call_kwargs["collection_name"] == "col"
         assert isinstance(call_kwargs["points_selector"], FilterSelector)
 
-    def test_delete_points_not_connected(self, service):
+    @pytest.mark.asyncio
+    async def test_delete_points_not_connected(self, service):
         mock_filter = Filter(must=[])
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.delete_points("col", mock_filter)
+            await service.delete_points("col", mock_filter)
 
 
 # ---------------------------------------------------------------------------
@@ -588,16 +605,19 @@ class TestDeletePoints:
 
 
 class TestQueryNearestPoints:
-    def test_query_success(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_query_success(self, connected_service):
         requests = [MagicMock(spec=QueryRequest)]
         connected_service.client.query_batch_points.return_value = [[]]
-        result = connected_service.query_nearest_points("col", requests)
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            result = await connected_service.query_nearest_points("col", requests)
         connected_service.client.query_batch_points.assert_called_once_with("col", requests)
         assert result == [[]]
 
-    def test_query_not_connected(self, service):
+    @pytest.mark.asyncio
+    async def test_query_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.query_nearest_points("col", [])
+            await service.query_nearest_points("col", [])
 
 
 # ---------------------------------------------------------------------------
@@ -625,13 +645,16 @@ class TestScroll:
 
 
 class TestOverwritePayload:
-    def test_overwrite_payload_success(self, connected_service):
+    @pytest.mark.asyncio
+    async def test_overwrite_payload_success(self, connected_service):
         mock_filter = Filter(must=[])
-        connected_service.overwrite_payload("col", {"key": "val"}, mock_filter)
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await connected_service.overwrite_payload("col", {"key": "val"}, mock_filter)
         connected_service.client.overwrite_payload.assert_called_once_with(
             "col", {"key": "val"}, mock_filter
         )
 
-    def test_overwrite_payload_not_connected(self, service):
+    @pytest.mark.asyncio
+    async def test_overwrite_payload_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.overwrite_payload("col", {}, Filter(must=[]))
+            await service.overwrite_payload("col", {}, Filter(must=[]))

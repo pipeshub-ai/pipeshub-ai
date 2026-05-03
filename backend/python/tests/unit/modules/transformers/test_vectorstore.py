@@ -417,11 +417,11 @@ class TestDeleteEmbeddings:
         """Deletes points from vector store."""
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(return_value={"filter": {}})
-        vs.vector_db_service.delete_points = MagicMock()
+        vs.vector_db_service.delete_points = AsyncMock()
 
         await vs.delete_embeddings("vr-1")
 
-        vs.vector_db_service.delete_points.assert_called_once()
+        vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_error_raises_embedding_error(self):
@@ -511,22 +511,22 @@ class TestStoreImagePoints:
     async def test_stores_points(self):
         """Stores points in vector DB."""
         vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
 
         mock_point = MagicMock()
         await vs._store_image_points([mock_point])
 
-        vs.vector_db_service.upsert_points.assert_called_once()
+        vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_points_logs(self):
         """Empty points list logs but doesn't upsert."""
         vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
 
         await vs._store_image_points([])
 
-        vs.vector_db_service.upsert_points.assert_not_called()
+        vs.vector_db_service.upsert_points.assert_not_awaited()
         vs.logger.info.assert_called()
 
 
@@ -1443,19 +1443,19 @@ class TestStoreImagePoints:
         """Should upsert points when list is non-empty."""
         import asyncio
         vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
 
         mock_point = MagicMock()
         await vs._store_image_points([mock_point])
-        vs.vector_db_service.upsert_points.assert_called_once()
+        vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_points_skipped(self):
         """Should log and skip when no points to upsert."""
         vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
         await vs._store_image_points([])
-        vs.vector_db_service.upsert_points.assert_not_called()
+        vs.vector_db_service.upsert_points.assert_not_awaited()
 
 
 # ===================================================================

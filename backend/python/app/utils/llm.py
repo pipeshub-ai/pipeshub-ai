@@ -1,3 +1,4 @@
+import asyncio
 from typing import Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -23,12 +24,12 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> T
 
     for config in llm_configs:
         if config.get("isDefault", False):
-            llm = get_generator_model(config["provider"], config)
+            llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
             if llm:
                 return llm, config
 
     for config in llm_configs:
-        llm = get_generator_model(config["provider"], config)
+        llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
         if llm:
             return llm, config
 
