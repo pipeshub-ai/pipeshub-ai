@@ -2181,7 +2181,12 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        # Server-side failure (graph DB outage, etc.) — return 500 so callers
+        # treat this as a transient backend error and fail-closed on deletion.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while checking model usage: {str(e)}",
+        ) from e
 
 
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])

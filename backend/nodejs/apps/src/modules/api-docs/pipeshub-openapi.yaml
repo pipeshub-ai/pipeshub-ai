@@ -15670,6 +15670,56 @@ paths:
         '401':
           description: Unauthorized
 
+  /agents/model-usage/{model_key}:
+    get:
+      tags:
+        - Agents
+      summary: Get AI model usage
+      description: |
+        Retrieve the list of agents in the organization that reference a specific AI model.<br><br>
+        <b>Overview:</b><br>
+        Used as a pre-deletion check when an admin attempts to delete an AI model
+        configuration. Returns the agents currently configured to use the model so
+        the caller can block deletion (HTTP 409 from the deleting service) when the
+        model is still in use.
+      operationId: getModelUsage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: model_key
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The model key (URL-encoded; typically the modelKey assigned at create time).
+      responses:
+        '200':
+          description: List of agents using the model. Empty array when the model is not in use or the key is blank.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        _key:
+                          type: string
+                        creatorName:
+                          type: string
+                          nullable: true
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error while checking model usage
+
   /agents/{agentKey}:
     get:
       tags:

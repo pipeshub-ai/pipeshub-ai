@@ -3270,7 +3270,9 @@ export const deleteAIModelProvider =
         return;
       }
 
-      // Check if any agents are using this model before allowing deletion
+      // Check if any agents are using this model before allowing deletion.
+      // Fail-closed: if the usage check itself errors, block deletion rather than risk
+      // deleting a model that active agents depend on.
       try {
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
@@ -3283,10 +3285,19 @@ export const deleteAIModelProvider =
         const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
         const aiResponse = await aiCommand.execute();
 
-        const agents =
-          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
-            ? aiResponse.data.agents
-            : [];
+        if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
+          logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
+            statusCode: aiResponse?.statusCode,
+            data: aiResponse?.data,
+          });
+          res.status(500).json({
+            status: 'error',
+            message: 'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+          });
+          return;
+        }
+
+        const agents = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
 
         if (agents.length > 0) {
           res.status(409).json({
@@ -3297,7 +3308,12 @@ export const deleteAIModelProvider =
           return;
         }
       } catch (usageError: any) {
-        logger.warn('Failed to check agent usage before deleting AI model; proceeding with deletion', { error: usageError.message });
+        logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
+        res.status(500).json({
+          status: 'error',
+          message: 'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        });
+        return;
       }
 
       const wasDefault = deletedModel.isDefault || false;

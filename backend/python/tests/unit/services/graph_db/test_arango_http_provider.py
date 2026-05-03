@@ -8213,6 +8213,99 @@ class TestCheckToolsetInstanceInUse:
 
 
 # ---------------------------------------------------------------------------
+# check_connector_in_use
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConnectorInUse:
+    @pytest.mark.asyncio
+    async def test_not_in_use_no_knowledge_nodes(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_not_in_use_knowledge_nodes_no_agents(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentKnowledge/k1"],  # knowledge IDs found
+                [],                     # but no agents reference them
+            ]
+        )
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_in_use_returns_unique_agent_names(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentKnowledge/k1", "agentKnowledge/k2"],
+                [
+                    {"agentId": "agents/a1", "agentName": "Agent1"},
+                    {"agentId": "agents/a2", "agentName": "Agent2"},
+                    {"agentId": "agents/a1", "agentName": "Agent1"},  # dup
+                ],
+            ]
+        )
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert sorted(result) == ["Agent1", "Agent2"]
+
+    @pytest.mark.asyncio
+    async def test_no_knowledge_returns_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=None)
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_raises(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=Exception("boom")
+        )
+        with pytest.raises(Exception, match="boom"):
+            await connected_provider.check_connector_in_use("conn1")
+
+
+# ---------------------------------------------------------------------------
+# get_agents_by_model_key
+# ---------------------------------------------------------------------------
+
+
+class TestGetAgentsByModelKey:
+    @pytest.mark.asyncio
+    async def test_no_agents(self, connected_provider):
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock, return_value=[]
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_matching_agents(self, connected_provider):
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock,
+            return_value=[
+                {"name": "Agent A", "_key": "a1", "creatorName": "Alice"},
+                {"name": "Agent B", "_key": "a2", "creatorName": "Bob"},
+            ],
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert len(result) == 2
+            assert result[0]["name"] == "Agent A"
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty_list(self, connected_provider):
+        # get_agents_by_model_key swallows errors and returns [] (mirrors web-search).
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock, side_effect=Exception("db down")
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
 # get_agent
 # ---------------------------------------------------------------------------
 

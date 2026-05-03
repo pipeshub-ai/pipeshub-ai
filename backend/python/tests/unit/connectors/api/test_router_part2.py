@@ -2485,6 +2485,7 @@ class TestDeleteConnectorInstance:
 
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
         producer = req.app.container.messaging_producer
         producer.send_message = AsyncMock()
 
@@ -2496,6 +2497,116 @@ class TestDeleteConnectorInstance:
             )
 
         assert result.status_code == 202
+
+    async def test_in_use_by_one_agent_raises_409(self):
+        """Connector referenced by one agent: 409, no Kafka events emitted."""
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", extra={"name": "Jira Prod"})
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=["kb-agent"])
+        producer = req.app.container.messaging_producer
+        producer.send_message = AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance(
+                    "c1", req, graph_provider=graph_provider
+                )
+
+        assert exc_info.value.status_code == 409
+        detail = exc_info.value.detail
+        assert "Jira Prod" in detail
+        assert "kb-agent" in detail
+        producer.send_message.assert_not_called()
+
+    async def test_in_use_by_many_agents_message_truncates(self):
+        """4 agents referencing connector → 3 names + 'and 1 more'."""
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", extra={"name": "Slack"})
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(
+            return_value=["a1", "a2", "a3", "a4"]
+        )
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance(
+                    "c1", req, graph_provider=graph_provider
+                )
+
+        assert exc_info.value.status_code == 409
+        detail = exc_info.value.detail
+        # 3 names listed verbatim, 4th rolled into "and 1 more"
+        assert "'a1'" in detail and "'a2'" in detail and "'a3'" in detail
+        assert "and 1 more" in detail
+
+    async def test_check_returns_non_list_raises_500(self):
+        """Defensive: graph provider returns malformed type → 500, no events."""
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1")
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value="not-a-list")
+        producer = req.app.container.messaging_producer
+        producer.send_message = AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance(
+                    "c1", req, graph_provider=graph_provider
+                )
+
+        assert exc_info.value.status_code == 500
+        assert "Invalid response" in exc_info.value.detail
+        producer.send_message.assert_not_called()
+
+    async def test_check_raises_fails_closed_500(self):
+        """Graph DB error during precheck → 500, no Kafka events emitted."""
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1")
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(
+            side_effect=RuntimeError("arango down")
+        )
+        producer = req.app.container.messaging_producer
+        producer.send_message = AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance(
+                    "c1", req, graph_provider=graph_provider
+                )
+
+        assert exc_info.value.status_code == 500
+        assert "Unable to verify" in exc_info.value.detail
+        producer.send_message.assert_not_called()
 
     async def test_team_connector_non_admin_raises_403(self):
         from app.connectors.api.router import delete_connector_instance
