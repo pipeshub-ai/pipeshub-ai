@@ -13,6 +13,7 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
+  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -28,6 +29,57 @@ import {
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
+
+// Headers we forward to the Python connector backend. Authorization carries
+// the verified caller identity (orgId/userId/role); tracing headers preserve
+// request correlation. Anything else (cookie, host, user-agent, arbitrary
+// x-* headers from the client) is dropped to avoid header-injection paths.
+const PROXY_FORWARD_HEADERS: readonly string[] = [
+  'authorization',
+  'x-request-id',
+  'x-correlation-id',
+  'x-forwarded-for',
+  'accept-language',
+];
+
+const buildProxyHeaders = (
+  req: AuthenticatedUserRequest,
+  isAdmin: boolean,
+): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  for (const name of PROXY_FORWARD_HEADERS) {
+    const value = req.headers[name];
+    if (typeof value === 'string') {
+      headers[name] = value;
+    } else if (Array.isArray(value)) {
+      headers[name] = value.join(',');
+    }
+  }
+  headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
+  return headers;
+};
+
+// Defense-in-depth ownership check at the gateway. Connector instance
+// metadata lives in the Python backend, so we cannot do a local
+// `findOne({ _id, orgId })`. Instead we probe the connector via GET using
+// the caller's auth context — a 4xx means the caller cannot see it (or it
+// does not exist), and we refuse to proxy the write. Returns NotFoundError
+// (not Forbidden) so cross-tenant probing cannot enumerate IDs by status.
+const assertConnectorAccessible = async (
+  appConfig: AppConfig,
+  connectorId: string,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const probe = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
+    HttpMethod.GET,
+    headers,
+  );
+  const status = probe?.statusCode;
+  if (typeof status !== 'number' || status < 200 || status >= 300) {
+    throw new NotFoundError('Connector not found');
+  }
+};
 
 const normalizeConnectorFileEventsBody = (body: unknown): unknown => {
   let candidate = body;
@@ -1262,14 +1314,12 @@ export const submitConnectorFileEvents =
       }
 
       const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
       const payload = normalizeConnectorFileEventsBody(req.body);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/file-events`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events`,
         HttpMethod.POST,
         headers,
         payload,
@@ -1320,6 +1370,9 @@ export const submitConnectorFileEventUploads =
       }
 
       const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
+
       const form = new FormData();
       form.append('manifest', String(req.body.manifest));
 
@@ -1332,22 +1385,8 @@ export const submitConnectorFileEventUploads =
         });
       }
 
-      const headers: Record<string, string> = {};
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (typeof value === 'string') {
-          headers[key] = value;
-        } else if (Array.isArray(value)) {
-          headers[key] = value.join(',');
-        }
-      }
-      delete headers['content-type'];
-      delete headers['Content-Type'];
-      delete headers['content-length'];
-      delete headers['Content-Length'];
-      headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
-
       const response = await axios.post(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/file-events/upload`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events/upload`,
         form,
         {
           headers: { ...headers, ...form.getHeaders() },

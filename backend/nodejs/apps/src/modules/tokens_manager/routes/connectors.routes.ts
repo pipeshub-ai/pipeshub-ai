@@ -129,11 +129,19 @@ const createConnectorInstanceSchema = z.object({
 });
 
 /**
- * Schema for validating connectorId parameter
+ * Schema for validating connectorId parameter.
+ * The pattern bounds shape and forbids URL-structural characters
+ * (slashes, dots, percent-encoding) to keep the value safe for
+ * interpolation into downstream service URL paths.
  */
 const connectorIdParamSchema = z.object({
   params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      ),
   }),
 });
 
@@ -596,6 +604,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
     localFsUpload.any(),
     submitConnectorFileEventUploads(config),
   );
@@ -605,6 +614,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
     submitConnectorFileEvents(config),
   );
 
