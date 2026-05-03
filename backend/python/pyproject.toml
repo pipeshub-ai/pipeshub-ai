@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py312"
 src = ["."]
 
 [tool.ruff.lint]
@@ -164,10 +164,10 @@ authors = [
 description = "AI Pipeline Service"
 version = "0.1"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=12.0.0",
-    "aiohttp==3.13.3",
+    "aiohttp==3.13.4",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
@@ -181,18 +181,19 @@ dependencies = [
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
-    "cryptography==44.0.1",
+    "cryptography==46.0.7",
     "curl-cffi==0.14.0",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
+    "docker>=7.0.0",
     "docling==2.60.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
     "etcd3==0.12.0",
     "evernote3>=1.25.14",
     "fastapi==0.115.6",
-    "fastmcp==3.0.2",
+    "fastmcp==3.2.0",
     "fastembed==0.5.1",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
@@ -204,6 +205,7 @@ dependencies = [
     "google-api-python-client==2.161.0",
     "google-auth-oauthlib==1.2.1",
     "google-cloud-storage==2.18.0",
+    "google-genai>=1.72.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
     "langchain-anthropic==1.2.0",
@@ -212,19 +214,21 @@ dependencies = [
     "langchain-community==0.4.1",
     "langchain-experimental==0.4.0",
     "langchain-fireworks==1.1.0",
-    "langchain-google-genai==3.0.0",
+    "langchain-google-genai==4.2.1",
     "langchain-google-vertexai==2.1.2",
     "langchain-groq==1.1.0",
     "langchain-huggingface==1.1.0",
     "langchain-mistralai==0.2.12",
     "langchain-ollama==1.0.0",
-    "langchain-openai==1.1.1",
+    "langchain-openai==1.1.14",
     "langchain-qdrant==1.0.0",
     "langchain-voyageai==0.3.0",
     "langchain-xai==1.1.0",
     "langchain==1.1.3",
     "langgraph==1.0.4",
+    "langgraph-prebuilt==1.0.8",
     "linkedin-api-client>=0.3.0",
+    "lxml>=4.9.0",
     "mail-parser-reply==1.36",
     "markdown==3.8",
     "mmh3==4.1.0",
@@ -235,46 +239,53 @@ dependencies = [
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
-    "nltk==3.9.1",
-    "numpy<2",
+    "nltk==3.9.4",
+    "numpy==2.3.2",
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
-    "opik==1.9.37",
+    "opik==1.10.60",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "Pillow<12.0.0",
     "pdf2image==1.17.0",
     "pillow-avif-plugin==1.5.5",
-    "protobuf==3.20.3",
+    "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "PyMuPDF==1.24.14",
     "python-arango==8.1.5",
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
-    "python-dotenv==1.1.0",
+    "python-dotenv==1.2.2",
+    "redshift_connector==2.0.918",
     "pikepdf>=8.1.0,<9.0.0",
+    # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
+    # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
+    # when the agent declares packages=["reportlab"] / ["fpdf2"].
+    "reportlab>=4.0.0,<5.0.0",
+    "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
-    "python-multipart==0.0.22",
+    "python-multipart==0.0.26",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
-    "requests==2.32.5",
-    "ruff==0.11.9",
+    "requests==2.33.0",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
-    "spacy<=3.7.5",
+    "spacy==3.8.2",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
+    "trafilatura>=1.6.0",
     "uuid==1.30",
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
+    "psycopg2-binary==2.9.11",
 ]
 
 [tool.setuptools.packages.find]
-exclude = ["modules"]
+exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -284,10 +295,15 @@ build-backend = "setuptools.build_meta"
 module = "app.indexing_main:run"
 
 [project.optional-dependencies]
-dev = ["ruff", "pyright"]
+dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
+# Optional: enable self-hosted Whisper Speech-to-Text (runs locally via faster-whisper + CTranslate2).
+# Not installed by default because the runtime pulls in CTranslate2 binaries and downloads
+# multi-hundred-MB model weights on first use. Enable with:
+#   pip install -e '.[whisper]'
+whisper = ["faster-whisper>=1.0.0"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 include = ["app"]
 exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
@@ -338,3 +354,6 @@ reportMatchNotExhaustive = "warning"
 # Informational quality signals, not type-safety blockers
 reportImportCycles = "warning"
 reportDeprecated = "warning"
+
+[tool.uv.sources]
+etcd3 = { git = "https://github.com/kragniz/python-etcd3.git", rev = "e58a899579ba416449c4e225b61f039457c8072a" }

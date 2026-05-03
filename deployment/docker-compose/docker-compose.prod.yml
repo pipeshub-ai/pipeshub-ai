@@ -11,6 +11,12 @@ services:
           memory: 10G
     shm_size: 2gb
     init: true
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+        compress: "true"
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-production}
@@ -45,6 +51,10 @@ services:
       - ARANGO_USERNAME=root
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
       # Ensure we use the same password as configured for the ArangoDB service
+
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
       - KAFKA_BROKERS=kafka-1:9092
@@ -89,11 +99,25 @@ services:
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
+      - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
 
       # Slack Bot config
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      # Code execution sandbox (subprocess vs Docker ephemeral containers).
+      # Default docker image uses the same IMAGE_TAG as pipeshubai/pipeshub-ai; build and
+      # push it from deployment/sandbox/Dockerfile as pipeshubai/pipeshub-sandbox:${IMAGE_TAG}.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -107,9 +131,12 @@ services:
         condition: service_healthy
       arango:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -118,8 +145,6 @@ services:
     image: mongo:8.0.17
     container_name: mongodb
     restart: always
-    ports:
-      - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
@@ -135,8 +160,6 @@ services:
     image: redis:bookworm
     container_name: redis
     restart: always
-    ports:
-      - "6379:6379"
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
@@ -156,8 +179,6 @@ services:
     image: arangodb:3.12.4
     container_name: arango
     restart: always
-    ports:
-      - "8529:8529"
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
     volumes:
@@ -172,9 +193,6 @@ services:
     image: quay.io/coreos/etcd:v3.5.17
     container_name: etcd
     restart: always
-    ports:
-      - "2379:2379"
-      - "2380:2380"
     command: >
       etcd
       --name etcd-node
@@ -196,8 +214,6 @@ services:
     image: confluentinc/cp-zookeeper:7.9.0
     container_name: zookeeper
     restart: always
-    ports:
-      - "2181:2181"
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
@@ -208,8 +224,6 @@ services:
     restart: always
     depends_on:
       - zookeeper
-    ports:
-      - "9092:9092"
     environment:
       - KAFKA_BROKER_ID=1
       - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
@@ -236,9 +250,6 @@ services:
     image: qdrant/qdrant:v1.15
     container_name: qdrant
     restart: always
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       # Performance optimizations
@@ -272,6 +283,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
+  # Release: docker build -f deployment/sandbox/Dockerfile -t pipeshubai/pipeshub-sandbox:$TAG deployment/sandbox
+  #          && docker push pipeshubai/pipeshub-sandbox:$TAG
+  # Override with SANDBOX_DOCKER_IMAGE if you host the image under another name.
+  sandbox-image:
+    image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+    restart: "no"
+    command: ["sh", "-c", "echo 'sandbox image ready'"]
 
 volumes:
   mongodb_data:

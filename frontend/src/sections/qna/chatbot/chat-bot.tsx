@@ -585,6 +585,12 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
       return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
+    case 'answer_chunk':
+    case 'restreaming':
+    case 'tool_call':
+    case 'tool_success':
+    case 'tool_error':
+    case 'tool_execution_complete':
       return null;
     default:
       return 'Processing ...';
@@ -843,12 +849,8 @@ const ChatInterface = () => {
     // Set chat mode from conversation if available
     if (conversationModelInfo.chatMode) {
       const chatModes = [
-        { id: 'quick', name: 'Quick', description: 'Quick responses with minimal context' },
-        {
-          id: 'standard',
-          name: 'Standard',
-          description: 'Balanced responses with moderate creativity',
-        },
+        { id: 'internal_search', name: 'Internal Search', description: 'Answer only from internal knowledge base' },
+        { id: 'web_search', name: 'Web Search', description: 'Search the web for answers' },
       ];
       const matchingMode = chatModes.find((m) => m.id === conversationModelInfo.chatMode);
       if (matchingMode) {
@@ -1324,11 +1326,14 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
-            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
-              ? currentModel.modelFriendlyName.trim() 
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim()
+              ? currentModel.modelFriendlyName.trim()
               : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
+            // Timezone and current time for LLM context
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            currentTime: new Date().toISOString(),
           },
           wasCreatingNewConversation
         );

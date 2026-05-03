@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -108,7 +109,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/minio.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.MINIO.value))
         .add_documentation_link(DocumentationLink(
             "MinIO Documentation",
             "https://min.io/docs/minio/linux/index.html",
@@ -175,6 +176,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         endpoint_url: str = "http://localhost:9000",
     ) -> None:
         base_console_url = self._parse_console_url(endpoint_url)
@@ -186,6 +189,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             connector_name=Connectors.MINIO,
             filter_key="minio",
             base_console_url=base_console_url,
@@ -221,14 +226,6 @@ class MinIOConnector(S3CompatibleBaseConnector):
         self.base_console_url = self._parse_console_url(endpoint_url)
         # Keep data_entities_processor in sync with updated console URL
         self.data_entities_processor.base_console_url = self.base_console_url
-
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
 
         try:
             client = await MinIOClient.build_from_services(
@@ -309,6 +306,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs,
     ) -> "MinIOConnector":
         """Factory method to create and initialize connector."""
@@ -337,6 +336,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
             endpoint_url=endpoint_url,
         )
 

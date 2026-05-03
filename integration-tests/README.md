@@ -36,7 +36,7 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.12+**
 - **Git** (for cloning the sample data repo)
 - **Network access** to:
   - Pipeshub (test.pipeshub.com or your local backend)
@@ -79,8 +79,8 @@ pytest -m integration -v
 | File              | When used  | Purpose |
 |-------------------|------------|---------|
 | `.env`            | Always first | Only `PIPESHUB_TEST_ENV=local` or `prod`. |
-| `.env.local`      | When `PIPESHUB_TEST_ENV=local` | Base URL, auth, Neo4j, storage creds for local runs. |
-| `.env.prod`       | When `PIPESHUB_TEST_ENV=prod`  | Base URL, auth, Neo4j, storage creds for remote (test.pipeshub.com). |
+| `.env.local`      | When `PIPESHUB_TEST_ENV=local` | Base URL, auth, graph DB vars, storage creds for local runs. |
+| `.env.prod`       | When `PIPESHUB_TEST_ENV=prod`  | Base URL, auth, graph DB vars, storage creds for remote (test.pipeshub.com). |
 
 Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.local.example` and `.env.prod.example` as templates.
 
@@ -91,6 +91,7 @@ Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.lo
 | Variable              | Required | Purpose |
 |-----------------------|----------|---------|
 | `PIPESHUB_BASE_URL`   | Yes      | Pipeshub API base URL. Remote: `https://test.pipeshub.com`. Local: e.g. `http://localhost:3000`. No trailing slash. |
+| `TEST_GRAPH_DB_TYPE`  | No       | Graph database type: `neo4j` (default) or `arango`. Determines which graph database the tests will validate against. |
 
 ---
 
@@ -108,18 +109,50 @@ Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.lo
 
 ---
 
-### Neo4j (graph validation)
+### Graph Database (graph validation)
+
+Choose one of Neo4j or ArangoDB via `TEST_GRAPH_DB_TYPE` (defaults to `neo4j`).
+
+#### Neo4j
 
 | Variable               | Required | Purpose |
 |------------------------|----------|---------|
-| `TEST_NEO4J_URI`       | Yes (remote) | Neo4j URI (e.g. `neo4j+s://xxxx.databases.neo4j.io` for Aura). |
+| `TEST_NEO4J_URI`       | Yes      | Neo4j URI (e.g. `neo4j+s://xxxx.databases.neo4j.io` for Aura, or `bolt://localhost:7687` for local). |
 | `TEST_NEO4J_USERNAME`  | Yes      | Neo4j user. |
 | `TEST_NEO4J_PASSWORD`  | Yes      | Neo4j password. |
 | `TEST_NEO4J_DATABASE`  | No       | Database name (default: `neo4j`). |
 
 Use `TEST_NEO4J_*` in both `.env.local` and `.env.prod`; the Neo4j driver fixture reads these directly.
 
-**Note:** The graph assertion helper `get_record_parent_path()` (in `helper/graph_assertions.py`) uses the APOC procedure `apoc.text.join`. The current connector tests do not use it. If you add tests that call this helper, ensure your Neo4j instance has the [APOC plugin](https://neo4j.com/docs/apoc/current/) installed.
+#### ArangoDB
+
+| Variable                | Required | Purpose |
+|-------------------------|----------|---------|
+| `TEST_ARANGO_URL`       | Yes      | ArangoDB HTTP URL (e.g. `http://localhost:8529` for local, or cloud URL). |
+| `TEST_ARANGO_USERNAME`  | No       | ArangoDB user (default: `root`). |
+| `TEST_ARANGO_PASSWORD`  | Yes      | ArangoDB password. |
+| `TEST_ARANGO_DB_NAME`   | No       | Database name (default: `es`). |
+
+Use `TEST_ARANGO_*` in both `.env.local` and `.env.prod`; the ArangoDB HTTP client reads these directly.
+
+**Example configuration:**
+
+```bash
+# Use Neo4j (default)
+TEST_GRAPH_DB_TYPE=neo4j
+TEST_NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+TEST_NEO4J_USERNAME=neo4j
+TEST_NEO4J_PASSWORD=your-password
+```
+
+```bash
+# Use ArangoDB
+TEST_GRAPH_DB_TYPE=arango
+TEST_ARANGO_URL=http://localhost:8529
+TEST_ARANGO_USERNAME=root
+TEST_ARANGO_PASSWORD=your-password
+TEST_ARANGO_DB_NAME=es
+```
 
 ---
 
@@ -281,10 +314,15 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `conftest.py`        | Loads `.env` then `.env.local` or `.env.prod`, exports Neo4j env, local OAuth fixture. |
 | `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). |
 | `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
-| `helper/graph_assertions.py` | Neo4j graph validation helpers. |
-| `helper/storage_helpers.py` | Storage SDK helpers (S3, GCS, Azure Blob, Azure Files). |
+| `helper/graph_provider.py` | `GraphProviderProtocol` — common graph test helper interface. |
+| `helper/graph_provider_utils.py` | Shared polling helpers (`wait_until_graph_condition`, etc.). |
+| `helper/neo4j_integration/test_neo4j_provider.py` | `TestNeo4jProvider` — extends backend `Neo4jProvider` with graph validation helpers. |
+| `helper/arango/test_arango_provider.py` | `TestArangoHTTPProvider` — extends backend `ArangoHTTPProvider` with AQL helpers (uses `CollectionNames`). |
+| `helper/connector_lifecycle.py` | Shared connector constructor/destructor (upload, sync wait, teardown). |
+| `connectors/<provider>/*_storage_helper.py` | Per-provider storage SDK wrappers (S3, GCS, Azure Blob, Azure Files). |
+| `connectors/<provider>/conftest.py` | Session storage fixture + module connector lifecycle for that provider. |
 | `sample-data/sample_data.py` | Clones sample-data repo and returns path to files. |
-| `connectors/conftest.py` | Session fixtures: client, Neo4j driver, sample_data_root, storage helpers. |
+| `conftest.py` (package root) | Env load, HTML report hooks, session fixtures: Pipeshub client, Neo4j, sample_data_root. |
 | `connectors/*/` | Per-connector lifecycle test modules. |
 | `helper/integration_report.py` | Builds the HTML report (root cause parsing, cascade hints, full tracebacks). |
 | `reports/INTEGRATION_TEST_REPORT_<timestamp>.html` | HTML report per run (only report artifact). |

@@ -62,7 +62,7 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     );
 
     if (result === null) {
-      throw new KeyAlreadyExistsError(`Key "${key}" already exists.`);
+      throw new KeyAlreadyExistsError('Key already exists.');
     }
 
     this.notifyWatchers(key, value);
@@ -135,7 +135,7 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
           callback(value);
         } catch (error) {
           // Log error but don't throw to avoid breaking other watchers
-          Logger.getInstance().error(`Error in watcher callback for key ${key}:`, error);
+          Logger.getInstance().error('Error in watcher callback for key [REDACTED]:', error);
         }
       }
     }

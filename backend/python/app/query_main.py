@@ -1,7 +1,7 @@
+import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
-import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -13,13 +13,15 @@ from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.search import router as search_router
+from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
-from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
+from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
@@ -66,30 +68,30 @@ async def get_initialized_container() -> QueryAppContainer:
         get_initialized_container.initialized = True
     return container
 
-async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
-    """Start all Kafka consumers at application level"""
+async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
-    # 1. Create AI Config Consumer
-        logger.info("🚀 Starting AI Config Kafka Consumer...")
-        aiconfig_kafka_config = await KafkaUtils.create_aiconfig_kafka_consumer_config(app_container)
-        aiconfig_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+        logger.info(f"🚀 Starting AI Config Consumer (broker: {broker_type})...")
+        aiconfig_config = await MessagingUtils.create_aiconfig_consumer_config(app_container)
+        aiconfig_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
             logger=logger,
-            config=aiconfig_kafka_config
+            config=aiconfig_config
         )
         aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
-        await aiconfig_kafka_consumer.start(aiconfig_message_handler)
-        consumers.append(("aiconfig", aiconfig_kafka_consumer))
-        logger.info("✅ AI Config Kafka consumer started")
+        await aiconfig_consumer.start(aiconfig_message_handler)
+        consumers.append(("aiconfig", aiconfig_consumer))
+        logger.info("✅ AI Config consumer started")
 
-        logger.info(f"✅ All {len(consumers)} Kafka consumers started successfully")
+        logger.info(f"✅ All {len(consumers)} message consumers started successfully")
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting message consumers: {str(e)}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -99,14 +101,14 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
 
-async def stop_kafka_consumers(container: QueryAppContainer) -> bool:
+async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
     """Stop all Kafka consumers"""
     logger = container.logger()
     consumers = getattr(container, 'kafka_consumers', [])
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
             return True
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
@@ -115,7 +117,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool:
             # Clear the consumers list
             if hasattr(container, 'kafka_consumers'):
                 container.kafka_consumers = []
-            return True
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -137,13 +139,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
-    # Start all Kafka consumers centrally
+    # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     # Get all organizations
@@ -153,7 +155,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Found organizations in the system")
         retrieval_service = await container.retrieval_service()
-        await retrieval_service.get_embedding_model_instance()
+
+        # Warm up the embedding model in the background. The default
+        # HuggingFace model (BAAI/bge-large-en-v1.5) can take minutes to
+        # download and load on a cold cache, which would otherwise block the
+        # FastAPI lifespan and prevent the service from accepting traffic
+        # (including health checks) until it finishes. Kick it off as a
+        # background task; callers of `get_embedding_model_instance()` will
+        # await/coordinate via the internal lock and lazy-load on first use
+        # if the warmup hasn't completed yet.
+        async def _warmup_embedding_model() -> None:
+            try:
+                logger.info("🔥 Warming up embedding model in background")
+                await retrieval_service.get_embedding_model_instance()
+                logger.info("✅ Embedding model warmup complete")
+            except Exception as warmup_error:
+                logger.error(
+                    f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
+                )
+
+        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
     # Initialize toolset registry for agent tool execution
     # This imports toolset modules which register tools in the global registry
@@ -173,12 +194,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    # Stop all Kafka consumers
+
+    # Cancel embedding warmup task if it is still running.
+    warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
+    if warmup_task is not None and not warmup_task.done():
+        warmup_task.cancel()
+        try:
+            await warmup_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Stop all message consumers
     try:
         await stop_kafka_consumers(app_container)
-        logger.info("✅ All Kafka consumers stopped")
+        logger.info("✅ All message consumers stopped")
     except Exception as e:
-        logger.error(f"❌ Error stopping Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error stopping message consumers: {str(e)}")
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:
@@ -211,8 +242,7 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # Apply authentication
         authenticated_request = await authMiddleware(request)
         # Continue with the request
-        response = await call_next(authenticated_request)
-        return response
+        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors
@@ -237,39 +267,12 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    """Health check endpoint that also verifies connector service health"""
+    """Health check endpoint for the query service itself"""
     try:
-        endpoints = await app.container.config_service().get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-        connector_url = f"{connector_endpoint}/health"
-        async with httpx.AsyncClient() as client:
-            connector_response = await client.get(connector_url, timeout=5.0)
-
-            if connector_response.status_code != HttpStatusCode.SUCCESS.value:
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "fail",
-                        "error": f"Connector service unhealthy: {connector_response.text}",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                    },
-                )
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "healthy",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-    except httpx.RequestError as e:
         return JSONResponse(
-            status_code=500,
+            status_code=200,
             content={
-                "status": "fail",
-                "error": f"Failed to connect to connector service: {str(e)}",
+                "status": "healthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -277,7 +280,7 @@ async def health_check() -> JSONResponse:
         return JSONResponse(
             status_code=500,
             content={
-                "status": "fail",
+                "status": "unhealthy",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
@@ -290,7 +293,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     This will log the detailed error and the body of the failed request.
     """
     # Log the full error details from the exception
-    print(f"Pydantic validation error for {request.method} {request.url}: {exc.errors()}")
 
     try:
         # Try to log the request body
@@ -309,9 +311,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
+app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(ai_models_registry_router, prefix="/api/v1")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
@@ -319,7 +323,6 @@ def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
     uvicorn.run(
         "app.query_main:app", host=host, port=port, log_level="info", reload=reload
     )
-
 
 if __name__ == "__main__":
     run(reload=False)

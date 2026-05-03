@@ -113,12 +113,18 @@ class EventService:
             config_service = self.app_container.config_service()
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
+            # Extract scope and createdBy from connector document
+            scope = connector_doc.get("scope", "personal")
+            created_by = connector_doc.get("createdBy", "")
+
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=connector_id,
+                scope=scope,
+                created_by=created_by,
             )
 
             if not connector:
@@ -183,13 +189,27 @@ class EventService:
             config_service = self.app_container.config_service()
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
+            
+            # Fetch scope and createdBy from database App node
+            connector_doc = await self.graph_provider.get_document(
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+            )
+            if not connector_doc:
+                self.logger.error(f"Connector {connector_id} not found in database")
+                return False
+            scope = connector_doc.get("scope", "personal")
+            created_by = connector_doc.get("createdBy", "")
+            
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
                 name=connector_name,
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
-                connector_id=connector_id
+                connector_id=connector_id,
+                scope=scope,
+                created_by=created_by
             )
 
             if not connector:
@@ -407,6 +427,18 @@ class EventService:
                     break
 
                 self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+
+                # Clear AUTO_INDEX_OFF (etc.) on the same batch we are about to reindex — one graph
+                # read path (get_records_* / get_records_by_status) + status updates only.
+                record_ids_to_queue = [
+                    rid
+                    for r in records
+                    if (rid := getattr(r, "id", None)) and isinstance(rid, str)
+                ]
+                if record_ids_to_queue:
+                    await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(
+                        record_ids_to_queue
+                    )
 
                 # Process this batch with typed records
                 await connector.reindex_records(records)

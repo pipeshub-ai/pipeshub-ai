@@ -13,6 +13,8 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { AuthService } from '../services/auth.service';
 import { ConfigurationManagerService } from '../services/cm.service';
 import { TeamsController } from '../controller/teams.controller';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -69,8 +71,20 @@ export class UserManagerContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
+      // Create broker-agnostic message producer
+      const brokerConfig = messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+      const messageProducer = messageBrokerFactory.createMessageProducer(
+        brokerConfig,
+        container.get('Logger'),
+      );
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
       const entityEventsService = new EntitiesEventProducer(
-        appConfig.kafka,
+        messageProducer,
         container.get('Logger'),
       );
       container
@@ -135,28 +149,23 @@ export class UserManagerContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Get specific services that need to be disconnected
-
         const keyValueStoreService = this.instance.isBound(
           'KeyValueStoreService',
         )
           ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
           : null;
 
-        // Disconnect services if they have a disconnect method
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
+          : null;
+
         if (keyValueStoreService && keyValueStoreService.isConnected()) {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');
         }
-        const entityEventsService = this.instance.isBound(
-          'EntitiesEventProducer',
-        )
-          ? this.instance.get<EntitiesEventProducer>('EntitiesEventProducer')
-          : null;
-        // Disconnect services if they have a disconnect method
-        if (entityEventsService && entityEventsService.isConnected()) {
-          this.logger.info('Entity Events disconnected successfully');
-          await entityEventsService.stop();
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
+          this.logger.info('MessageProducer disconnected successfully');
         }
 
         this.logger.info('All User Manager services disconnected successfully');

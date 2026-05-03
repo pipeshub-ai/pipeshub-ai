@@ -10,17 +10,24 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -37,12 +44,14 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import (
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -118,20 +127,63 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             ),
             fields=[
                 CommonFields.client_id("Atlassian OAuth App"),
-                CommonFields.client_secret("Atlassian OAuth App")
+                CommonFields.client_secret("Atlassian OAuth App"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL to use. Must match the Confluence site you want to sync.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
-            icon_path="/assets/icons/connectors/confluence.svg",
+            icon_path=IconPaths.connector_icon(Connectors.CONFLUENCE.value),
             app_group="Atlassian",
             app_description="OAuth application for accessing Confluence Cloud API and collaboration features",
             app_categories=["Knowledge Management", "Collaboration"]
         ),
-        # AuthBuilder.type(AuthType.API_TOKEN).fields([
-        #     CommonFields.api_token("Atlassian API Token")
-        # ])
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
-    .with_info("⚠️ Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public.")\
+    .with_info(
+        "Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public."
+        + "\n\n"
+        + CONNECTOR_EMAIL_IDENTITY_INFO
+    )\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/confluence.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.CONFLUENCE.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Confluence Cloud OAuth Setup",
@@ -244,7 +296,9 @@ class ConfluenceConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         """Initialize the Confluence connector."""
         super().__init__(
@@ -253,7 +307,9 @@ class ConfluenceConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         # Client instances
@@ -308,6 +364,8 @@ class ConfluenceConnector(BaseConnector):
         3. Updates client ONLY if token changed (mutation)
         4. Returns datasource with current token
 
+        For API_TOKEN auth, returns existing datasource (no token refresh needed).
+
         Returns:
             ConfluenceDataSource with current valid token
         """
@@ -320,7 +378,15 @@ class ConfluenceConnector(BaseConnector):
         if not config:
             raise Exception("Confluence configuration not found")
 
-        # Extract fresh OAuth access token
+        # Check auth type
+        auth_config = config.get("auth", {}) or {}
+        auth_type = auth_config.get("authType", "OAUTH")
+
+        # For API_TOKEN auth, no token refresh needed - return existing datasource
+        if auth_type == "API_TOKEN":
+            return ConfluenceDataSource(self.external_client)
+
+        # For OAuth, extract fresh access token and update if changed
         credentials_config = config.get("credentials", {}) or {}
         fresh_token = credentials_config.get("access_token", "")
 
@@ -598,7 +664,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_spaces(self) -> List[RecordGroup]:
+    async def _sync_spaces(self) -> list[RecordGroup]:
         """
         Sync spaces from Confluence with permissions using cursor-based pagination.
 
@@ -1103,7 +1169,7 @@ class ConfluenceConnector(BaseConnector):
         self,
         start_date_ms: int,
         end_date_ms: int
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Fetch audit logs and extract content titles that had permission changes.
 
@@ -1156,7 +1222,7 @@ class ConfluenceConnector(BaseConnector):
 
         return list(content_titles_set)
 
-    def _extract_content_title_from_audit_record(self, record: Dict[str, Any]) -> Optional[str]:
+    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
         """
         Extract content title from an audit record if it's a content permission change.
 
@@ -1191,7 +1257,7 @@ class ConfluenceConnector(BaseConnector):
         return content_obj.get("name")
 
 
-    async def _sync_content_permissions_by_titles(self, titles: List[str]) -> None:
+    async def _sync_content_permissions_by_titles(self, titles: list[str]) -> None:
         """
         Search for content by titles and sync their current permissions.
 
@@ -1316,7 +1382,7 @@ class ConfluenceConnector(BaseConnector):
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
-    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
+    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> list[Permission]:
         """
         Fetch all permissions for a space with cursor-based pagination.
 
@@ -1373,7 +1439,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return []  # Return empty list on error, space will be created without permissions
 
-    async def _fetch_page_permissions(self, page_id: str) -> List[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
         """
         Fetch permissions for a Confluence page using v1 API.
 
@@ -1419,11 +1485,11 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         page_title: str,
         comment_type: str,
-        page_permissions: List[Permission],
+        page_permissions: list[Permission],
         parent_space_id: Optional[str],
         parent_type: str = "page",
         parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
 
@@ -1569,9 +1635,9 @@ class ConfluenceConnector(BaseConnector):
         comment_type: str,
         page_id: str,
         parent_space_id: Optional[str],
-        page_permissions: List[Permission],
+        page_permissions: list[Permission],
         parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
 
@@ -1684,7 +1750,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_comment_record(
         self,
-        comment_data: Dict[str, Any],
+        comment_data: dict[str, Any],
         page_id: str,
         parent_space_id: Optional[str],
         comment_type: str,
@@ -1786,7 +1852,7 @@ class ConfluenceConnector(BaseConnector):
                 weburl=web_url,
                 author_source_id=author,
                 resolution_status=resolution_status,
-                inline_original_selection=inline_original_selection,
+                comment_selection=inline_original_selection,
                 is_dependent_node=True,  # Comments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent page
             )
@@ -1795,7 +1861,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform comment: {e}")
             return None
 
-    def _construct_web_url(self, links: Dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
+    def _construct_web_url(self, links: dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
         """
         Construct web URL from _links dictionary.
 
@@ -1974,7 +2040,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
-    async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
+    async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
         """
         Transform Confluence space permission to Permission object.
 
@@ -2084,8 +2150,8 @@ class ConfluenceConnector(BaseConnector):
 
     async def _transform_page_restriction_to_permissions(
         self,
-        restriction_data: Dict[str, Any]
-    ) -> List[Permission]:
+        restriction_data: dict[str, Any]
+    ) -> list[Permission]:
         """
         Transform page restriction data (from v1 API) to Permission objects.
         Creates pseudo-groups for users without email to preserve permissions.
@@ -2161,7 +2227,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_space_record_group(
         self,
-        space_data: Dict[str, Any],
+        space_data: dict[str, Any],
         base_url: Optional[str] = None
     ) -> Optional[RecordGroup]:
         """
@@ -2216,7 +2282,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_webpage_record(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record] = None
     ) -> Optional[WebpageRecord]:
@@ -2367,7 +2433,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_attachment_file_record(
         self,
-        attachment_data: Dict[str, Any],
+        attachment_data: dict[str, Any],
         parent_external_record_id: str,
         parent_external_record_group_id: Optional[str],
         existing_record: Optional[Record] = None,
@@ -2520,10 +2586,10 @@ class ConfluenceConnector(BaseConnector):
 
     async def _process_webpage_with_update(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record],
-        permissions: List[Permission]
+        permissions: list[Permission]
     ) -> RecordUpdate:
         """Process webpage with change detection.
 
@@ -2588,7 +2654,7 @@ class ConfluenceConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
         Fetch all members of a group with pagination.
 
@@ -2646,7 +2712,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return []
 
-    async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
+    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
         """
         Get AppUser objects by their email addresses from database.
 
@@ -2683,7 +2749,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get users by emails: {e}")
             return []
 
-    def _transform_to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+    def _transform_to_app_user(self, user_data: dict[str, Any]) -> Optional[AppUser]:
         """
         Transform Confluence user data to AppUser entity.
 
@@ -2723,7 +2789,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_user_group(
         self,
-        group_data: Dict[str, Any]
+        group_data: dict[str, Any]
     ) -> Optional[AppUserGroup]:
         """
         Transform Confluence group data to AppUserGroup entity.
@@ -3029,7 +3095,7 @@ class ConfluenceConnector(BaseConnector):
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Confluence records.
 
         This method:
@@ -3090,7 +3156,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch record from source and return data for reindexing.
 
         Args:
@@ -3119,7 +3185,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_page(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch page from source for reindexing."""
         try:
             page_id = record.external_record_id
@@ -3175,7 +3241,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_blogpost(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch blogpost from source for reindexing."""
         try:
             blogpost_id = record.external_record_id
@@ -3230,7 +3296,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_comment(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch comment from source for reindexing."""
         try:
             comment_id = record.external_record_id
@@ -3315,7 +3381,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_attachment(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
@@ -3714,7 +3780,7 @@ class ConfluenceConnector(BaseConnector):
             cursor=next_cursor
         )
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications (not implemented)."""
         self.logger.warning("Webhook notifications not yet supported for Confluence")
         pass
@@ -3725,7 +3791,9 @@ class ConfluenceConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "ConfluenceConnector":
         """Factory method to create a Confluence connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3741,5 +3809,7 @@ class ConfluenceConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

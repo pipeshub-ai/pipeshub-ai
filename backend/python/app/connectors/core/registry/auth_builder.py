@@ -107,7 +107,7 @@ class OAuthConfig:
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
     # Display metadata - stored in OAuth config to make it self-contained
-    icon_path: str = "/assets/icons/connectors/default.svg"
+    icon_path: str = "/icons/connectors/default.svg"
     app_group: str = ""
     app_description: str = ""
     app_categories: list[str] = field(default_factory=list)
@@ -193,7 +193,7 @@ class OAuthConfig:
             additional_params=data.get("additional_params", {}),
             scope_parameter_name=data.get("scope_parameter_name", "scope"),
             token_response_path=data.get("token_response_path") or data.get("tokenResponsePath"),
-            icon_path=data.get("icon_path", "/assets/icons/connectors/default.svg"),
+            icon_path=data.get("icon_path", "/icons/connectors/default.svg"),
             app_group=data.get("app_group", ""),
             app_description=data.get("app_description", ""),
             app_categories=data.get("app_categories", []),
@@ -216,6 +216,7 @@ class AuthType:
     CONNECTION_STRING = "CONNECTION_STRING"
     OAUTH_ADMIN_CONSENT = "OAUTH_ADMIN_CONSENT"
     CUSTOM = "CUSTOM"
+    NONE = "NONE"
 
 
 class AuthBuilder:
@@ -315,7 +316,7 @@ class AuthBuilder:
             additional_params=additional_params or {},
             scope_parameter_name=scope_parameter_name or "scope",
             token_response_path=token_response_path,
-            icon_path=icon_path or "/assets/icons/connectors/default.svg",
+            icon_path=icon_path or "/icons/connectors/default.svg",
             app_group=app_group or "",
             app_description=app_description or "",
             app_categories=app_categories or [],
@@ -390,4 +391,3 @@ class AuthBuilder:
     def get_oauth_config(self) -> Optional[OAuthConfig]:
         """Get the OAuth config if set"""
         return self._oauth_config
-

@@ -21,6 +21,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,6 +45,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -298,7 +300,7 @@ def nextcloud_permissions_to_permission_type(permissions: int) -> PermissionType
     """
     if permissions == NEXTCLOUD_PERM_MASK_ALL:
         return PermissionType.OWNER
-    elif permissions & 8 or permissions & 2:
+    elif permissions & 8 or permissions & 4 or permissions & 2:
         return PermissionType.WRITE
     elif permissions & 1:
         return PermissionType.READ
@@ -328,7 +330,7 @@ def extract_response_body(response) -> Optional[bytes]:
             logger = logging.getLogger(__name__)
             logger.debug(f"Failed to extract text from response: {e}")
 
-    if hasattr(response, 'response') and hasattr(response.response, 'content'):
+    if hasattr(response, 'response'):
         try:
             content = response.response.content
             if content is not None:
@@ -401,8 +403,9 @@ def get_response_error(response) -> str:
             )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/nextcloud.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.NEXTCLOUD.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Nextcloud API Documentation",
@@ -432,6 +435,8 @@ class NextcloudConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             NextcloudApp(connector_id=connector_id),
@@ -439,7 +444,9 @@ class NextcloudConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id=connector_id
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.NEXTCLOUD
@@ -752,7 +759,7 @@ class NextcloudConnector(BaseConnector):
                 external_revision_id=etag,
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=self.connector_name,
+                connector_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -1095,7 +1102,7 @@ class NextcloudConnector(BaseConnector):
 
             # Create a single app user for the current user
             app_user = AppUser(
-                app_name=self.connector_name,
+                app_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 source_user_id=self.current_user_id,
                 full_name=self.current_user_id,
@@ -1112,7 +1119,7 @@ class NextcloudConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 description="Personal Nextcloud Folder",
                 external_group_id=self.current_user_id,
-                connector_name=self.connector_name,
+                connector_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
@@ -1640,7 +1647,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncGenerator[bytes]:
+            async def generate() -> AsyncGenerator[bytes, None]:
                 yield file_content
 
             return create_stream_record_response(
@@ -1945,7 +1952,9 @@ class NextcloudConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """Factory method to create a NextcloudConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1953,5 +1962,11 @@ class NextcloudConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return NextcloudConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )

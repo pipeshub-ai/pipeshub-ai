@@ -33,11 +33,13 @@ import { Org } from '../../user_management/schema/org.schema';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
+import { SamlController } from '../../auth/controller/saml.controller';
 import axios from 'axios';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { ConfigService } from '../services/updateConfig.service';
 import {
   ConnectorPublicUrlChangedEvent,
+  EmbeddingModelConfiguredEvent,
   EntitiesEventProducer,
   Event,
   EventType,
@@ -54,6 +56,8 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
 import { AIModelsConfig } from '../types/ai-models.types';
+import { WebSearchConfig } from '../types/web-search.types';
+import { WebSearchProviderConfiguration } from '../types/web-search.types';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -74,6 +78,32 @@ type SlackBotStore = {
 
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
+  includeImages: false,
+  maxImages: 3,
+});
+
+const normalizeWebSearchSettings = (
+  settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
+) => {
+  const includeImages =
+    typeof settings?.includeImages === 'boolean'
+      ? settings.includeImages
+      : DEFAULT_WEB_SEARCH_SETTINGS.includeImages;
+  const parsedMaxImages = Number(settings?.maxImages);
+  const maxImages =
+    Number.isInteger(parsedMaxImages) &&
+    parsedMaxImages >= 1 &&
+    parsedMaxImages <= 500
+      ? parsedMaxImages
+      : DEFAULT_WEB_SEARCH_SETTINGS.maxImages;
+
+  return {
+    includeImages,
+    maxImages,
+  };
+};
 
 const handleBackendError = (error: any, operation: string): Error => {
   if (
@@ -441,7 +471,7 @@ const parseSlackBotStore = (
   }
 };
 
-const getSlackBotStore = async (
+export const getSlackBotStore = async (
   keyValueStoreService: KeyValueStoreService,
 ): Promise<SlackBotStore> => {
   const configManagerConfig = loadConfigurationManagerConfig();
@@ -710,7 +740,11 @@ export const getAvailablePlatformFeatureFlags =
     res: Response,
     _next: NextFunction,
   ) => {
-    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+    // Only expose user-toggleable flags. Hidden flags are still seeded with
+    // their defaults by getPlatformSettingsFromStore but never surface in the
+    // Labs UI.
+    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    res.status(200).json({ flags }).end();
   };
 
 export const getAzureAdAuthConfig =
@@ -1975,10 +2009,13 @@ export const setSharePointCredentials =
   };
 
 export const setSsoAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    samlController: SamlController,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { entryPoint, emailKey, enableJit } = req.body;
+      const { entryPoint, emailKey, enableJit , samlPlatform} = req.body;
       let { certificate } = req.body;
       certificate = certificate
         .replace(/\\n/g, '') // Remove \n
@@ -2000,11 +2037,12 @@ export const setSsoAuthConfig =
       const encryptedSsoConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true }));
+      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform }));
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
         encryptedSsoConfig,
       );
+      await samlController.updateSamlStrategiesWithCallback();
       res.status(200).json({ message: 'Sso config created successfully' });
     } catch (error: any) {
       logger.error('Error creating Sso config', { error });
@@ -2444,16 +2482,31 @@ export const createAIModelsConfig =
         encryptedAIConfig,
       );
 
-      // Send event to notify other services about the new AI config
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      // Notify other services about the new AI config. The initial config
+      // may include LLM and/or embedding models; fire a separate event per
+      // model type so downstream caches (e.g. the Python retrieval service's
+      // embedding instance) get invalidated appropriately.
+      if (aiConfig.llm.length > 0) {
+        const llmEvent: Event = {
+          eventType: EventType.LLMConfiguredEvent,
+          timestamp: Date.now(),
+          payload: {
+            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+          } as LLMConfiguredEvent,
+        };
+        await sendEvent(eventService, llmEvent);
+      }
 
-      await sendEvent(eventService, event);
+      if (aiConfig.embedding.length > 0) {
+        const embeddingEvent: Event = {
+          eventType: EventType.EmbeddingModelConfiguredEvent,
+          timestamp: Date.now(),
+          payload: {
+            credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+          } as EmbeddingModelConfiguredEvent,
+        };
+        await sendEvent(eventService, embeddingEvent);
+      }
 
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
@@ -2509,6 +2562,9 @@ export const getAIModelsProviders =
             llm: [],
             reasoning: [],
             multiModal: [],
+            imageGeneration: [],
+            tts: [],
+            stt: [],
           },
           message: 'No AI models found',
         });
@@ -2530,6 +2586,9 @@ export const getAIModelsProviders =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
+        tts: [],
+        stt: [],
       };
 
       for (const key of Object.keys(defaultStructure)) {
@@ -2568,6 +2627,9 @@ export const getModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2637,6 +2699,9 @@ export const getAvailableModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2763,6 +2828,9 @@ export const addAIModelProvider =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2835,6 +2903,9 @@ export const addAIModelProvider =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
+        tts: [],
+        stt: [],
       };
       for (const key of Object.keys(defaultStructure)) {
         if (!(key in aiModels)) {
@@ -2888,13 +2959,26 @@ export const addAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      // Emit an event specific to the model type so downstream services
+      // refresh the right cache. Embedding changes MUST NOT use the LLM
+      // event because the Python retrieval service only invalidates its
+      // embedding instance on `embeddingModelConfigured`.
+      const event: Event =
+        modelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3078,13 +3162,22 @@ export const updateAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
       res.status(200).json({
         status: 'success',
@@ -3198,13 +3291,22 @@ export const deleteAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3287,6 +3389,87 @@ export const updateDefaultAIModel =
         return;
       }
 
+      // If the model is already the default, no-op: nothing to check or update.
+      if (targetModel.isDefault) {
+        res.status(200).json({
+          status: 'success',
+          message: `Default ${targetModelType} model unchanged`,
+          details: {
+            modelKey,
+            modelType: targetModelType,
+            provider: targetModel.provider,
+            model: targetModel.configuration?.model,
+            contextLength: targetModel.contextLength,
+          },
+        });
+        return;
+      }
+
+      // Run a health check on the target model BEFORE promoting it to default.
+      // This is critical for `embedding`: switching the default to a model with a
+      // different vector dimension or model identity while the collection already
+      // contains points would corrupt retrieval. The Python
+      // `/api/v1/health-check/embedding` endpoint enforces that policy.
+      // For other model types (llm, ocr, slm, reasoning, multiModal) we also
+      // verify the model is reachable/credentials work before flipping the flag.
+      const healthCheckSupportedTypes = [
+        'llm',
+        'embedding',
+        'ocr',
+        'slm',
+        'reasoning',
+        'multiModal',
+        'imageGeneration',
+        'tts',
+        'stt',
+      ];
+      if (healthCheckSupportedTypes.includes(targetModelType)) {
+        const healthCheckPayload = {
+          provider: targetModel.provider,
+          configuration: targetModel.configuration,
+          modelType: targetModelType,
+          isMultimodal: targetModel.isMultimodal ?? false,
+          isReasoning: targetModel.isReasoning ?? false,
+          isDefault: true,
+          contextLength: targetModel.contextLength ?? null,
+          ...(targetModel.modelFriendlyName && {
+            modelFriendlyName: targetModel.modelFriendlyName,
+          }),
+        };
+
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: healthCheckPayload,
+        };
+
+        logger.debug(
+          `Health Check for AI ${targetModelType} default-update API calling`,
+        );
+
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
+          const errData: any = aiResponseData?.data ?? {};
+          const reasonMessage =
+            (errData && (errData.message ?? errData.error?.message)) ??
+            `Failed health check while setting default ${targetModelType} model. ` +
+              `Refusing to change default to prevent breaking the system.`;
+
+          res.status(aiResponseData?.statusCode ?? 500).json({
+            error: {
+              status: 'error',
+              message: reasonMessage,
+              details: errData,
+            },
+          });
+          return;
+        }
+      }
+
       // Remove default flag from all models in this type
       for (const config of aiModels[targetModelType]) {
         config.isDefault = false;
@@ -3306,13 +3489,22 @@ export const updateDefaultAIModel =
         encryptedUpdatedConfig,
       );
 
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
+      const event: Event =
+        targetModelType === 'embedding'
+          ? {
+              eventType: EventType.EmbeddingModelConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as EmbeddingModelConfiguredEvent,
+            }
+          : {
+              eventType: EventType.LLMConfiguredEvent,
+              timestamp: Date.now(),
+              payload: {
+                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+              } as LLMConfiguredEvent,
+            };
       await sendEvent(eventService, event);
 
       res.status(200).json({
@@ -3384,7 +3576,7 @@ export const getCustomSystemPrompt =
       );
 
       if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPrompt: '' }).end();
+        res.status(200).json({ customSystemPrompt: '', customSystemPromptWebSearch: '' }).end();
         return;
       }
 
@@ -3396,7 +3588,8 @@ export const getCustomSystemPrompt =
       );
 
       const customSystemPrompt = aiModels.customSystemPrompt || '';
-      res.status(200).json({ customSystemPrompt }).end();
+      const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
+      res.status(200).json({ customSystemPrompt, customSystemPromptWebSearch }).end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3407,14 +3600,17 @@ export const setCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { customSystemPrompt } = req.body;
+      const { customSystemPrompt, customSystemPromptWebSearch } = req.body;
 
       if (typeof customSystemPrompt !== 'string') {
         throw new BadRequestError('customSystemPrompt must be a string');
       }
+      if (typeof customSystemPromptWebSearch !== 'string') {
+        throw new BadRequestError('customSystemPromptWebSearch must be a string');
+      }
 
       const configManagerConfig = loadConfigurationManagerConfig();
-      
+
       // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
       const MAX_RETRIES = 5;
       let success = false;
@@ -3434,8 +3630,9 @@ export const setCustomSystemPrompt =
           );
         }
 
-        // Update only the customSystemPrompt field, keeping everything else intact
+        // Update only the custom prompt fields, keeping everything else intact
         aiModels.customSystemPrompt = customSystemPrompt;
+        aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
 
         // Encrypt the updated configuration
         const encryptedUpdatedConfig = EncryptionService.getInstance(
@@ -3455,7 +3652,7 @@ export const setCustomSystemPrompt =
           break;
         } else if (attempt === MAX_RETRIES - 1) {
           throw new Error(
-            'Failed to update custom system prompt due to persistent concurrent modification. Please try again.',
+            'Failed to update custom system prompts due to persistent concurrent modification. Please try again.',
           );
         }
         // If CAS failed, retry with exponential backoff
@@ -3464,16 +3661,693 @@ export const setCustomSystemPrompt =
 
       if (!success) {
         throw new Error(
-          'Failed to update custom system prompt after maximum retries.',
+          'Failed to update custom system prompts after maximum retries.',
         );
       }
 
       res.status(200).json({
-        message: 'Custom system prompt updated successfully',
+        message: 'Custom system prompts updated successfully',
         customSystemPrompt,
+        customSystemPromptWebSearch,
       });
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });
+      next(error);
+    }
+  };
+
+// ---------------------------------------------------------------------------
+// AI Model Registry proxy (forwards to Python backend)
+// ---------------------------------------------------------------------------
+
+async function proxyAiBackendGet(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  path: string,
+  options: { query?: URLSearchParams; logMessage: string },
+): Promise<void> {
+  try {
+    const qs = options.query?.toString();
+    const url = `${appConfig.aiBackend}${path}${qs ? `?${qs}` : ''}`;
+
+    const headers: Record<string, string> = {};
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios.get(url, { timeout: 10000, headers });
+    res.status(response.status).json(response.data);
+  } catch (error: any) {
+    logger.error(options.logMessage, { error });
+    if (error?.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      next(new ServiceUnavailableError('AI model registry service is unavailable'));
+    }
+  }
+}
+
+export const getAIModelRegistry =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const { search, capability } = req.query;
+    const params = new URLSearchParams();
+    if (search) params.set('search', String(search));
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(appConfig, req, res, next, '/api/v1/ai-models/registry', {
+      query: params,
+      logMessage: 'Error proxying AI model registry request',
+    });
+  };
+
+export const getAIModelRegistryCapabilities =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      '/api/v1/ai-models/registry/capabilities',
+      { logMessage: 'Error proxying AI model capabilities request' },
+    );
+  };
+
+export const getAIModelProviderSchema =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const providerId = req.params.providerId ?? '';
+    const { capability } = req.query;
+    const params = new URLSearchParams();
+    if (capability) params.set('capability', String(capability));
+
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
+      { query: params, logMessage: 'Error proxying AI model provider schema request' },
+    );
+  };
+
+// Web Search Provider Management Functions
+export const getWebSearchProviders =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(200).json({
+          status: 'success',
+          providers: [],
+          settings: DEFAULT_WEB_SEARCH_SETTINGS,
+          message: 'No web search providers found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      ) as WebSearchConfig;
+
+      const providers = Array.isArray(webSearchConfig.providers)
+        ? webSearchConfig.providers
+        : [];
+      const settings = normalizeWebSearchSettings(webSearchConfig.settings);
+
+      res.status(200).json({
+        status: 'success',
+        providers,
+        settings,
+        message: 'Web search providers retrieved successfully',
+      });
+    } catch (error: any) {
+      logger.error('Error getting web search providers', { error });
+      next(error);
+    }
+  };
+
+export const updateWebSearchSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { includeImages, maxImages } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
+      const MAX_RETRIES = 5;
+      let success = false;
+      let normalizedSettings: ReturnType<typeof normalizeWebSearchSettings> | null =
+        null;
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+          configPaths.webSearch,
+        );
+
+        let webSearchConfig: WebSearchConfig = { providers: [] };
+        if (encryptedWebSearchConfig) {
+          webSearchConfig = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedWebSearchConfig),
+          ) as WebSearchConfig;
+        }
+
+        if (!Array.isArray(webSearchConfig.providers)) {
+          webSearchConfig.providers = [];
+        }
+
+        const existingSettings = normalizeWebSearchSettings(
+          webSearchConfig.settings,
+        );
+        normalizedSettings = normalizeWebSearchSettings({
+          includeImages,
+          maxImages:
+            typeof maxImages === 'number'
+              ? maxImages
+              : existingSettings.maxImages,
+        });
+
+        webSearchConfig.settings = normalizedSettings;
+
+        const encryptedUpdatedConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify(webSearchConfig));
+
+        const casSuccess = await keyValueStoreService.compareAndSet<string>(
+          configPaths.webSearch,
+          encryptedWebSearchConfig ?? null,
+          encryptedUpdatedConfig,
+        );
+
+        if (casSuccess) {
+          success = true;
+          break;
+        } else if (attempt === MAX_RETRIES - 1) {
+          throw new Error(
+            'Failed to update web search settings due to persistent concurrent modification. Please try again.',
+          );
+        }
+        // If CAS failed, retry with exponential backoff
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+
+      if (!success || normalizedSettings === null) {
+        throw new Error(
+          'Failed to update web search settings after maximum retries.',
+        );
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search settings updated successfully',
+        settings: normalizedSettings,
+      });
+    } catch (error: any) {
+      logger.error('Error updating web search settings', { error });
+      next(error);
+    }
+  };
+
+export const addWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { provider, configuration, isDefault = false } = req.body;
+
+      // Validate required fields
+      if (!provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'provider and configuration are required',
+        });
+        return;
+      }
+
+      // Health check: verify provider credentials before saving
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration },
+      };
+
+      logger.debug('Health check for web search provider before adding');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      let webSearchConfig: WebSearchConfig = { providers: [] };
+      if (encryptedWebSearchConfig) {
+        webSearchConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedWebSearchConfig),
+        );
+      }
+
+      // Ensure providers array exists
+      if (!webSearchConfig.providers) {
+        webSearchConfig.providers = [];
+      }
+
+      // Generate a unique providerKey
+      const providerKey = uuidv4();
+
+      // If this is set as default, remove default flag from other providers
+      if (isDefault) {
+        for (const config of webSearchConfig.providers) {
+          config.isDefault = false;
+        }
+      }
+
+      // If this is the first provider, make it default
+      const shouldBeDefault = webSearchConfig.providers.length === 0 || isDefault;
+
+      // Add the new configuration
+      const newConfig = {
+        provider,
+        configuration,
+        providerKey,
+        isDefault: shouldBeDefault,
+      };
+
+      webSearchConfig.providers.push(newConfig);
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider added successfully',
+        details: {
+          providerKey,
+          provider,
+          isDefault: shouldBeDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error adding web search provider', { error });
+      next(error);
+    }
+  };
+
+export const updateWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+      const { provider, configuration, isDefault = false } = req.body;
+
+      // Validate required fields
+      if (!provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'provider and configuration are required',
+        });
+        return;
+      }
+
+      // Health check: verify provider credentials before updating
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration },
+      };
+
+      logger.debug('Health check for web search provider before updating');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider with the specified key
+      const targetProvider = webSearchConfig.providers?.find(
+        (p: WebSearchProviderConfiguration) => p.providerKey === providerKey,
+      );
+
+      if (!targetProvider) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      // Update the provider configuration
+      targetProvider.provider = provider;
+      targetProvider.configuration = configuration;
+      targetProvider.isDefault = isDefault;
+
+      // If this is set as default, remove default flag from other providers
+      if (isDefault) {
+        for (const config of webSearchConfig.providers) {
+          if (config.providerKey !== providerKey) {
+            config.isDefault = false;
+          }
+        }
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider updated successfully',
+        details: {
+          providerKey,
+          provider: targetProvider.provider,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating web search provider', { error });
+      next(error);
+    }
+  };
+
+export const deleteWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider index
+      const providerIndex = webSearchConfig.providers?.findIndex(
+        (p: any) => p.providerKey === providerKey,
+      );
+
+      if (providerIndex === -1 || providerIndex === undefined) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      const deletedProvider = webSearchConfig.providers[providerIndex];
+
+      // Check if any agents are using this provider before allowing deletion
+      try {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+          method: HttpMethod.GET,
+          headers: {
+            ...(req.headers as Record<string, string>),
+            'Content-Type': 'application/json',
+          },
+        };
+        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
+        const aiResponse = await aiCommand.execute();
+
+        const agents =
+          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
+            ? aiResponse.data.agents
+            : [];
+
+        if (agents.length > 0) {
+          res.status(409).json({
+            status: 'error',
+            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+            agents,
+          });
+          return;
+        }
+      } catch (usageError: any) {
+        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      }
+
+      const wasDefault = deletedProvider.isDefault || false;
+
+      // Remove the provider from the configuration
+      webSearchConfig.providers.splice(providerIndex, 1);
+
+      // If the deleted provider was default, set the first remaining provider as default
+      if (wasDefault && webSearchConfig.providers.length > 0) {
+        webSearchConfig.providers[0].isDefault = true;
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Web search provider deleted successfully',
+        details: {
+          providerKey,
+          provider: deletedProvider.provider,
+          wasDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error deleting web search provider', { error });
+      next(error);
+    }
+  };
+
+export const updateDefaultWebSearchProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { providerKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+        configPaths.webSearch,
+      );
+
+      // DuckDuckGo is a built-in provider that requires no stored configuration.
+      // Setting it as default means clearing the default flag from all stored providers.
+      if (providerKey === 'duckduckgo') {
+        if (encryptedWebSearchConfig) {
+          const webSearchConfigForDDG = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedWebSearchConfig),
+          );
+
+          for (const config of webSearchConfigForDDG.providers || []) {
+            config.isDefault = false;
+          }
+
+          const encryptedUpdatedConfig = EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).encrypt(JSON.stringify(webSearchConfigForDDG));
+
+          await keyValueStoreService.set<string>(
+            configPaths.webSearch,
+            encryptedUpdatedConfig,
+          );
+        }
+
+        res.status(200).json({
+          status: 'success',
+          message: 'Default web search provider updated successfully',
+          details: {
+            providerKey,
+            provider: 'duckduckgo',
+          },
+        });
+        return;
+      }
+
+      if (!encryptedWebSearchConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No web search configuration found',
+        });
+        return;
+      }
+
+      const webSearchConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedWebSearchConfig),
+      );
+
+      // Find the provider with the specified key
+      const targetProvider = webSearchConfig.providers?.find(
+        (p: any) => p.providerKey === providerKey,
+      );
+
+      if (!targetProvider) {
+        res.status(404).json({
+          status: 'error',
+          message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      // Health check: verify provider is reachable before setting as default
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider: targetProvider.provider, configuration: targetProvider.configuration },
+      };
+
+      logger.debug('Health check for web search provider before setting as default');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
+      // Remove default flag from all providers
+      for (const config of webSearchConfig.providers) {
+        config.isDefault = false;
+      }
+
+      // Set the target provider as default
+      targetProvider.isDefault = true;
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(webSearchConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.webSearch,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Default web search provider updated successfully',
+        details: {
+          providerKey,
+          provider: targetProvider.provider,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating default web search provider', { error });
       next(error);
     }
   };

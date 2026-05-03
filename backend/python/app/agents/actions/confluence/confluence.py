@@ -1,7 +1,8 @@
 import html
 import json
 import logging
-from typing import Any, Dict, Optional, Tuple
+import re
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,11 +14,13 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -29,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Pydantic schemas for Confluence tools
 class CreatePageInput(BaseModel):
     """Schema for creating Confluence pages"""
-    space_id: str = Field(description="Space ID or key")
+    space_id: str = Field(description="Space ID or key (e.g. '~abc123', 'SD', '12345'). IMPORTANT: Resolve via confluence.get_spaces if not already known from Reference Data or conversation history.")
     page_title: str = Field(description="Page title")
     page_content: str = Field(description="Page content in storage format")
 
@@ -106,14 +109,70 @@ class SearchContentInput(BaseModel):
             ),
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
-                CommonFields.client_secret("Atlassian Developer Console")
+                CommonFields.client_secret("Atlassian Developer Console"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL the Confluence agent should work with.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
-            icon_path="/assets/icons/connectors/confluence.svg",
+            icon_path=IconPaths.connector_icon("confluence"),
             app_group="Documentation",
             app_description="Confluence OAuth application for agent integration"
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                usage="CONFIGURE",
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg"))\
+    .configure(lambda builder: builder
+        .with_icon(IconPaths.connector_icon("confluence"))
+        .add_documentation_link(DocumentationLink(
+            "Confluence Cloud OAuth Setup",
+            "https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/confluence/confluence",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Confluence:
     """Confluence tool exposed to the agents using ConfluenceDataSource"""
@@ -131,7 +190,7 @@ class Confluence:
         self,
         response: HTTPResponse,
         success_message: str
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Handle HTTP response and return standardized tuple.
 
         Args:
@@ -175,18 +234,51 @@ class Confluence:
         try:
             # Get token from client
             client_obj = self.client._client
+
+            # OAuth: get_base_url() is the API gateway
+            # (api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2).
+            # Browse URLs need the site host from accessible-resources (*.atlassian.net),
+            # and we must match the cloud_id to the correct site (token may access many).
             if hasattr(client_obj, 'get_token'):
                 token = client_obj.get_token()
                 if token:
+                    cloud_id = None
+                    if hasattr(client_obj, 'get_base_url'):
+                        gateway = (client_obj.get_base_url() or "").rstrip('/')
+                        match = re.search(r"/ex/confluence/([^/]+)", gateway)
+                        if match:
+                            cloud_id = match.group(1)
+
                     resources = await ConfluenceClient.get_accessible_resources(token)
-                    if resources and len(resources) > 0:
-                        # Extract base URL from resource URL
-                        resource_url = resources[0].url
-                        # Resource URL is like 'https://example.atlassian.net'
-                        self._site_url = resource_url.rstrip('/')
+                    if resources:
+                        if cloud_id:
+                            picked = next((r for r in resources if r.id == cloud_id), None)
+                            if picked is None:
+                                logger.warning(
+                                    "Confluence _get_site_url: cloud_id %s not found in accessible resources (%s); "
+                                    "refusing to fall back to a different site.",
+                                    cloud_id, [r.id for r in resources],
+                                )
+                                return None
+                            self._site_url = picked.url.rstrip('/')
+                            return self._site_url
+                        # Could not extract cloud_id from the gateway URL — only safe
+                        # when the token has exactly one accessible site.
+                        self._site_url = resources[0].url.rstrip('/')
                         return self._site_url
+
+            # API token / basic: get_base_url() includes /wiki/api/v2, strip it for site URL
+            if hasattr(client_obj, 'get_base_url'):
+                base_url = client_obj.get_base_url()
+                if base_url:
+                    # Remove /wiki/api/v2 suffix to get the site URL
+                    site_url = base_url.rstrip('/')
+                    if site_url.endswith('/wiki/api/v2'):
+                        site_url = site_url[:-len('/wiki/api/v2')]
+                    self._site_url = site_url
+                    return self._site_url
         except Exception as e:
-            logger.warning(f"Could not get site URL: {e}")
+            logger.warning("Could not get site URL: %s", e)
 
         return None
 
@@ -253,6 +345,7 @@ class Confluence:
         app_name="confluence",
         tool_name="create_page",
         description="Create a page in Confluence",
+        llm_description="Create a page in Confluence. Requires space_id (numeric ID or key), page_title, and page_content (HTML storage format). Call confluence.get_spaces first if the space is not yet resolved.",
         args_schema=CreatePageInput,  # NEW: Pydantic schema
         returns="JSON with success status and page details",
         when_to_use=[
@@ -270,7 +363,9 @@ class Confluence:
         typical_queries=[
             "Create a Confluence page",
             "Add a new page to Confluence",
-            "Create documentation page"
+            "Create documentation page",
+            "Create a page in X space",
+            "Create a wiki page about X and add the Jira ticket link"
         ],
         category=ToolCategory.DOCUMENTATION
     )
@@ -279,7 +374,7 @@ class Confluence:
         space_id: str,
         page_title: str,
         page_content: str
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a page in Confluence.
 
         Args:
@@ -399,7 +494,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_page_content(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page_content(self, page_id: str) -> tuple[bool, str]:
         """Get the content of a page in Confluence.
 
         Args:
@@ -483,7 +578,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_pages_in_space(self, space_id: str) -> Tuple[bool, str]:
+    async def get_pages_in_space(self, space_id: str) -> tuple[bool, str]:
         """Get all pages in a space.
 
         Args:
@@ -566,7 +661,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
+    async def update_page_title(self, page_id: str, new_title: str) -> tuple[bool, str]:
         """Update the title of a page.
 
         Args:
@@ -618,7 +713,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_child_pages(self, page_id: str) -> Tuple[bool, str]:
+    async def get_child_pages(self, page_id: str) -> tuple[bool, str]:
         """Get child pages of a page.
 
         Args:
@@ -716,7 +811,7 @@ class Confluence:
         self,
         title: str,
         space_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for pages by title.
 
         Args:
@@ -727,7 +822,7 @@ class Confluence:
             Tuple of (success, json_response)
         """
         try:
-            kwargs: Dict[str, object] = {"title": title}
+            kwargs: dict[str, object] = {"title": title}
             if space_id:
                 kwargs["space_id"] = [space_id]
 
@@ -830,7 +925,7 @@ class Confluence:
         space_id: Optional[str] = None,
         content_types: Optional[list] = None,
         limit: Optional[int] = 25,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Full-text search across Confluence using the platform search engine.
 
         Searches page/blogpost titles, body content, comments, and labels via CQL ``text ~``.
@@ -877,7 +972,7 @@ class Confluence:
             # This is the most reliable way to get the correct base URL
             response_links = data.get("_links", {})
             base_url = response_links.get("base", "")
-            
+
             # Fallback to site_url if base_url is not available
             if not base_url:
                 base_url = await self._get_site_url()
@@ -903,7 +998,7 @@ class Confluence:
                 webui = ""
                 content_links = content.get("_links") or {}
                 webui_path = content_links.get("webui", "")
-                
+
                 if webui_path and base_url:
                     # Combine base URL with the relative webui path
                     # webui_path already starts with "/spaces/", so just combine
@@ -915,7 +1010,7 @@ class Confluence:
                     # Last resort: use webui path as-is if no base URL available
                     webui = webui_path
 
-                entry: Dict[str, Any] = {
+                entry: dict[str, Any] = {
                     "id": content_id,
                     "type": content_type,
                     "title": title,
@@ -950,28 +1045,32 @@ class Confluence:
         app_name="confluence",
         tool_name="get_spaces",
         description="Get all spaces with permissions in Confluence",
+        llm_description="Get all spaces with permissions in Confluence. Also used to resolve space names/types (e.g., personal space) before creating pages.",
         # No args_schema needed (no parameters)
-        returns="JSON with list of spaces",
+        returns="JSON with list of spaces including id, key, name, and type fields",
         when_to_use=[
             "User wants to list all Confluence spaces",
             "User mentions 'Confluence' + wants spaces",
-            "User asks for available spaces"
+            "User asks for available spaces",
+            "Need to resolve 'my personal space' or any named space to get its ID before creating/updating a page",
+            "User refers to a space by name and you need the space key or numeric ID"
         ],
         when_not_to_use=[
-            "User wants specific space (use get_space)",
+            "Space ID is already known from conversation history",
             "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
+            "User wants info ABOUT Confluence (use retrieval)"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "List all Confluence spaces",
             "Show me available spaces",
-            "What spaces are in Confluence?"
+            "What spaces are in Confluence?",
+            "Create a page in my personal space",
+            "Create a page in the Engineering space"
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_spaces(self) -> Tuple[bool, str]:
+    async def get_spaces(self) -> tuple[bool, str]:
         """Get all spaces accessible to the user.
 
         Returns:
@@ -1034,7 +1133,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_space(self, space_id: str) -> Tuple[bool, str]:
+    async def get_space(self, space_id: str) -> tuple[bool, str]:
         """Get details of a specific space.
 
         Args:
@@ -1107,7 +1206,7 @@ class Confluence:
         page_id: str,
         page_title: Optional[str] = None,
         page_content: Optional[str] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Update a page in Confluence.
 
         Args:
@@ -1180,7 +1279,7 @@ class Confluence:
             version_number = version.get("number", 1)
 
             # Build update body with ALL required fields
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "id": page_id_str,  # ✅ REQUIRED by API
                 "status": status,   # ✅ REQUIRED by API
                 "spaceId": space_id,  # ✅ REQUIRED by API
@@ -1276,7 +1375,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_page_versions(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         """Get version history of a page.
 
         Args:
@@ -1330,7 +1429,7 @@ class Confluence:
         page_id: str,
         comment_text: str,
         parent_comment_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Add a comment to a Confluence page.
 
         Args:

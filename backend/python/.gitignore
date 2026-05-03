@@ -3,9 +3,12 @@ default_config.json
 to_do.txt
 credentials.json
 token.pickle
-tests/
 google_test
 celerybeat-schedule.*
 .env
 cleanup.sh
 __pycache__/
+build/
+dist/
+*.egg-info/
+htmlcov/*

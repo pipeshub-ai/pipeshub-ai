@@ -1,64 +1,75 @@
-
 <!DOCTYPE html>
-
 <html>
   {{>head}}
-  <main>
-    <body>
-      <table
- {{{containerstyle}}}
-    
-      >
-        <tr> 
+  <body>
+    <main>
+      <table {{{containerstyle}}}>
+        <tr>
           <td>{{> header}}</td>
         </tr>
         <tr>
-          <td> 
-            <table
-              class="mobile-width"
- {{{bodytablestyle}}}
-              
-            >
+          <td>
+            <table class="mobile-width" {{{bodytablestyle}}}>
               <tr>
-                <td>
-
-
-                <div style="width: 90%; margin: 0 auto; background-color: red; color: white; text-align: center; padding: 10px; border-radius: 5px;">Alert</div>
-                <br>
-                  <div {{{divstyle}}}>
-                      <p>Dear User,<br>
-                        A suspicious attempt to login to your account has been made on <b>PipesHub</b> <br>
-                        Multiple attempts were made using the wrong OTP.
-                        <br><br>
-                        If it was you who was trying to enter the platform, kindly wait for sometime and enter the latest OTP sent to your email, and if not then contact the support team at <b>PipesHub</b> by clicking the button given below.
-
-                      </p>
-                    
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      font-size: 20px;
+                      font-weight: 700;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    "
+                  >
+                    We noticed a suspicious sign-in attempt
                   </div>
-
-                    <div {{{divstyle}}}>
-                     
-                    <p {{{pstyle}}}>
-                      <a href={{link}} target="_blank">
-                        <button
-                          {{{buttonstyle}}}
-                        >
-                          Contact Support 
-                        </button>
-                      </a>
-                    </p>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 24px 0;
+                    "
+                  >
+                    <div>{{#if name}}Hi {{name}},{{else}}Hi,{{/if}}</div>
+                    <div>We detected multiple failed sign-in attempts on your
+                      PipesHub account, and your account has been temporarily
+                      locked to keep it safe.</div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
+                    <div>Your account will be automatically unlocked 24 hours
+                      after the lock was applied, then you can try signing in
+                      again.</div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
+                    <div>If you still can&rsquo;t sign in after that, please contact
+                      your organisation&rsquo;s admin.</div>
                   </div>
- 
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                    "
+                  >
+                    If you didn&rsquo;t attempt to sign in, please let your
+                    admin know so they can review the activity on your account.
+                  </div>
                 </td>
               </tr>
             </table>
           </td>
         </tr>
-
         <tr>
           <td>{{> footer}}</td>
         </tr>
       </table>
-    </body>
-  </main>
+    </main>
+  </body>
 </html>

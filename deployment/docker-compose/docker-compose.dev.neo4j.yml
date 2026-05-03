@@ -6,8 +6,8 @@ services:
       context: ../../
       dockerfile: Dockerfile
       args:
-        BUILDKIT_INLINE_CACHE: "1"
-        RUNTIME_BASE: ${RUNTIME_BASE:-python:3.10-slim}
+        - BUILDKIT_INLINE_CACHE=1
+        - FRONTEND=new
       shm_size: 4gb
       ulimits:
         memlock:
@@ -18,19 +18,26 @@ services:
       - "8081:8081"
       - "8088:8088"
       - "3000:3000"
+      - "3001:3001"
       - "3020:3020"
       - "8001:8000"
     deploy:
       resources:
         limits:
-          memory: 10G
+          memory: 12G
     shm_size: 2gb
     init: true
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+        compress: "true"
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       # Security settings - allow override with custom secret
@@ -58,6 +65,10 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -100,6 +111,14 @@ services:
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
+      - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
@@ -113,22 +132,48 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
+      # Defaults to "docker" -- the sandbox-image service below builds the required
+      # pipeshub/sandbox:latest image before pipeshub-ai starts.
+      # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
+      # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+
     depends_on:
       qdrant:
         condition: service_healthy
-      kafka-1:
-        condition: service_started
       redis:
-        condition: service_started
+        condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       neo4j:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
+
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Probe the aggregated /api/v1/health/services endpoint served by the
+    # nodejs API. If curl succeeds, the nodejs service itself is up; the JSON
+    # body must additionally report every Python application service
+    # (query, connector, indexing, docling) as "healthy" before the container
+    # is considered ready. This makes `docker compose up --wait` block until
+    # all 5 pipeshub services inside the container have finished starting.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
 
   mongodb:
     image: mongo:8.0.17
@@ -160,6 +205,11 @@ services:
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   neo4j:
     image: neo4j:5.26.0
@@ -193,6 +243,7 @@ services:
       start_period: 30s
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -200,12 +251,19 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -223,6 +281,24 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Build-only helper that ensures the pipeshub/sandbox:latest image is
+  # available on the host Docker daemon before pipeshub-ai starts.
+  # The container itself is a no-op: it prints a message and exits 0, leaving
+  # the image in place for SANDBOX_MODE=docker ephemeral execution.
+  sandbox-image:
+    image: pipeshub/sandbox:latest
+    build:
+      context: ../../deployment/sandbox
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
 
   qdrant:
     image: qdrant/qdrant:v1.15

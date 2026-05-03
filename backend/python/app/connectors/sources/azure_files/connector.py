@@ -14,8 +14,9 @@ Key differences from Azure Blob/S3:
 import base64
 import mimetypes
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from logging import Logger
 from urllib.parse import quote, unquote
 
@@ -31,6 +32,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -84,7 +86,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_files import AzureFilesClient
 from app.sources.external.azure.azure_files import AzureFilesDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
@@ -128,6 +130,35 @@ def get_mimetype_for_azure_files(file_path: str, *, is_directory: bool = False) 
         except ValueError:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
+
+
+def _share_last_modified_epoch_ms_from_list(
+    shares_data: Iterable[Any] | None, target_names: set[str]
+) -> dict[str, int]:
+    """Map share name -> last_modified as epoch ms from list_shares data."""
+    out: dict[str, int] = {}
+    if not shares_data or not target_names:
+        return out
+    for share in shares_data:
+        name: str | None = None
+        lm: Any = None
+        if isinstance(share, dict):
+            name = share.get("name")
+            lm = share.get("last_modified")
+        else:
+            name = getattr(share, "name", None)
+            lm = getattr(share, "last_modified", None)
+        if not name or name not in target_names:
+            continue
+        ts: int | None = None
+        if lm is not None:
+            if isinstance(lm, datetime):
+                ts = datetime_to_epoch_ms(lm)
+            else:
+                ts = datetime_to_epoch_ms(str(lm))
+        if ts is not None:
+            out[name] = ts
+    return out
 
 
 class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
@@ -217,7 +248,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/azurefiles.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.AZURE_FILES.value))
         .add_documentation_link(DocumentationLink(
             "Azure Files Setup",
             "https://learn.microsoft.com/en-us/azure/storage/files/storage-files-introduction",
@@ -265,6 +296,8 @@ class AzureFilesConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=AzureFilesApp(connector_id),
@@ -273,6 +306,8 @@ class AzureFilesConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.AZURE_FILES
@@ -294,8 +329,6 @@ class AzureFilesConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.share_name: str | None = None
-        self.connector_scope: str | None = None
-        self.created_by: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
 
@@ -341,25 +374,8 @@ class AzureFilesConnector(BaseConnector):
             connection_string
         )
 
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
-
-        # Fetch creator email once to avoid repeated DB queries during sync
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
-                    if user and user.get("email"):
-                        self.creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not get user for created_by {self.created_by}: {e}"
-                )
+        # Load creator email if needed (for personal scope permission creation)
+        await self._load_creator_email()
 
         try:
             client = await AzureFilesClient.build_from_services(
@@ -424,9 +440,28 @@ class AzureFilesConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
 
             # Get sync filters
             sync_filters = (
@@ -442,7 +477,8 @@ class AzureFilesConnector(BaseConnector):
             )
 
             # List all shares or use configured share
-            shares_to_sync = []
+            shares_to_sync: list[str] = []
+            shares_list_payload: list[Any] | None = None
             if selected_shares:
                 shares_to_sync = selected_shares
                 self.logger.info(f"Using filtered shares: {shares_to_sync}")
@@ -457,6 +493,7 @@ class AzureFilesConnector(BaseConnector):
 
                 shares_data = shares_response.data
                 if shares_data:
+                    shares_list_payload = shares_data
                     shares_to_sync = [
                         share.get("name")
                         for share in shares_data
@@ -467,8 +504,24 @@ class AzureFilesConnector(BaseConnector):
                     self.logger.warning("No shares found")
                     return
 
+            target_names = {n for n in shares_to_sync if n}
+            share_ts_ms = _share_last_modified_epoch_ms_from_list(
+                shares_list_payload, target_names
+            )
+            if shares_list_payload is None and target_names:
+                try:
+                    extra = await self.data_source.list_shares()
+                    if extra.success and extra.data:
+                        share_ts_ms = _share_last_modified_epoch_ms_from_list(
+                            extra.data, target_names
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch share timestamps via list_shares: {e}"
+                    )
+
             # Create record groups for shares first
-            await self._create_record_groups_for_shares(shares_to_sync)
+            await self._create_record_groups_for_shares(shares_to_sync, share_ts_ms)
 
             # Sync each share
             for share_name in shares_to_sync:
@@ -489,19 +542,28 @@ class AzureFilesConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_shares(
-        self, share_names: list[str]
+        self,
+        share_names: list[str],
+        share_last_modified_epoch_ms: dict[str, int] | None = None,
     ) -> None:
-        """Create record groups for shares with appropriate permissions."""
+        """Create record groups for shares with appropriate permissions.
+
+        Args:
+            share_names: File shares to represent as record groups.
+            share_last_modified_epoch_ms: Optional map from share name to Azure
+                ``last_modified`` (epoch ms) from list_shares, for hub Created/Updated.
+        """
         if not share_names:
             return
 
+        ts_map = share_last_modified_epoch_ms or {}
         record_groups = []
         for share_name in share_names:
             if not share_name:
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -530,6 +592,7 @@ class AzureFilesConnector(BaseConnector):
                         )
                     )
 
+            lm_ms = ts_map.get(share_name)
             record_group = RecordGroup(
                 name=share_name,
                 external_group_id=share_name,
@@ -537,6 +600,9 @@ class AzureFilesConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"Azure File Share: {share_name}",
+                web_url=self._generate_directory_url(share_name, ""),
+                source_created_at=lm_ms,
+                source_updated_at=lm_ms,
             )
             record_groups.append((record_group, permissions))
 
@@ -1133,7 +1199,7 @@ class AzureFilesConnector(BaseConnector):
         try:
             permissions: list[Permission] = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1753,6 +1819,8 @@ class AzureFilesConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "AzureFilesConnector":
         """Factory method to create and initialize connector."""
@@ -1781,5 +1849,7 @@ class AzureFilesConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

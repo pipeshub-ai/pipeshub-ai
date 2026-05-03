@@ -1,11 +1,9 @@
 import asyncio
 import os
-
-# Only for development/debugging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
+from typing import TYPE_CHECKING, Any
 
-import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -17,13 +15,16 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
-from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    pass  # TYPE_CHECKING block kept for future use
 
 # def handle_sigterm(signum, frame) -> None:
 #     print(f"Received signal {signum}, {frame} shutting down gracefully")
@@ -45,10 +46,10 @@ async def get_initialized_container() -> IndexingAppContainer:
             ):  # Double-check inside lock
                 await initialize_container(container)
                 container.wire(modules=["app.modules.retrieval.retrieval_service"])
-                get_initialized_container.initialized = True
+                setattr(get_initialized_container, "initialized", True)
     return container
 
-async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider) -> None:
+async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider: IGraphDBProvider) -> None:
     """
     Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
     QUEUED records are set to AUTO_INDEX_OFF so they are not auto-processed on startup.
@@ -99,9 +100,9 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
 
         logger.info(f"📋 Found {total_records} in-progress record(s) to recover")
         # Create the message handler that will process these records
-        record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
+        record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
 
-        async def process_single_record(idx: int, record: dict) -> None:
+        async def process_single_record(idx: int, record: dict[str, Any]) -> None:
             """Process a single record with semaphore control."""
             async with semaphore:
                 record_id = record.get("_key")
@@ -131,14 +132,15 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                                 f"connector instance {connector_id} is inactive."
                             )
                             # Update status to AUTO_INDEX_OFF and reason to connector is inactive
-                            await graph_provider.update_node(
-                                record_id,
-                                CollectionNames.RECORDS.value,
-                                {
-                                    "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
-                                    "reason" : "Connector is inactive"
-                                },
-                            )
+                            if record_id is not None:
+                                await graph_provider.update_node(
+                                    record_id,
+                                    CollectionNames.RECORDS.value,
+                                    {
+                                        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                                        "reason" : "Connector is inactive"
+                                    },
+                                )
                             results["skipped"] += 1
                             return
 
@@ -159,7 +161,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
                     # Otherwise, treat as NEW_RECORD (even if version > 0, the initial indexing might have failed)
-                    version = payload.get("version", 0)
+                    version = int(payload.get("version", 0) or 0)
                     virtual_record_id = payload.get("virtualRecordId")
 
                     if version > 0 and virtual_record_id is not None:
@@ -169,22 +171,22 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                         event_type = EventTypes.NEW_RECORD.value
                         logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    # Process the record using the same handler that processes Kafka messages
+                    # Process the record using the same handler that processes stream messages
                     # record_message_handler returns an async generator, so we need to consume it
                     # Track whether we received the indexing_complete event to verify full recovery
                     parsing_complete = False
                     indexing_complete = False
 
-                    async for event in record_message_handler({
-                        "eventType": event_type,
-                        "payload": payload
-                    }):
-                        event_name = event.get("event", "unknown")
-                        logger.debug(f"   Recovery event: {event_name}")
+                    recovery_message = StreamMessage(
+                        eventType=event_type,
+                        payload=payload,
+                    )
+                    async for event in record_message_handler(recovery_message):
+                        logger.debug(f"   Recovery event: {event.event}")
 
-                        if event_name == "parsing_complete":
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
                             parsing_complete = True
-                        elif event_name == "indexing_complete":
+                        elif event.event == IndexingEvent.INDEXING_COMPLETE:
                             indexing_complete = True
 
                     # Only report success if indexing actually completed
@@ -229,23 +231,23 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Don't raise - we want to continue starting the service even if recovery fails
-        logger.warning("⚠️ Continuing to start Kafka consumers despite recovery errors")
+        logger.warning("⚠️ Continuing to start message consumers despite recovery errors")
 
-async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
-    """Start all Kafka consumers at application level"""
+async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any]:
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
-        # 1. Create Entity Consumer
-        logger.info("🚀 Starting Entity Kafka Consumer...")
-        record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
+        logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
+        record_consumer_config = await MessagingUtils.create_record_consumer_config(app_container)
 
         record_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+            broker_type=broker_type,
             logger=logger,
-            config=record_kafka_consumer_config,
-            consumer_type="indexing"
+            config=record_consumer_config,
+            consumer_type=ConsumerType.INDEXING
         )
 
         # TODO: Remove this once the graph provider is fixed
@@ -277,13 +279,13 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             logger.info("✅Neo4j Graph provider reconnected in worker thread event loop")
 
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
-        await record_kafka_consumer.start(record_message_handler)
+        await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         consumers.append(("record", record_kafka_consumer))
-        logger.info("✅ Record Kafka consumer started")
+        logger.info("✅ Record message consumer started")
 
         return consumers
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting message consumers: {str(e)}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -293,7 +295,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
 
-async def stop_kafka_consumers(container) -> None:
+async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
     """Stop all Kafka consumers"""
 
     logger = container.logger()
@@ -301,7 +303,7 @@ async def stop_kafka_consumers(container) -> None:
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
 
@@ -324,26 +326,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
-    # Recover in-progress records before starting Kafka consumers
+    # Recover in-progress records before starting message consumers
     try:
         await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Continue even if recovery fails
 
-    # Start all Kafka consumers centrally
+    # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    # Stop Kafka consumers
+    # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
     except Exception as e:
@@ -360,46 +362,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     lifespan=lifespan,
     title="Vector Search API",
-    description="API for semantic search and document retrieval with Kafka consumer",
+    description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
 
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    """Health check endpoint that also verifies connector service health"""
+    """Health check endpoint for the indexing service itself"""
     try:
-        endpoints = await app.container.config_service().get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-        connector_url = f"{connector_endpoint}/health"
-        async with httpx.AsyncClient() as client:
-            connector_response = await client.get(connector_url, timeout=5.0)
-
-            if connector_response.status_code != HttpStatusCode.SUCCESS.value:
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "fail",
-                        "error": f"Connector service unhealthy: {connector_response.text}",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                    },
-                )
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "healthy",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-    except httpx.RequestError as e:
         return JSONResponse(
-            status_code=500,
+            status_code=200,
             content={
-                "status": "fail",
-                "error": f"Failed to connect to connector service: {str(e)}",
+                "status": "healthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -407,17 +382,31 @@ async def health_check() -> JSONResponse:
         return JSONResponse(
             status_code=500,
             content={
-                "status": "fail",
+                "status": "unhealthy",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8091, reload: bool = True) -> None:
+def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
+    import warnings
+    workers = workers or max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    if reload and workers > 1:
+        warnings.warn(
+            "INDEXING_UVICORN_WORKERS>1 is not compatible with reload=True; falling back to 1 worker.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        workers = 1
     uvicorn.run(
-        "app.indexing_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.indexing_main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload,
+        workers=workers,
     )
 
 

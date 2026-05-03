@@ -986,6 +986,24 @@ class KnowledgeBaseService:
                 if not role or role not in valid_roles:
                     return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
 
+            self.logger.info(f"Looking up requester for create_kb_permissions: {requester_id}")
+            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+            if not requester:
+                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found for user_id: {requester_id}",
+                }
+            requester_key = requester.get("id") or requester.get("_key")
+            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
+            if requester_role not in ["OWNER"]:
+                return {
+                    "success": False,
+                    "reason": "Only KB owners can grant permissions",
+                    "code": 403,
+                }
+
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
             result = await self.graph_provider.create_kb_permissions(

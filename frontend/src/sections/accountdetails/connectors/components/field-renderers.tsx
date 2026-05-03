@@ -580,7 +580,15 @@ export const NumberFieldRenderer: React.FC<BaseFieldProps> = ({
         placeholder={field.placeholder}
         type="number"
         value={value !== undefined && value !== null ? String(value) : ''}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === '') {
+            onChange(null);
+            return;
+          }
+          const n = Number(raw);
+          onChange(Number.isNaN(n) ? null : n);
+        }}
         required={field.required}
         error={!!error}
         helperText={error}

@@ -14,10 +14,9 @@ import base64
 import json
 import logging
 from enum import Enum
-from typing import Any, cast
+from typing import Any, cast, override
 
 from pydantic import BaseModel, Field  # type: ignore
-from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
@@ -198,6 +197,15 @@ class ZoomRESTClientViaOAuth(HTTPClient):
     def get_base_url(self) -> str:
         """Get the base URL."""
         return self.base_url
+
+    def get_token(self) -> str:
+        """Return the current access token."""
+        return self.access_token
+
+    def set_token(self, token: str) -> None:
+        """Update the access token and Authorization header atomically."""
+        self.access_token = token
+        self.headers["Authorization"] = f"Bearer {token}"
 
 
 class ZoomRESTClientViaToken(HTTPClient):

@@ -185,7 +185,7 @@ export class DynamicConfigFactory {
                 { message: 'Must be a valid URL' }
               );
           } else {
-            schemaFields[field.name] = field.validation.optional();
+            schemaFields[field.name] = field.validation.optional().or(z.literal(''));
           }
         } else {
           schemaFields[field.name] = field.validation;

@@ -137,7 +137,7 @@ class KafkaMessagingProducer(IMessagingProducer):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to send message to Kafka: {str(e)}")
-            return False
+            raise
 
     # implementing abstract methods from IMessagingProducer
     async def send_event(
@@ -148,24 +148,17 @@ class KafkaMessagingProducer(IMessagingProducer):
         key: Optional[str] = None
     ) -> bool:
         """Send an event message with standardized format"""
-        try:
-            # Prepare the message
-            message = {
-                'eventType': event_type,
-                'payload': payload,
-                'timestamp': get_epoch_timestamp_in_ms()
-            }
+        message = {
+            'eventType': event_type,
+            'payload': payload,
+            'timestamp': get_epoch_timestamp_in_ms()
+        }
 
-            # Send the message to sync-events topic using aiokafka
-            await self.send_message(
-                topic=topic,
-                message=message,
-                key=key
-            )
+        await self.send_message(
+            topic=topic,
+            message=message,
+            key=key
+        )
 
-            self.logger.info(f"Successfully sent event with type: {event_type} to topic: {topic}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error sending sync event: {str(e)}")
-            return False
+        self.logger.info(f"Successfully sent event with type: {event_type} to topic: {topic}")
+        return True

@@ -12,11 +12,13 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.github.github import GitHubClient, GitHubResponse
 from app.sources.external.github.github_ import GitHubDataSource
 
@@ -322,12 +324,22 @@ class SearchRepositoriesInput(BaseModel):
                 CommonFields.client_id("GitHub Developer Settings"),
                 CommonFields.client_secret("GitHub Developer Settings"),
             ],
-            icon_path="/assets/icons/connectors/github.svg",
+            icon_path=IconPaths.connector_icon("github"),
             app_group="Development",
             app_description="GitHub OAuth application for agent integration",
         ),
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/github.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("github"))
+        .add_documentation_link(DocumentationLink(
+            "GitHub API Setup",
+            "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/github/github",
+            "pipeshub",
+        )))\
     .build_decorator()
 class GitHub:
     """GitHub tools exposed to agents using GitHubDataSource."""

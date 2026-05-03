@@ -44,9 +44,7 @@ def _init_auth(base_url: str, email: str, timeout: int) -> str:
         timeout=timeout,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"initAuth failed: HTTP {resp.status_code} - {resp.text[:500]}"
-        )
+        raise RuntimeError(f"initAuth failed: HTTP {resp.status_code}")
     session_token = resp.headers.get("x-session-token")
     if not session_token:
         raise RuntimeError(
@@ -73,13 +71,11 @@ def _authenticate(
         timeout=timeout,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"authenticate failed: HTTP {resp.status_code} - {resp.text[:500]}"
-        )
+        raise RuntimeError(f"authenticate failed: HTTP {resp.status_code}")
     try:
         data = resp.json()
     except ValueError:
-        raise RuntimeError(f"authenticate returned non-JSON: {resp.text[:200]}")
+        raise RuntimeError("authenticate returned non-JSON response")
     access_token = data.get("accessToken")
     if not access_token:
         raise RuntimeError(
@@ -99,23 +95,55 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> Tuple[s
             "name": "Integration Test Client",
             "allowedGrantTypes": ["client_credentials"],
             "allowedScopes": [
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "org:read",
+                "org:write",
+                "org:admin",
+                "user:read",
+                "user:write",
+                "user:invite",
+                "user:delete",
+                "usergroup:read",
+                "usergroup:write",
+                "team:read",
+                "team:write",
+                "kb:read",
+                "kb:write",
+                "kb:delete",
+                "kb:upload",
+                "semantic:read",
+                "semantic:write",
+                "semantic:delete",
+                "conversation:read",
+                "conversation:write",
+                "conversation:chat",
+                "agent:read",
+                "agent:write",
+                "agent:execute",
                 "connector:read",
                 "connector:write",
                 "connector:sync",
                 "connector:delete",
+                "config:read",
+                "config:write",
+                "crawl:read",
+                "crawl:write",
+                "crawl:delete",
             ],
         },
         timeout=timeout,
     )
     if resp.status_code >= 400:
         raise RuntimeError(
-            f"create OAuth app failed: HTTP {resp.status_code} - {resp.text[:500]} "
-            "(user may not be org admin)"
+            f"create OAuth app failed: HTTP {resp.status_code} (user may not be org admin)"
         )
     try:
         data = resp.json()
     except ValueError:
-        raise RuntimeError(f"oauth-clients returned non-JSON: {resp.text[:200]}")
+        raise RuntimeError("oauth-clients returned non-JSON response")
     app = data.get("app") or {}
     client_id = app.get("clientId")
     client_secret = app.get("clientSecret")

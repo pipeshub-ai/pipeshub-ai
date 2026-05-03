@@ -1,137 +1,76 @@
-import asyncio
-import json
-import ssl
-from typing import Dict
-
-from aiokafka import AIOKafkaProducer
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes
-from app.config.constants.service import config_node_constants
+from app.services.messaging.config import Topic
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KafkaService:
-    def __init__(self, config_service: ConfigurationService, logger) -> None:
+    """Messaging service for connectors that delegates to IMessagingProducer.
+
+    Despite the name (kept for backward compatibility), this class now works
+    with any IMessagingProducer implementation (Kafka or Redis Streams).
+    """
+
+    def __init__(
+        self,
+        config_service: ConfigurationService,
+        logger,
+        producer: Optional[IMessagingProducer] = None,
+    ) -> None:
         self.config_service = config_service
-        self.producer = None
         self.logger = logger
-        self._producer_lock = asyncio.Lock()  # ✅ Add lock
+        self._producer = producer
+        self._producer_started = False
 
     async def _ensure_producer(self) -> None:
-        """Ensure producer is initialized and started"""
-        if self.producer is not None:
-            return  # Fast path: already initialized
+        """Ensure the producer is initialized and started"""
+        if self._producer is None:
+            raise RuntimeError(
+                "No messaging producer configured. "
+                "Set producer via constructor or set_producer()."
+            )
+        if not self._producer_started:
+            await self._producer.start()
+            self._producer_started = True
 
-        async with self._producer_lock:  # ✅ Serialize initialization
-            # Double-check after acquiring lock
-            if self.producer is not None:
-                return
+    def set_producer(self, producer: IMessagingProducer) -> None:
+        """Set the messaging producer (for deferred initialization)"""
+        self._producer = producer
+        self._producer_started = False
 
-            producer = None
-            try:
-                kafka_config = await self.config_service.get_config(
-                    config_node_constants.KAFKA.value
-                )
-                if not isinstance(kafka_config, dict):
-                    raise ValueError("Kafka configuration must be a dictionary")
-
-                brokers = kafka_config.get("brokers", "localhost:9092")
-                if isinstance(brokers, list):
-                    brokers = ",".join(brokers)
-                elif (
-                    isinstance(brokers, str)
-                    and brokers.startswith("[")
-                    and brokers.endswith("]")
-                ):
-                    brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
-
-                producer_config = {
-                    "bootstrap_servers": brokers,
-                    "client_id": kafka_config.get("client_id", "file-processor"),
-                    "request_timeout_ms": 30000,
-                    "retry_backoff_ms": 100,
-                    "enable_idempotence": True
-                }
-
-                # Add SSL/SASL configuration for AWS MSK
-                if kafka_config.get("ssl"):
-                    producer_config["ssl_context"] = ssl.create_default_context()
-                    sasl_config = kafka_config.get("sasl", {})
-                    if sasl_config.get("username"):
-                        producer_config["security_protocol"] = "SASL_SSL"
-                        producer_config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                        producer_config["sasl_plain_username"] = sasl_config["username"]
-                        producer_config["sasl_plain_password"] = sasl_config["password"]
-                    else:
-                        producer_config["security_protocol"] = "SSL"
-
-                producer = AIOKafkaProducer(**producer_config)
-                await producer.start()
-
-                # ✅ Only assign after successful start
-                self.producer = producer
-                self.logger.info("✅ Kafka producer initialized and started")
-
-            except Exception as e:
-                if producer is not None:
-                    try:
-                        await producer.stop()
-                    except Exception as e:
-                        self.logger.info(f"⚠️ Failed to stop Kafka producer during error handling: {str(e)}")
-                self.producer = None
-                self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
-                raise
-
-    async def publish_event(self, topic: str, event: Dict) -> bool:
+    async def publish_event(self, topic: str, event: dict) -> bool:
         """
-        Publish an event to a specified Kafka topic.
-        :param topic: The Kafka topic to publish to
+        Publish an event to a specified topic.
+        :param topic: The topic/stream to publish to
         :param event: Dictionary containing the event data
         :return: True if successful, False otherwise
         """
         try:
-            # Ensure producer is ready
             await self._ensure_producer()
 
-            # Convert event to JSON bytes for aiokafka
-            message_value = json.dumps(event).encode('utf-8')
-
-            # Use recordId from payload as key if available, otherwise use timestamp
             record_id = event.get("payload", {}).get("recordId")
-            message_key = str(record_id).encode('utf-8') if record_id else str(event.get("timestamp", "")).encode('utf-8')
+            key = str(record_id) if record_id else str(event.get("timestamp", ""))
 
-            # Send message and wait for delivery
-            record_metadata = await self.producer.send_and_wait(
+            return await self._producer.send_message(  # type: ignore
                 topic=topic,
-                key=message_key,
-                value=message_value
+                message=event,
+                key=key,
             )
-
-            # Log successful delivery
-            self.logger.info(
-                "✅ Event successfully published to %s [%s] at offset %s",
-                record_metadata.topic,
-                record_metadata.partition,
-                record_metadata.offset
-            )
-
-            return True
-
         except Exception as e:
-            self.logger.error("❌ Failed to publish event to topic %s: %s", topic, str(e))
+            self.logger.error("Failed to publish event to topic %s: %s", topic, str(e))
             raise
 
     async def send_event_to_kafka(self, event_data) -> bool | None:
         """
-        Send an event to Kafka asynchronously.
+        Send an event to the record-events topic.
         :param event_data: Dictionary containing file processing details
         """
         try:
-            # Ensure producer is ready
             await self._ensure_producer()
 
-            # Standardize event format
             formatted_event = {
                 "eventType": event_data.get("eventType", EventTypes.NEW_RECORD.value),
                 "timestamp": get_epoch_timestamp_in_ms(),
@@ -155,48 +94,38 @@ class KafkaService:
                 },
             }
 
-            # Convert to JSON bytes for aiokafka
-            message_value = json.dumps(formatted_event).encode('utf-8')
-            message_key = str(formatted_event["payload"]["recordId"]).encode('utf-8')
+            key = str(formatted_event["payload"]["recordId"])
 
-            # Send message and wait for delivery
-            record_metadata = await self.producer.send_and_wait(
-                topic="record-events",
-                key=message_key,
-                value=message_value
+            result = await self._producer.send_message(  # type: ignore
+                topic=Topic.RECORD_EVENTS.value,
+                message=formatted_event,
+                key=key,
             )
 
-            # Log successful delivery
-            self.logger.info(
-                "✅ Record %s successfully produced to %s [%s] at offset %s",
-                formatted_event["payload"]["recordId"],
-                record_metadata.topic,
-                record_metadata.partition,
-                record_metadata.offset
-            )
+            if result:
+                self.logger.info(
+                    "Record %s successfully produced to record-events",
+                    formatted_event["payload"]["recordId"],
+                )
 
-            return True
+            return result
 
         except Exception as e:
-            self.logger.error("❌ Failed to send event to Kafka: %s", str(e))
-            return False
+            self.logger.error("Failed to send event: %s", str(e))
+            raise
 
     async def stop_producer(self) -> None:
-        """Stop the Kafka producer and clean up resources"""
-        async with self._producer_lock:
-            if self.producer:
-                try:
-                    await self.producer.stop()
-                    self.producer = None
-                    self.logger.info("✅ Kafka producer stopped successfully")
-                except Exception as e:
-                    self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+        """Stop the producer and clean up resources"""
+        if self._producer:
+            try:
+                await self._producer.cleanup()
+                self.logger.info("Messaging producer stopped successfully")
+            except Exception as e:
+                self.logger.error(f"Error stopping messaging producer: {str(e)}")
 
     async def __aenter__(self) -> "KafkaService":
-        """Async context manager entry"""
         await self._ensure_producer()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit"""
         await self.stop_producer()

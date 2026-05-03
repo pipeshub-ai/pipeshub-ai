@@ -136,6 +136,76 @@ export function getExtension(documentName: string): string {
   return parts[parts.length - 1] || '';
 }
 
+/**
+ * Normalises a file extension so it always starts with a dot.
+ * Examples:
+ *   normalizeExtension('pdf')   -> '.pdf'
+ *   normalizeExtension('.pdf')  -> '.pdf'
+ *   normalizeExtension('')      -> ''
+ */
+export function normalizeExtension(ext: string): string {
+  if (!ext) return '';
+  return ext.startsWith('.') ? ext : `.${ext}`;
+}
+
+/**
+ * Returns the org-scoped folder path (without documentId).
+ * e.g. 'org1/PipesHub/Finance'  or  'org1/PipesHub'
+ */
+export function getFullDocumentPath(
+  orgId: string,
+  documentPath?: string,
+): string {
+  return documentPath
+    ? `${orgId}/PipesHub/${documentPath}`
+    : `${orgId}/PipesHub`;
+}
+
+/**
+ * Returns the versioned snapshot path for a specific version number.
+ * e.g. 'org1/PipesHub/Finance/doc1/versions/v3.pdf'
+ */
+export function getVersionFilePath(
+  rootPath: string,
+  version: number,
+  extension: string,
+): string {
+  return `${rootPath}/versions/v${version}${normalizeExtension(extension)}`;
+}
+
+/**
+ * Returns the "live" (current) file path.
+ * versioned:     'org1/.../doc1/current/report.pdf'
+ * non-versioned: 'org1/.../doc1/report.pdf'
+ */
+export function getCurrentFilePath(
+  rootPath: string,
+  documentName: string,
+  extension: string,
+  isVersioned: boolean,
+): string {
+  const ext = normalizeExtension(extension);
+  return isVersioned
+    ? `${rootPath}/current/${documentName}${ext}`
+    : `${rootPath}/${documentName}${ext}`;
+}
+
+/**
+ * Returns the root folder path for a document (org + optional sub-path + documentId).
+ * e.g. 'org1/PipesHub/Finance/doc1'
+ */
+export function getDocumentRootPath(
+  orgId: string,
+  documentId: string,
+  documentPath?: string,
+  fullDocumentPath?: string,
+): string {
+  if (fullDocumentPath) {
+    return `${fullDocumentPath}/${documentId}`;
+  }
+  return `${getFullDocumentPath(orgId, documentPath)}/${documentId}`;
+}
+
 export function hasExtension(documentName: string | undefined): boolean {
   if (documentName === undefined) {
     return false;
@@ -204,9 +274,10 @@ export async function createPlaceholderDocument(
     // Validate file extension, MIME type, and document name constraints
     validateFileAndDocumentName(extension, documentName, fileNameForError);
 
+    const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
     const documentInfo: Partial<Document> = {
       documentName,
-      documentPath,
+      documentPath: fullDocumentPath,
       alternateDocumentName,
       orgId: new mongoose.Types.ObjectId(orgId),
       isVersionedFile: isVersionedFile,
@@ -215,7 +286,7 @@ export async function createPlaceholderDocument(
       customMetadata,
       sizeInBytes: size,
       storageVendor: StorageVendor.S3,
-      extension,
+      extension: normalizeExtension(extension),
     };
 
     const savedDocument = await DocumentModel.create(documentInfo);

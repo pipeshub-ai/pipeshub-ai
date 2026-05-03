@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -15,11 +15,13 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -38,9 +40,9 @@ class CreateIssueInput(BaseModel):
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[List[str]] = Field(default=None, description="List of labels")
-    components: Optional[List[str]] = Field(default=None, description="List of component names")
-    parent_key: Optional[str] = Field(default=None, description="Parent issue key")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    parent_key: str | None = Field(default=None, description="Parent issue key")
 
     @model_validator(mode='before')
     @classmethod
@@ -173,10 +175,12 @@ class UpdateIssueInput(BaseModel):
     description: Optional[str] = Field(default=None, description="Issue description")
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
+    reporter_account_id: Optional[str] = Field(default=None, description="Reporter account ID")
+    reporter_query: Optional[str] = Field(default=None, description="Name or email to resolve reporter")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[List[str]] = Field(default=None, description="List of labels")
-    components: Optional[List[str]] = Field(default=None, description="List of component names")
-    status: Optional[str] = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    status: str | None = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
 
     @model_validator(mode='before')
     @classmethod
@@ -202,7 +206,7 @@ class UpdateIssueInput(BaseModel):
                 if 'description' in fields:
                     normalized['description'] = fields['description']
                 # Copy other fields
-                for field in ['assignee_account_id', 'assignee_query', 'priority_name', 'labels', 'components', 'status']:
+                for field in ['assignee_account_id', 'assignee_query', 'reporter_account_id', 'reporter_query', 'priority_name', 'labels', 'components', 'status']:
                     if field in fields:
                         normalized[field] = fields[field]
                 # Remove the fields wrapper after extraction
@@ -221,7 +225,7 @@ class UpdateIssueInput(BaseModel):
                         if 'description' in fields:
                             normalized['description'] = fields['description']
                         # Copy other fields
-                        for field in ['assignee_account_id', 'assignee_query', 'priority_name', 'labels', 'components', 'status']:
+                        for field in ['assignee_account_id', 'assignee_query', 'reporter_account_id', 'reporter_query', 'priority_name', 'labels', 'components', 'status']:
                             if field in fields:
                                 normalized[field] = fields[field]
                 # Extract issue_key from update wrapper if not already set
@@ -296,14 +300,69 @@ class GetCommentsInput(BaseModel):
             ),
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
-                CommonFields.client_secret("Atlassian Developer Console")
+                CommonFields.client_secret("Atlassian Developer Console"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL the Jira agent should work with.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
-            icon_path="/assets/icons/connectors/jira.svg",
+            icon_path=IconPaths.connector_icon("jira"),
             app_group="Project Management",
             app_description="JIRA OAuth application for agent integration"
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                usage="CONFIGURE",
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("jira"))
+        .add_documentation_link(DocumentationLink(
+            "Jira Cloud API Setup",
+            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/jira/jira",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""
@@ -316,14 +375,14 @@ class Jira:
         """
         self.client = JiraDataSource(client)
         self._site_url = None  # Cache for site URL
-        self._field_schema_cache: Optional[Dict[str, Dict[str, str]]] = None  # Cache for field schema mapping
+        self._field_schema_cache: Optional[dict[str, dict[str, str]]] = None  # Cache for field schema mapping
 
     def _handle_response(
         self,
         response: HTTPResponse,
         success_message: str,
         include_guidance: bool = False
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Handle HTTP response and return standardized tuple.
 
         Args:
@@ -389,7 +448,7 @@ class Jira:
                 error_text = response.text() if hasattr(response, 'text') else str(response)
 
             # Build error response
-            error_response: Dict[str, object] = {
+            error_response: dict[str, object] = {
                 "error": error_message or f"HTTP {response.status}",
                 "status_code": response.status,
                 "details": error_text
@@ -445,7 +504,7 @@ class Jira:
         }
         return guidance_map.get(status_code)
 
-    def _convert_text_to_adf(self, text: str) -> Optional[Dict[str, object]]:
+    def _convert_text_to_adf(self, text: str) -> Optional[dict[str, object]]:
         """Convert plain text to Atlassian Document Format (ADF).
 
         Args:
@@ -473,7 +532,7 @@ class Jira:
             ]
         }
 
-    def _validate_issue_fields(self, fields: Dict[str, object]) -> Tuple[bool, str]:
+    def _validate_issue_fields(self, fields: dict[str, object]) -> tuple[bool, str]:
         """Validate issue fields before creating the issue.
 
         Args:
@@ -600,20 +659,47 @@ class Jira:
             return self._site_url
 
         try:
-            # Get token from client
             client_obj = self.client._client
+
+            # OAuth: get_base_url() is the API gateway (api.atlassian.com/ex/jira/{cloud_id}).
+            # Browse URLs need the site host from accessible-resources (*.atlassian.net),
+            # and we must match the cloud_id to the correct site (the token can access many).
             if hasattr(client_obj, 'get_token'):
                 token = client_obj.get_token()
                 if token:
+                    cloud_id = None
+                    if hasattr(client_obj, 'get_base_url'):
+                        gateway = (client_obj.get_base_url() or "").rstrip('/')
+                        match = re.search(r"/ex/jira/([^/]+)", gateway)
+                        if match:
+                            cloud_id = match.group(1)
+
                     resources = await JiraClient.get_accessible_resources(token)
-                    if resources and len(resources) > 0:
-                        # Extract base URL from resource URL
-                        resource_url = resources[0].url
-                        # Resource URL is like 'https://example.atlassian.net'
-                        self._site_url = resource_url.rstrip('/')
+                    if resources:
+                        if cloud_id:
+                            picked = next((r for r in resources if r.id == cloud_id), None)
+                            if picked is None:
+                                logger.warning(
+                                    "Jira _get_site_url: cloud_id %s not found in accessible resources (%s); "
+                                    "refusing to fall back to a different site.",
+                                    cloud_id, [r.id for r in resources],
+                                )
+                                return None
+                            self._site_url = picked.url.rstrip('/')
+                            return self._site_url
+                        # Could not extract cloud_id from the gateway URL — only safe
+                        # when the token has exactly one accessible site.
+                        self._site_url = resources[0].url.rstrip('/')
                         return self._site_url
+
+            # API token / basic: configured instance base_url is the site URL
+            if hasattr(client_obj, 'get_base_url'):
+                base_url = client_obj.get_base_url()
+                if base_url:
+                    self._site_url = base_url.rstrip('/')
+                    return self._site_url
         except Exception as e:
-            logger.warning(f"Could not get site URL: {e}")
+            logger.warning("Could not get site URL: %s", e)
 
         return None
 
@@ -637,7 +723,7 @@ class Jira:
 
         return normalized.lower().strip('_')
 
-    async def _fetch_and_cache_field_schema(self) -> Dict[str, Dict[str, str]]:
+    async def _fetch_and_cache_field_schema(self) -> dict[str, dict[str, str]]:
         """Fetch and cache JIRA field schema mapping.
 
         Returns a mapping of:
@@ -661,7 +747,7 @@ class Jira:
                     return self._field_schema_cache
 
                 # Build mapping: field_id -> {name, normalized}
-                field_map: Dict[str, Dict[str, str]] = {}
+                field_map: dict[str, dict[str, str]] = {}
                 for field in fields_data:
                     field_id = field.get("id")
                     field_name = field.get("name", "")
@@ -685,7 +771,7 @@ class Jira:
             self._field_schema_cache = {}
             return self._field_schema_cache
 
-    def _clean_issue_fields(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_issue_fields(self, issue: dict[str, Any]) -> dict[str, Any]:
         """Clean issue fields by removing unnecessary data and simplifying nested structures.
 
         This aggressively removes bloat while preserving user-actionable and business-relevant fields.
@@ -709,7 +795,7 @@ class Jira:
 
         # Fields to always remove (system metadata, empty values, redundant data)
         fields_to_remove = []
-        
+
         # Fields to simplify (extract only essential info from nested objects)
         fields_to_simplify = {}
 
@@ -840,9 +926,9 @@ class Jira:
 
     async def _normalize_issues_in_response(
         self,
-        response_data: Dict[str, Any],
-        field_schema: Dict[str, Dict[str, str]]
-    ) -> Dict[str, Any]:
+        response_data: dict[str, Any],
+        field_schema: dict[str, dict[str, str]]
+    ) -> dict[str, Any]:
         """Normalize custom fields in a response containing issues.
 
         Only normalizes fields that have values (not None) to avoid adding back removed fields.
@@ -882,37 +968,37 @@ class Jira:
 
     def _add_urls_to_issue_references(
         self,
-        issue: Dict[str, Any],
+        issue: dict[str, Any],
         site_url: Optional[str]
     ) -> None:
         """Add URLs to issue references in custom fields (like Epic Links) and parent field.
-        
+
         This makes Epic Links and other issue-referencing custom fields clickable,
         similar to how regular Jira ticket links are handled.
-        
+
         Args:
             issue: Issue dictionary to process (modified in place)
             site_url: Base site URL (e.g., 'https://example.atlassian.net')
         """
         if not site_url or not isinstance(issue, dict):
             return
-        
+
         fields = issue.get("fields", {})
         if not isinstance(fields, dict):
             return
-        
+
         # Helper to add URL to an issue reference object
-        def add_url_to_issue_ref(issue_ref: Any) -> None:
+        def add_url_to_issue_ref(issue_ref: object) -> None:
             """Add URL to an issue reference if it has a key."""
             if isinstance(issue_ref, dict) and issue_ref.get("key"):
                 issue_key = issue_ref["key"]
                 issue_ref["url"] = f"{site_url}/browse/{issue_key}"
-        
+
         # Add URL to parent field if it exists and has a key
         parent = fields.get("parent")
         if parent:
             add_url_to_issue_ref(parent)
-        
+
         # Check all fields for issue references
         # Epic Links and other issue-referencing custom fields typically contain
         # an issue object with a "key" field
@@ -921,7 +1007,7 @@ class Jira:
             # Skip standard fields that we've already handled (parent) or that aren't issue references
             if field_key in ["parent", "key", "id", "self", "url"]:
                 continue
-            
+
             # Check if this field contains an issue reference
             # Issue references are dicts with a "key" field (like Epic Links)
             if field_value is not None:
@@ -937,7 +1023,7 @@ class Jira:
                             add_url_to_issue_ref(item)
 
 
-    def _validate_and_fix_jql(self, jql: str) -> Tuple[str, Optional[str]]:
+    def _validate_and_fix_jql(self, jql: str) -> tuple[str, str | None]:
         """Validate and fix common JQL syntax errors.
 
         Args:
@@ -1035,7 +1121,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def validate_connection(self) -> Tuple[bool, str]:
+    async def validate_connection(self) -> tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
         try:
             # Simply try to fetch the current user to validate the connection
@@ -1101,7 +1187,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_current_user(self) -> Tuple[bool, str]:
+    async def get_current_user(self) -> tuple[bool, str]:
         """Get the current authenticated JIRA user's details"""
         try:
             response = await self.client.get_current_user()
@@ -1160,7 +1246,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
+    async def convert_text_to_adf(self, text: str) -> tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
         try:
             adf_document = self._convert_text_to_adf(text)
@@ -1205,15 +1291,15 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None,
-        parent_key: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent_key: str | None = None
+    ) -> tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
             # Build issue fields
-            fields: Dict[str, object] = {
+            fields: dict[str, object] = {
                 "project": {"key": project_key},
                 "summary": summary,
                 "issuetype": {"name": issue_type_name},
@@ -1240,7 +1326,7 @@ class Jira:
 
             if components:
                 fields["components"] = [{"name": comp} for comp in components]
-            
+
             if parent_key:
                 fields["parent"] = {"key": parent_key}
 
@@ -1314,13 +1400,14 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="update_issue",
-        description="Update an existing JIRA issue. Can update summary, description, assignee, priority, labels, components, and status.",
+        description="Update an existing JIRA issue. Can update summary, description, assignee, reporter, priority, labels, components, and status.",
         args_schema=UpdateIssueInput,  # NEW: Pydantic schema
         returns="Updated issue details",
         when_to_use=[
             "User wants to update/edit a Jira ticket",
             "User mentions 'Jira' + wants to modify issue",
-            "User asks to change issue details/status"
+            "User asks to change issue details/status",
+            "User wants to change the reporter or assignee of an issue"
         ],
         when_not_to_use=[
             "User wants to create issue (use create_issue)",
@@ -1332,7 +1419,9 @@ class Jira:
         typical_queries=[
             "Update Jira ticket PA-123",
             "Change issue status to Done",
-            "Edit Jira issue"
+            "Edit Jira issue",
+            "Make X the reporter of PA-123",
+            "Set reporter to John"
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
@@ -1343,15 +1432,17 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None,
-        status: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        reporter_account_id: Optional[str] = None,
+        reporter_query: Optional[str] = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        status: str | None = None
+    ) -> tuple[bool, str]:
         """Update an existing JIRA issue"""
         try:
             # Build fields dictionary with only provided values
-            fields: Dict[str, object] = {}
+            fields: dict[str, object] = {}
 
             if summary:
                 fields["summary"] = summary
@@ -1384,6 +1475,21 @@ class Jira:
 
             if assignee_account_id:
                 fields["assignee"] = {"accountId": assignee_account_id}
+
+            # Resolve reporter
+            if reporter_query and not reporter_account_id:
+                issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
+                if issue_response.status == HttpStatusCode.SUCCESS.value:
+                    issue_data = issue_response.json()
+                    project_key = issue_data.get("fields", {}).get("project", {}).get("key")
+                    if project_key:
+                        reporter_account_id = await self._resolve_user_to_account_id(
+                            project_key,
+                            reporter_query
+                        )
+
+            if reporter_account_id:
+                fields["reporter"] = {"accountId": reporter_account_id}
 
             if priority_name:
                 fields["priority"] = {"name": priority_name}
@@ -1419,7 +1525,7 @@ class Jira:
             if not fields and not transition:
                 return False, json.dumps({
                     "error": "No updates provided",
-                    "guidance": "Provide at least one field to update (summary, description, assignee, priority, labels, components) or a status to transition to"
+                    "guidance": "Provide at least one field to update (summary, description, assignee, reporter, priority, labels, components) or a status to transition to"
                 })
 
             # Step 1: Update fields (if any) - Jira transitions must be done separately via POST
@@ -1429,6 +1535,23 @@ class Jira:
                     fields=fields,
                     transition=None  # Don't pass transition here - it's ignored by PUT endpoint
                 )
+
+                # Retry without reporter field if Jira rejects it (some instances don't allow reporter changes)
+                if response.status == HttpStatusCode.BAD_REQUEST.value and "reporter" in fields:
+                    try:
+                        error_body = response.json()
+                        errors = error_body.get("errors", {})
+                        if "reporter" in errors:
+                            logger.info("Retrying update without reporter field (not permitted by this Jira instance)")
+                            fields_without_reporter = {k: v for k, v in fields.items() if k != "reporter"}
+                            if fields_without_reporter:
+                                response = await self.client.edit_issue(
+                                    issueIdOrKey=issue_key,
+                                    fields=fields_without_reporter,
+                                    transition=None
+                                )
+                    except Exception:
+                        pass
 
                 if response.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
                     return self._handle_response(
@@ -1541,7 +1664,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_projects(self) -> Tuple[bool, str]:
+    async def get_projects(self) -> tuple[bool, str]:
         """Get all JIRA projects"""
         try:
             response = await self.client.get_all_projects()
@@ -1608,7 +1731,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_project(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project(self, project_key: str) -> tuple[bool, str]:
         """Get a specific JIRA project"""
         try:
             response = await self.client.get_project(projectIdOrKey=project_key)
@@ -1674,7 +1797,7 @@ class Jira:
         project_key: str,
         days: Optional[int] = None,
         max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get issues from a project with configurable time range"""
         try:
             # Escape project key and add time filter to avoid unbounded query errors
@@ -1774,7 +1897,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_issue(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_issue(self, issue_key: str) -> tuple[bool, str]:
         """Get a specific JIRA issue"""
         try:
             response = await self.client.get_issue(issueIdOrKey=issue_key)
@@ -1873,7 +1996,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
+    async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> tuple[bool, str]:
         """Search for JIRA issues using the enhanced search endpoint"""
         try:
             # Validate and fix JQL query
@@ -2048,7 +2171,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
+    async def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
 
         try:
             # Convert plain text comment to ADF format if it's a string
@@ -2124,7 +2247,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_comments(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_comments(self, issue_key: str) -> tuple[bool, str]:
         """Get comments for an issue"""
         try:
             response = await self.client.get_comments(issueIdOrKey=issue_key)
@@ -2185,7 +2308,7 @@ class Jira:
         self,
         query: str,
         max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search JIRA users using the user picker API (more reliable than the search API)"""
         try:
             # Validate query parameter
@@ -2272,7 +2395,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         """Get project metadata"""
         try:
             response = await self.client.get_project(projectIdOrKey=project_key)

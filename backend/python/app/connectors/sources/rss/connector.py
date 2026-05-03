@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.connectors.core.constants import IconPaths
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -56,12 +57,12 @@ class RSSApp(App):
     .with_categories(["Web", "Content"])
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/rss.svg")
+        lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.RSS.value))
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(
                 "RSS Connector Guide",
-                "https://docs.pipeshub.ai/connectors/rss",
+                "https://docs.pipeshub.com/connectors/overview",
                 "setup",
             )
         )
@@ -120,6 +121,8 @@ class RSSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             RSSApp(connector_id),
@@ -128,6 +131,8 @@ class RSSConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.RSS
         self.connector_id = connector_id
@@ -179,6 +184,9 @@ class RSSConnector(BaseConnector):
             if isinstance(self.fetch_full_content, str):
                 self.fetch_full_content = self.fetch_full_content.lower() == "true"
 
+            # Load creator email if needed (for personal scope permission creation)
+            await self._load_creator_email()
+
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
             self.session = aiohttp.ClientSession(
@@ -218,6 +226,50 @@ class RSSConnector(BaseConnector):
                 clean_urls.append(url)
 
         return list(dict.fromkeys(clean_urls))  # Deduplicate while preserving order
+
+    def _create_rss_permissions(self) -> list[Permission]:
+        """Create permissions for RSS feed articles based on connector scope."""
+        try:
+            permissions = []
+
+            if self.scope == ConnectorScope.TEAM.value:
+                permissions.append(
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
+                )
+            else:
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
+
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+                    )
+
+            return permissions
+        except Exception as e:
+            self.logger.warning(f"Error creating RSS permissions: {e}")
+            return [
+                Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id
+                )
+            ]
 
     async def test_connection_and_access(self) -> bool:
         """Test if the configured feed URLs are accessible."""
@@ -283,14 +335,7 @@ class RSSConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Org-level READ permission (RSS content is public within the org)
-            permissions = [
-                Permission(
-                    external_id=self.data_entities_processor.org_id,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                )
-            ]
+            permissions = self._create_rss_permissions()
 
             await self.data_entities_processor.on_new_record_groups(
                 [(record_group, permissions)]
@@ -310,9 +355,31 @@ class RSSConnector(BaseConnector):
         try:
             self.logger.info(f"🚀 Starting RSS sync for {len(self.feed_urls)} feed(s)")
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                app_users = []
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                        app_users = []
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
+                    app_users = []
 
             # Step 2: Process each feed
             total_articles = 0
@@ -522,14 +589,7 @@ class RSSConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        # Org-level READ permissions (public content)
-        permissions = [
-            Permission(
-                external_id=self.data_entities_processor.org_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.ORG,
-            )
-        ]
+        permissions = self._create_rss_permissions()
 
         return file_record, permissions
 
@@ -662,6 +722,8 @@ class RSSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> BaseConnector:
         """Factory method to create an RSSConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -674,6 +736,8 @@ class RSSConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 
     async def cleanup(self) -> None:

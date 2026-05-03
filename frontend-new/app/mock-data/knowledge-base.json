@@ -1,0 +1,103 @@
+{
+  "createdByYou": [
+    {
+      "id": "engineering",
+      "name": "Engineering",
+      "createdAt": "2024-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "itemCount": 42,
+      "ownerId": "user-1",
+      "isShared": false
+    },
+    {
+      "id": "marketing",
+      "name": "Marketing",
+      "createdAt": "2024-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "itemCount": 15,
+      "ownerId": "user-1",
+      "isShared": false
+    }
+  ],
+  "sharedWithYou": [
+    { "id": "finance", "name": "Finance", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 8, "ownerId": "user-2", "isShared": true },
+    { "id": "hr", "name": "Human Resources", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 12, "ownerId": "user-2", "isShared": true },
+    { "id": "marketing-shared", "name": "Marketing", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 5, "ownerId": "user-2", "isShared": true },
+    { "id": "product", "name": "Product Development", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 20, "ownerId": "user-2", "isShared": true },
+    { "id": "sales", "name": "Sales", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 18, "ownerId": "user-2", "isShared": true },
+    { "id": "support", "name": "Customer Support", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 7, "ownerId": "user-2", "isShared": true },
+    { "id": "it", "name": "IT Services", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 14, "ownerId": "user-2", "isShared": true },
+    { "id": "legal", "name": "Legal Affairs", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "itemCount": 9, "ownerId": "user-2", "isShared": true }
+  ],
+  "folderTree": [
+    {
+      "id": "engineering",
+      "name": "Engineering",
+      "depth": 0,
+      "parentId": null,
+      "isExpanded": true,
+      "children": [
+        {
+          "id": "frontend",
+          "name": "Front-End",
+          "depth": 1,
+          "parentId": "engineering",
+          "isExpanded": false,
+          "children": []
+        },
+        {
+          "id": "backend",
+          "name": "Back-End",
+          "depth": 1,
+          "parentId": "engineering",
+          "isExpanded": true,
+          "children": [
+            {
+              "id": "code",
+              "name": "Code",
+              "depth": 2,
+              "parentId": "backend",
+              "isExpanded": false,
+              "children": []
+            },
+            {
+              "id": "api",
+              "name": "API",
+              "depth": 2,
+              "parentId": "backend",
+              "isExpanded": true,
+              "children": [
+                { "id": "docs", "name": "docs", "depth": 3, "parentId": "api", "isExpanded": false, "children": [] },
+                { "id": "errors1", "name": "errors1", "depth": 3, "parentId": "api", "isExpanded": false, "children": [] },
+                { "id": "errors2", "name": "errors2", "depth": 3, "parentId": "api", "isExpanded": false, "children": [] },
+                { "id": "records", "name": "records", "depth": 3, "parentId": "api", "isExpanded": false, "children": [] }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "marketing",
+      "name": "Marketing",
+      "depth": 0,
+      "parentId": null,
+      "isExpanded": false,
+      "children": []
+    }
+  ],
+  "items": [
+    { "id": "1", "name": "Q3 2025 Product Strategy Overview", "type": "folder", "createdAt": "2025-11-02T00:00:00Z", "updatedAt": "2025-11-02T00:00:00Z", "size": 1200, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "2", "name": "Q4 2025 Marketing Plan", "type": "folder", "createdAt": "2025-12-15T00:00:00Z", "updatedAt": "2025-12-15T00:00:00Z", "size": 800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "3", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "4", "name": "Q1 2026 User Research Findings", "type": "folder", "createdAt": "2026-01-10T00:00:00Z", "updatedAt": "2026-01-10T00:00:00Z", "size": 1500000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "5", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "6", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "7", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "8", "name": "Q2 2026 Feature Prioritization", "type": "folder", "createdAt": "2026-04-05T00:00:00Z", "updatedAt": "2026-04-05T00:00:00Z", "size": 600000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "9", "name": "Q3 2026 Market Analysis Report", "type": "folder", "createdAt": "2026-07-20T00:00:00Z", "updatedAt": "2026-07-20T00:00:00Z", "size": 2100000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "10", "name": "Q4 2026 Customer Feedback Summary", "type": "folder", "createdAt": "2026-10-15T00:00:00Z", "updatedAt": "2026-10-15T00:00:00Z", "size": 900000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "11", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" },
+    { "id": "12", "name": "2027 Product Roadmap", "type": "file", "fileType": "PDF", "status": "indexed", "source": "upload", "createdAt": "2027-01-01T00:00:00Z", "updatedAt": "2027-01-01T00:00:00Z", "size": 1800000, "parentId": null, "knowledgeBaseId": "engineering" }
+  ]
+}

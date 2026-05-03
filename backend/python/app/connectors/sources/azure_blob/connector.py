@@ -18,9 +18,6 @@ if TYPE_CHECKING:
     from azure.storage.blob import BlobProperties  # type: ignore[import-untyped]
 
 from aiolimiter import AsyncLimiter
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
@@ -29,6 +26,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -42,10 +40,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.registry.auth_builder import (
-    AuthBuilder,
-    AuthType,
-)
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -82,13 +77,19 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
 # Base URL for Azure Portal
 AZURE_PORTAL_BASE_URL = "https://portal.azure.com"
+
+# When sync targets explicit container names without a prior list response, fetch each
+# container's properties instead of listing all containers (avoids heavy calls on large accounts).
+_MAX_CONTAINERS_FOR_PER_PROPERTY_TIMESTAMP_FETCH = 128
 
 
 def get_file_extension(blob_name: str) -> str | None:
@@ -211,6 +212,40 @@ def get_parent_path_for_azure_blob(parent_external_id: str) -> str | None:
         return None
 
 
+def _container_last_modified_epoch_ms_from_list(
+    containers_data: Iterable[Any] | None, target_names: set[str]
+) -> dict[str, int]:
+    """Map container name -> last_modified as epoch ms from list_containers data.
+
+    The Azure data source returns dicts with ``name`` and ISO ``last_modified``.
+    List API does not expose a separate creation time; we use last_modified for
+    both source_created_at and source_updated_at on the record group.
+    """
+    out: dict[str, int] = {}
+    if not containers_data or not target_names:
+        return out
+    for container in containers_data:
+        name: str | None = None
+        lm: Any = None
+        if isinstance(container, dict):
+            name = container.get("name")
+            lm = container.get("last_modified")
+        else:
+            name = getattr(container, "name", None)
+            lm = getattr(container, "last_modified", None)
+        if not name or name not in target_names:
+            continue
+        ts: int | None = None
+        if lm is not None:
+            if isinstance(lm, datetime):
+                ts = datetime_to_epoch_ms(lm)
+            else:
+                ts = datetime_to_epoch_ms(str(lm))
+        if ts is not None:
+            out[name] = ts
+    return out
+
+
 class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     """Azure Blob processor that extends the base processor with Azure-specific placeholder record logic."""
 
@@ -267,7 +302,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/azureblob.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.AZURE_BLOB.value))
         .add_documentation_link(DocumentationLink(
             "Azure Blob Storage Setup",
             "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal",
@@ -310,6 +345,8 @@ class AzureBlobConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=AzureBlobApp(connector_id),
@@ -318,6 +355,8 @@ class AzureBlobConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.AZURE_BLOB
@@ -339,8 +378,6 @@ class AzureBlobConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.container_name: str | None = None
-        self.connector_scope: str | None = None
-        self.created_by: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
 
@@ -384,23 +421,8 @@ class AzureBlobConnector(BaseConnector):
         # Container name is no longer stored in config - it's determined at sync time
         self.container_name = None
 
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
-
-        # Fetch creator email once to avoid repeated DB queries during sync
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
-                    if user and user.get("email"):
-                        self.creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+        # Load creator email if needed (for personal scope permission creation)
+        await self._load_creator_email()
 
         try:
             client = await AzureBlobClient.build_from_services(
@@ -478,9 +500,28 @@ class AzureBlobConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -490,7 +531,8 @@ class AzureBlobConnector(BaseConnector):
             selected_containers = container_filter.value if container_filter and container_filter.value else []
 
             # List all containers or use configured container
-            containers_to_sync = []
+            containers_to_sync: list[str] = []
+            containers_list_payload: list[Any] | None = None
             if self.container_name:
                 containers_to_sync = [self.container_name]
                 self.logger.info(f"Using configured container: {self.container_name}")
@@ -506,6 +548,7 @@ class AzureBlobConnector(BaseConnector):
 
                 containers_data = containers_response.data
                 if containers_data:
+                    containers_list_payload = containers_data
                     containers_to_sync = self._extract_container_names(containers_data)
 
                     if containers_to_sync:
@@ -517,8 +560,52 @@ class AzureBlobConnector(BaseConnector):
                     self.logger.warning("No containers found")
                     return
 
+            target_names = {n for n in containers_to_sync if n}
+            container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                containers_list_payload, target_names
+            )
+            if containers_list_payload is None and target_names:
+                try:
+                    names_for_ts = sorted(n for n in target_names if n)
+                    if (
+                        names_for_ts
+                        and len(names_for_ts) <= _MAX_CONTAINERS_FOR_PER_PROPERTY_TIMESTAMP_FETCH
+                    ):
+                        per_container: dict[str, int] = {}
+                        for cname in names_for_ts:
+                            prop = await self.data_source.get_container_properties(cname)
+                            if not prop.success or not prop.data:
+                                continue
+                            lm = getattr(prop.data, "last_modified", None)
+                            ts: int | None = None
+                            if lm is not None:
+                                if isinstance(lm, datetime):
+                                    ts = datetime_to_epoch_ms(lm)
+                                else:
+                                    ts = datetime_to_epoch_ms(str(lm))
+                            if ts is not None:
+                                per_container[cname] = ts
+                        if per_container:
+                            container_ts_ms = per_container
+                        else:
+                            extra = await self.data_source.list_containers()
+                            if extra.success and extra.data:
+                                container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                                    extra.data, target_names
+                                )
+                    else:
+                        extra = await self.data_source.list_containers()
+                        if extra.success and extra.data:
+                            container_ts_ms = _container_last_modified_epoch_ms_from_list(
+                                extra.data, target_names
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch container timestamps: {e}"
+                    )
+
             # Create record groups for containers first
-            await self._create_record_groups_for_containers(containers_to_sync)
+            await self._create_record_groups_for_containers(containers_to_sync, container_ts_ms)
 
             # Sync each container
             for container_name in containers_to_sync:
@@ -538,21 +625,33 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_containers(self, container_names: list[str]) -> None:
+    async def _create_record_groups_for_containers(
+        self,
+        container_names: list[str],
+        container_last_modified_epoch_ms: dict[str, int] | None = None,
+    ) -> None:
         """Create record groups for containers with appropriate permissions.
 
         Uses cached creator_email from init() to avoid repeated database queries.
+
+        Args:
+            container_names: Containers to represent as record groups.
+            container_last_modified_epoch_ms: Optional map from container name to
+                Azure ``last_modified`` (epoch ms) from list_containers. Used for
+                source_created_at / source_updated_at so the knowledge hub shows
+                real dates (Azure list does not expose separate creation time).
         """
         if not container_names:
             return
 
+        ts_map = container_last_modified_epoch_ms or {}
         record_groups = []
         for container_name in container_names:
             if not container_name:
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -581,6 +680,7 @@ class AzureBlobConnector(BaseConnector):
                         )
                     )
 
+            lm_ms = ts_map.get(container_name)
             record_group = RecordGroup(
                 name=container_name,
                 external_group_id=container_name,
@@ -588,6 +688,11 @@ class AzureBlobConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"Azure Blob Container: {container_name}",
+                web_url=get_parent_weburl_for_azure_blob(
+                    container_name, self.account_name or ""
+                ),
+                source_created_at=lm_ms,
+                source_updated_at=lm_ms,
             )
             record_groups.append((record_group, permissions))
 
@@ -1208,7 +1313,7 @@ class AzureBlobConnector(BaseConnector):
         try:
             permissions = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1678,6 +1783,8 @@ class AzureBlobConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
@@ -1710,5 +1817,7 @@ class AzureBlobConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

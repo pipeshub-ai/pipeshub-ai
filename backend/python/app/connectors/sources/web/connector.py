@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import hashlib
+import random
 import re
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -11,14 +13,16 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
-from bs4 import BeautifulSoup, Tag
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from PIL import Image
-
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -57,6 +61,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from bs4 import BeautifulSoup, Tag
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
 
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
@@ -79,14 +87,31 @@ class RecordUpdate:
     external_record_id: Optional[str] = None
     html_bytes: Optional[bytes] = None
 
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+@dataclass
+class RetryUrl:
+    url: str
+    status: str
+    status_code: int
+    retries: int
+    last_attempted: int
+    depth: int = 0                  # depth at which the URL was first encountered
+    referer: str | None = None   # referer at the time of first attempt
 
-RETRYABLE_EXCEPTIONS = (
-    aiohttp.ClientConnectorError,
-    aiohttp.ServerDisconnectedError,
-    aiohttp.ServerTimeoutError,
-    asyncio.TimeoutError,
-)
+class Status(Enum):
+    PENDING = "PENDING"
+
+
+RETRYABLE_STATUS_CODES = {
+    403, 408, 429,
+    500, 502, 503, 504,
+    999,
+    520, 522, 524, 525, 529,
+}
+
+# Base and cap (seconds) for the exponential back-off between attempts.
+_BACKOFF_BASE = 15.0
+_BACKOFF_CAP = 120.0
+MAX_RETRIES = 2
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -153,20 +178,20 @@ class WebApp(App):
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/web.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.WEB.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Web Connector Guide",
-            "https://docs.pipeshub.ai/connectors/web",
+            "https://docs.pipeshub.com/connectors/overview",
             "setup"
         ))
         .with_scheduled_config(True, 1440)  # Daily sync
         .add_sync_custom_field(CustomField(
             name="url",
             display_name="Website URL",
-            field_type="TEXT",
+            field_type="URL",
             required=True,
-            description="The URL of the website to crawl (e.g., https://example.com)",
+            description="The URL of the website to crawl (e.g., https://example.com). Can't be changed later.",
             non_editable=True,
         ))
         .add_sync_custom_field(CustomField(
@@ -297,10 +322,12 @@ class WebConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> None:
         super().__init__(
-            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id
+            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
         self.connector_name = Connectors.WEB
         self.connector_id = connector_id
@@ -311,17 +338,23 @@ class WebConnector(BaseConnector):
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
-        self.restrict_to_start_path: bool = True
+        self.restrict_to_start_path: bool = False
         self.start_path_prefix: str = "/"
         self.url_should_contain: List[str] = []
 
         # Crawling state
         self.visited_urls: Set[str] = set()
+        self.retry_urls: dict[str, RetryUrl] = {}
+        self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
 
         # Batch processing
         self.batch_size: int = 50
+
+        # Scope and creator (loaded from DB during init)
+        self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None
 
         # Filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -330,7 +363,7 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            config_values = await self._fetch_and_parse_config(use_cache=True)
+            config_values = await self._fetch_and_parse_config(use_cache=False)
 
             self.url = config_values["url"]
             self.crawl_type = config_values["crawl_type"]
@@ -342,6 +375,9 @@ class WebConnector(BaseConnector):
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
+
+            # Load creator email if needed (for personal scope permission creation)
+            await self._load_creator_email()
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -384,12 +420,56 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
 
-    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+    def _create_web_permissions(self, url: str) -> list[Permission]:
+        """Create permissions for a web page based on connector scope."""
+        try:
+            permissions = []
+
+            if self.scope == ConnectorScope.TEAM.value:
+                permissions.append(
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
+                )
+            else:
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
+
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+                    )
+
+            return permissions
+        except Exception as e:
+            self.logger.warning(f"Error creating permissions for {url}: {e}")
+            return [
+                Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id
+                )
+            ]
+
+    async def _fetch_and_parse_config(self, use_cache: bool = False) -> Dict:
         """
         Fetch and parse connector configuration.
 
         Args:
-            use_cache: Whether to use cached config (default: True)
+            use_cache: Whether to use cached config (default: False)
 
         Returns:
             Dictionary containing parsed config values:
@@ -429,7 +509,7 @@ class WebConnector(BaseConnector):
             max_pages = int(sync_config.get("max_pages") or 1000)
             max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
-            restrict_to_start_path = sync_config.get("restrict_to_start_path", True)
+            restrict_to_start_path = sync_config.get("restrict_to_start_path", False)
             # Accept both a legacy plain string and the new list-of-strings format.
             _usc_raw = sync_config.get("url_should_contain", [])
             if isinstance(_usc_raw, list):
@@ -449,7 +529,7 @@ class WebConnector(BaseConnector):
 
             # Validate max_pages and max_depth
             if max_pages > 10000:
-                self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
+                self.logger.warning("⚠️ WebPage max_pages is greater than 10000, setting to 10000")
                 max_pages = 10000
             elif max_pages < 1:
                 self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
@@ -573,16 +653,25 @@ class WebConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create READ permissions for all app_users
-            permissions = [
-                Permission(
-                    email=app_user.email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                )
-                for app_user in app_users
-                if app_user.email
-            ]
+            # Create READ permissions: TEAM scope uses org; PERSONAL uses app_users
+            if not app_users and self.scope == ConnectorScope.TEAM.value:
+                permissions = [
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id,
+                    )
+                ]
+            else:
+                permissions = [
+                    Permission(
+                        email=app_user.email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER,
+                    )
+                    for app_user in app_users
+                    if app_user.email
+                ]
 
             # Create/update record group with permissions
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
@@ -601,7 +690,7 @@ class WebConnector(BaseConnector):
             self.logger.debug("running reload config")
             config_values = await self._fetch_and_parse_config(use_cache=False)
 
-            config_values["url"]
+            new_url =  config_values["url"]
             new_crawl_type = config_values["crawl_type"]
             new_max_depth = config_values["max_depth"]
             new_max_pages = config_values["max_pages"]
@@ -609,7 +698,11 @@ class WebConnector(BaseConnector):
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
             new_restrict_to_start_path = config_values["restrict_to_start_path"]
+            new_start_path_prefix = config_values["start_path_prefix"]
 
+            if new_url.lower() != self.url.lower():
+                self.logger.error(f"❌ Cannot change URL from {self.url} to {new_url}. Please create a new connector for {new_url}")
+                raise ValueError("Cannot change URL for web connector.")
             if new_base_domain != self.base_domain:
                 self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
                 raise ValueError("Cannot change base domain for web connector.")
@@ -632,6 +725,7 @@ class WebConnector(BaseConnector):
             if new_restrict_to_start_path != self.restrict_to_start_path:
                 self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
                 self.restrict_to_start_path = new_restrict_to_start_path
+                self.start_path_prefix = new_start_path_prefix
 
             new_url_should_contain = config_values["url_should_contain"]
             if new_url_should_contain != self.url_should_contain:
@@ -654,17 +748,39 @@ class WebConnector(BaseConnector):
 
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
-            # Step 1: fetch and sync all active users
-            self.logger.info("Syncing users...")
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                app_users = []
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                        app_users = []
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
+                    app_users = []
 
             # Step 2: create record group with permissions
             await self.create_record_group(app_users)
 
             # Reset state for new sync
             self.visited_urls.clear()
+            self.retry_urls.clear()
+            self.processed_urls = 0
 
             # Start crawling
             assert self.url is not None, "URL not set — init() must be called first"
@@ -673,8 +789,11 @@ class WebConnector(BaseConnector):
             else:
                 await self._crawl_single_page(self.url)
 
+            #fetch urls with retryable errors
+            await self.process_retry_urls()
+
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
+                f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled, {self.processed_urls} pages processed, {len(self.retry_urls)} pages failed"
             )
 
         except Exception as e:
@@ -701,6 +820,7 @@ class WebConnector(BaseConnector):
                 elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
                     pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
                     await self.data_entities_processor.on_new_records([pair])
+                    self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -780,7 +900,7 @@ class WebConnector(BaseConnector):
                     external_record_id=external_id,
                     external_record_group_id=self.url,
                     version=0,
-                    origin=OriginTypes.CONNECTOR.value,
+                    origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     created_at=timestamp,
@@ -794,18 +914,13 @@ class WebConnector(BaseConnector):
                     path=prefix_path,
                     mime_type=MimeTypes.HTML.value,
                     preview_renderable=False,
+                    is_internal=True,
                     parent_external_record_id=parent_url,
                     parent_record_type=RecordType.FILE if parent_url else None,
-                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(ancestor_url)
 
                 placeholder_records.append((file_record, permissions))
                 self.logger.info(
@@ -854,12 +969,14 @@ class WebConnector(BaseConnector):
                     if len(batch_records) >= self.batch_size:
                         await self.data_entities_processor.on_new_records(batch_records)
                         self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
+                        self.processed_urls += len(batch_records)
                         batch_records.clear()
 
             # Process remaining batch
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
                 self.logger.info(f"✅ Final batch processed: {len(batch_records)} records")
+                self.processed_urls += len(batch_records)
 
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
@@ -878,13 +995,35 @@ class WebConnector(BaseConnector):
         # Queue for BFS crawling: (url, depth, referer)
         queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
 
-        while queue and len(self.visited_urls) < self.max_pages:
+        while (queue or self.retry_urls) and len(self.visited_urls) < self.max_pages:
+            if not queue:
+                # Re-enqueue retry candidates that haven't hit the max-retry limit.
+                # The existing loop logic will skip any that are at MAX_RETRIES.
+                # Exhausted entries are left for process_retry_urls() at the end.
+                retry_candidates = [
+                    r for r in self.retry_urls.values() if r.retries < MAX_RETRIES
+                ]
+                if not retry_candidates:
+                    break  # only exhausted entries remain; hand off to process_retry_urls()
+
+                for retry_entry in retry_candidates:
+                    normalized = self._normalize_url(retry_entry.url)
+                    if normalized not in self.visited_urls:
+                        queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
+
+                self.logger.debug(f"Re-enqueued {len(retry_candidates)} retry URLs")
+                continue  # restart the while-loop with the newly enqueued URLs
+
             current_url, current_depth, referer = queue.pop(0)
 
             # Skip if already visited
             normalized_url = self._normalize_url(current_url)
             if normalized_url in self.visited_urls:
                 continue
+            if normalized_url in self.retry_urls:
+                retry_url = self.retry_urls[normalized_url]
+                if retry_url.retries >= MAX_RETRIES:
+                    continue
 
             # Skip if depth exceeded
             if current_depth > self.max_depth:
@@ -901,13 +1040,16 @@ class WebConnector(BaseConnector):
                     current_url, current_depth, referer=referer
                 )
 
+                # Only mark as visited if NOT queued for retry
+                if normalized_url not in self.retry_urls:
+                    self.visited_urls.add(normalized_url)
+
                 if record_update is None:
                     continue
 
                 file_record = record_update.record
 
                 if file_record:
-                    self.visited_urls.add(normalized_url)
 
                     is_disabled = self._check_index_filter(file_record)
 
@@ -925,6 +1067,7 @@ class WebConnector(BaseConnector):
                             normalized_link = self._normalize_url(link)
                             if (
                                 normalized_link not in self.visited_urls
+                                and normalized_link not in self.retry_urls
                                 and len(self.visited_urls) < self.max_pages
                             ):
                                 queue.append((link, current_depth + 1, current_url))
@@ -940,7 +1083,7 @@ class WebConnector(BaseConnector):
             await asyncio.sleep(1)
 
     async def _fetch_and_process_url(
-        self, url: str, depth: int, referer: Optional[str] = None
+        self, url: str, depth: int, referer: str | None = None
     ) -> Optional[RecordUpdate]:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
@@ -958,21 +1101,23 @@ class WebConnector(BaseConnector):
             )
 
             if result is None:
+                # Connection-level failure (all fetch strategies exhausted with no response).
+                # Queue for retry; unlike HTTP 4xx/5xx this is often transient.
+                normalized = self._normalize_url(url)
+                existing_entry = self.retry_urls.get(normalized)
+                self.retry_urls[normalized] = RetryUrl(
+                    url=normalized,
+                    status=Status.PENDING,
+                    # Synthetic timeout code for connection failures without an HTTP response.
+                    status_code=existing_entry.status_code if existing_entry else 408,
+                    retries=(existing_entry.retries + 1) if existing_entry else 0,
+                    last_attempted=get_epoch_timestamp_in_ms(),
+                    depth=depth,
+                    referer=referer,
+                )
                 return None
 
-            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                # Already logged inside fetch_url_with_fallback
-                return None
-
-            is_new = False
-            is_updated = False
-            is_deleted = False
-            metadata_changed = False
-            content_changed = False
-
-            content_type = result.headers.get("Content-Type", "").lower()
             final_url = result.final_url
-            content_bytes = result.content_bytes
 
             # Guard against HTTP redirects that silently cross a domain boundary.
             if self.base_domain and not self.follow_external:
@@ -999,8 +1144,40 @@ class WebConnector(BaseConnector):
                             "⚠️ Skipping %s: URL does not match any of the required substrings "
                             + "%s", final_url, self.url_should_contain
                         )
+                        final_url_normalized = self._normalize_url(final_url)
+                        current_url_normalized = self._normalize_url(url)
+                        if final_url_normalized != current_url_normalized:
+                            self.visited_urls.add(final_url_normalized)
                         return None
 
+            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                if result.status_code in RETRYABLE_STATUS_CODES:
+                    normalized = self._normalize_url(url)
+                    existing_entry = self.retry_urls.get(normalized)  # O(1)
+                    self.retry_urls[normalized] = RetryUrl(
+                        url=normalized,
+                        status=Status.PENDING,
+                        status_code=result.status_code,
+                        retries=(existing_entry.retries + 1) if existing_entry else 0,
+                        last_attempted=get_epoch_timestamp_in_ms(),
+                        depth=depth,
+                        referer=referer,
+                    )
+                return None
+            else:
+                normalized_url = self._normalize_url(url)
+                if normalized_url in self.retry_urls:
+                    self.retry_urls.pop(normalized_url, None)
+                    self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
+
+            is_new = False
+            is_updated = False
+            is_deleted = False
+            metadata_changed = False
+            content_changed = False
+
+            content_type = result.headers.get("Content-Type", "").lower()
+            content_bytes = result.content_bytes
 
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
@@ -1130,14 +1307,7 @@ class WebConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            # Create permissions (org-level access for web pages)
-            permissions = [
-                Permission(
-                    external_id=self.data_entities_processor.org_id,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                )
-            ]
+            permissions = self._create_web_permissions(url)
 
             record_update = RecordUpdate(
                 record=file_record,
@@ -1219,6 +1389,158 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
         return links
+
+    async def _create_failed_placeholder_record(
+        self, url: str, status_code: int
+    ) -> tuple[FileRecord | None, list[Permission] | None]:
+        """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
+
+        Looks up any existing record by external_id so the same database document is
+        reused (prevents duplicates on repeated sync runs).
+
+        Args:
+            url:         The URL that permanently failed to fetch.
+            status_code: The HTTP status code of the last failed attempt.
+
+        Returns:
+            A (FileRecord, permissions) tuple ready to pass to on_new_records.
+        """
+        normalized_url = self._normalize_url(url)
+        external_id = self._ensure_trailing_slash(normalized_url)
+        timestamp = get_epoch_timestamp_in_ms()
+        title = self._extract_title_from_url(url)
+        parent_url = self._get_parent_url(url)
+
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=external_id
+        )
+
+        if not existing_record:
+            legacy_external_id = external_id.rstrip('/')
+            if legacy_external_id != external_id:
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=legacy_external_id
+                )
+
+
+        if existing_record:
+            return None, None
+
+        record_id = str(uuid.uuid4())
+
+        self.logger.warning(
+            "⚠️ Creating FAILED placeholder for %s — "
+            "failed due to error, status code: %d",
+            url,
+            status_code,
+        )
+
+        await self._ensure_parent_records_exist(parent_url)
+
+        placeholder_record = FileRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=title,
+            record_type=RecordType.FILE,
+            record_group_type=RecordGroupType.WEB,
+            external_record_id=external_id,
+            external_record_group_id=self.url,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            created_at=timestamp,
+            updated_at=timestamp,
+            source_created_at=timestamp,
+            source_updated_at=timestamp,
+            weburl=url,
+            size_in_bytes=None,
+            is_file=True,
+            extension=None,
+            path=urlparse(url).path,
+            mime_type=MimeTypes.HTML.value,
+            preview_renderable=False,
+            parent_external_record_id=parent_url,
+            parent_record_type=RecordType.FILE if parent_url else None,
+            indexing_status=ProgressStatus.FAILED.value,
+            reason=f"Failed to process URL, status code: {status_code}",
+        )
+
+        permissions = self._create_web_permissions(url)
+
+        return placeholder_record, permissions
+
+    async def _retry_urls_generator(
+        self,
+        max_retries: int = 2,
+    ) -> AsyncGenerator[RecordUpdate, None]:
+        """Generator that processes each queued retry URL and yields a RecordUpdate.
+
+        Iterates over a snapshot of ``self.retry_urls`` so that mutations to the
+        set during iteration are safe.
+
+        Each URL is attempted up to ``max_retries`` times.  Between attempts an
+        exponential back-off with full jitter is applied (base 15 s, cap 120 s)
+        to avoid triggering bot-detection on the remote server.
+
+        Yields:
+            RecordUpdate — either the real fetch result (success) or a
+            synthetic RecordUpdate wrapping a FAILED placeholder record
+            (exhausted retries).
+        """
+
+        snapshot = list(self.retry_urls.values())
+
+        self.logger.info("Processing %d retryable URLs", len(snapshot))
+
+        for retry_url in snapshot:
+            placeholder, perms = await self._create_failed_placeholder_record(
+                retry_url.url, retry_url.status_code
+            )
+
+            if placeholder is None:
+                continue
+
+            yield RecordUpdate(
+                record=placeholder,
+                is_new=True,
+                is_updated=False,
+                is_deleted=False,
+                metadata_changed=False,
+                content_changed=False,
+                permissions_changed=False,
+                new_permissions=perms,
+            )
+
+    async def process_retry_urls(self, max_retries: int = 2) -> None:
+        """Process retry URLs in batches.
+
+        Delegates per-URL fetching to ``_retry_urls_generator``.  Yielded
+        records are routed as follows:
+
+        - **Updated** records are forwarded immediately to
+          ``_handle_record_updates``.
+        - **New** records (including FAILED placeholders) are collected into a
+          batch and flushed to ``on_new_records`` once the batch reaches
+          ``self.batch_size``, with a final flush after all URLs are processed.
+        """
+        batch_records: list[tuple[Record, list[Permission]]] = []
+
+        async for record_update in self._retry_urls_generator(max_retries=max_retries):
+            if record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                batch_records.append((record_update.record, record_update.new_permissions))
+
+                if len(batch_records) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    self.logger.info("✅ Retry batch processed: %d records", len(batch_records))
+                    self.processed_urls += len(batch_records)
+                    batch_records.clear()
+
+        # Flush any remaining records
+        if batch_records:
+            await self.data_entities_processor.on_new_records(batch_records)
+            self.logger.info("✅ Retry final batch processed: %d records", len(batch_records))
+            self.processed_urls += len(batch_records)
 
     def _check_index_filter(self, record: Record) -> bool:
         """Check if the record should be indexed."""
@@ -1311,10 +1633,10 @@ class WebConnector(BaseConnector):
                 return MimeTypes.CSV, 'csv'
             elif 'tab-separated' in content_type_lower or 'tsv' in content_type_lower:
                 return MimeTypes.TSV, 'tsv'
-            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
-                return MimeTypes.MARKDOWN, 'md'
             elif 'mdx' in content_type_lower:
                 return MimeTypes.MDX, 'mdx'
+            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
+                return MimeTypes.MARKDOWN, 'md'
             elif 'image/webp' in content_type_lower:
                 return MimeTypes.WEBP, 'webp'
             elif 'image/heic' in content_type_lower:
@@ -1566,7 +1888,7 @@ class WebConnector(BaseConnector):
                     external_record_id=external_id,
                     external_record_group_id=self.url,
                     version=0,
-                    origin=OriginTypes.CONNECTOR.value,
+                    origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     created_at=timestamp,
@@ -1580,18 +1902,13 @@ class WebConnector(BaseConnector):
                     path=prefix_path,
                     mime_type=MimeTypes.HTML.value,
                     preview_renderable=False,
+                    is_internal=True,
                     parent_external_record_id=segment_parent_url,
                     parent_record_type=RecordType.FILE if segment_parent_url else None,
-                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(segment_url)
 
                 batch_parent_records.append((file_record, permissions))
                 self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
@@ -1619,7 +1936,9 @@ class WebConnector(BaseConnector):
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1627,7 +1946,7 @@ class WebConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
 
     async def cleanup(self) -> None:
@@ -2111,9 +2430,10 @@ class WebConnector(BaseConnector):
             return png_b64_str
 
         except Exception as pillow_err:
-            self.logger.debug(
-                f"ℹ️  Pillow could not open AVIF ({pillow_err}), trying ffmpeg fallback — '{url}'"
+            self.logger.warning(
+                f"⚠️  Pillow could not open AVIF ({pillow_err})"
             )
+            return None
 
     async def _process_all_images(
         self,

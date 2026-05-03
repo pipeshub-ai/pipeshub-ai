@@ -1,10 +1,10 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
-import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
+import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
 export enum EventType {
   LLMConfiguredEvent = 'llmConfigured',
+  EmbeddingModelConfiguredEvent = 'embeddingModelConfigured',
   ConnectorPublicUrlChangedEvent = 'connectorPublicUrlChanged',
   GmailUpdatesEnabledEvent = 'gmailUpdatesEnabledEvent',
   GmailUpdatesDisabledEvent = 'gmailUpdatesDisabledEvent',
@@ -47,6 +47,7 @@ export interface Event {
   timestamp: number;
   payload:
     | LLMConfiguredEvent
+    | EmbeddingModelConfiguredEvent
     | ConnectorPublicUrlChangedEvent
     | GmailUpdatesEnabledEvent
     | GmailUpdatesDisabledEvent
@@ -56,6 +57,10 @@ export interface Event {
 }
 
 export interface LLMConfiguredEvent {
+  credentialsRoute: string;
+}
+
+export interface EmbeddingModelConfiguredEvent {
   credentialsRoute: string;
 }
 
@@ -73,30 +78,32 @@ export interface GmailUpdatesDisabledEvent {
 }
 
 @injectable()
-export class SyncEventProducer extends BaseKafkaProducerConnection {
+export class SyncEventProducer {
   private readonly topic = 'sync-events';
 
   constructor(
-    @inject('KafkaConfig') config: KafkaConfig,
-    @inject('Logger') logger: Logger,
-  ) {
-    super(config, logger);
-  }
+    @inject('MessageProducer') private readonly producer: IMessageProducer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
 
   async start(): Promise<void> {
-    if (!this.isConnected) {
-      await this.connect();
+    if (!this.producer.isConnected()) {
+      await this.producer.connect();
     }
   }
 
   async stop(): Promise<void> {
-    if (this.isConnected()) {
-      await this.disconnect();
+    if (this.producer.isConnected()) {
+      await this.producer.disconnect();
     }
   }
 
+  isConnected(): boolean {
+    return this.producer.isConnected();
+  }
+
   async publishEvent(event: Event): Promise<void> {
-    const message: KafkaMessage<string> = {
+    const message: StreamMessage<string> = {
       key: event.eventType,
       value: JSON.stringify(event),
       headers: {
@@ -106,7 +113,7 @@ export class SyncEventProducer extends BaseKafkaProducerConnection {
     };
 
     try {
-      await this.publish(this.topic, message);
+      await this.producer.publish(this.topic, message);
       this.logger.info(
         `Published event: ${event.eventType} to topic ${this.topic}`,
       );
@@ -117,30 +124,32 @@ export class SyncEventProducer extends BaseKafkaProducerConnection {
 }
 
 @injectable()
-export class EntitiesEventProducer extends BaseKafkaProducerConnection {
+export class EntitiesEventProducer {
   private readonly topic = 'entity-events';
 
   constructor(
-    @inject('KafkaConfig') config: KafkaConfig,
-    @inject('Logger') logger: Logger,
-  ) {
-    super(config, logger);
-  }
+    @inject('MessageProducer') private readonly producer: IMessageProducer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
 
   async start(): Promise<void> {
-    if (!this.isConnected) {
-      await this.connect();
+    if (!this.producer.isConnected()) {
+      await this.producer.connect();
     }
   }
 
   async stop(): Promise<void> {
-    if (this.isConnected()) {
-      await this.disconnect();
+    if (this.producer.isConnected()) {
+      await this.producer.disconnect();
     }
   }
 
+  isConnected(): boolean {
+    return this.producer.isConnected();
+  }
+
   async publishEvent(event: Event): Promise<void> {
-    const message: KafkaMessage<string> = {
+    const message: StreamMessage<string> = {
       key: event.eventType,
       value: JSON.stringify(event),
       headers: {
@@ -150,7 +159,7 @@ export class EntitiesEventProducer extends BaseKafkaProducerConnection {
     };
 
     try {
-      await this.publish(this.topic, message);
+      await this.producer.publish(this.topic, message);
       this.logger.info(
         `Published event: ${event.eventType} to topic ${this.topic}`,
       );

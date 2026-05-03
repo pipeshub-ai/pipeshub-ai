@@ -45,6 +45,7 @@ class ToolsetCategory(str, Enum):
     CALENDAR = "calendar"  # Calendar toolsets
     PROJECT_MANAGEMENT = "project_management"  # Project management toolsets (Jira, etc.)
     DOCUMENTATION = "documentation"  # Documentation toolsets (Confluence, etc.)
+    CODE_EXECUTION = "code_execution"  # Code execution sandbox toolsets
 
 
 @dataclass
@@ -143,7 +144,7 @@ class ToolsetConfigBuilder:
     def _reset(self) -> 'ToolsetConfigBuilder':
         """Reset the builder to default state"""
         self.config = {
-            "iconPath": "/assets/icons/toolsets/default.svg",
+            "iconPath": "/icons/toolsets/default.svg",
             "documentationLinks": [],
             "auth": {
                 "supportedAuthTypes": ["API_TOKEN"],  # List of supported auth types (user selects one during creation)
@@ -510,7 +511,7 @@ class ToolsetBuilder:
             # Auto-populate metadata from toolset builder if not already set
             # This makes OAuth configs self-contained with metadata
             # Note: app_description should be OAuth-specific (about the OAuth app), not toolset description
-            if not oauth_config.icon_path or oauth_config.icon_path == "/assets/icons/connectors/default.svg":
+            if not oauth_config.icon_path or oauth_config.icon_path == "/icons/connectors/default.svg":
                 oauth_config.icon_path = config.get("iconPath", oauth_config.icon_path)
             if not oauth_config.app_group:
                 oauth_config.app_group = self.app_group

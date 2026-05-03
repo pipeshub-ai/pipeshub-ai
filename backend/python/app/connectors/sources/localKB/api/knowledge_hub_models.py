@@ -67,6 +67,7 @@ class NodeItem(BaseModel):
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
+    reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")
@@ -77,6 +78,7 @@ class NodeItem(BaseModel):
     previewRenderable: Optional[bool] = Field(None, description="Whether preview can be rendered for this record")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
     sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
+    isInternal: bool = Field(False, description="True when the node is an internal/system record group or record (doesn't come from source)")
 
     class Config:
         use_enum_values = True

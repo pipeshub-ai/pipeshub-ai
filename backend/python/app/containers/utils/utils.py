@@ -20,6 +20,8 @@ from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
+from app.modules.parsers.sql.sql_table_parser import SQLTableParser
+from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
@@ -120,7 +122,7 @@ class ContainerUtils:
 
     async def create_sink_orchestrator(self, logger: Logger, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider)
+        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider, logger=logger)
         return orchestrator
 
     async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:
@@ -156,6 +158,8 @@ class ContainerUtils:
             ExtensionTypes.SVG.value: image_parser,
             ExtensionTypes.HEIC.value: image_parser,
             ExtensionTypes.HEIF.value: image_parser,
+            ExtensionTypes.SQL_TABLE.value: SQLTableParser(),
+            ExtensionTypes.SQL_VIEW.value: SQLViewParser(),
         }
         return parsers
 

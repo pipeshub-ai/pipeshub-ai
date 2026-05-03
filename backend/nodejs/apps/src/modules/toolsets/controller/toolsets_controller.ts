@@ -845,9 +845,26 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search } = req.query;
+      const { search, includeRegistry, page, limit, authStatus, toolsetType } = req.query as {
+        search?: string;
+        includeRegistry?: boolean | string;
+        page?: number | string;
+        limit?: number | string;
+        authStatus?: string;
+        toolsetType?: string;
+      };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
+      if (page !== undefined && page !== null) queryParams.append('page', String(page));
+      if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
+      if (authStatus) queryParams.append('authStatus', String(authStatus));
+      if (toolsetType && String(toolsetType).trim()) {
+        queryParams.append('toolsetType', String(toolsetType).trim());
+      }
+      // includeRegistry is boolean true after Zod coercion; also accept legacy string 'true'
+      if (includeRegistry === true || includeRegistry === 'true') {
+        queryParams.append('includeRegistry', 'true');
+      }
 
       logger.info(`Getting my toolsets for user ${userId}`);
 
@@ -1175,5 +1192,243 @@ export const deleteToolsetOAuthConfig =
     } catch (error: any) {
       logger.error('Error deleting toolset OAuth config', { error: error.message, toolsetType: req.params.toolsetType, oauthConfigId: req.params.oauthConfigId });
       next(handleBackendError(error, 'delete toolset OAuth config'));
+    }
+  };
+
+// ============================================================================
+// Agent-Scoped Toolset Controllers
+// ============================================================================
+// These controllers manage per-agent toolset credentials for service account agents.
+// Credentials are stored at /services/toolsets/{instanceId}/{agentKey} (ETCD).
+// All endpoints require the authenticated user to have edit access to the agent.
+// ============================================================================
+
+/**
+ * Get all toolset instances merged with agent's authentication status.
+ */
+export const getAgentToolsets =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey } = req.params;
+      const { search, page, limit, includeRegistry, toolsetType } = req.query as {
+        search?: string;
+        page?: number | string;
+        limit?: number | string;
+        includeRegistry?: boolean | string;
+        toolsetType?: string;
+      };
+
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+
+      logger.info(`Getting agent toolsets for agent ${agentKey}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const queryParams = new URLSearchParams();
+      if (search) queryParams.append('search', String(search));
+      if (page !== undefined && page !== null) queryParams.append('page', String(page));
+      if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
+      if (toolsetType && String(toolsetType).trim()) {
+        queryParams.append('toolsetType', String(toolsetType).trim());
+      }
+      if (includeRegistry === true || includeRegistry === 'true') {
+        queryParams.append('includeRegistry', 'true');
+      }
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}?${queryParams.toString()}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting agent toolsets', 'Agent toolsets not found');
+    } catch (error: any) {
+      logger.error('Error getting agent toolsets', { error: error.message, agentKey: req.params.agentKey });
+      next(handleBackendError(error, 'get agent toolsets'));
+    }
+  };
+
+/**
+ * Authenticate an agent against a toolset instance (API key / Basic auth).
+ */
+export const authenticateAgentToolset =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey, instanceId } = req.params;
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Authenticating agent ${agentKey} against toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/authenticate`,
+        HttpMethod.POST,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Authenticating agent toolset', 'Failed to authenticate agent toolset');
+    } catch (error: any) {
+      logger.error('Error authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'authenticate agent toolset'));
+    }
+  };
+
+/**
+ * Update agent credentials for a toolset instance.
+ */
+export const updateAgentToolsetCredentials =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey, instanceId } = req.params;
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Updating agent ${agentKey} credentials for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/credentials`,
+        HttpMethod.PUT,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Updating agent toolset credentials', 'Failed to update agent toolset credentials');
+    } catch (error: any) {
+      logger.error('Error updating agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'update agent toolset credentials'));
+    }
+  };
+
+/**
+ * Remove agent credentials for a toolset instance.
+ */
+export const removeAgentToolsetCredentials =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey, instanceId } = req.params;
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Removing agent ${agentKey} credentials for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/credentials`,
+        HttpMethod.DELETE,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Removing agent toolset credentials', 'Failed to remove agent toolset credentials');
+    } catch (error: any) {
+      logger.error('Error removing agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'remove agent toolset credentials'));
+    }
+  };
+
+/**
+ * Re-authenticate (clear credentials) for an agent toolset instance.
+ */
+export const reauthenticateAgentToolset =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey, instanceId } = req.params;
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Re-authenticating agent ${agentKey} for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/reauthenticate`,
+        HttpMethod.POST,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Re-authenticating agent toolset', 'Failed to re-authenticate agent toolset');
+    } catch (error: any) {
+      logger.error('Error re-authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'reauthenticate agent toolset'));
+    }
+  };
+
+/**
+ * Get OAuth authorization URL for an agent toolset instance.
+ * The state encodes agentKey so the callback stores credentials under the agent's path.
+ */
+export const getAgentToolsetOAuthUrl =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { agentKey, instanceId } = req.params;
+      const { base_url } = req.query;
+
+      if (!agentKey) throw new BadRequestError('agentKey is required');
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Getting OAuth URL for agent ${agentKey}, instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const queryParams = new URLSearchParams();
+      if (base_url) queryParams.append('base_url', String(base_url));
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/oauth/authorize?${queryParams.toString()}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting agent toolset OAuth URL', 'Failed to get OAuth authorization URL for agent toolset');
+    } catch (error: any) {
+      logger.error('Error getting agent toolset OAuth URL', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'get agent toolset OAuth URL'));
     }
   };

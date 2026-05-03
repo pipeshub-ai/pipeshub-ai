@@ -485,7 +485,8 @@ export const extractAgentConfigFromFlow = (
   nodes: any[],
   edges: any[],
   currentAgent?: Agent | null,
-  shareWithOrg?: boolean
+  shareWithOrg?: boolean,
+  isServiceAccount?: boolean
 ) => {
   const toolsetsInternal: ToolsetDataInternal[] = []; // Toolset objects with nested tools
   const knowledgeInternal: KnowledgeDataInternal[] = []; // Knowledge objects with connectorId and filters (includes both apps and KBs)
@@ -882,6 +883,12 @@ export const extractAgentConfigFromFlow = (
     models,
     tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
     shareWithOrg: shareWithOrg !== undefined ? shareWithOrg : (currentAgent?.shareWithOrg ?? false),
+    // Once an agent is a service account it cannot be downgraded — always keep true
+    // if the persisted agent already has isServiceAccount: true, regardless of the
+    // caller-supplied value.  This mirrors the backend guard in update_agent.
+    isServiceAccount: (currentAgent?.isServiceAccount === true)
+      ? true
+      : (isServiceAccount !== undefined ? isServiceAccount : false),
   };
 };
 

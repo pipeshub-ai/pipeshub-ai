@@ -107,6 +107,7 @@ export const ssoConfigSchema = z.object({
     certificate: z.string().min(1, { message: 'SSO certificate is required' }),
     emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
     enableJit: z.boolean().optional().default(true),
+    samlPlatform: z.string().optional(),
   }),
 });
 
@@ -329,18 +330,19 @@ export const microsoftConnectorCredentialsSchema = z.object({
     clientId: z.string().min(1, { message: 'Client ID is required' }),
     clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
     tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    hasAdminConsent: z.boolean().optional(),
+    hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
   }),
 });
 
 export const sharepointCredentialsSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
-    tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
-    hasAdminConsent: z.boolean().optional(),
-  }),
+  body: z
+    .object({
+      clientId: z.string().min(1, { message: 'Client ID is required' }),
+      clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
+      tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
+      sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
+      hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
+    }),
 });
 
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
@@ -421,59 +423,19 @@ export const metricsCollectionRemoteServerSchema = z.object({
 // Enum definitions
 export const modelType = z.enum([
   'llm',
-  'embedding', 
+  'embedding',
   'ocr',
   'slm',
   'reasoning',
-  'multiModal'
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
 ]);
 
-export const embeddingProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI', 
-  'cohere',
-  'default',
-  'fireworks',
-  'gemini',
-  'huggingFace',
-  'jinaAI',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'sentenceTransformers',
-  'together',
-  'vertexAI',
-  'voyage'
-]);
-
-export const llmProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI',
-  'cohere',
-  'fireworks',
-  'gemini',
-  'groq',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'together',
-  'vertexAI',
-  'xai'
-]);
-
-export const ocrProvider = z.enum([
-  'azureDI',
-  'ocrmypdf'
-]);
-
-// Combined provider type that accepts embedding, LLM, and OCR providers
-export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider]);
+// Provider validation is now dynamic — the Python backend registry is the
+// source of truth.  We only enforce that a non-empty string is provided.
+export const providerType = z.string().min(1, 'Provider is required');
 
 // Model Configuration schema
 export const configurationSchema = z.object({
@@ -553,10 +515,13 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
-      custom_system_prompt: z.string().optional().nullable(),
+      imageGeneration: z.array(modelConfigurationSchema).optional(),
+      tts: z.array(modelConfigurationSchema).optional(),
+      stt: z.array(modelConfigurationSchema).optional(),
+      customSystemPrompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, and customSystemPrompt',
     })
     .refine(
       (data) => {
@@ -582,6 +547,9 @@ export const modelTypeSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
   }),
 });
@@ -595,6 +563,9 @@ export const updateDefaultModelSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
@@ -609,7 +580,88 @@ export const deleteProviderSchema = z.object({
       'slm',
       'reasoning',
       'multiModal',
+      'imageGeneration',
+      'tts',
+      'stt',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
+});
+
+// Web Search Provider Schemas
+export const webSearchProviderType = z.enum([
+  'duckduckgo',
+  'serper',
+  'tavily',
+]);
+
+export const webSearchConfigurationSchema = z
+  .record(z.any())
+  .describe(
+    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+  );
+
+export const webSearchProviderConfigSchema = z.object({
+  provider: webSearchProviderType,
+  configuration: webSearchConfigurationSchema,
+  isDefault: z
+    .boolean()
+    .default(false)
+    .describe('Whether this should be the default provider'),
+});
+
+export const addWebSearchProviderSchema = z.object({
+  body: z.object({
+    provider: webSearchProviderType,
+    configuration: webSearchConfigurationSchema,
+    isDefault: z
+      .boolean()
+      .default(false)
+      .describe('Whether this should be the default provider'),
+  }),
+});
+
+export const updateWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+  body: z.object({
+    provider: webSearchProviderType,
+    configuration: webSearchConfigurationSchema,
+    isDefault: z
+      .boolean()
+      .default(false)
+      .describe('Whether this should be the default provider'),
+  }),
+});
+
+export const deleteWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+});
+
+export const updateDefaultWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+});
+
+export const webSearchSettingsSchema = z
+  .object({
+    includeImages: z.boolean(),
+    maxImages: z.number().int().min(1).max(500).optional(),
+  })
+  .superRefine((settings, ctx) => {
+    if (settings.includeImages && settings.maxImages === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['maxImages'],
+        message: 'maxImages is required when includeImages is true',
+      });
+    }
+  });
+
+export const updateWebSearchSettingsSchema = z.object({
+  body: webSearchSettingsSchema,
 });

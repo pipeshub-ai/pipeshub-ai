@@ -1,6 +1,6 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
-import jwt from 'jsonwebtoken'
+import jwt from 'jsonwebtoken';
 import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
@@ -84,6 +84,14 @@ export class AuthMiddleware {
     // search for user activities for this user
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
+    const user = await Users.findOne({
+      _id: userId,
+      isDeleted: false,
+    }).lean()
+      .exec();
+    if (!user) {
+      throw new UnauthorizedError('User not found, please login again');
+    }
 
     if (userId && orgId) {
       let userActivity: IUserActivity | null = null;
@@ -136,11 +144,9 @@ export class AuthMiddleware {
     // for client_credentials tokens (userId === client_id), resolve the app owner
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      // prefer createdBy from JWT payload (embedded at token generation time)
       if (payload.createdBy) {
         userId = payload.createdBy;
       } else {
-        // fallback for tokens generated before createdBy was embedded
         try {
           const app = await OAuthApp.findOne({
             clientId: payload.client_id,
@@ -155,6 +161,9 @@ export class AuthMiddleware {
             throw new UnauthorizedError('OAuth app not found or revoked');
           }
         } catch (err) {
+          if (err instanceof UnauthorizedError) {
+            throw err;
+          }
           this.logger.error('Failed to look up OAuth app owner', err);
           throw new UnauthorizedError('Failed to look up OAuth app owner');
         }
@@ -248,7 +257,7 @@ export class AuthMiddleware {
 
         this.logger.info(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
 
-        if (userId && orgId && scope === TokenScopes.PASSWORD_RESET) {
+        if (userId && orgId && (scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL)) {
           let userActivity: IUserActivity | null = null;
           try {
             userActivity = await UserActivities.findOne({
@@ -268,7 +277,7 @@ export class AuthMiddleware {
           if (userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
-            if (activityTimestamp > tokenIssuedAt ) {
+            if (activityTimestamp > tokenIssuedAt) {
               throw new UnauthorizedError('Password reset link expired, please request for a new link');
             }
           }

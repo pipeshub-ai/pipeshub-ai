@@ -1,0 +1,1246 @@
+{
+    "success": true,
+    "connectors": [
+        {
+            "name": "Pipeshub docs",
+            "type": "Web",
+            "appGroup": "Web",
+            "supportedAuthTypes": [
+                "NONE"
+            ],
+            "appDescription": "Crawl and sync data from web pages",
+            "appCategories": [
+                "Web"
+            ],
+            "iconPath": "/assets/icons/connectors/web.svg",
+            "supportsRealtime": false,
+            "supportsSync": true,
+            "supportsAgent": false,
+            "config": {
+                "iconPath": "/assets/icons/connectors/web.svg",
+                "supportsRealtime": false,
+                "supportsSync": true,
+                "supportsAgent": false,
+                "documentationLinks": [
+                    {
+                        "title": "Web Connector Guide",
+                        "url": "https://docs.pipeshub.ai/connectors/web",
+                        "type": "setup"
+                    }
+                ],
+                "hideConnector": false,
+                "auth": {
+                    "supportedAuthTypes": [
+                        "NONE"
+                    ],
+                    "schemas": {},
+                    "oauthConfigs": {},
+                    "values": {},
+                    "customFields": [],
+                    "customValues": {},
+                    "conditionalDisplay": {}
+                },
+                "sync": {
+                    "supportedStrategies": [
+                        "MANUAL",
+                        "SCHEDULED"
+                    ],
+                    "selectedStrategy": "MANUAL",
+                    "webhookConfig": {
+                        "supported": false,
+                        "webhookUrl": "",
+                        "events": [],
+                        "verificationToken": "",
+                        "secretKey": ""
+                    },
+                    "scheduledConfig": {
+                        "intervalMinutes": 1440,
+                        "cronExpression": "",
+                        "timezone": "UTC",
+                        "startTime": 0,
+                        "nextTime": 0,
+                        "endTime": 0,
+                        "maxRepetitions": 0,
+                        "repetitionCount": 0
+                    },
+                    "realtimeConfig": {
+                        "supported": false,
+                        "connectionType": "WEBSOCKET"
+                    },
+                    "customFields": [
+                        {
+                            "name": "url",
+                            "displayName": "Website URL",
+                            "description": "The URL of the website to crawl (e.g., https://example.com)",
+                            "fieldType": "TEXT",
+                            "required": true,
+                            "defaultValue": "",
+                            "validation": {},
+                            "isSecret": false
+                        },
+                        {
+                            "name": "type",
+                            "displayName": "Crawl Type",
+                            "description": "Choose whether to crawl a single page or recursively crawl linked pages",
+                            "fieldType": "SELECT",
+                            "required": true,
+                            "defaultValue": "single",
+                            "validation": {},
+                            "isSecret": false,
+                            "options": [
+                                "single",
+                                "recursive"
+                            ]
+                        },
+                        {
+                            "name": "depth",
+                            "displayName": "Crawl Depth",
+                            "description": "Maximum depth for recursive crawling (1-10, only applies to recursive type)",
+                            "fieldType": "NUMBER",
+                            "required": false,
+                            "defaultValue": "3",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 10
+                            },
+                            "isSecret": false
+                        },
+                        {
+                            "name": "max_pages",
+                            "displayName": "Maximum Pages",
+                            "description": "Maximum number of pages to crawl (1-1000)",
+                            "fieldType": "NUMBER",
+                            "required": false,
+                            "defaultValue": "100",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 1000
+                            },
+                            "isSecret": false
+                        },
+                        {
+                            "name": "follow_external",
+                            "displayName": "Follow External Links",
+                            "description": "Follow links to external domains",
+                            "fieldType": "BOOLEAN",
+                            "required": false,
+                            "defaultValue": "false",
+                            "validation": {},
+                            "isSecret": false
+                        }
+                    ],
+                    "customValues": {},
+                    "values": {}
+                },
+                "filters": {
+                    "sync": {
+                        "schema": {
+                            "fields": []
+                        },
+                        "values": {}
+                    },
+                    "indexing": {
+                        "schema": {
+                            "fields": []
+                        },
+                        "values": {}
+                    }
+                }
+            },
+            "scope": "team",
+            "connectorInfo": null,
+            "authType": "NONE",
+            "isActive": true,
+            "isAgentActive": false,
+            "isConfigured": true,
+            "isAuthenticated": true,
+            "createdAtTimestamp": 1772084057484,
+            "updatedAtTimestamp": 1772084077911,
+            "_key": "26e5933d-8260-454d-b106-9c916b5f8903",
+            "createdBy": "699fda84712d1105459d0682",
+            "updatedBy": "699fda84712d1105459d0682"
+        },
+        {
+            "name": "Sharepoint online",
+            "type": "SharePoint Online",
+            "appGroup": "Microsoft 365",
+            "supportedAuthTypes": [
+                "OAUTH_ADMIN_CONSENT"
+            ],
+            "appDescription": "Sync documents and lists from SharePoint Online",
+            "appCategories": [
+                "Storage",
+                "Documentation"
+            ],
+            "iconPath": "/assets/icons/connectors/sharepoint.svg",
+            "supportsRealtime": false,
+            "supportsSync": true,
+            "supportsAgent": true,
+            "config": {
+                "iconPath": "/assets/icons/connectors/sharepoint.svg",
+                "supportsRealtime": false,
+                "supportsSync": true,
+                "supportsAgent": true,
+                "documentationLinks": [
+                    {
+                        "title": "SharePoint Online API Setup",
+                        "url": "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",
+                        "type": "setup"
+                    },
+                    {
+                        "title": "Pipeshub Documentation",
+                        "url": "https://docs.pipeshub.com/connectors/microsoft-365/sharepoint",
+                        "type": "pipeshub"
+                    }
+                ],
+                "hideConnector": false,
+                "auth": {
+                    "supportedAuthTypes": [
+                        "OAUTH_ADMIN_CONSENT"
+                    ],
+                    "schemas": {
+                        "OAUTH_ADMIN_CONSENT": {
+                            "fields": [
+                                {
+                                    "name": "clientId",
+                                    "displayName": "Application (Client) ID",
+                                    "placeholder": "Enter your Azure AD Application ID",
+                                    "description": "The Application (Client) ID from Azure AD App Registration",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "tenantId",
+                                    "displayName": "Directory (Tenant) ID (Optional)",
+                                    "placeholder": "Enter your Azure AD Tenant ID",
+                                    "description": "The Directory (Tenant) ID from Azure AD",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "hasAdminConsent",
+                                    "displayName": "Has Admin Consent",
+                                    "placeholder": "",
+                                    "description": "Check if admin consent has been granted for the application",
+                                    "fieldType": "CHECKBOX",
+                                    "required": true,
+                                    "defaultValue": false,
+                                    "validation": {
+                                        "minLength": 0,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "sharepointDomain",
+                                    "displayName": "SharePoint Domain",
+                                    "placeholder": "https://your-domain.sharepoint.com",
+                                    "description": "Your SharePoint domain URL",
+                                    "fieldType": "URL",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 2000
+                                    },
+                                    "isSecret": false
+                                }
+                            ]
+                        }
+                    },
+                    "oauthConfigs": {},
+                    "values": {},
+                    "customFields": [],
+                    "customValues": {},
+                    "conditionalDisplay": {}
+                },
+                "sync": {
+                    "supportedStrategies": [
+                        "SCHEDULED",
+                        "MANUAL"
+                    ],
+                    "selectedStrategy": "MANUAL",
+                    "webhookConfig": {
+                        "supported": false,
+                        "webhookUrl": "",
+                        "events": [],
+                        "verificationToken": "",
+                        "secretKey": ""
+                    },
+                    "scheduledConfig": {
+                        "intervalMinutes": 60,
+                        "cronExpression": "",
+                        "timezone": "UTC",
+                        "startTime": 0,
+                        "nextTime": 0,
+                        "endTime": 0,
+                        "maxRepetitions": 0,
+                        "repetitionCount": 0
+                    },
+                    "realtimeConfig": {
+                        "supported": false,
+                        "connectionType": "WEBSOCKET"
+                    },
+                    "customFields": [],
+                    "customValues": {},
+                    "values": {}
+                },
+                "filters": {
+                    "sync": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "site_ids",
+                                    "displayName": "Site Names",
+                                    "description": "Filter specific sites by name.",
+                                    "filterType": "list",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": [],
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "dynamic"
+                                },
+                                {
+                                    "name": "page_ids",
+                                    "displayName": "Page name",
+                                    "description": "Filter specific pages by name.",
+                                    "filterType": "list",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": [],
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "dynamic"
+                                },
+                                {
+                                    "name": "drive_ids",
+                                    "displayName": "Document Library Names",
+                                    "description": "Filter specific document libraries by name.",
+                                    "filterType": "list",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": [],
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "dynamic"
+                                },
+                                {
+                                    "name": "file_extensions",
+                                    "displayName": "File Extensions",
+                                    "description": "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+                                    "filterType": "multiselect",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": [],
+                                    "defaultOperator": "in",
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "static",
+                                    "options": [
+                                        {
+                                            "id": "pdf",
+                                            "label": ".pdf"
+                                        },
+                                        {
+                                            "id": "docx",
+                                            "label": ".docx"
+                                        },
+                                        {
+                                            "id": "doc",
+                                            "label": ".doc"
+                                        },
+                                        {
+                                            "id": "pptx",
+                                            "label": ".pptx"
+                                        },
+                                        {
+                                            "id": "ppt",
+                                            "label": ".ppt"
+                                        },
+                                        {
+                                            "id": "xlsx",
+                                            "label": ".xlsx"
+                                        },
+                                        {
+                                            "id": "xls",
+                                            "label": ".xls"
+                                        },
+                                        {
+                                            "id": "csv",
+                                            "label": ".csv"
+                                        },
+                                        {
+                                            "id": "tsv",
+                                            "label": ".tsv"
+                                        },
+                                        {
+                                            "id": "txt",
+                                            "label": ".txt"
+                                        },
+                                        {
+                                            "id": "md",
+                                            "label": ".md"
+                                        },
+                                        {
+                                            "id": "mdx",
+                                            "label": ".mdx"
+                                        },
+                                        {
+                                            "id": "html",
+                                            "label": ".html"
+                                        },
+                                        {
+                                            "id": "png",
+                                            "label": ".png"
+                                        },
+                                        {
+                                            "id": "jpg",
+                                            "label": ".jpg"
+                                        },
+                                        {
+                                            "id": "jpeg",
+                                            "label": ".jpeg"
+                                        },
+                                        {
+                                            "id": "webp",
+                                            "label": ".webp"
+                                        },
+                                        {
+                                            "id": "svg",
+                                            "label": ".svg"
+                                        },
+                                        {
+                                            "id": "heic",
+                                            "label": ".heic"
+                                        },
+                                        {
+                                            "id": "heif",
+                                            "label": ".heif"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "modified",
+                                    "displayName": "Modified Date",
+                                    "description": "Filter pages and blogposts by modification date.",
+                                    "filterType": "datetime",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "last_7_days",
+                                        "last_14_days",
+                                        "last_30_days",
+                                        "last_90_days",
+                                        "last_180_days",
+                                        "last_365_days",
+                                        "is_after",
+                                        "is_before",
+                                        "is_between"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "created",
+                                    "displayName": "Created Date",
+                                    "description": "Filter pages and blogposts by creation date.",
+                                    "filterType": "datetime",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "last_7_days",
+                                        "last_14_days",
+                                        "last_30_days",
+                                        "last_90_days",
+                                        "last_180_days",
+                                        "last_365_days",
+                                        "is_after",
+                                        "is_before",
+                                        "is_between"
+                                    ],
+                                    "optionSourceType": "manual"
+                                }
+                            ]
+                        },
+                        "values": {}
+                    },
+                    "indexing": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "enable_manual_sync",
+                                    "displayName": "Enable Manual Indexing",
+                                    "description": "Disable automatic indexing for all synced records.",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": false,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "pages",
+                                    "displayName": "Index Pages",
+                                    "description": "Enable indexing of pages",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "documents",
+                                    "displayName": "Index Documents",
+                                    "description": "Enable indexing of documents",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                }
+                            ]
+                        },
+                        "values": {}
+                    }
+                }
+            },
+            "scope": "team",
+            "connectorInfo": null,
+            "authType": "OAUTH_ADMIN_CONSENT",
+            "isActive": true,
+            "isAgentActive": false,
+            "isConfigured": true,
+            "isAuthenticated": true,
+            "createdAtTimestamp": 1772101800432,
+            "updatedAtTimestamp": 1772101812610,
+            "_key": "5f885a1d-092e-4aeb-9364-86817a96c1f1",
+            "createdBy": "699fda84712d1105459d0682",
+            "updatedBy": "699fda84712d1105459d0682"
+        },
+        {
+            "name": "Onedrive",
+            "type": "OneDrive",
+            "appGroup": "Microsoft 365",
+            "supportedAuthTypes": [
+                "OAUTH_ADMIN_CONSENT"
+            ],
+            "appDescription": "Sync files and folders from OneDrive",
+            "appCategories": [
+                "Storage"
+            ],
+            "iconPath": "/assets/icons/connectors/onedrive.svg",
+            "supportsRealtime": false,
+            "supportsSync": true,
+            "supportsAgent": true,
+            "config": {
+                "iconPath": "/assets/icons/connectors/onedrive.svg",
+                "supportsRealtime": false,
+                "supportsSync": true,
+                "supportsAgent": true,
+                "documentationLinks": [
+                    {
+                        "title": "Azure AD App Registration Setup",
+                        "url": "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+                        "type": "setup"
+                    },
+                    {
+                        "title": "Pipeshub Documentation",
+                        "url": "https://docs.pipeshub.com/connectors/microsoft-365/one-drive",
+                        "type": "pipeshub"
+                    }
+                ],
+                "hideConnector": false,
+                "auth": {
+                    "supportedAuthTypes": [
+                        "OAUTH_ADMIN_CONSENT"
+                    ],
+                    "schemas": {
+                        "OAUTH_ADMIN_CONSENT": {
+                            "fields": [
+                                {
+                                    "name": "clientId",
+                                    "displayName": "Application (Client) ID",
+                                    "placeholder": "Enter your Azure AD Application ID",
+                                    "description": "The Application (Client) ID from Azure AD App Registration",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "clientSecret",
+                                    "displayName": "Client Secret",
+                                    "placeholder": "Enter your Azure AD Client Secret",
+                                    "description": "The Client Secret from Azure AD App Registration",
+                                    "fieldType": "PASSWORD",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": true
+                                },
+                                {
+                                    "name": "tenantId",
+                                    "displayName": "Directory (Tenant) ID",
+                                    "placeholder": "Enter your Azure AD Tenant ID",
+                                    "description": "The Directory (Tenant) ID from Azure AD",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "hasAdminConsent",
+                                    "displayName": "Has Admin Consent",
+                                    "placeholder": "",
+                                    "description": "Check if admin consent has been granted for the application",
+                                    "fieldType": "CHECKBOX",
+                                    "required": true,
+                                    "defaultValue": false,
+                                    "validation": {
+                                        "minLength": 0,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "redirectUri",
+                                    "displayName": "Redirect URI",
+                                    "placeholder": "http://localhost:3001/connectors/oauth/callback/onedrive",
+                                    "description": "The redirect URI for OAuth authentication",
+                                    "fieldType": "URL",
+                                    "required": false,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 2000
+                                    },
+                                    "isSecret": false
+                                }
+                            ]
+                        }
+                    },
+                    "oauthConfigs": {},
+                    "values": {},
+                    "customFields": [],
+                    "customValues": {},
+                    "conditionalDisplay": {
+                        "redirectUri": {
+                            "showWhen": {
+                                "field": "hasAdminConsent",
+                                "operator": "equals",
+                                "value": false
+                            }
+                        }
+                    }
+                },
+                "sync": {
+                    "supportedStrategies": [
+                        "SCHEDULED",
+                        "MANUAL"
+                    ],
+                    "selectedStrategy": "MANUAL",
+                    "webhookConfig": {
+                        "supported": false,
+                        "webhookUrl": "",
+                        "events": [],
+                        "verificationToken": "",
+                        "secretKey": ""
+                    },
+                    "scheduledConfig": {
+                        "intervalMinutes": 60,
+                        "cronExpression": "",
+                        "timezone": "UTC",
+                        "startTime": 0,
+                        "nextTime": 0,
+                        "endTime": 0,
+                        "maxRepetitions": 0,
+                        "repetitionCount": 0
+                    },
+                    "realtimeConfig": {
+                        "supported": false,
+                        "connectionType": "WEBSOCKET"
+                    },
+                    "customFields": [],
+                    "customValues": {},
+                    "values": {}
+                },
+                "filters": {
+                    "sync": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "modified",
+                                    "displayName": "Modified Date",
+                                    "description": "Filter files and folders by modification date.",
+                                    "filterType": "datetime",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "last_7_days",
+                                        "last_14_days",
+                                        "last_30_days",
+                                        "last_90_days",
+                                        "last_180_days",
+                                        "last_365_days",
+                                        "is_after",
+                                        "is_before",
+                                        "is_between"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "created",
+                                    "displayName": "Created Date",
+                                    "description": "Filter files and folders by creation date.",
+                                    "filterType": "datetime",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "last_7_days",
+                                        "last_14_days",
+                                        "last_30_days",
+                                        "last_90_days",
+                                        "last_180_days",
+                                        "last_365_days",
+                                        "is_after",
+                                        "is_before",
+                                        "is_between"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "file_extensions",
+                                    "displayName": "File Extensions",
+                                    "description": "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+                                    "filterType": "multiselect",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": [],
+                                    "defaultOperator": "in",
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "static",
+                                    "options": [
+                                        {
+                                            "id": "pdf",
+                                            "label": ".pdf"
+                                        },
+                                        {
+                                            "id": "docx",
+                                            "label": ".docx"
+                                        },
+                                        {
+                                            "id": "doc",
+                                            "label": ".doc"
+                                        },
+                                        {
+                                            "id": "pptx",
+                                            "label": ".pptx"
+                                        },
+                                        {
+                                            "id": "ppt",
+                                            "label": ".ppt"
+                                        },
+                                        {
+                                            "id": "xlsx",
+                                            "label": ".xlsx"
+                                        },
+                                        {
+                                            "id": "xls",
+                                            "label": ".xls"
+                                        },
+                                        {
+                                            "id": "csv",
+                                            "label": ".csv"
+                                        },
+                                        {
+                                            "id": "tsv",
+                                            "label": ".tsv"
+                                        },
+                                        {
+                                            "id": "txt",
+                                            "label": ".txt"
+                                        },
+                                        {
+                                            "id": "md",
+                                            "label": ".md"
+                                        },
+                                        {
+                                            "id": "mdx",
+                                            "label": ".mdx"
+                                        },
+                                        {
+                                            "id": "html",
+                                            "label": ".html"
+                                        },
+                                        {
+                                            "id": "png",
+                                            "label": ".png"
+                                        },
+                                        {
+                                            "id": "jpg",
+                                            "label": ".jpg"
+                                        },
+                                        {
+                                            "id": "jpeg",
+                                            "label": ".jpeg"
+                                        },
+                                        {
+                                            "id": "webp",
+                                            "label": ".webp"
+                                        },
+                                        {
+                                            "id": "svg",
+                                            "label": ".svg"
+                                        },
+                                        {
+                                            "id": "heic",
+                                            "label": ".heic"
+                                        },
+                                        {
+                                            "id": "heif",
+                                            "label": ".heif"
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        "values": {}
+                    },
+                    "indexing": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "enable_manual_sync",
+                                    "displayName": "Enable Manual Indexing",
+                                    "description": "Disable automatic indexing for all synced records.",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": false,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "shared",
+                                    "displayName": "Index Shared Items",
+                                    "description": "Enable indexing of shared items",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                }
+                            ]
+                        },
+                        "values": {}
+                    }
+                }
+            },
+            "scope": "team",
+            "connectorInfo": null,
+            "authType": "OAUTH_ADMIN_CONSENT",
+            "isActive": true,
+            "isAgentActive": false,
+            "isConfigured": true,
+            "isAuthenticated": true,
+            "createdAtTimestamp": 1772102285404,
+            "updatedAtTimestamp": 1772102297030,
+            "_key": "c7899cc1-0c3f-4fbc-bc72-f243d30bf83f",
+            "createdBy": "699fda84712d1105459d0682",
+            "updatedBy": "699fda84712d1105459d0682"
+        },
+        {
+            "name": "Outlook",
+            "type": "Outlook",
+            "appGroup": "Microsoft 365",
+            "supportedAuthTypes": [
+                "OAUTH_ADMIN_CONSENT"
+            ],
+            "appDescription": "Sync emails from Outlook",
+            "appCategories": [
+                "Email"
+            ],
+            "iconPath": "/assets/icons/connectors/outlook.svg",
+            "supportsRealtime": false,
+            "supportsSync": true,
+            "supportsAgent": true,
+            "config": {
+                "iconPath": "/assets/icons/connectors/outlook.svg",
+                "supportsRealtime": false,
+                "supportsSync": true,
+                "supportsAgent": true,
+                "documentationLinks": [
+                    {
+                        "title": "Azure AD App Registration Setup",
+                        "url": "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+                        "type": "setup"
+                    },
+                    {
+                        "title": "Pipeshub Documentation",
+                        "url": "https://docs.pipeshub.com/connectors/microsoft-365/outlook",
+                        "type": "pipeshub"
+                    }
+                ],
+                "hideConnector": false,
+                "auth": {
+                    "supportedAuthTypes": [
+                        "OAUTH_ADMIN_CONSENT"
+                    ],
+                    "schemas": {
+                        "OAUTH_ADMIN_CONSENT": {
+                            "fields": [
+                                {
+                                    "name": "clientId",
+                                    "displayName": "Application (Client) ID",
+                                    "placeholder": "Enter your Azure AD Application ID",
+                                    "description": "The Application (Client) ID from Azure AD App Registration",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "clientSecret",
+                                    "displayName": "Client Secret",
+                                    "placeholder": "Enter your Azure AD Client Secret",
+                                    "description": "The Client Secret from Azure AD App Registration",
+                                    "fieldType": "PASSWORD",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": true
+                                },
+                                {
+                                    "name": "tenantId",
+                                    "displayName": "Directory (Tenant) ID",
+                                    "placeholder": "Enter your Azure AD Tenant ID",
+                                    "description": "The Directory (Tenant) ID from Azure AD",
+                                    "fieldType": "TEXT",
+                                    "required": true,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "hasAdminConsent",
+                                    "displayName": "Has Admin Consent",
+                                    "placeholder": "",
+                                    "description": "Check if admin consent has been granted for the application",
+                                    "fieldType": "CHECKBOX",
+                                    "required": true,
+                                    "defaultValue": false,
+                                    "validation": {
+                                        "minLength": 0,
+                                        "maxLength": 1000
+                                    },
+                                    "isSecret": false
+                                },
+                                {
+                                    "name": "redirectUri",
+                                    "displayName": "Redirect URI",
+                                    "placeholder": "connectors/Outlook/oauth/callback",
+                                    "description": "The redirect URI for OAuth authentication",
+                                    "fieldType": "URL",
+                                    "required": false,
+                                    "defaultValue": "",
+                                    "validation": {
+                                        "minLength": 1,
+                                        "maxLength": 2000
+                                    },
+                                    "isSecret": false
+                                }
+                            ]
+                        }
+                    },
+                    "oauthConfigs": {},
+                    "values": {},
+                    "customFields": [],
+                    "customValues": {},
+                    "conditionalDisplay": {
+                        "redirectUri": {
+                            "showWhen": {
+                                "field": "hasAdminConsent",
+                                "operator": "equals",
+                                "value": false
+                            }
+                        }
+                    }
+                },
+                "sync": {
+                    "supportedStrategies": [
+                        "SCHEDULED",
+                        "MANUAL"
+                    ],
+                    "selectedStrategy": "MANUAL",
+                    "webhookConfig": {
+                        "supported": false,
+                        "webhookUrl": "",
+                        "events": [],
+                        "verificationToken": "",
+                        "secretKey": ""
+                    },
+                    "scheduledConfig": {
+                        "intervalMinutes": 60,
+                        "cronExpression": "",
+                        "timezone": "UTC",
+                        "startTime": 0,
+                        "nextTime": 0,
+                        "endTime": 0,
+                        "maxRepetitions": 0,
+                        "repetitionCount": 0
+                    },
+                    "realtimeConfig": {
+                        "supported": false,
+                        "connectionType": "WEBSOCKET"
+                    },
+                    "customFields": [],
+                    "customValues": {},
+                    "values": {}
+                },
+                "filters": {
+                    "sync": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "folders",
+                                    "displayName": "Standard Folders",
+                                    "description": "Select standard Outlook folders to sync emails from.",
+                                    "filterType": "multiselect",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "in",
+                                        "not_in"
+                                    ],
+                                    "optionSourceType": "static",
+                                    "options": [
+                                        "Inbox",
+                                        "Sent Items",
+                                        "Drafts",
+                                        "Deleted Items",
+                                        "Junk Email",
+                                        "Archive",
+                                        "Outbox",
+                                        "Conversation History"
+                                    ]
+                                },
+                                {
+                                    "name": "custom_folders",
+                                    "displayName": "Custom Folders",
+                                    "description": "Include custom/non-standard email folders",
+                                    "filterType": "boolean",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "received_date",
+                                    "displayName": "Received Date",
+                                    "description": "Filter emails by received date. Defaults to last 60 days.",
+                                    "filterType": "datetime",
+                                    "category": "sync",
+                                    "required": false,
+                                    "defaultValue": null,
+                                    "defaultOperator": "last_90_days",
+                                    "operators": [
+                                        "last_7_days",
+                                        "last_14_days",
+                                        "last_30_days",
+                                        "last_90_days",
+                                        "last_180_days",
+                                        "last_365_days",
+                                        "is_after",
+                                        "is_before",
+                                        "is_between"
+                                    ],
+                                    "optionSourceType": "manual"
+                                }
+                            ]
+                        },
+                        "values": {}
+                    },
+                    "indexing": {
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "enable_manual_sync",
+                                    "displayName": "Enable Manual Indexing",
+                                    "description": "Disable automatic indexing for all synced records.",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": false,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "mails",
+                                    "displayName": "Index Emails",
+                                    "description": "Enable indexing of email messages",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "attachments",
+                                    "displayName": "Index Attachments",
+                                    "description": "Enable indexing of email attachments",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                },
+                                {
+                                    "name": "group_conversations",
+                                    "displayName": "Index Group Conversations",
+                                    "description": "Enable indexing of Microsoft 365 group conversations",
+                                    "filterType": "boolean",
+                                    "category": "indexing",
+                                    "required": false,
+                                    "defaultValue": true,
+                                    "defaultOperator": null,
+                                    "operators": [
+                                        "is",
+                                        "is_not"
+                                    ],
+                                    "optionSourceType": "manual"
+                                }
+                            ]
+                        },
+                        "values": {}
+                    }
+                }
+            },
+            "scope": "team",
+            "connectorInfo": null,
+            "authType": "OAUTH_ADMIN_CONSENT",
+            "isActive": true,
+            "isAgentActive": false,
+            "isConfigured": true,
+            "isAuthenticated": true,
+            "createdAtTimestamp": 1772102362483,
+            "updatedAtTimestamp": 1772102370312,
+            "_key": "547750c0-dc92-49a7-8eb6-a4ac95dadb25",
+            "createdBy": "699fda84712d1105459d0682",
+            "updatedBy": "699fda84712d1105459d0682"
+        }
+    ],
+    "pagination": {
+        "page": 1,
+        "limit": 20,
+        "search": null,
+        "totalCount": 4,
+        "totalPages": 1,
+        "hasPrev": false,
+        "hasNext": false,
+        "prevPage": 0,
+        "nextPage": 2
+    },
+    "scopeCounts": {
+        "personal": 0,
+        "team": 4
+    }
+}

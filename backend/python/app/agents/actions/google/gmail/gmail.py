@@ -14,11 +14,13 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
@@ -117,12 +119,22 @@ class GetUserProfileInput(BaseModel):
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/gmail.svg",
+            icon_path=IconPaths.connector_icon("gmail"),
             app_group="Google Workspace",
             app_description="Gmail OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/gmail.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("gmail"))
+        .add_documentation_link(DocumentationLink(
+            "Gmail API Setup",
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/google-workspace/gmail",
+            "pipeshub",
+        )))\
     .build_decorator()
 class Gmail:
     """Gmail tool exposed to the agents using GoogleGmailDataSource"""

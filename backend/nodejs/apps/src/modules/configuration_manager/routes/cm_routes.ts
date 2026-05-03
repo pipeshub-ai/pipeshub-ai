@@ -51,10 +51,19 @@ import {
   getAvailablePlatformFeatureFlags,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
+  getWebSearchProviders,
+  updateWebSearchSettings,
+  addWebSearchProvider,
+  updateWebSearchProvider,
+  deleteWebSearchProvider,
+  updateDefaultWebSearchProvider,
   getSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
+  getAIModelRegistry,
+  getAIModelRegistryCapabilities,
+  getAIModelProviderSchema,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -80,6 +89,11 @@ import {
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
   sharepointCredentialsSchema,
+  addWebSearchProviderSchema,
+  updateWebSearchSettingsSchema,
+  updateWebSearchProviderSchema,
+  deleteWebSearchProviderSchema,
+  updateDefaultWebSearchProviderSchema,
   createSlackBotConfigSchema,
   updateSlackBotConfigSchema,
   deleteSlackBotConfigSchema,
@@ -103,6 +117,7 @@ import {
   EntitiesEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
+import { SamlController } from '../../auth/controller/saml.controller';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -115,6 +130,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   const syncEventService =
     container.get<SyncEventProducer>('SyncEventProducer');
+  const samlController = container.get<SamlController>('SamlController');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   // storage config routes
@@ -444,7 +460,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(ssoConfigSchema),
-    setSsoAuthConfig(keyValueStoreService),
+    setSsoAuthConfig(keyValueStoreService, samlController),
   );
 
   // OAuth config routes
@@ -789,6 +805,38 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
+   * @route GET /api/v1/configurationManager/ai-models/registry
+   * @desc Get all registered AI model providers from the Python backend registry
+   * @access Private (admin)
+   */
+  router.get(
+    '/ai-models/registry/capabilities',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelRegistryCapabilities(appConfig),
+  );
+
+  router.get(
+    '/ai-models/registry/:providerId/schema',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelProviderSchema(appConfig),
+  );
+
+  router.get(
+    '/ai-models/registry',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelRegistry(appConfig),
+  );
+
+  /**
    * @route GET /api/v1/conversations/ai-models
    * @desc Get all AI models providers (direct Node.js implementation)
    * @access Private
@@ -898,6 +946,92 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultModelSchema),
     updateDefaultAIModel(keyValueStoreService, entityEventService, appConfig),
+  );
+
+  // Web Search provider routes
+  /**
+   * @route GET /api/v1/configurationManager/web-search
+   * @desc Get all web search providers
+   * @access Private
+   */
+  router.get(
+    '/web-search',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getWebSearchProviders(keyValueStoreService),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/settings
+   * @desc Update web search settings
+   * @access Private
+   */
+  router.put(
+    '/web-search/settings',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateWebSearchSettingsSchema),
+    updateWebSearchSettings(keyValueStoreService),
+  );
+
+  /**
+   * @route POST /api/v1/configurationManager/web-search/providers
+   * @desc Add a new web search provider
+   * @access Private
+   */
+  router.post(
+    '/web-search/providers',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addWebSearchProviderSchema),
+    addWebSearchProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/providers/:providerKey
+   * @desc Update a web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.put(
+    '/web-search/providers/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateWebSearchProviderSchema),
+    updateWebSearchProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/configurationManager/web-search/providers/:providerKey
+   * @desc Delete a web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.delete(
+    '/web-search/providers/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteWebSearchProviderSchema),
+    deleteWebSearchProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/default/:providerKey
+   * @desc Update the default web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.put(
+    '/web-search/default/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateDefaultWebSearchProviderSchema),
+    updateDefaultWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   router.get(

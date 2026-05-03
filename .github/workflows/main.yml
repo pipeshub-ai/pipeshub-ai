@@ -77,6 +77,29 @@ jobs:
           cd frontend
           npm run build
 
+  validate-frontend-new:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend-new/package-lock.json
+
+      - name: Install frontend-new dependencies
+        run: |
+          cd frontend-new
+          npm install
+
+      - name: Build frontend-new
+        run: |
+          cd frontend-new
+          npm run build
+
   ruff-lint-pr:
     runs-on: ubuntu-latest
 
@@ -89,7 +112,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install ruff
         run: pip install ruff
@@ -98,11 +121,12 @@ jobs:
         run: |
           git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- '*.py' || true)
+          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed Python files with full ruleset:"
             echo "$CHANGED_FILES"
             echo "---"
+            cd backend/python
             echo "$CHANGED_FILES" | xargs ruff check || echo "::warning::Ruff found linting issues (non-fatal)"
           else
             echo "No Python files changed, skipping ruff."
@@ -120,13 +144,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
 
       - name: Install dependencies
         run: |
           cd backend/python
-          pip install pyright
-          pip install -e . 2>&1 || true
+          uv pip install --system pyright
+          uv pip install --system -e . 2>&1 || true
 
       - name: Run pyright on changed Python files
         run: |

@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -43,6 +44,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -83,7 +85,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 # Notion OAuth URLs
@@ -113,15 +115,16 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
                 CommonFields.client_id("Notion OAuth App"),
                 CommonFields.client_secret("Notion OAuth App")
             ],
-            icon_path="/assets/icons/connectors/notion.svg",
+            icon_path=IconPaths.connector_icon(Connectors.NOTION.value),
             app_group="Notion",
             app_description="OAuth application for accessing Notion API",
             app_categories=["Knowledge Management", "Collaboration"],
             additional_params={}
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/notion.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.NOTION.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Notion OAuth Setup",
@@ -178,7 +181,9 @@ class NotionConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         """Initialize the Notion connector."""
         super().__init__(
@@ -187,7 +192,9 @@ class NotionConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         # Client instances
@@ -630,7 +637,9 @@ class NotionConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "NotionConnector":
         """Factory method to create a Notion connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -646,7 +655,9 @@ class NotionConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
     # ==================== Main Sync Methods ====================

@@ -26,9 +26,14 @@ import {
   createPlaceholderDocument,
   generatePresignedUrlForDirectUpload,
   getBaseUrl,
+  getCurrentFilePath,
+  getDocumentRootPath,
+  getFullDocumentPath,
+  getVersionFilePath,
   isValidStorageVendor,
   extractOrgId,
   extractUserId,
+  normalizeExtension,
   validateFileAndDocumentName,
 } from '../utils/utils';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
@@ -110,23 +115,26 @@ export class UploadDocumentService {
       const documentId = placeholderDoc._id;
       const documentName = placeholderDoc.documentName;
       const isVersioned = parseBoolean(placeholderDoc.isVersionedFile);
-      
-      // Get file extension (ensure it includes the dot, matching regular upload behavior)
-      const fileExtension = path.extname(originalname);
-      
-      // Construct rootPath matching regular upload structure (lines 205-211)
-      let rootPath = '';
-      if (placeholderDocumentPath) {
-        rootPath = `${orgId}/PipesHub/${placeholderDocumentPath}/${documentId}`;
-      } else {
-        rootPath = `${orgId}/PipesHub/${documentId}`;
-      }
-      
-      // Construct final path matching regular upload structure (lines 213-216)
-      const concatenatedPath =
-        isVersioned === false
-          ? `${rootPath}/${documentName}${fileExtension}`
-          : `${rootPath}/current/${documentName}${fileExtension}`;
+
+      const strippedDocPath = placeholderDocumentPath
+        ? placeholderDocumentPath.replace(/^.*?PipesHub\/?/, '')
+        : undefined;
+      const ext = normalizeExtension(path.extname(originalname));
+      const rootPath = getDocumentRootPath(
+        orgId ?? '',
+        String(documentId),
+        strippedDocPath,
+      );
+      const fullDocumentPath = getFullDocumentPath(
+        orgId ?? '',
+        strippedDocPath,
+      );
+      const concatenatedPath = getCurrentFilePath(
+        rootPath,
+        documentName ?? '',
+        ext,
+        isVersioned,
+      );
           
       const storageURL = await generatePresignedUrlForDirectUpload(
         this.storageServiceWrapper,
@@ -158,7 +166,7 @@ export class UploadDocumentService {
         } else if (this.storageVendor === StorageVendor.AzureBlob) {
           placeholderDocument.document.azureBlob = { url: baseUrl };
         }
-
+        placeholderDocument.document.documentPath = fullDocumentPath;
         await placeholderDocument.document.save();
         res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
         return;
@@ -226,18 +234,19 @@ export class UploadDocumentService {
     };
 
     const savedDocument = await DocumentModel.create(documentInfo);
-    let rootPath = '';
-    // path of the document in the storage service
-    if (documentPath) {
-      rootPath = `${orgId}/PipesHub/${documentPath}/${savedDocument._id}`;
-    } else {
-      rootPath = `${orgId}/PipesHub/${savedDocument._id}`;
-    }
 
-    const concatenatedPath =
-      isVersioned === false
-        ? `${rootPath}/${documentName}${fileExtension}`
-        : `${rootPath}/current/${documentName}${fileExtension}`;
+    const rootPath = getDocumentRootPath(
+      String(orgId),
+      String(savedDocument._id),
+      documentPath,
+    );
+    const fullDocumentPath = getFullDocumentPath(String(orgId), documentPath);
+    const concatenatedPath = getCurrentFilePath(
+      rootPath,
+      documentName ?? '',
+      normalizeExtension(fileExtension),
+      isVersioned,
+    );
 
     const uploadResult =
       await this.storageServiceWrapper.uploadDocumentToStorageService({
@@ -248,7 +257,7 @@ export class UploadDocumentService {
       });
 
     if (uploadResult.statusCode === HTTP_STATUS.OK && uploadResult.data) {
-      savedDocument.documentPath = rootPath;
+      savedDocument.documentPath = fullDocumentPath;
 
       const storageTypeKey = this.storageVendor;
       let normalizedUrl = '';
@@ -293,13 +302,19 @@ export class UploadDocumentService {
 
       if (savedDocument.versionHistory?.length === 0) {
         const nextVersion = savedDocument.versionHistory.length;
-        const newDocumentFilePath = `${rootPath}/versions/v${nextVersion}${fileExtension}`;
+        const newDocumentFilePath = getVersionFilePath(
+          rootPath,
+          nextVersion,
+          fileExtension,
+        );
 
         const cloneResponse = await this.cloneDocument(
           savedDocument,
           buffer,
           newDocumentFilePath,
         );
+        const versionLocalPath =
+          storageTypeKey === StorageVendor.Local ? cloneResponse.data ?? '' : '';
         // normalize the url to the local storage
         if (storageTypeKey === StorageVendor.Local) {
           cloneResponse.data = normalizedUrl;
@@ -310,7 +325,10 @@ export class UploadDocumentService {
             version: nextVersion,
             [`${storageTypeKey}`]: {
               url: cloneResponse.data,
-              localPath: localPath,
+              localPath:
+                storageTypeKey === StorageVendor.Local
+                  ? versionLocalPath
+                  : localPath,
             },
             createdAt: Date.now(),
             size: savedDocument.sizeInBytes,
@@ -337,8 +355,8 @@ export class UploadDocumentService {
   ): Promise<StorageServiceResponse<string>> {
     try {
       // Get mime type from document extension without the dot
-      const extension = document.extension.replace('.', '');
-      const mimeType = getMimeType(extension);
+      const ext = normalizeExtension(document.extension);
+      const mimeType = getMimeType(ext.replace('.', ''));
 
       if (!mimeType) {
         throw new BadRequestError('Invalid document extension');

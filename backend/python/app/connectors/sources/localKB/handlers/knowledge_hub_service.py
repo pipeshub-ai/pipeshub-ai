@@ -296,7 +296,9 @@ class KnowledgeHubService:
                     )
 
                 if 'permissions' in include:
-                    response.permissions = await self._get_permissions(user_key, org_id, parent_id)
+                    response.permissions = await self._get_permissions(
+                        user_key, org_id, parent_id, parent_type
+                    )
 
             return response
 
@@ -712,7 +714,11 @@ class KnowledgeHubService:
             return []
 
     async def _get_permissions(
-        self, user_key: str, org_id: str, parent_id: str | None
+        self,
+        user_key: str,
+        org_id: str,
+        parent_id: str | None,
+        parent_type: str | None = None,
     ) -> PermissionsInfo | None:
         """Get user permissions for the current context. Returns None if user has no permission."""
         try:
@@ -720,6 +726,7 @@ class KnowledgeHubService:
                 user_key=user_key,
                 org_id=org_id,
                 parent_id=parent_id,
+                parent_type=parent_type,
             )
 
             # If role is None, user has no permission - return None
@@ -789,6 +796,7 @@ class KnowledgeHubService:
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
+            reason=doc.get('reason'),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),
@@ -799,6 +807,7 @@ class KnowledgeHubService:
             previewRenderable=doc.get('previewRenderable'),
             permission=permission,
             sharingStatus=doc.get('sharingStatus'),
+            isInternal=bool(doc.get('isInternal', False)),
         )
 
 

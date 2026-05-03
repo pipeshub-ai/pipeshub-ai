@@ -2,6 +2,7 @@ name: Integration Tests
 
 on:
   pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - 'main'
   workflow_dispatch:
@@ -10,60 +11,138 @@ on:
         description: 'Connector markers to run (e.g. "s3", "gcs", "azure_blob", "azure_files", or "integration" for all)'
         required: true
         default: 'integration'
+        type: choice
+        options:
+          - integration
+          - s3
+          - confluence
+          - gcs
+          - azure_blob
+          - azure_files
+          - messaging
+      commit_hash:
+        description: 'Commit hash to checkout (defaults to HEAD)'
+        required: false
+        default: ''
+      python_version:
+        description: 'Python version to use'
+        required: true
+        default: '3.12'
+        type: choice
+        options:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+      graph_db:
+        description: 'Graph database backend to test against'
+        required: true
+        default: 'neo4j'
+        type: choice
+        options:
+          - arango
+          - neo4j
+          - both
+      message_broker:
+        description: 'Message broker to use'
+        required: true
+        default: 'kafka'
+        type: choice
+        options:
+          - kafka
+          - redis
 
 permissions:
   contents: read
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
+  GRAPH_DB: ${{ github.event.inputs.graph_db || 'neo4j' }}
+  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'kafka' }}
 
 jobs:
   integration-tests:
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
-    timeout-minutes: 45
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    timeout-minutes: 60
 
     environment:
       name: integration-test-dev
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha }}
 
-      - name: Build and start services
+      - name: Build Neo4j stack images
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: deployment/docker-compose
-        run: |
-          docker compose -f docker-compose.dev.neo4j.yml build
-          docker compose -f docker-compose.dev.neo4j.yml up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml build
 
-      - name: Wait for core services to be healthy
+      - name: Build ArangoDB stack images
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml build
+
+      - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python_version || '3.12' }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python and install dependencies
+        working-directory: integration-tests
         run: |
-          echo "Waiting for core services (Node.js, Redis, Kafka, MongoDB)..."
-          timeout 120 bash -c '
+          uv venv
+          uv pip install -e .
+
+      - name: 'Neo4j: Start services'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+
+      - name: 'Neo4j: Wait for core services'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        run: |
+          echo "Waiting for core services..."
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "Core services are healthy!"
 
-      - name: Wait for Python microservices to be healthy
+      - name: 'Neo4j: Wait for Python microservices'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
           echo "Waiting for connector and query services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "All services are healthy!"
 
-      - name: Create organization and admin user
+      - name: 'Neo4j: Create organization and admin user'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         env:
           BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
           ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
-          # Step 1: Create organization with admin user
           echo "Creating organization..."
           curl -sf "${BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
@@ -79,50 +158,326 @@ jobs:
           echo ""
           echo "Organization created successfully!"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python and create virtual environment
-        working-directory: integration-tests
-        run: uv venv
-
-      - name: Install dependencies
-        working-directory: integration-tests
-        run: uv pip install -e .
-
-      - name: Run integration tests
+      - name: 'Neo4j: Run integration tests'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: integration-tests
         env:
-          # Environment selector
           PIPESHUB_TEST_ENV: local
-
-          # Pipeshub API
           PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-
-          # Local auth (org admin credentials to auto-create OAuth app)
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-
-          # Neo4j (local docker compose instance)
           TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
           TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
           TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
           TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
-
-          # AWS S3
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
           S3_REGION: ${{ secrets.S3_REGION }}
-
-          # Google Cloud Storage
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
           GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-
-          # Azure Blob Storage
           AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-
-          # Azure Files
           AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
+          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
+          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
-          pytest -m "$MARKERS" -v --tb=short 2>&1
+          pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
+
+      - name: 'Neo4j: Dump docker logs'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/docker-logs/neo4j
+          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+            > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
+          done
+
+      - name: 'Neo4j: Tear down services (preserve images)'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+
+      - name: 'ArangoDB: Start services'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml up -d
+
+      - name: 'ArangoDB: Wait for core services'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          echo "Waiting for core services..."
+          timeout 300 bash -c '
+            delay=1
+            until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
+            done
+          '
+          echo "Core services are healthy!"
+
+      - name: 'ArangoDB: Wait for Python microservices'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          echo "Waiting for connector and query services..."
+          timeout 300 bash -c '
+            delay=1
+            until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
+            done
+          '
+          echo "All services are healthy!"
+
+      - name: 'ArangoDB: Create organization and admin user'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        env:
+          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
+          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+        run: |
+          echo "Creating organization..."
+          curl -sf "${BASE_URL}/api/v1/org" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "accountType": "business",
+              "adminFullName": "Integration Test Admin",
+              "contactEmail": "'"${ADMIN_EMAIL}"'",
+              "password": "'"${ADMIN_PASSWORD}"'",
+              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "registeredName": "Integration Test Org",
+              "shortName": "INTTEST"
+            }'
+          echo ""
+          echo "Organization created successfully!"
+
+      - name: 'ArangoDB: Run integration tests'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_ENV: local
+          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
+          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
+          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
+        run: |
+          source .venv/bin/activate
+          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
+
+      - name: 'ArangoDB: Dump docker logs'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/docker-logs/arango
+          docker compose -f docker-compose.integration.arango.yml ps -a \
+            > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
+          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
+            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
+          done
+
+      - name: 'ArangoDB: Tear down services (preserve images)'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml down -v
+
+      - name: Collect test results and prepare email
+        if: always()
+        id: test-results
+        working-directory: integration-tests
+        env:
+          # Route untrusted PR metadata through env vars so the shell script
+          # below never evaluates `${{ ... }}` directly (workflow-injection).
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_IN: ${{ github.event.pull_request.number }}
+          PR_TITLE_IN: ${{ github.event.pull_request.title }}
+          PR_URL_IN: ${{ github.event.pull_request.html_url }}
+          PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
+          ACTOR_IN: ${{ github.actor }}
+        run: |
+          TOTAL_PASSED=0
+          TOTAL_FAILED=0
+          TOTAL_SKIPPED=0
+          TOTAL_ERRORS=0
+          TOTAL_TESTS=0
+          BACKENDS_RUN=""
+
+          for xml in reports/neo4j-results.xml reports/arango-results.xml; do
+            if [ -f "$xml" ]; then
+              backend=$(basename "$xml" -results.xml)
+              BACKENDS_RUN="${BACKENDS_RUN:+$BACKENDS_RUN, }$backend"
+              tests=$(grep -oP 'tests="\K[0-9]+' "$xml" | head -1)
+              failures=$(grep -oP 'failures="\K[0-9]+' "$xml" | head -1)
+              errors=$(grep -oP 'errors="\K[0-9]+' "$xml" | head -1)
+              skipped=$(grep -oP 'skipped="\K[0-9]+' "$xml" | head -1)
+              TOTAL_TESTS=$((TOTAL_TESTS + ${tests:-0}))
+              TOTAL_PASSED=$((TOTAL_PASSED + ${tests:-0} - ${failures:-0} - ${errors:-0} - ${skipped:-0}))
+              TOTAL_FAILED=$((TOTAL_FAILED + ${failures:-0}))
+              TOTAL_ERRORS=$((TOTAL_ERRORS + ${errors:-0}))
+              TOTAL_SKIPPED=$((TOTAL_SKIPPED + ${skipped:-0}))
+            fi
+          done
+
+          if [ "$TOTAL_TESTS" -gt 0 ]; then
+            PASS_RATE=$(( (TOTAL_PASSED * 100) / TOTAL_TESTS ))
+          else
+            PASS_RATE=0
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            TRIGGER_LABEL="PR #${PR_NUMBER_IN}"
+            AUTHOR="$PR_LOGIN_IN"
+            # Slack mrkdwn escape for link labels (& < >). Build a clickable
+            # `<url|#NUM — Title>` text for a dedicated *PR:* field.
+            TITLE_SLACK=$(printf '%s' "$PR_TITLE_IN" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+            PR_FIELD_TEXT="*PR:*"$'\n'"<${PR_URL_IN}|#${PR_NUMBER_IN} — ${TITLE_SLACK}>"
+          else
+            TRIGGER_LABEL="Manual Dispatch"
+            AUTHOR="$ACTOR_IN"
+            PR_FIELD_TEXT=""
+          fi
+
+          echo "TOTAL_TESTS=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
+          echo "TOTAL_PASSED=$TOTAL_PASSED" >> "$GITHUB_OUTPUT"
+          echo "TOTAL_FAILED=$TOTAL_FAILED" >> "$GITHUB_OUTPUT"
+          echo "TOTAL_ERRORS=$TOTAL_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
+          echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
+          echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
+          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request_target" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Use a heredoc so a title containing quotes or other special chars
+          # can't break the output file format.
+          {
+            echo "PR_FIELD_TEXT<<PR_FIELD_EOF"
+            printf '%s\n' "$PR_FIELD_TEXT"
+            echo "PR_FIELD_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Zip reports folder
+        if: always()
+        working-directory: integration-tests
+        run: zip -r reports.zip reports/
+
+      - name: Send Slack report
+        if: always()
+        id: slack-message
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CI_CHANNEL_ID }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    ${{ steps.test-results.outputs.IS_PR == 'true' && format('{{ "type": "mrkdwn", "text": {0} }},', toJSON(steps.test-results.outputs.PR_FIELD_TEXT)) || '' }}
+                    { "type": "mrkdwn", "text": "*Author:*\n<https://github.com/${{ steps.test-results.outputs.AUTHOR }}|@${{ steps.test-results.outputs.AUTHOR }}>" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${{ github.head_ref || github.ref_name }}`" },
+                    { "type": "mrkdwn", "text": "*Graph DB:*\n${{ steps.test-results.outputs.BACKENDS_RUN || 'N/A' }}" },
+                    { "type": "mrkdwn", "text": "*Connectors:*\n${{ github.event.inputs.connectors || 'integration (all)' }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Test Results*\n| Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|\n| ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}`" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Workflow Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Upload reports zip to Slack
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+          MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+        working-directory: integration-tests
+        run: |
+          if [ ! -f reports.zip ]; then
+            echo "No reports.zip found, skipping upload"
+            exit 0
+          fi
+          THREAD_TS=$(echo "$MESSAGE_RESPONSE" | jq -r '.ts // empty')
+          FILE_SIZE=$(stat -c%s reports.zip)
+
+          RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -d "filename=integration-test-reports.zip" \
+            -d "length=$FILE_SIZE")
+          OK=$(echo "$RESPONSE" | jq -r '.ok')
+          if [ "$OK" != "true" ]; then
+            echo "::warning::Failed to get Slack upload URL: $RESPONSE"
+            exit 0
+          fi
+          UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url')
+          FILE_ID=$(echo "$RESPONSE" | jq -r '.file_id')
+
+          curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
+
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports\"}],\"channel_id\":\"$CHANNEL_ID\""
+          if [ -n "$THREAD_TS" ]; then
+            COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
+          fi
+          COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD}"
+          curl -s -X POST "https://slack.com/api/files.completeUploadExternal" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$COMPLETE_PAYLOAD"

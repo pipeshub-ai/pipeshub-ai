@@ -14,7 +14,7 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
-const OrgCreationBody = z
+export const OrgCreationBody = z
   .object({
     accountType: z.enum(['individual', 'business']),
     shortName: z.string().optional(),
@@ -165,7 +165,7 @@ export function createOrgRouter(container: Container) {
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024,
+      maxFileSize: 2 * 1024 * 1024,
       strictFileUpload: true,
     }).getMiddleware,
     metricsMiddleware(container),

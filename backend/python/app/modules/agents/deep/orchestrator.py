@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.capability_summary import (
+    build_capability_summary,
+    build_connector_routing_rules,
+    classify_knowledge_sources,
+)
 from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
     compact_conversation_history_async,
@@ -27,7 +30,13 @@ from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
 )
+from app.modules.agents.deep.orchestrator_reflection import (
+    OrchestratorReflectionError,
+    run_orchestrator_with_reflection,
+)
+from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -94,6 +103,7 @@ async def orchestrator_node(
         agent_instructions = _build_agent_instructions(state)
 
         capability_summary = build_capability_summary(state)
+        time_context = _build_time_context(state)
 
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
             tool_domains=domain_desc,
@@ -101,6 +111,7 @@ async def orchestrator_node(
             tool_guidance=tool_guidance,
             agent_instructions=agent_instructions,
             capability_summary=capability_summary,
+            time_context=f"{time_context}\n\n" if time_context else "",
         )
 
         # Build messages
@@ -117,6 +128,18 @@ async def orchestrator_node(
         if conv_messages:
             messages.extend(conv_messages)
 
+        # Consume critic feedback whenever present. This must not depend on
+        # iteration index because critic-driven re-plan can happen while
+        # deep_iteration_count is still 0.
+        critic_feedback = state.get("critic_feedback", "")
+        if critic_feedback:
+            from app.modules.agents.deep.orchestrator_critic import (
+                inject_critic_feedback_into_messages,
+            )
+            messages = inject_critic_feedback_into_messages(messages, state)
+            state["critic_feedback"] = ""      # consume — don't re-inject next time
+            state["critic_issues"] = None
+
         # Add continue/retry context from previous iterations
         if iteration > 0:
             continue_ctx = _build_iteration_context(state, log)
@@ -132,27 +155,50 @@ async def orchestrator_node(
         if user_ctx:
             user_content += f"\n\n{user_ctx}"
 
-        time_ctx = _build_time_context(state)
-        if time_ctx:
-            user_content += f"\n\n{time_ctx}"
-
         messages.append(HumanMessage(content=user_content))
 
         # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
-        log.info("Requesting task plan from LLM...")
+        log.info("Requesting task plan from LLM (with reflection)...")
         keepalive_task = asyncio.create_task(
             send_keepalive(writer, config, "Planning tasks...")
         )
+    
+        # Build the set of domains that actually have tools so the validator
+        # can check domain references in the plan.
+        available_domains: set[str] = set(tool_groups.keys())
+        # Always allow 'retrieval' / 'knowledge' — these are virtual domains
+        # handled by the knowledge layer, not tool_groups.
+        available_domains.update({"retrieval", "knowledge"})
+        state["_critic_available_domains"] = sorted(available_domains)
+    
         try:
-            response = await llm.ainvoke(messages, config=get_opik_config())
+            plan = await run_orchestrator_with_reflection(
+                llm=llm,
+                messages=messages,
+                available_domains=available_domains,
+                log=log,
+                config=get_opik_config(),
+            )
+        except OrchestratorReflectionError as reflection_err:
+            # Retries exhausted — surface a real error to the user.
+            log.error(
+                "Orchestrator reflection exhausted all retries: %s", reflection_err
+            )
+            state["error"] = {
+                "status": "error",
+                "message": (
+                    "I was unable to build a valid plan for your request after "
+                    "multiple attempts. Please try rephrasing your query or "
+                    "contact support if this persists."
+                ),
+                "status_code": 500,
+                "detail": str(reflection_err),
+            }
+            return state
         finally:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
-        plan = _parse_orchestrator_response(
-            response.content if hasattr(response, "content") else str(response),
-            log,
-        )
 
         # Stream the orchestrator's reasoning to the user
         reasoning = plan.get("reasoning", "")
@@ -200,6 +246,7 @@ async def orchestrator_node(
 
         tasks: list[SubAgentTask] = []
         for task_spec in normalized_tasks:
+            _scoped = str(task_spec.get("scoped_instructions") or "").strip()
             task: SubAgentTask = {
                 "task_id": task_spec.get("task_id", f"task_{len(tasks) + 1}"),
                 "description": task_spec.get("description", ""),
@@ -214,6 +261,7 @@ async def orchestrator_node(
                 "batch_strategy": task_spec.get("batch_strategy"),
                 "multi_step": bool(task_spec.get("multi_step", False)),
                 "sub_steps": task_spec.get("sub_steps"),
+                "scoped_instructions": _scoped or None,
             }
             tasks.append(task)
 
@@ -273,7 +321,11 @@ async def orchestrator_node(
 # ---------------------------------------------------------------------------
 
 def _create_retrieval_task(query: str) -> dict[str, Any]:
-    """Return a standard retrieval task definition for the given query."""
+    """Return a standard retrieval task when the plan omitted retrieval despite KB config.
+
+    ``scoped_instructions`` are not synthesized here: the model should include
+    retrieval in the plan with per-task ``scoped_instructions`` in the same JSON.
+    """
     return {
         "task_id": "retrieval_search",
         "description": (
@@ -345,6 +397,7 @@ def _normalize_tasks(
         for _i, domain in enumerate(domains):
             split_id = f"{original_id}_{domain}"
             split_ids.append(split_id)
+            _scoped = task_spec.get("scoped_instructions")
             normalized.append({
                 "task_id": split_id,
                 "description": f"[{domain} part] {description}",
@@ -352,6 +405,7 @@ def _normalize_tasks(
                 "depends_on": list(original_deps),
                 "complexity": task_spec.get("complexity", "simple"),
                 "batch_strategy": task_spec.get("batch_strategy"),
+                "scoped_instructions": _scoped,
             })
 
         # Update any later tasks that depend on the original task_id
@@ -369,52 +423,12 @@ def _normalize_tasks(
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _parse_orchestrator_response(content: str, log: logging.Logger) -> dict[str, Any]:
-    """Parse the orchestrator LLM response into a plan dict."""
-    # Try to extract JSON from the response
-    try:
-        # Strip markdown code blocks
-        text = content.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first and last lines (```json and ```)
-            json_lines = []
-            in_block = False
-            for line in lines:
-                if line.strip().startswith("```") and not in_block:
-                    in_block = True
-                    continue
-                if line.strip() == "```" and in_block:
-                    break
-                if in_block:
-                    json_lines.append(line)
-            text = "\n".join(json_lines)
-
-        plan = json.loads(text)
-
-        # Validate structure
-        if not isinstance(plan, dict):
-            log.warning("Orchestrator response is not a dict, using fallback")
-            return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
-        return plan
-
-    except json.JSONDecodeError:
-        # Try to find JSON within the text
-        import re
-        json_match = re.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        log.warning("Could not parse orchestrator response as JSON")
-        return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
-
 def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
-    """Build knowledge context for the orchestrator prompt."""
+    """Build knowledge context for the orchestrator prompt.
+
+    Uses shared `classify_knowledge_sources` and `build_connector_routing_rules`
+    from capability_summary so the routing logic is maintained in one place.
+    """
     has_knowledge = state.get("has_knowledge", False)
     has_tools = bool(state.get("tools"))
 
@@ -426,34 +440,69 @@ def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
             "knowledge sources or toolsets."
         )
 
-    parts = []
-    if has_knowledge:
-        parts.append(
-            "## Knowledge Base Available\n"
-            "An internal knowledge base is configured with indexed documents.\n\n"
-            "**RULE**: When a knowledge base is available, you MUST set `can_answer_directly: false` "
-            "and create at least one retrieval task for ANY substantive question — even if you "
-            "think you know the answer. The knowledge base contains organization-specific content "
-            "that your training data does not have. Only greetings and trivial arithmetic skip retrieval.\n\n"
-            "Create a task with `\"domains\": [\"retrieval\"]` to search the knowledge base. "
-            "The retrieval sub-agent will use the `search_internal_knowledge` tool.\n\n"
-            "**Write descriptive retrieval task descriptions**: The task description IS the instruction "
-            "for the retrieval sub-agent. Specify what to search for, key topics to cover, and "
-            "what aspects matter. Example: instead of just \"Search KB for X\", write "
-            "\"Search the knowledge base for X. Cover aspects like features, pricing, integrations, "
-            "and differences between editions. Use multiple search queries with different phrasings.\"\n\n"
-            "**Hybrid strategy**: When the question involves services that have BOTH indexed content "
-            "AND API tools (e.g., Confluence pages may be indexed AND accessible via the Confluence API), "
-            "create BOTH a retrieval task and an API task in parallel. Retrieval finds indexed content "
-            "quickly, while the API fetches the latest live version."
-        )
-    else:
-        parts.append(
-            "## No Knowledge Base\n"
-            "No knowledge sources configured. Do NOT create retrieval tasks."
+    if not has_knowledge:
+        return (
+            "## No Knowledge Base Configured\n"
+            "No knowledge sources are configured for this agent. "
+            "Do NOT create retrieval tasks — there is no knowledge base to search."
         )
 
-    return "\n".join(parts)
+    # ── Classify knowledge sources ─────────────────────────────────────────
+    agent_knowledge: list = state.get("agent_knowledge", []) or []
+    connector_configs = state.get("connector_configs") or {}
+    kb_sources, indexed_connectors = classify_knowledge_sources(
+        agent_knowledge,
+        connector_configs=connector_configs if isinstance(connector_configs, dict) else None,
+    )
+
+    knowledge_lines: list[str] = [
+        "## Knowledge Sources Available",
+        "",
+        "An internal knowledge base is configured with indexed documents.",
+        "",
+        "**MANDATORY RULE**: When a knowledge base is available you MUST set "
+        "`can_answer_directly: false` and create retrieval task(s) for ANY substantive "
+        "question — even if you believe you already know the answer. The knowledge base "
+        "contains organisation-specific content your training data does not have. "
+        "Only pure greetings and trivial arithmetic may skip retrieval. "
+        "**The routing rules below still apply**: when the user explicitly names a "
+        "specific connector (e.g. 'use Jira', 'from Confluence'), create retrieval "
+        "tasks for ONLY that connector — do NOT search other sources.",
+    ]
+
+    # ── Routing rules with identity block (handles KB-only, connector-only, mixed) ──
+    if kb_sources or indexed_connectors:
+        routing = build_connector_routing_rules(
+            indexed_connectors,
+            kb_sources=kb_sources,
+            call_format="orchestrator",
+        )
+        knowledge_lines.append(routing)
+    else:
+        # has_knowledge is True but no detailed sources resolved
+        knowledge_lines.append(
+            "\n- Internal knowledge sources are configured (details unavailable).\n"
+            "  Create a generic retrieval task that searches the knowledge base."
+        )
+
+    # ── Retrieval task quality guidance ────────────────────────────────────
+    knowledge_lines.append(
+        "\n**Write rich retrieval task descriptions** — the description IS the "
+        "instruction the retrieval sub-agent receives. Be specific:\n"
+        "  • State the topic and key aspects to cover.\n"
+        "  • Include the connector_id(s) and the connector label.\n"
+        "  • Ask for multiple search query phrasings (different angles / synonyms).\n"
+        "  Example: instead of \"Search KB for X\", write:\n"
+        "  \"Search the Confluence knowledge base (connector_id: abc-123) for X. "
+        "Cover features, pricing, integrations, and edition differences. "
+        "Use at least 3 search queries with different phrasings.\"\n\n"
+        "**Hybrid strategy**: When a service has BOTH indexed content AND live API tools "
+        "(e.g., Confluence pages are indexed AND accessible via the API), create BOTH "
+        "a retrieval task AND an API task in parallel — retrieval finds indexed snapshots "
+        "quickly; the API fetches the latest live version."
+    )
+
+    return "\n".join(knowledge_lines)
 
 
 def _build_tool_guidance(state: DeepAgentState) -> str:
@@ -505,7 +554,7 @@ def _build_agent_instructions(state: DeepAgentState) -> str:
 
     # Agent's custom system prompt (persona / role)
     base_prompt = state.get("system_prompt", "")
-    if base_prompt and base_prompt.strip() and base_prompt != "You are an enterprise questions answering expert":
+    if is_custom_agent_system_prompt(base_prompt):
         parts.append(f"## Agent Role\n{base_prompt.strip()}")
 
     # Agent instructions (workflow-specific behavior)
@@ -520,14 +569,10 @@ def _build_agent_instructions(state: DeepAgentState) -> str:
 
 def _build_time_context(state: DeepAgentState) -> str:
     """Build time context string."""
-    parts = []
-    current_time = state.get("current_time")
-    timezone = state.get("timezone")
-    if current_time:
-        parts.append(f"Current time: {current_time}")
-    if timezone:
-        parts.append(f"Timezone: {timezone}")
-    return "\n".join(parts) if parts else ""
+    return build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
 
 
 def _build_user_context(state: DeepAgentState) -> str:

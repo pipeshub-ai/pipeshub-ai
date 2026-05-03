@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import cogIcon from '@iconify-icons/mdi/cog';
 import robotIcon from '@iconify-icons/mdi/robot';
 import toolsIcon from '@iconify-icons/mdi/tools';
-import emailIcon from '@iconify-icons/mdi/email';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import accountIcon from '@iconify-icons/mdi/account';
 import keyLinkIcon from '@iconify-icons/mdi/key-link';
@@ -14,6 +13,9 @@ import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
+import webSearchIcon from '@iconify-icons/mdi/web';
+import emailIcon from '@iconify-icons/mdi/email';
+
 import slackIcon from '@iconify-icons/logos/slack-icon';
 
 import List from '@mui/material/List';
@@ -108,6 +110,12 @@ export default function Sidebar() {
       name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,
+      adminOnly: true,
+    },
+    {
+      name: 'Web Search',
+      icon: webSearchIcon,
+      path: `${baseUrl}/settings/web-search`,
       adminOnly: true,
     },
      {

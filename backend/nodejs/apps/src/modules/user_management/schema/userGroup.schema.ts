@@ -3,7 +3,7 @@ import { Document, Schema, Types, model } from 'mongoose';
 
 export const groupTypes = ['admin', 'standard', 'everyone', 'custom'];
 
-interface UserGroup extends Document {
+export interface UserGroup extends Document {
   slug?: string;
   name: string;
   type: 'admin' | 'standard' | 'custom' | 'everyone';

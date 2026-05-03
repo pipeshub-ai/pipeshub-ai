@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -11,37 +11,41 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
+    AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
     CommentRecord,
-    Connectors,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
     Person,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordGroup,
     RecordType,
     RelatedExternalRecord,
+    SQLTableRecord,
+    SQLViewRecord,
     TicketRecord,
     User,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.services.messaging.interface.producer import IMessagingProducer
 
 ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
 
@@ -57,16 +61,17 @@ PERMISSION_HIERARCHY = {
 @dataclass
 class RecordGroupWithPermissions:
     record_group: RecordGroup
-    users: List[Tuple[AppUser, Permission]]
-    user_groups: List[Tuple[AppUserGroup, Permission]]
+    users: list[tuple[AppUser, Permission]]
+    user_groups: list[tuple[AppUserGroup, Permission]]
     anyone_with_link: bool = False
     anyone_same_org: bool = False
     anyone_same_domain: bool = False
 
+
 @dataclass
 class UserGroupWithMembers:
     user_group: AppUserGroup
-    users: List[Tuple[AppUser, Permission]]
+    users: list[tuple[AppUser, Permission]]
 
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
@@ -78,7 +83,10 @@ class DataSourceEntitiesProcessor:
         RecordType.SHAREPOINT_PAGE,
         RecordType.PROJECT,
         RecordType.LINK,
-        RecordType.TICKET
+        RecordType.TICKET,
+        RecordType.DEAL,
+        RecordType.CASE,
+        RecordType.TASK
     ]
 
     # Record relation types that connectors create for related external records
@@ -93,6 +101,7 @@ class DataSourceEntitiesProcessor:
         RecordRelations.CAUSES.value,
         RecordRelations.RELATED.value,
         RecordRelations.LINKED_TO.value,
+        RecordRelations.FOREIGN_KEY.value,
     ]
 
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
@@ -102,25 +111,14 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
 
     async def initialize(self) -> None:
-        producer_config = await self.config_service.get_config(
-            config_node_constants.KAFKA.value
-        )
+        from app.services.messaging.utils import MessagingUtils
 
-        # Ensure bootstrap_servers is a list
-        bootstrap_servers = producer_config.get("brokers") or producer_config.get("bootstrap_servers")
-        if isinstance(bootstrap_servers, str):
-            bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
-
-        kafka_producer_config = KafkaProducerConfig(
-            bootstrap_servers=bootstrap_servers,
-            client_id=producer_config.get("client_id", "connectors"),
-            ssl=producer_config.get("ssl", False),
-            sasl=producer_config.get("sasl"),
+        config = await MessagingUtils.create_producer_config_from_service(
+            self.config_service, "connectors"
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
-            broker_type="kafka",
             logger=self.logger,
-            config=kafka_producer_config,
+            config=config,
         )
         await self.messaging_producer.initialize()
         async with self.data_store_provider.transaction() as tx_store:
@@ -130,19 +128,30 @@ class DataSourceEntitiesProcessor:
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
+    
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
         parent_record_type: RecordType,
         record: Record,
+        record_name: Optional[str] = None,
+        record_group_type: Optional[str] = None,
+        external_record_group_id: Optional[str] = None,
     ) -> Record:
         """
-        Create a placeholder parent record based on the parent record type.
+        Create a placeholder parent/related record based on the record type.
 
         Args:
             parent_external_id: External ID of the parent record
             parent_record_type: Type of the parent record
             record: The child record (for context like connector info)
+            record_name: Optional name for the record. Defaults to parent_external_id.
+            record_group_type: Optional record group type. Pass the child record's
+                value for parent records; omit (None) for related records that may
+                belong to a different group (e.g. FK targets in SQL connectors).
+            external_record_group_id: Optional external record group ID. Pass the
+                child record's value for parent records; omit (None) for related
+                records that may belong to a different group.
 
         Returns:
             A placeholder Record instance of the appropriate type
@@ -150,13 +159,13 @@ class DataSourceEntitiesProcessor:
         base_params = {
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
-            "record_name": parent_external_id,  # Will be updated when real parent is synced
+            "record_name": record_name or parent_external_id,
             "origin": OriginTypes.CONNECTOR.value,
             "connector_name": record.connector_name,
             "connector_id": record.connector_id,
             "record_type": parent_record_type,
-            "record_group_type": record.record_group_type,
-            "external_record_group_id": record.external_record_group_id,  # Inherit from child record
+            "record_group_type": record_group_type,
+            "external_record_group_id": external_record_group_id,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
@@ -182,7 +191,7 @@ class DataSourceEntitiesProcessor:
             return WebpageRecord(**base_params)
         elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
-        elif parent_record_type == RecordType.TICKET:
+        elif parent_record_type in [RecordType.TICKET, RecordType.CASE, RecordType.TASK]:
             return TicketRecord(**base_params)
         elif parent_record_type == RecordType.PROJECT:
             return ProjectRecord(**base_params)
@@ -199,12 +208,30 @@ class DataSourceEntitiesProcessor:
                 is_public=LinkPublicStatus.UNKNOWN,
                 linked_record_id=None,
             )
+        elif parent_record_type == RecordType.PULL_REQUEST:
+            return PullRequestRecord(**base_params)
+        elif parent_record_type == RecordType.SQL_TABLE:
+            # Placeholder for FK target table not yet synced; will be replaced when table is synced
+            return SQLTableRecord(**base_params)
+        elif parent_record_type == RecordType.SQL_VIEW:
+            # Placeholder for FK target view not yet synced; will be replaced when view is synced
+            return SQLViewRecord(**base_params)
         else:
             raise ValueError(
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
             )
 
-    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
+
+        # Delete the old parent-child edge if it exists and the parent external record id has changed
+        if (
+            existing_record
+            and existing_record.parent_external_record_id
+            and record.parent_external_record_id != existing_record.parent_external_record_id
+        ):
+            self.logger.debug(f"Deleting parent-child edge from {existing_record.id} to {record.id}")
+            await tx_store.delete_parent_child_edge_to_record(existing_record.id)
+
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
@@ -217,6 +244,8 @@ class DataSourceEntitiesProcessor:
                     parent_external_id=record.parent_external_record_id,
                     parent_record_type=record.parent_record_type,
                     record=record,
+                    record_group_type=record.record_group_type,
+                    external_record_group_id=record.external_record_group_id,
                 )
                 self.logger.debug(f"parent_record: {parent_record}")
 
@@ -240,7 +269,7 @@ class DataSourceEntitiesProcessor:
     async def _handle_related_external_records(
         self,
         record: Record,
-        related_external_records: List[RelatedExternalRecord],
+        related_external_records: list[RelatedExternalRecord],
         tx_store: TransactionStore
     ) -> None:
         """
@@ -274,8 +303,9 @@ class DataSourceEntitiesProcessor:
             except Exception as e:
                 self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
 
+        edges_to_create = []
+
         for related_ext_record in related_external_records:
-            # Strict type check - only accept RelatedExternalRecord objects
             if not isinstance(related_ext_record, RelatedExternalRecord):
                 self.logger.warning(
                     f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
@@ -289,43 +319,45 @@ class DataSourceEntitiesProcessor:
 
             if not external_record_id:
                 continue
-
-            # Look up the related record by external ID and connector
             related_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
                 external_id=external_record_id
             )
 
-            # Create placeholder related record if not found (similar to _handle_parent_record)
             if related_record is None and record_type:
-                # record_type is already a RecordType enum from RelatedExternalRecord
                 related_record = self._create_placeholder_parent_record(
                     parent_external_id=external_record_id,
                     parent_record_type=record_type,
                     record=record,
+                    record_name=related_ext_record.record_name,
                 )
-
-                # Prepare record group BEFORE saving (so record_group_id is included in first save)
-                record_group_id = await self._handle_record_group(related_record, tx_store)
-
                 await tx_store.batch_upsert_records([related_record])
-
-                # Link record to group AFTER saving (when record.id is available for edges)
-                if record_group_id:
-                    await self._link_record_to_group(related_record, record_group_id, tx_store)
 
             # Create relation using the specific relation_type
             if related_record and isinstance(related_record, Record):
                 # relation_type_enum is already a RecordRelations enum, get its value
                 relation_type = relation_type_enum.value
 
-                await tx_store.create_record_relation(
-                    from_record_id=record.id,
-                    to_record_id=related_record.id,
-                    relation_type=relation_type
-                )
+                edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
+                    "_to": f"{CollectionNames.RECORDS.value}/{related_record.id}",
+                    "relationshipType": relation_type,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "sourceColumn": getattr(related_ext_record, "source_column", None) or "",
+                    "targetColumn": getattr(related_ext_record, "target_column", None) or "",
+                    "childTableName": getattr(related_ext_record, "child_table_name", None) or "",
+                    "parentTableName": getattr(related_ext_record, "parent_table_name", None) or "",
+                    "constraintName": getattr(related_ext_record, "constraint_name", None) or "",
+                }
+                
+                edges_to_create.append(edge)
 
-    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
+        # Batch upsert all relation edges at once
+        if edges_to_create:
+            await tx_store.batch_upsert_record_relations(edges_to_create)
+
+    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
         Prepare record group by looking up or creating it, and set record_group_id on the record.
         This should be called BEFORE saving the record so record_group_id is included in the first save.
@@ -359,7 +391,7 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> None:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
@@ -388,13 +420,13 @@ class DataSourceEntitiesProcessor:
     async def _prepare_ticket_user_edge(
         self,
         ticket: TicketRecord,
-        user_email: Optional[str],
+        user_email: str | None,
         edge_type: EntityRelations,
         timestamp_attr_name: str,
         fallback_timestamp_attr: str,
         tx_store: TransactionStore,
         edge_type_name: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Helper method to prepare a ticket-user edge data dictionary.
 
@@ -571,7 +603,7 @@ class DataSourceEntitiesProcessor:
 
         await tx_store.batch_upsert_records([record])
 
-    async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
+    async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
 
         try:
@@ -653,7 +685,7 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _upsert_external_person(self, email: str, tx_store) -> Optional[str]:
+    async def _upsert_external_person(self, email: str, tx_store) -> str | None:
         """
         Upsert person record for external email address.
         Uses deterministic UUID based on email to ensure only one Person record per email.
@@ -677,24 +709,37 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Error upserting person for {email}: {e}")
             return None
 
-    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
+    @retry_on_deadlock()
+    async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
-
-
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
+                # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
+                # edges only; permissions are still applied in this method below.
+                record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
+                belongs_to_edges = await tx_store.get_edges_from_node(
+                    record_node_id, CollectionNames.BELONGS_TO.value
+                )
+                if not belongs_to_edges:
+                    self.logger.info(
+                        "No BELONGS_TO edge for record %s; running _process_record without permissions "
+                        "to restore graph edges",
+                        record.record_name,
+                    )
+                    await self._process_record(record, [], tx_store)
+
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
                     to_id=record.id,
                     to_collection=CollectionNames.RECORDS.value,
                     collection=CollectionNames.PERMISSION.value
                 )
-                self.logger.info(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
+                self.logger.debug("Deleted %d old permission edge(s) for record: %s", deleted_count, record.id)
 
                 # Step 2: Add the new permissions by reusing the existing helper method.
                 if permissions:
-                    self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
+                    self.logger.debug("Adding %d new permission edge(s) for record: %s", len(permissions), record.id)
                     await self._handle_record_permissions(record, permissions, tx_store)
                 # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
                 if record.inherit_permissions:
@@ -725,7 +770,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
+    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
         self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -737,10 +782,11 @@ class DataSourceEntitiesProcessor:
         record_group_id = await self._handle_record_group(record, tx_store)
 
         if existing_record is None:
-            self.logger.info("New record: %s", record)
+            self.logger.debug("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            record.weburl = existing_record.weburl
             # pass
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
@@ -751,11 +797,12 @@ class DataSourceEntitiesProcessor:
             await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store)
+        await self._handle_parent_record(record, tx_store, existing_record)
 
-        # Handle related external records (issue links, project links, etc.)
-        # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
-        if isinstance(record, (TicketRecord, ProjectRecord)):
+        # Handle related external records (issue links, project links, FK relations, etc.)
+        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
+        # to clean up stale link edges even when related_external_records is empty (handles removed links)
+        if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
@@ -812,7 +859,8 @@ class DataSourceEntitiesProcessor:
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
-    async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
+    @retry_on_deadlock()
+    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
@@ -837,6 +885,10 @@ class DataSourceEntitiesProcessor:
                         )
                         continue
 
+                    if record.is_internal:
+                        self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                        continue
+
                     await self.messaging_producer.send_message(
                             "record-events",
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
@@ -847,6 +899,7 @@ class DataSourceEntitiesProcessor:
             raise e
 
 
+    @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
@@ -869,6 +922,7 @@ class DataSourceEntitiesProcessor:
                 key=record.id
             )
 
+    @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
@@ -877,11 +931,13 @@ class DataSourceEntitiesProcessor:
             if processed_record:
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
+    @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
 
-    async def reindex_existing_records(self, records: List[Record]) -> None:
+    @retry_on_deadlock()
+    async def reindex_existing_records(self, records: list[Record]) -> None:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -895,16 +951,23 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
+            skipped_records = 0
+
             # Reset status to QUEUED for all records before reindexing
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
+                    # Only reset if not already QUEUED or EMPTY or internal record
+                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value] and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
             for record in records:
+                if record.is_internal:
+                    self.logger.debug(f"Skipping reindex event for internal record {record.id}")
+                    skipped_records += 1
+                    continue
+
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(
@@ -917,12 +980,13 @@ class DataSourceEntitiesProcessor:
                     key=record.id
                 )
 
-            self.logger.info(f"Published reindex events for {len(records)} records")
+            self.logger.info(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
-    async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
+    @retry_on_deadlock()
+    async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         try:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
@@ -1003,6 +1067,17 @@ class DataSourceEntitiesProcessor:
                             external_id=record_group.parent_external_group_id
                         )
 
+                        if parent_record_group is None:
+                            # Create placeholder parent record group
+                            parent_record_group = RecordGroup(
+                                external_group_id=record_group.parent_external_group_id,
+                                name=record_group.parent_external_group_id,
+                                group_type=record_group.group_type,
+                                connector_name=record_group.connector_name,
+                                connector_id=record_group.connector_id,
+                            )
+                            await tx_store.batch_upsert_record_groups([parent_record_group])
+
                         if parent_record_group:
                             self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
 
@@ -1030,11 +1105,6 @@ class DataSourceEntitiesProcessor:
                                     [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
                                 )
                             #if inherit records is false we need to remove the edge aswell
-                        else:
-                            self.logger.warning(
-                                f"Could not find parent record group with external_id "
-                                f"'{record_group.parent_external_group_id}' for child '{record_group.name}'"
-                            )
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
@@ -1111,6 +1181,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
 
+    @retry_on_deadlock()
     async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_id: str = None) -> None:
         """Update the name of an existing record group in the database."""
         try:
@@ -1140,7 +1211,8 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
             raise
 
-    async def on_new_app_users(self, users: List[AppUser]) -> None:
+    @retry_on_deadlock()
+    async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
@@ -1153,7 +1225,8 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
-    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[AppUser]]]) -> None:
+    @retry_on_deadlock()
+    async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
@@ -1169,7 +1242,6 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
-                    self.logger.debug(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -1237,7 +1309,8 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
             raise e
 
-    async def on_new_app_roles(self, roles: List[Tuple[AppRole, List[AppUser]]]) -> None:
+    @retry_on_deadlock()
+    async def on_new_app_roles(self, roles: list[tuple[AppRole, list[AppUser]]]) -> None:
         """
         Processes new app roles, upserts them, and creates permission edges
         from users to these roles.
@@ -1253,7 +1326,6 @@ class DataSourceEntitiesProcessor:
                     role.org_id = self.org_id
 
                     self.logger.info(f"Processing app role: {role.name}")
-                    self.logger.info(f"Processing role members: {members}")
 
                     # Check if the app role already exists in the DB
                     existing_app_role = await tx_store.get_app_role_by_external_id(
@@ -1327,18 +1399,40 @@ class DataSourceEntitiesProcessor:
         pass
 
 
-    async def get_all_active_users(self) -> List[User]:
+
+    async def get_all_active_users(self) -> list[User]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
 
-    async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
+    async def get_user_by_user_id(self, user_id: str) -> User | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            raw = await tx_store.get_user_by_user_id(user_id)
+        if not raw:
+            return None
+        return User.from_arango_user(raw) if isinstance(raw, dict) else raw
+
+    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
+    async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
+        """
+        Get app metadata (scope, createdBy, etc.) from the database.
+
+        Args:
+            connector_id: The connector/app ID
+
+        Returns:
+            AppMetadata object or None if not found
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_by_id(connector_id)
+
+    @retry_on_deadlock()
     async def on_user_group_member_removed(
         self,
         external_group_id: str,
@@ -1398,6 +1492,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_user_group_member_added(
         self,
         external_group_id: str,
@@ -1474,6 +1569,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_user_group_deleted(
         self,
         external_group_id: str,
@@ -1525,6 +1621,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def delete_user_group_by_id(self, group_id: str) -> None:
         """
         Delete a user group by its internal ID, including all associated edges.
@@ -1540,12 +1637,13 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
             raise
 
+    @retry_on_deadlock()
     async def migrate_group_permissions_to_user(
         self,
         group_id: str,
         user_email: str,
         connector_id: str,
-        tx_store: Optional[TransactionStore] = None
+        tx_store: TransactionStore | None = None
     ) -> None:
         """
         Migrate all permissions from a group to a user.
@@ -1578,7 +1676,7 @@ class DataSourceEntitiesProcessor:
                 f"User {user_email} not found in users collection, "
                 f"cannot migrate permissions. Skipping."
             )
-            return
+            return None
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
@@ -1589,7 +1687,7 @@ class DataSourceEntitiesProcessor:
 
         if not permission_edges:
             self.logger.debug(f"No permissions found for group {group_id}")
-            return
+            return None
 
         migrated_count = 0
         skipped_count = 0
@@ -1703,7 +1801,10 @@ class DataSourceEntitiesProcessor:
                 f"✅ Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
+            return None
+        return None
 
+    @retry_on_deadlock()
     async def migrate_group_to_user_by_external_id(
         self,
         group_external_id: str,
@@ -1755,6 +1856,7 @@ class DataSourceEntitiesProcessor:
 
             self.logger.info(f"✅ Completed migration and deleted group '{group.name}'")
 
+    @retry_on_deadlock()
     async def on_app_role_deleted(
         self,
         external_role_id: str,
@@ -1806,6 +1908,7 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
+    @retry_on_deadlock()
     async def on_record_group_deleted(
         self,
         external_group_id: str,
@@ -1881,12 +1984,14 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
-    async def add_permission_to_record(self, record: Record, permissions: List[Permission]) -> None:
+    @retry_on_deadlock()
+    async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
         async with self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
+    @retry_on_deadlock()
     async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
         """Delete permissions from a record."""
 
@@ -1909,7 +2014,7 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
-    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+    async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
         Fetch the creator user for a connector/app by connectorId.
         """

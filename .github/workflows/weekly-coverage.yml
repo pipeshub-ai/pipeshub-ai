@@ -1,0 +1,139 @@
+name: weekly-coverage
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  run-tests:
+    uses: ./.github/workflows/unit-test.yml
+    with:
+      python-coverage-threshold: 92
+      generate-coverage-reports: true
+
+  slack-notify:
+    runs-on: ubuntu-latest
+    needs: [run-tests]
+    if: always()
+
+    steps:
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: coverage-reports/
+
+      - name: Send Slack report
+        id: slack-message
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CI_CHANNEL_ID }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.run-tests.result == 'success' && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Trigger:*\n${{ github.event_name == 'schedule' && 'Weekly schedule (Mon 06:00 UTC)' || 'Manual dispatch' }}" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Node.js (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
+                    { "type": "mrkdwn", "text": "*Python 3.10–3.12 (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 92%" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ needs.run-tests.result == 'success' && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.sha }}` | Actor: <https://github.com/${{ github.actor }}|@${{ github.actor }}>" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Workflow Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Upload coverage zips to Slack
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+          MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+        run: |
+          THREAD_TS=$(echo "$MESSAGE_RESPONSE" | jq -r '.ts // empty')
+
+          upload_file() {
+            local file_path="$1" title="$2"
+            if [ ! -f "$file_path" ]; then
+              echo "Skipping $title — file not found at $file_path"
+              return 0
+            fi
+            local file_size
+            file_size=$(stat -c%s "$file_path")
+
+            local resp
+            resp=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -d "filename=$(basename "$file_path")" \
+              -d "length=$file_size")
+            if [ "$(echo "$resp" | jq -r '.ok')" != "true" ]; then
+              echo "::warning::Failed to get upload URL for $title: $resp"
+              return 0
+            fi
+            local upload_url file_id
+            upload_url=$(echo "$resp" | jq -r '.upload_url')
+            file_id=$(echo "$resp" | jq -r '.file_id')
+
+            curl -s -X POST "$upload_url" -F "file=@$file_path"
+
+            local payload="{\"files\":[{\"id\":\"$file_id\",\"title\":\"$title\"}],\"channel_id\":\"$CHANNEL_ID\""
+            if [ -n "$THREAD_TS" ]; then
+              payload="$payload,\"thread_ts\":\"$THREAD_TS\""
+            fi
+            payload="$payload}"
+            curl -s -X POST "https://slack.com/api/files.completeUploadExternal" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$payload"
+            echo "Uploaded $title"
+          }
+
+          for dir in coverage-reports/nodejs-coverage-report-*/; do
+            os=$(basename "$dir" | sed 's/nodejs-coverage-report-//')
+            upload_file "${dir}coverage-report.zip" "Node.js ($os) Coverage Report"
+          done
+          for dir in coverage-reports/python-coverage-report-*/; do
+            label=$(basename "$dir" | sed 's/python-coverage-report-//')
+            upload_file "${dir}python-coverage-report.zip" "Python ($label) Coverage Report"
+          done

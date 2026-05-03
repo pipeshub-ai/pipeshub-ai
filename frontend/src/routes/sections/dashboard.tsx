@@ -37,6 +37,7 @@ const AuthenticationSettings = lazy(
 );
 const MailSettings = lazy(() => import('src/pages/dashboard/account/mail-settings'));
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
+const WebSearchSettings = lazy(() => import('src/pages/dashboard/account/web-search-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const SlackBotSettings = lazy(() => import('src/pages/dashboard/account/slack-bot-settings'));
@@ -458,6 +459,12 @@ export const dashboardRoutes = [
                   {
                     path: 'ai-models',
                     element: <AdminProtectedRoute component={AiModelsSettings} />,
+                  },
+
+                  // Web Search Settings
+                  {
+                    path: 'web-search',
+                    element: <AdminProtectedRoute component={WebSearchSettings} />,
                   },
 
                   // Platform Settings

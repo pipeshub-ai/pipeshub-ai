@@ -75,6 +75,7 @@ export interface Agent {
     nodes: any[];
     edges: any[];
   };
+  isServiceAccount?: boolean; // Whether this agent acts as a service account with its own credentials
 }
 
 export interface AgentConversation {
@@ -315,6 +316,7 @@ export interface AgentFormData {
   tags: string[];
   templateId?: string;
   shareWithOrg?: boolean; // Whether to share this agent with the whole organization
+  isServiceAccount?: boolean; // Whether this agent acts as a service account with its own credentials
   flow?: {
     nodes: any[];
     edges: any[];

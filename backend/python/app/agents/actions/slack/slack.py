@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
@@ -14,19 +16,43 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
 logger = logging.getLogger(__name__)
 
 # Constants
-MIN_SLACK_USER_ID_LENGTH = 9  # Minimum length for valid Slack user ID (starts with 'U')
+MIN_SLACK_USER_ID_LENGTH = 9  # Minimum length for valid Slack user ID (starts with 'U' or 'W')
 MIN_PARTIAL_MATCH_LENGTH = 3  # Minimum length for partial name matching
+USER_LOOKUP_CONCURRENCY = 20  # Max parallel users.info calls when resolving IDs to names
+# Slack user-ID prefixes: 'U' (regular) and 'W' (Enterprise Grid workspace user).
+# See https://docs.slack.dev/reference/methods/reactions.get for an example W-prefixed ID.
+USER_ID_PREFIXES = ('U', 'W')
+
+# Captures the user ID inside a Slack mention like <@U0ABC1234> or <@W0ABC1234>.
+# Used by enrichment to substitute @display_name into message text.
+SLACK_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
+
+
+def _is_user_id(value: Any) -> bool:
+    """True iff value looks like a Slack user ID ('U…' or 'W…' of plausible length).
+
+    The Slack docs describe user IDs as upper-case letter+digits starting with U or W;
+    bot IDs ('B…') and channel IDs ('C…'/'G…'/'D…') deliberately do NOT match here so
+    we never feed them to users.info.
+    """
+    return (
+        isinstance(value, str)
+        and len(value) >= MIN_SLACK_USER_ID_LENGTH
+        and value.startswith(USER_ID_PREFIXES)
+    )
 
 
 class AmbiguousUserError(Exception):
@@ -35,6 +61,96 @@ class AmbiguousUserError(Exception):
         self.identifier = identifier
         self.matches = matches
         super().__init__(f"Multiple users found matching '{identifier}'. Please use email or user ID for disambiguation.")
+
+class SlackDateError(ValueError):
+    """Raised when an LLM-supplied date string can't be parsed."""
+
+
+def _iso_to_slack_ts(date_str: Optional[str]) -> Optional[str]:
+    """Parse an ISO 8601 date/datetime and return Slack's `oldest`/`latest` format.
+
+    Accepts:
+      - 'YYYY-MM-DD' (treated as 00:00:00 UTC)
+      - 'YYYY-MM-DDTHH:MM:SS' (naive — treated as UTC)
+      - 'YYYY-MM-DDTHH:MM:SS+HH:MM' or '...Z' (timezone-aware)
+
+    Returns None for None / empty input. Raises :class:`SlackDateError` on
+    unparseable input — surfaced to the LLM so it can correct the format
+    rather than silently fetching the wrong window.
+    """
+    if date_str is None:
+        return None
+    s = str(date_str).strip()
+    if not s:
+        return None
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError as e:
+        raise SlackDateError(
+            f"Invalid date '{date_str}'. Expected ISO 8601 like 'YYYY-MM-DD' "
+            f"or 'YYYY-MM-DDTHH:MM:SSZ' (UTC assumed when no timezone given)."
+        ) from e
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return f"{dt.timestamp():.6f}"
+
+
+def _iso_to_slack_post_at(date_str: Optional[str]) -> Optional[int]:
+    """Like :func:`_iso_to_slack_ts` but returns integer epoch seconds.
+
+    Used for `chat.scheduleMessage`'s `post_at`, which is an int-seconds field
+    (Slack rejects fractional seconds here).
+    """
+    ts = _iso_to_slack_ts(date_str)
+    return int(float(ts)) if ts is not None else None
+
+
+def _slack_ts_to_iso(ts: Any) -> Optional[str]:  # noqa: ANN401
+    """Convert a Slack epoch value to an ISO 8601 UTC string.
+
+    Accepts string ('1700000000.000000'), int seconds, or float seconds.
+    Returns None when the value is missing or can't be parsed — callers should
+    treat that as "no enrichment available" and leave the original field as is.
+    """
+    if ts is None:
+        return None
+    try:
+        seconds = float(ts)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    try:
+        dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return dt.isoformat().replace("+00:00", "Z")
+
+_EPOCH_FIELDS_ON_MESSAGE = ("ts", "thread_ts", "latest_reply", "last_read")
+_EPOCH_FIELDS_ON_CONVERSATION = ("created", "last_read")
+_EPOCH_FIELDS_ON_FILE = ("created", "timestamp", "updated")
+_EPOCH_FIELDS_ON_PIN_ITEM = ("created",)
+_EPOCH_FIELDS_ON_SCHEDULED = ("post_at", "date_created")
+_EPOCH_FIELDS_ON_ROOM = ("date_start", "date_end", "canvas_thread_ts", "thread_root_ts")
+
+
+def _add_iso_date_sibling(d: Dict[str, Any], field: str) -> None:
+    """If `d[field]` is a Slack epoch, set `d[f'{field}_date']` to the ISO form.
+
+    No-op if the field is absent or unparseable. Never overwrites an existing
+    `<field>_date` key (so re-running enrichment on already-enriched data is
+    idempotent).
+    """
+    if field not in d:
+        return
+    iso = _slack_ts_to_iso(d.get(field))
+    if iso is None:
+        return
+    sibling = f"{field}_date"
+    if sibling not in d:
+        d[sibling] = iso
 
 # Pydantic schemas for Slack tools
 class SendMessageInput(BaseModel):
@@ -47,6 +163,27 @@ class GetChannelHistoryInput(BaseModel):
     """Schema for getting channel history"""
     channel: str = Field(description="The channel to get the history of")
     limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of time range as an ISO 8601 date or datetime string. "
+            "Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z', "
+            "'2026-04-30T14:30:00+05:30'. Naive datetimes are interpreted as UTC. "
+            "Pair with 'latest' for an explicit end bound, "
+            "otherwise omit 'latest' to mean 'up to now'."
+        ),
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of time range as an ISO 8601 date or datetime string (same "
+            "format as 'oldest'). Omit to fetch up to the current time. "
+        ),
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
 
 
 class SearchAllInput(BaseModel):
@@ -80,9 +217,36 @@ class SendDirectMessageInput(BaseModel):
                 pass
         return data
 
+class GetDmHistoryInput(BaseModel):
+    """Schema for getting DM history with a specific user"""
+    user: str = Field(description="DM partner identifier. Accepts email, display name, real name, or Slack user ID (starts with 'U').")
+    limit: Optional[int] = Field(default=None, description="Maximum number of messages to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of time range as an ISO 8601 date or datetime string. "
+            "Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z', "
+            "'2026-04-30T14:30:00+05:30'. Naive datetimes are interpreted as UTC. "
+            "Pair with 'latest' for an explicit end bound, "
+            "otherwise omit 'latest' to mean 'up to now'."
+        ),
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of time range as an ISO 8601 date or datetime string (same "
+            "format as 'oldest'). Omit to fetch up to the current time. "
+        ),
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
+
+
 class ReplyToMessageInput(BaseModel):
     """Schema for replying to a message"""
-    channel: str = Field(description="The channel containing the message to reply to")
+    channel: str = Field(description="The channel id containing the message (e.g 'C1234567890','G1234567890', 'D1234567890') to reply to")
     message: str = Field(description="The reply message")
     thread_ts: Optional[str] = Field(default=None, description="Timestamp of the parent message to reply to")
     latest_message: Optional[bool] = Field(default=None, description="Whether to reply to the latest message in the channel")
@@ -128,7 +292,7 @@ class ResolveUserInput(BaseModel):
 
 class AddReactionInput(BaseModel):
     """Schema for adding a reaction to a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to add reaction to")
     name: str = Field(description="Name of the emoji reaction (e.g., 'thumbsup', '+1')")
 
@@ -136,8 +300,42 @@ class SearchMessagesInput(BaseModel):
     """Schema for searching messages"""
     query: str = Field(description="The search query to find messages")
     channel: Optional[str] = Field(default=None, description="The channel to search in")
+    with_user: Optional[str] = Field(
+        default=None,
+        description="Filter to messages exchanged with this user, including DMs. "
+                    "Accepts email, display name, real name, or Slack user ID. "
+                    "Adds Slack's 'with:@user' search modifier.",
+    )
+    from_user: Optional[str] = Field(
+        default=None,
+        description="Filter to messages authored by this user. "
+                    "Accepts email, display name, real name, or Slack user ID. "
+                    "Adds Slack's 'from:@user' search modifier.",
+    )
     count: Optional[int] = Field(default=None, description="Maximum number of results to return")
     sort: Optional[str] = Field(default=None, description="Sort order (timestamp, score)")
+    sort_dir: Optional[str] = Field(
+        default=None,
+        description="Sort direction: 'asc' or 'desc'. Defaults to Slack's default ('desc') when omitted.",
+    )
+    after: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict to messages after this date (YYYY-MM-DD). Adds Slack's "
+            "'after:<date>' modifier. WARNING: this is EXCLUSIVE — 'after:2025-01-15' "
+            "matches messages from 2025-01-16 onward, NOT 2025-01-15. For narrow "
+            "windows like 'today' or 'last 24 hours', use get_channel_history with "
+            "'oldest'/'latest' instead — search has indexing lag and exclusive bounds."
+        ),
+    )
+    before: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict to messages before this date (YYYY-MM-DD). Adds Slack's "
+            "'before:<date>' modifier. WARNING: this is EXCLUSIVE — 'before:2025-01-15' "
+            "matches messages up to 2025-01-14, NOT including 2025-01-15."
+        ),
+    )
 
 class SetUserStatusInput(BaseModel):
     """Schema for setting user status"""
@@ -167,11 +365,19 @@ class ScheduleMessageInput(BaseModel):
     """Schema for scheduling a message"""
     channel: str = Field(description="The channel to send the message to")
     message: str = Field(description="The message to send")
-    post_at: str = Field(description="Unix timestamp for when to post the message")
+    post_at: str = Field(
+        description=(
+            "When to post the message, as an ISO 8601 datetime string. "
+            "Examples: '2026-05-01T09:00:00Z' (UTC), "
+            "'2026-05-01T14:30:00+05:30' (with timezone offset). "
+            "Naive datetimes (no timezone) are interpreted as UTC. "
+            "Date-only ('2026-05-01') is accepted and means midnight UTC. "
+        )
+    )
 
 class PinMessageInput(BaseModel):
     """Schema for pinning a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to pin")
 
 class GetUnreadMessagesInput(BaseModel):
@@ -218,14 +424,14 @@ class GetUserChannelsInput(BaseModel):
 
 class DeleteMessageInput(BaseModel):
     """Schema for deleting a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to delete")
     as_user: Optional[bool] = Field(default=None, description="Delete the message as the authenticated user")
 
 
 class UpdateMessageInput(BaseModel):
     """Schema for updating a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to update")
     text: str = Field(description="New text content for the message")
     blocks: Optional[List[Dict]] = Field(default=None, description="Rich message blocks for advanced formatting")
@@ -234,20 +440,20 @@ class UpdateMessageInput(BaseModel):
 
 class GetMessagePermalinkInput(BaseModel):
     """Schema for getting message permalink"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to get permalink for")
 
 
 class GetReactionsInput(BaseModel):
     """Schema for getting reactions"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to get reactions for")
     full: Optional[bool] = Field(default=None, description="Return full reaction objects")
 
 
 class RemoveReactionInput(BaseModel):
     """Schema for removing a reaction"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to remove reaction from")
     name: str = Field(description="Name of the emoji reaction to remove")
 
@@ -259,15 +465,35 @@ class GetPinnedMessagesInput(BaseModel):
 
 class UnpinMessageInput(BaseModel):
     """Schema for unpinning a message"""
-    channel: str = Field(description="The channel containing the message")
+    channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the message to unpin")
 
 
 class GetThreadRepliesInput(BaseModel):
     """Schema for getting thread replies"""
-    channel: str = Field(description="The channel containing the thread")
+    channel: str = Field(description="The channel id containing the thread e.g 'C1234567890','G1234567890', 'D1234567890'")
     timestamp: str = Field(description="Timestamp of the parent message")
     limit: Optional[int] = Field(default=None, description="Maximum number of replies to return")
+    oldest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of time range (inclusive of older replies) as an ISO 8601 "
+            "date or datetime string, e.g. '2026-04-30' or "
+            "'2026-04-30T09:00:00Z'. Naive datetimes are treated as UTC. "
+        ),
+    )
+    latest: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of time range (inclusive of newer replies) as an ISO 8601 "
+            "date or datetime string. Same format as 'oldest'. "
+            "Omit to fetch up to the current time."
+        ),
+    )
+    inclusive: Optional[bool] = Field(
+        default=None,
+        description="Include messages with the exact 'oldest' or 'latest' timestamp. Only relevant when those are set.",
+    )
 
 class UploadFileToChannelInput(BaseModel):
     """Schema for uploading a file to a Slack channel"""
@@ -353,12 +579,22 @@ class UploadFileToChannelInput(BaseModel):
                 CommonFields.client_id("Slack App Console"),
                 CommonFields.client_secret("Slack App Console")
             ],
-            icon_path="/assets/icons/connectors/slack.svg",
+            icon_path=IconPaths.connector_icon("slack"),
             app_group="Communication",
             app_description="Slack OAuth application for agent integration"
         )
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("slack"))
+        .add_documentation_link(DocumentationLink(
+            title="Slack Bot Token Setup",
+            url="https://docs.slack.dev/authentication/tokens#bot",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/slack/slack",
+            doc_type="pipeshub",
+        )))\
     .build_decorator()
 class Slack:
     """Slack tool exposed to the agents using SlackDataSource"""
@@ -372,6 +608,13 @@ class Slack:
             None
         """
         self.client = SlackDataSource(client)
+
+        self._user_cache: Dict[str, Dict[str, Optional[str]]] = {}
+        self._channel_cache: Dict[str, str] = {}
+        # Shared across user + channel resolvers so a parallel
+        # _enrich_messages gather can't double the effective burst against
+        # Slack's per-method tier limits.
+        self._lookup_sem = asyncio.Semaphore(USER_LOOKUP_CONCURRENCY)
 
     def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         """Handle Slack API response and convert to standardized format.
@@ -702,15 +945,17 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_channel_history",
-        description="Get message history from a Slack channel",
+        description="Get message history from a Slack channel, optionally filtered by a time window",
         args_schema=GetChannelHistoryInput,
         when_to_use=[
-            "User wants to read messages from Slack channel",
+            "User wants to read messages from a Slack channel",
+            "User wants messages from a channel within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
             "User mentions 'Slack' + wants to see messages/history",
             "User asks for recent messages in a channel"
         ],
         when_not_to_use=[
             "User wants to send a message (use send_message)",
+            "User wants to keyword-search across messages (use search_messages)",
             "User wants info ABOUT Slack (use retrieval)",
             "No Slack mention (use other tools)"
         ],
@@ -718,82 +963,73 @@ class Slack:
         typical_queries=[
             "Show me messages from #general",
             "Get Slack channel history",
+            "What was said in #tech in the last 24 hours?",
+            "Messages in #engineering since yesterday",
+            "Today's messages in #general",
             "What was said in the channel?"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Fetch messages from a Slack channel. For time-windowed requests "
+            "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' "
+            "(and optionally 'latest') to ISO 8601 dates or datetimes — for "
+            "example '2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes "
+            "are treated as UTC. Do NOT pass Unix epoch values; the tool "
+            "converts dates to Slack's internal format. PREFER this tool over "
+            "search_messages whenever the user wants channel messages from a "
+            "time window without a keyword."
+        ),
     )
-    async def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_channel_history(
+        self,
+        channel: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
             channel: The channel to get the history of
+            limit: Maximum number of messages to return
+            oldest: Start of time range (ISO 8601 date or datetime string)
+            latest: End of time range (ISO 8601 date or datetime string)
+            inclusive: Include messages with exact oldest/latest timestamps
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the history details
         """
         try:
+            try:
+                oldest_ts = _iso_to_slack_ts(oldest)
+                latest_ts = _iso_to_slack_ts(latest)
+            except SlackDateError as date_err:
+                return (False, SlackResponse(success=False, error=str(date_err)).to_json())
+
             # Resolve channel name like "#bugs" to channel ID
             chan = await self._resolve_channel(channel)
 
-            # Use SlackDataSource method
+            # Use SlackDataSource method. SDS already drops None-valued kwargs,
+            # so passing all params unconditionally is safe.
             response = await self.client.conversations_history(
                 channel=chan,
-                limit=limit
+                limit=limit,
+                oldest=oldest_ts,
+                latest=latest_ts,
+                inclusive=inclusive,
             )
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not slack_response.data:
                 return (slack_response.success, slack_response.to_json())
 
-            # Resolve Slack mentions in message text: <@UXXXXXXXX> -> @display_name
+            # Resolve all Slack user IDs that appear in the messages —
+            # text mentions, authors, parent_user_id, reply authors, and
+            # reactions[].users — via the shared enrichment helper.
             try:
                 data = slack_response.data
                 messages = data.get('messages', []) if isinstance(data, dict) else []
-                import re
-                mention_re = re.compile(r"<@([A-Z0-9]+)>")
-                user_ids: set[str] = set()
-                for msg in messages:
-                    if isinstance(msg, dict) and isinstance(msg.get('text'), str):
-                        for m in mention_re.findall(msg['text']):
-                            user_ids.add(m)
-                id_to_name: dict[str, str] = {}
-                id_to_email: dict[str, str] = {}
-                for uid in user_ids:
-                    try:
-                        uresp = await self.client.users_info(user=uid)
-                        u = self._handle_slack_response(uresp)
-                        if u.success and u.data and isinstance(u.data, dict):
-                            user_obj = u.data.get('user') or {}
-                            profile = user_obj.get('profile') or {}
-                            display = profile.get('display_name') or user_obj.get('real_name') or user_obj.get('name') or uid
-                            email = profile.get('email')
-                            id_to_name[uid] = display
-                            if email:
-                                id_to_email[uid] = email
-                    except Exception:
-                        # Best-effort; skip failures
-                        pass
-                # Inject resolved fields without mutating originals
-                resolved_messages = []
-                for msg in messages:
-                    if isinstance(msg, dict):
-                        new_msg = dict(msg)
-                        text = new_msg.get('text')
-                        if isinstance(text, str):
-                            def _rep(m) -> str:
-                                return f"@{id_to_name.get(m.group(1), m.group(1))}"
-                            new_msg['resolved_text'] = mention_re.sub(_rep, text)
-                        mentions_meta = []
-                        for uid in mention_re.findall(text or ""):
-                            mentions_meta.append({
-                                'id': uid,
-                                'display_name': id_to_name.get(uid),
-                                'email': id_to_email.get(uid),
-                            })
-                        if mentions_meta:
-                            new_msg['mentions'] = mentions_meta
-                        resolved_messages.append(new_msg)
-                    else:
-                        resolved_messages.append(msg)
-                enriched = dict(data)
+                resolved_messages = await self._enrich_messages(messages)
+                enriched = dict(data) if isinstance(data, dict) else {}
                 enriched['messages'] = resolved_messages
 
                 # Transform the enriched data to remove unnecessary fields
@@ -815,13 +1051,20 @@ class Slack:
                             "*.is_starred", "*.skipped_shares", "*.has_rich_preview", "*.file_access")
                     .keep("messages", "id", "name", "text", "ts", "user", "channel", "team",
                           "display_name", "real_name", "email", "resolved_text", "mentions",
+                          "user_display_name", "user_email", "parent_user_id",
+                          "parent_user_display_name", "user_display_names", "edited",
                           "thread_ts", "reply_count", "replies", "subscribed", "subtype",
                           "type", "attachments", "blocks", "files", "reactions", "pinned_to",
                           "permalink", "has_more", "next_cursor", "previous_cursor", "bot_profile",
                           "client_msg_id", "upload",
                           # Essential file fields to keep (including URLs for user access)
                           "created", "timestamp", "title", "mimetype", "filetype", "pretty_type",
-                          "size", "url_private", "url_private_download", "permalink_public")
+                          "size", "url_private", "url_private_download", "permalink_public",
+                          # ISO date siblings injected by _apply_resolution_to_message
+                          # so the LLM never needs to interpret raw Slack epoch values.
+                          "ts_date", "thread_ts_date", "latest_reply_date",
+                          "created_date", "timestamp_date", "updated_date",
+                          "last_read_date", "post_at_date", "date_created_date")
                     .clean()
                 )
 
@@ -970,12 +1213,13 @@ class Slack:
         description="Fetch all conversations in the workspace (public channels, private channels, DMs, group DMs)",
         when_to_use=[
             "User wants to list all Slack channels/conversations",
-            "User mentions 'Slack' + wants to see channels/DMs",
-            "User asks for available channels/conversations"
+            "User mentions 'Slack' + wants to see channels/DMs/conversations",
+            "User asks for available channels/conversations",
+            "User wants to enumerate their DMs (returned as 'im' entries with id starting 'D' and a 'user' field for the partner)"
         ],
         when_not_to_use=[
             "User wants channel info (use get_channel_info)",
-            "User wants messages (use get_channel_history)",
+            "User wants messages (use get_channel_history; for DMs with a named person use get_dm_history)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
@@ -983,26 +1227,47 @@ class Slack:
             "List all Slack channels",
             "Show me available channels",
             "What channels are in Slack?",
-            "Show all conversations"
+            "Show all conversations including DMs",
+            "List my DMs"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Lists all conversations the user can access. Differentiate by 'is_im'/'is_mpim'/'is_private' "
+            "or id prefix (D/G/C). DM entries have no 'name' — only 'id' (D…) and 'user' (U…). "
+            "The DM partner's display name is pre-resolved into 'user_display_name' on each IM entry "
+            "(and 'creator_display_name' for channels), so no extra users_info call is needed."
+        ),
     )
-    async def fetch_channels(self) -> Tuple[bool, str]:
+    async def fetch_channels(
+        self,
+        types: Optional[str] = None,
+        exclude_archived: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Fetch all conversations (public channels, private channels, DMs, group DMs) with pagination"""
         """
+        Args:
+            types: Comma-separated channel types to include. Any combination of
+                'public_channel', 'private_channel', 'mpim', 'im'. Defaults to all four.
+            exclude_archived: When True, archived channels are omitted. Defaults to False
+                (archived channels are included) to preserve prior behavior.
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with all conversations
         """
         try:
+            effective_types = types or "public_channel,private_channel,mpim,im"
+            effective_exclude_archived = (
+                False if exclude_archived is None else exclude_archived
+            )
+
             # Fetch ALL conversation types with pagination
             all_conversations = []
             cursor = None
 
             while True:
-                kwargs = {
-                    "types": "public_channel,private_channel,mpim,im",
-                    "exclude_archived": False,
-                    "limit": 1000
+                kwargs: Dict[str, Any] = {
+                    "types": effective_types,
+                    "exclude_archived": effective_exclude_archived,
+                    "limit": 1000,
                 }
                 if cursor:
                     kwargs["cursor"] = cursor
@@ -1029,6 +1294,14 @@ class Slack:
                 logger.debug(f"Fetched {len(conversations)} conversations, continuing pagination...")
 
             logger.info(f"✅ Fetched total {len(all_conversations)} conversations (all types)")
+
+            # IM entries carry only `id` + `user` (partner ID, no `name`); channels
+            # carry `creator`. Resolve both so the LLM never sees a bare U…/W… ID.
+            try:
+                all_conversations = await self._enrich_conversations(all_conversations)
+            except Exception as enrichment_err:
+                logger.debug(f"fetch_channels enrichment failed: {enrichment_err}")
+
             return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
 
         except Exception as e:
@@ -1074,6 +1347,16 @@ class Slack:
                 query=query,
                 count=limit
             )
+
+            # Enrich messages.matches[] (user, mentions, reactions) and
+            # files.matches[].user (uploader). Slack returns these alongside
+            # one another for search.all; for search.messages only messages.
+            try:
+                if isinstance(response, dict):
+                    response = await self._enrich_search_response(response)
+            except Exception as enrichment_err:
+                logger.debug(f"search_all enrichment failed: {enrichment_err}")
+
             transformed_response = (
                 ResponseTransformer(response)
                 .remove(
@@ -1130,10 +1413,24 @@ class Slack:
             # Resolve channel name to channel ID if needed
             chan = await self._resolve_channel(channel)
 
-            # Use SlackDataSource method
+            # conversations.members returns {members: ["U…", …]} — bare IDs.
+            # Resolve to {id, display_name, real_name, email} so the LLM has
+            # names without an extra round-trip.
             response = await self.client.conversations_members(channel=chan)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
+            try:
+                data = slack_response.data
+                member_ids = data.get('members', [])
+                resolved_members = await self._resolve_user_id_list(member_ids)
+                enriched = dict(data)
+                enriched['resolved_members'] = resolved_members
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Member enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             if "not_in_channel" in str(e):
                 err = SlackResponse(success=False, error="not_in_channel")
@@ -1173,10 +1470,21 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel members
         """
         try:
-            # Use SlackDataSource method
             response = await self.client.conversations_members(channel=channel_id)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
+            try:
+                data = slack_response.data
+                member_ids = data.get('members', [])
+                resolved_members = await self._resolve_user_id_list(member_ids)
+                enriched = dict(data)
+                enriched['resolved_members'] = resolved_members
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Member enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_channel_members_by_id: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1341,6 +1649,125 @@ class Slack:
             raise  # Re-raise to be handled by the outer try-except
         except Exception as e:
             logger.error(f"Error in send_direct_message: {e}")
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
+
+
+    @tool(
+        app_name="slack",
+        tool_name="get_dm_history",
+        description="Get direct message (DM) history with a specific user, optionally filtered by a time window",
+        args_schema=GetDmHistoryInput,
+        when_to_use=[
+            "User wants to read their personal/direct chat with a specific person",
+            "User asks to summarize DMs / personal chats / 1:1 conversation with someone",
+            "User wants their DM thread with a person within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
+            "User mentions 'Slack' + 'DM' / 'direct message' / 'personal chat' with a named person",
+            "User wants the conversation between themselves and another user (not a channel)"
+        ],
+        when_not_to_use=[
+            "User wants channel messages (use get_channel_history)",
+            "User wants to keyword-search across Slack (use search_messages)",
+            "User wants to send a DM (use send_direct_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Summarize my DMs with John Doe",
+            "Show my personal chat with user@company.com",
+            "What did I talk about with @john in Slack DMs?",
+            "Get my direct messages with Alice",
+            "Last 24 hours of my DMs with Vishwjeet",
+            "My DMs with bob@company.com since yesterday",
+            "Today's DMs with @alice"
+        ],
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Fetch the 1:1 DM history with a user. Pass the user (email, display name, "
+            "real name, or Slack user ID) — NOT a channel ID. For time-windowed requests "
+            "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' (and "
+            "optionally 'latest') to ISO 8601 dates or datetimes — for example "
+            "'2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes are treated as "
+            "UTC. "
+            "Use for any 'DM' / 'personal chat' / '1:1 with X' request;"
+        ),
+    )
+    async def get_dm_history(
+        self,
+        user: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
+        """Get DM history with a specific user.
+
+        Args:
+            user: User identifier (email, display name, real name, or Slack user ID)
+            limit: Maximum number of messages to return
+            oldest: Start of time range (ISO 8601 date or datetime string)
+            latest: End of time range (ISO 8601 date or datetime string)
+            inclusive: Include messages with exact oldest/latest timestamps
+        Returns:
+            A tuple with a boolean indicating success/failure and a JSON string with the DM history
+        """
+        try:
+            # Resolve identifier to a unique user ID
+            try:
+                user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
+            except AmbiguousUserError as e:
+                matches_list = []
+                for match in e.matches:
+                    match_str = f"  - {match.get('real_name') or match.get('display_name') or match.get('name', 'Unknown')}"
+                    if match.get('email'):
+                        match_str += f" ({match['email']})"
+                    match_str += f" [ID: {match.get('id', 'Unknown')}]"
+                    matches_list.append(match_str)
+
+                error_msg = (
+                    f"Multiple users found matching '{user}'. Please use email or user ID for disambiguation.\n\n"
+                    f"Matching users:\n" + "\n".join(matches_list) + "\n\n"
+                    "Tip: Use the user's email address (e.g., 'user@example.com') or Slack user ID (e.g., 'U1234567890') "
+                    "to uniquely identify the user."
+                )
+                return (False, SlackResponse(success=False, error=error_msg).to_json())
+
+            if not user_id:
+                return (
+                    False,
+                    SlackResponse(
+                        success=False,
+                        error=f"User '{user}' not found. Please use email address or Slack user ID.",
+                    ).to_json(),
+                )
+
+            # Open (or fetch existing) DM channel for the resolved user
+            open_response = await self.client.conversations_open(users=[user_id])
+            open_slack_response = self._handle_slack_response(open_response)
+            if not open_slack_response.success:
+                return (open_slack_response.success, open_slack_response.to_json())
+
+            channel_id = (
+                open_slack_response.data.get('channel', {}).get('id')
+                if open_slack_response.data
+                else None
+            )
+            if not channel_id:
+                return (
+                    False,
+                    SlackResponse(success=False, error="Failed to open DM channel").to_json(),
+                )
+            return await self.get_channel_history(
+                channel_id,
+                limit=limit,
+                oldest=oldest,
+                latest=latest,
+                inclusive=inclusive,
+            )
+        except AmbiguousUserError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in get_dm_history: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -1546,53 +1973,135 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="search_messages",
-        description="Search for messages in Slack",
+        description="Keyword-search messages in Slack (requires a query term)",
         args_schema=SearchMessagesInput,
         when_to_use=[
-            "User wants to search for specific messages",
-            "User mentions 'Slack' + wants to find messages",
-            "User asks to search messages by content"
+            "User wants to find messages containing specific keywords or phrases",
+            "User mentions 'Slack' + wants to find messages by content",
+            "User wants keyword search constrained to messages with/from a specific person (use with_user / from_user)"
         ],
         when_not_to_use=[
-            "User wants to read channel history (use get_channel_history)",
-            "User wants to search all content (use search_all)",
+            "User wants to browse a channel's recent messages or a time window of a channel — use get_channel_history with oldest/latest instead (search has indexing lag and 'before/after' are exclusive day boundaries — bad for narrow windows)",
+            "User wants the full DM thread with someone (use get_dm_history)",
+            "User wants to search all content types — files, channels (use search_all)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "Search for messages about 'project'",
             "Find messages in #general about X",
-            "Search Slack messages"
+            "Find messages from @alice about deploys",
+            "Search my conversation with bob@company.com for 'roadmap'"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Keyword search across Slack messages. Requires a real keyword/phrase "
+            "in 'query'. Do NOT use this for 'all messages in #channel in the last N "
+            "hours/days' — use get_channel_history with oldest/latest instead. "
+            "Slack search has indexing lag (recent messages may not appear) and "
+            "the 'before:'/'after:' modifiers are EXCLUSIVE day boundaries: "
+            "'after:2025-01-01 before:2025-01-02' returns NOTHING (no day strictly "
+            "between them). For 'today's' or 'last 24h' messages, use "
+            "get_channel_history."
+        ),
     )
-    async def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
-        """Search for messages in Slack"""
-        """
+    async def search_messages(
+        self,
+        query: str,
+        channel: Optional[str] = None,
+        with_user: Optional[str] = None,
+        from_user: Optional[str] = None,
+        count: Optional[int] = None,
+        sort: Optional[str] = None,
+        sort_dir: Optional[str] = None,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Search for messages in Slack.
+
         Args:
-            query: Search query
-            channel: Channel to search in (optional)
+            query: Search query (keywords / phrase)
+            channel: Channel to search in (optional). Adds an 'in:#channel' modifier.
+            with_user: Restrict to messages exchanged with this user (any identifier:
+                email, display name, real name, or user ID). Adds 'with:@handle'.
+            from_user: Restrict to messages authored by this user. Adds 'from:@handle'.
             count: Maximum number of results to return
-            sort: Sort order
+            sort: Sort order (timestamp, score)
+            sort_dir: Sort direction ('asc' or 'desc')
+            after: Restrict to messages after this date (YYYY-MM-DD). Adds 'after:<date>'.
+            before: Restrict to messages before this date (YYYY-MM-DD). Adds 'before:<date>'.
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            # Build search query with channel filter if provided
-            search_query = query
+            modifiers: List[str] = []
+
             if channel:
-                # Remove # if present
                 channel_name = channel[1:] if channel.startswith('#') else channel
-                search_query = f"in:{channel_name} {query}"
+                modifiers.append(f"in:{channel_name}")
+
+            if after:
+                modifiers.append(f"after:{after}")
+            if before:
+                modifiers.append(f"before:{before}")
+
+            # Resolve with_user / from_user to Slack handles for use in search modifiers.
+            # Slack's search syntax requires the username (e.g. 'with:@john'), not user IDs,
+            # so we must look up the handle.
+            for modifier_name, identifier in (("with", with_user), ("from", from_user)):
+                if not identifier:
+                    continue
+                try:
+                    handle = await self._resolve_user_handle(identifier)
+                except AmbiguousUserError as e:
+                    matches_list = []
+                    for match in e.matches:
+                        match_str = f"  - {match.get('real_name') or match.get('display_name') or match.get('name', 'Unknown')}"
+                        if match.get('email'):
+                            match_str += f" ({match['email']})"
+                        match_str += f" [ID: {match.get('id', 'Unknown')}]"
+                        matches_list.append(match_str)
+                    error_msg = (
+                        f"Multiple users found matching '{identifier}' for '{modifier_name}_user'. "
+                        "Please use email or user ID for disambiguation.\n\n"
+                        "Matching users:\n" + "\n".join(matches_list)
+                    )
+                    return (False, SlackResponse(success=False, error=error_msg).to_json())
+
+                if not handle:
+                    return (
+                        False,
+                        SlackResponse(
+                            success=False,
+                            error=f"Could not resolve '{identifier}' for '{modifier_name}_user' to a Slack user. "
+                                  "Please use email address or Slack user ID.",
+                        ).to_json(),
+                    )
+                modifiers.append(f"{modifier_name}:@{handle}")
+
+            search_query = " ".join([*modifiers, query]).strip() if modifiers else query
 
             response = await self.client.search_messages(
                 query=search_query,
                 count=count,
-                sort=sort
+                sort=sort,
+                sort_dir=sort_dir,
             )
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
 
+            # Resolve user IDs in messages.matches[] (and files.matches[] if
+            # present from a search.all-style call) so the LLM sees names.
+            try:
+                enriched = await self._enrich_search_response(slack_response.data)
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"search_messages enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
+
+        except AmbiguousUserError:
+            raise
         except Exception as e:
             logger.error(f"Error in search_messages: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1735,11 +2244,23 @@ class Slack:
         Args:
             channel: The channel to send the message to
             message: The message to send
-            post_at: Unix timestamp for when to post the message
+            post_at: ISO 8601 date or datetime for when to post the message
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the scheduled message details
         """
         try:
+            # Convert LLM-supplied ISO datetime -> integer epoch seconds.
+            # Slack rejects fractional seconds for `post_at`.
+            try:
+                post_at_epoch = _iso_to_slack_post_at(post_at)
+            except SlackDateError as date_err:
+                return (False, SlackResponse(success=False, error=str(date_err)).to_json())
+            if post_at_epoch is None:
+                return (
+                    False,
+                    SlackResponse(success=False, error="post_at is required").to_json(),
+                )
+
             # Resolve channel name to channel ID if needed
             chan = await self._resolve_channel(channel)
 
@@ -1749,9 +2270,15 @@ class Slack:
             response = await self.client.chat_schedule_message(
                 channel=chan,
                 text=slack_message,
-                post_at=int(post_at)
+                post_at=post_at_epoch,
             )
             slack_response = self._handle_slack_response(response)
+            # Surface a human-readable date alongside the epoch in the response,
+            # so the LLM can confirm the scheduled time without re-converting.
+            if slack_response.success and isinstance(slack_response.data, dict):
+                enriched = dict(slack_response.data)
+                _add_iso_date_sibling(enriched, "post_at")
+                return (True, SlackResponse(success=True, data=enriched).to_json())
             return (slack_response.success, slack_response.to_json())
 
         except Exception as e:
@@ -1838,24 +2365,42 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with unread messages
         """
         try:
+            # Resolve channel name like '#general' to ID
+            chan = await self._resolve_channel(channel)
+
             # Get channel info to check for unread count
-            info_response = await self.client.conversations_info(channel=channel)
+            info_response = await self.client.conversations_info(channel=chan)
             info_slack_response = self._handle_slack_response(info_response)
 
             if not info_slack_response.success:
                 return (info_slack_response.success, info_slack_response.to_json())
 
             # Get recent messages
-            history_response = await self.client.conversations_history(channel=channel, limit=50)
+            history_response = await self.client.conversations_history(channel=chan, limit=50)
             history_slack_response = self._handle_slack_response(history_response)
 
             if not history_slack_response.success:
                 return (history_slack_response.success, history_slack_response.to_json())
 
+            # Resolve user IDs in messages, and resolve `creator`/`user` (DM
+            # partner) on the channel_info object via _enrich_conversations.
+            recent_messages = (
+                history_slack_response.data.get('messages', [])
+                if history_slack_response.data else []
+            )
+            enriched_messages = await self._enrich_messages(recent_messages)
+
+            channel_info = info_slack_response.data or {}
+            channel_obj = channel_info.get('channel') if isinstance(channel_info, dict) else None
+            if isinstance(channel_obj, dict):
+                enriched_channel_list = await self._enrich_conversations([channel_obj])
+                channel_info = dict(channel_info)
+                channel_info['channel'] = enriched_channel_list[0] if enriched_channel_list else channel_obj
+
             # Combine channel info with recent messages
             result = {
-                "channel_info": info_slack_response.data,
-                "recent_messages": history_slack_response.data.get('messages', []) if history_slack_response.data else []
+                "channel_info": channel_info,
+                "recent_messages": enriched_messages,
             }
 
             # Transform the result to remove unnecessary fields
@@ -1918,7 +2463,30 @@ class Slack:
 
             response = await self.client.chat_scheduled_messages_list(**kwargs)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
+            # Each scheduled item carries `post_at` and `date_created` as int
+            # epoch seconds — surface ISO date siblings so the LLM doesn't
+            # have to interpret raw epochs.
+            try:
+                data = dict(slack_response.data)
+                items = data.get('scheduled_messages')
+                if isinstance(items, list):
+                    new_items = []
+                    for it in items:
+                        if isinstance(it, dict):
+                            new_it = dict(it)
+                            for f in _EPOCH_FIELDS_ON_SCHEDULED:
+                                _add_iso_date_sibling(new_it, f)
+                            new_items.append(new_it)
+                        else:
+                            new_items.append(it)
+                    data['scheduled_messages'] = new_items
+                return (True, SlackResponse(success=True, data=data).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Scheduled-message enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_scheduled_messages: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2136,7 +2704,17 @@ class Slack:
 
                 response = await self.client.users_conversations(**kwargs)
                 slack_response = self._handle_slack_response(response)
-                return (slack_response.success, slack_response.to_json())
+                if not slack_response.success or not isinstance(slack_response.data, dict):
+                    return (slack_response.success, slack_response.to_json())
+                try:
+                    channels = slack_response.data.get('channels', [])
+                    enriched_channels = await self._enrich_conversations(channels)
+                    enriched_data = dict(slack_response.data)
+                    enriched_data['channels'] = enriched_channels
+                    return (True, SlackResponse(success=True, data=enriched_data).to_json())
+                except Exception as enrichment_err:
+                    logger.debug(f"users_conversations enrichment failed: {enrichment_err}")
+                    return (slack_response.success, slack_response.to_json())
 
             # Otherwise, fetch all conversations with pagination
             all_conversations = []
@@ -2175,6 +2753,13 @@ class Slack:
                 logger.debug(f"Fetched {len(conversations)} conversations for user, continuing pagination...")
 
             logger.info(f"✅ Fetched total {len(all_conversations)} conversations for authenticated user")
+
+            # Resolve DM partner (`user`) and channel `creator` for every entry
+            try:
+                all_conversations = await self._enrich_conversations(all_conversations)
+            except Exception as enrichment_err:
+                logger.debug(f"users_conversations enrichment failed: {enrichment_err}")
+
             return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
 
         except Exception as e:
@@ -2223,7 +2808,20 @@ class Slack:
 
             response = await self.client.usergroups_list(**kwargs)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
+            # Resolve created_by/updated_by/deleted_by + users[] per usergroup
+            try:
+                data = slack_response.data
+                groups = data.get('usergroups', [])
+                resolved_groups = await self._enrich_usergroups(groups)
+                enriched = dict(data)
+                enriched['usergroups'] = resolved_groups
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Usergroup enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_user_groups: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2268,7 +2866,26 @@ class Slack:
 
             response = await self.client.usergroups_info(**kwargs)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
+            # usergroups.info returns the group at top-level `usergroup` (singular).
+            # Some Slack helpers return `usergroups: [...]` instead — handle both.
+            try:
+                data = slack_response.data
+                enriched = dict(data)
+                single = data.get('usergroup')
+                if isinstance(single, dict):
+                    resolved_list = await self._enrich_usergroups([single])
+                    if resolved_list:
+                        enriched['usergroup'] = resolved_list[0]
+                groups_list = data.get('usergroups')
+                if isinstance(groups_list, list):
+                    enriched['usergroups'] = await self._enrich_usergroups(groups_list)
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Usergroup-info enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_user_group_info: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2352,6 +2969,13 @@ class Slack:
                 logger.debug(f"Fetched {len(channels)} channels for user, continuing pagination...")
 
             logger.info(f"✅ Fetched total {len(all_channels)} channels for authenticated user")
+
+            # Resolve DM partner (`user`) on IM entries and `creator` on channels
+            try:
+                all_channels = await self._enrich_conversations(all_channels)
+            except Exception as enrichment_err:
+                logger.debug(f"get_user_channels enrichment failed: {enrichment_err}")
+
             return (True, SlackResponse(success=True, data={"channels": all_channels, "count": len(all_channels)}).to_json())
 
         except Exception as e:
@@ -2546,8 +3170,9 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the reactions
         """
         try:
+            chan = await self._resolve_channel(channel)
             kwargs = {
-                "channel": channel,
+                "channel": chan,
                 "timestamp": timestamp
             }
             if full is not None:
@@ -2555,7 +3180,39 @@ class Slack:
 
             response = await self.client.reactions_get(**kwargs)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not slack_response.data:
+                return (slack_response.success, slack_response.to_json())
+
+            # reactions.get returns the item under one of: 'message', 'file',
+            # or 'file_comment' depending on `type`. The reactions[] array
+            # (each with .users[]) lives on whichever item is present, plus
+            # the message itself has 'user'. We enrich whichever item is set.
+            try:
+                data = slack_response.data
+                if not isinstance(data, dict):
+                    return (slack_response.success, slack_response.to_json())
+                enriched = dict(data)
+                # Message-typed reaction: enrich as a normal message
+                msg = enriched.get('message')
+                if isinstance(msg, dict):
+                    enriched['message'] = (await self._enrich_messages([msg]))[0]
+                # File-typed reaction: collect uploader + reaction users
+                file_obj = enriched.get('file')
+                if isinstance(file_obj, dict):
+                    enriched['file'] = await self._enrich_reactable(file_obj)
+                # File-comment reaction: comment has user + reactions
+                comment = enriched.get('file_comment') or enriched.get('comment')
+                if isinstance(comment, dict):
+                    new_comment = await self._enrich_reactable(comment)
+                    # Write back under whichever key it was loaded from
+                    if 'file_comment' in enriched:
+                        enriched['file_comment'] = new_comment
+                    else:
+                        enriched['comment'] = new_comment
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Reactions enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_reactions: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2639,9 +3296,25 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the pinned messages
         """
         try:
-            response = await self.client.pins_list(channel=channel)
+            chan = await self._resolve_channel(channel)
+            response = await self.client.pins_list(channel=chan)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not slack_response.data:
+                return (slack_response.success, slack_response.to_json())
+
+            # Each pin item is type=message|file|file_comment with user IDs at
+            # items[].created_by (pinner), items[].message.user (author),
+            # items[].file.user (uploader), items[].comment.user.
+            try:
+                data = slack_response.data
+                items = data.get('items', []) if isinstance(data, dict) else []
+                resolved_items = await self._enrich_pin_items(items)
+                enriched = dict(data) if isinstance(data, dict) else {}
+                enriched['items'] = resolved_items
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Pinned-message enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_pinned_messages: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2715,27 +3388,69 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    async def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_thread_replies(
+        self,
+        channel: str,
+        timestamp: str,
+        limit: Optional[int] = None,
+        oldest: Optional[str] = None,
+        latest: Optional[str] = None,
+        inclusive: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
         """Get replies in a thread"""
         """
         Args:
             channel: The channel containing the thread
             timestamp: Timestamp of the parent message
             limit: Maximum number of replies to return
+            oldest: Start of time range (ISO 8601 date or datetime string)
+            latest: End of time range (ISO 8601 date or datetime string)
+            inclusive: Include messages with exact oldest/latest timestamps
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the thread replies
         """
         try:
-            kwargs = {
-                "channel": channel,
-                "ts": timestamp
+            # Convert LLM-supplied ISO dates -> Slack epoch-string format.
+            try:
+                oldest_ts = _iso_to_slack_ts(oldest)
+                latest_ts = _iso_to_slack_ts(latest)
+            except SlackDateError as date_err:
+                return (False, SlackResponse(success=False, error=str(date_err)).to_json())
+
+            # Resolve channel name like '#bugs' to a channel ID — the LLM
+            # sometimes passes a name even though the schema asks for an ID.
+            chan = await self._resolve_channel(channel)
+
+            kwargs: Dict[str, Any] = {
+                "channel": chan,
+                "ts": timestamp,
             }
-            if limit:
+            if limit is not None:
                 kwargs["limit"] = limit
+            if oldest_ts is not None:
+                kwargs["oldest"] = oldest_ts
+            if latest_ts is not None:
+                kwargs["latest"] = latest_ts
+            if inclusive is not None:
+                kwargs["inclusive"] = inclusive
 
             response = await self.client.conversations_replies(**kwargs)
             slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            if not slack_response.success or not slack_response.data:
+                return (slack_response.success, slack_response.to_json())
+
+            # Resolve user IDs in every thread message: text mentions, author,
+            # parent_user_id, reactions[].users. Fall back to raw payload on error.
+            try:
+                data = slack_response.data
+                messages = data.get('messages', []) if isinstance(data, dict) else []
+                resolved_messages = await self._enrich_messages(messages)
+                enriched = dict(data) if isinstance(data, dict) else {}
+                enriched['messages'] = resolved_messages
+                return (True, SlackResponse(success=True, data=enriched).to_json())
+            except Exception as enrichment_err:
+                logger.debug(f"Thread reply enrichment failed: {enrichment_err}")
+                return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_thread_replies: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2970,6 +3685,709 @@ class Slack:
             logger.error(f"Error resolving user identifier '{user_identifier}': {e}")
             return None
 
+    async def _resolve_user_ids(
+        self,
+        user_ids: set,
+    ) -> Dict[str, Dict[str, Optional[str]]]:
+        """Bulk-resolve a set of Slack user IDs to {display_name, real_name, email}.
+
+        Hits the per-instance cache first and only fetches misses, fanning out
+        users_info calls in parallel with a concurrency cap so a busy channel
+        with many distinct authors doesn't serialize on network round-trips.
+
+        Returns a dict keyed by the user IDs that were requested. Failures
+        for a given ID fall back to {display_name: id, real_name: None, email: None}
+        so callers can always look up the input ID without a None-check.
+        """
+        if not user_ids:
+            return {}
+
+        missing = [uid for uid in user_ids if uid not in self._user_cache]
+
+        if missing:
+            async def _fetch_one(uid: str) -> Tuple[str, Optional[Dict[str, Optional[str]]]]:
+                async with self._lookup_sem:
+                    try:
+                        uresp = await self.client.users_info(user=uid)
+                        u = self._handle_slack_response(uresp)
+                        if u.success and u.data and isinstance(u.data, dict):
+                            user_obj = u.data.get('user') or {}
+                            profile = user_obj.get('profile') or {}
+                            display = (
+                                profile.get('display_name')
+                                or user_obj.get('real_name')
+                                or user_obj.get('name')
+                                or uid
+                            )
+                            return uid, {
+                                'display_name': display,
+                                'real_name': user_obj.get('real_name'),
+                                'email': profile.get('email'),
+                            }
+                    except Exception as e:
+                        logger.debug(f"users_info failed for {uid}: {e}")
+
+                return uid, None
+
+            results = await asyncio.gather(*(_fetch_one(uid) for uid in missing))
+            for uid, info in results:
+                if info is not None:
+                    self._user_cache[uid] = info
+
+        # Fall back at read time so callers always get a usable label,
+        # but the next call gets a chance to actually resolve the ID.
+        fallback = {'display_name': None, 'real_name': None, 'email': None}
+        return {
+            uid: self._user_cache.get(uid, {**fallback, 'display_name': uid})
+            for uid in user_ids
+        }
+
+    async def _resolve_channel_ids(self, channel_ids: set) -> Dict[str, str]:
+        """Bulk-resolve Slack channel IDs (C…/G…/D…) to display names.
+
+        Mirrors `_resolve_user_ids` — cache-first, parallel `conversations.info`
+        for misses. DM (`is_im`) channels lack `name`, so we synthesize
+        `DM:<partner_uid>` from the channel's `user` field; falls back to the
+        raw ID on any failure so callers always get a usable label.
+        """
+        if not channel_ids:
+            return {}
+        missing = [cid for cid in channel_ids if cid not in self._channel_cache]
+        if missing:
+            async def _fetch_one(cid: str) -> Tuple[str, Optional[str]]:
+                async with self._lookup_sem:
+                    try:
+                        cresp = await self.client.conversations_info(channel=cid)
+                        c = self._handle_slack_response(cresp)
+                        if c.success and c.data and isinstance(c.data, dict):
+                            chan = c.data.get('channel') or {}
+                            name = chan.get('name')
+                            if not name and chan.get('is_im'):
+                                partner = chan.get('user')
+                                name = f"DM:{partner}" if partner else cid
+                            return cid, name or cid
+                    except Exception as e:
+                        logger.debug(f"conversations_info failed for {cid}: {e}")
+                return cid, None
+
+            results = await asyncio.gather(*(_fetch_one(cid) for cid in missing))
+            for cid, name in results:
+                if name is not None:
+                    self._channel_cache[cid] = name
+        return {cid: self._channel_cache.get(cid, cid) for cid in channel_ids}
+
+    # ------------------------------------------------------------------
+    # Enrichment helpers — collect + resolve + apply, by response shape
+    # ------------------------------------------------------------------
+    #
+    # Slack tools historically returned raw 'U…'/'W…' user IDs in tool
+    # responses, forcing the LLM to follow up with users_info calls just
+    # to print a name. The helpers below take a Slack response fragment
+    # (a message, list of messages, list of pinned items, etc.), collect
+    # every user-ID-bearing field, bulk-resolve via _resolve_user_ids,
+    # and inject *_display_name / *_email fields without removing the
+    # original IDs (so existing consumers keep working).
+
+    def _collect_user_ids_from_message(self, msg: Any, ids: set) -> None:  # noqa: ANN401
+        """Add every Slack user ID found in a single message dict to `ids`.
+
+        Looks at: inline <@U…> mentions in `text`, the message author (`user`),
+        the thread parent (`parent_user_id`), reply summaries (`replies[].user`),
+        the thread-parent reply roster (`reply_users[]` — per
+        https://docs.slack.dev/reference/methods/conversations.replies; may
+        contain bot IDs which `_is_user_id` filters out), reactions
+        (`reactions[].users[]`), file attachments (`files[].user` — the
+        uploader, per https://docs.slack.dev/reference/objects/file-object),
+        edits (`edited.user` — the editor, per the message event docs), and
+        the huddle `room` block on `subtype=huddle_thread` messages
+        (`room.created_by`, `room.participant_history[]`).
+        """
+        if not isinstance(msg, dict):
+            return
+        text = msg.get('text')
+        if isinstance(text, str):
+            ids.update(SLACK_MENTION_RE.findall(text))
+        for field in ('user', 'parent_user_id'):
+            v = msg.get(field)
+            if _is_user_id(v):
+                ids.add(v)
+        for rep in (msg.get('replies') or []):
+            if isinstance(rep, dict):
+                v = rep.get('user')
+                if _is_user_id(v):
+                    ids.add(v)
+        for u in (msg.get('reply_users') or []):
+            if _is_user_id(u):
+                ids.add(u)
+        for r in (msg.get('reactions') or []):
+            if isinstance(r, dict):
+                for u in (r.get('users') or []):
+                    if _is_user_id(u):
+                        ids.add(u)
+        for f in (msg.get('files') or []):
+            if isinstance(f, dict):
+                fu = f.get('user')
+                if _is_user_id(fu):
+                    ids.add(fu)
+        edited = msg.get('edited')
+        if isinstance(edited, dict):
+            eu = edited.get('user')
+            if _is_user_id(eu):
+                ids.add(eu)
+        room = msg.get('room')
+        if isinstance(room, dict):
+            cb = room.get('created_by')
+            if _is_user_id(cb):
+                ids.add(cb)
+            for u in (room.get('participant_history') or []):
+                if _is_user_id(u):
+                    ids.add(u)
+
+    def _collect_channel_ids_from_message(self, msg: Any, channel_ids: set) -> None:  # noqa: ANN401
+        """Collect Slack channel IDs (C…/G…/D…) from a single message dict.
+
+        Looks at the top-level `channel` field and `room.channels[]` on
+        huddle_thread messages.
+        """
+        if not isinstance(msg, dict):
+            return
+        ch = msg.get('channel')
+        if isinstance(ch, str) and len(ch) >= MIN_SLACK_USER_ID_LENGTH and ch[0] in ('C', 'G', 'D'):
+            channel_ids.add(ch)
+        room = msg.get('room')
+        if isinstance(room, dict):
+            for c in (room.get('channels') or []):
+                if isinstance(c, str) and len(c) >= MIN_SLACK_USER_ID_LENGTH and c[0] in ('C', 'G', 'D'):
+                    channel_ids.add(c)
+
+    def _apply_resolution_to_message(
+        self,
+        msg: Any,  # noqa: ANN401
+        id_to_name: Dict[str, str],
+        id_to_email: Dict[str, str],
+        channel_id_to_name: Optional[Dict[str, str]] = None,
+    ) -> Any:  # noqa: ANN401
+        """Return a shallow-copied message with resolved fields injected.
+
+        Adds: `resolved_text`, `mentions[]`, `user_display_name`, `user_email`,
+        `parent_user_display_name`, `replies[].user_display_name`,
+        `reply_users_display_names[]` (parent thread roster),
+        per-reaction `user_display_names`, `files[].user_display_name`/`user_email`
+        (file uploader), `edited.user_display_name` (editor), `channel_name`
+        (top-level), and `room.created_by_display_name` /
+        `room.participant_history_display_names[]` / `room.channel_names[]` on
+        huddle_thread messages.
+        """
+        channel_id_to_name = channel_id_to_name or {}
+        if not isinstance(msg, dict):
+            return msg
+        new_msg = dict(msg)
+
+        # Top-level message epoch fields (ts, thread_ts, latest_reply).
+        for field in _EPOCH_FIELDS_ON_MESSAGE:
+            _add_iso_date_sibling(new_msg, field)
+
+        text = new_msg.get('text')
+        if isinstance(text, str):
+            def _rep(m: re.Match) -> str:
+                return f"@{id_to_name.get(m.group(1), m.group(1))}"
+            new_msg['resolved_text'] = SLACK_MENTION_RE.sub(_rep, text)
+            mentions_meta = []
+            for uid in SLACK_MENTION_RE.findall(text):
+                mentions_meta.append({
+                    'id': uid,
+                    'display_name': id_to_name.get(uid),
+                    'email': id_to_email.get(uid),
+                })
+            if mentions_meta:
+                new_msg['mentions'] = mentions_meta
+
+        author = new_msg.get('user')
+        if isinstance(author, str) and author in id_to_name:
+            new_msg['user_display_name'] = id_to_name[author]
+            if author in id_to_email:
+                new_msg['user_email'] = id_to_email[author]
+
+        parent_uid = new_msg.get('parent_user_id')
+        if isinstance(parent_uid, str) and parent_uid in id_to_name:
+            new_msg['parent_user_display_name'] = id_to_name[parent_uid]
+
+        replies = new_msg.get('replies')
+        if isinstance(replies, list):
+            new_replies = []
+            for rep in replies:
+                if isinstance(rep, dict):
+                    new_rep = dict(rep)
+                    ru = new_rep.get('user')
+                    if isinstance(ru, str) and ru in id_to_name:
+                        new_rep['user_display_name'] = id_to_name[ru]
+                    # Reply-summary entries carry their own `ts` epoch.
+                    _add_iso_date_sibling(new_rep, 'ts')
+                    new_replies.append(new_rep)
+                else:
+                    new_replies.append(rep)
+            new_msg['replies'] = new_replies
+
+        reply_users = new_msg.get('reply_users')
+        if isinstance(reply_users, list):
+            new_msg['reply_users_display_names'] = [
+                id_to_name.get(u, u) for u in reply_users if isinstance(u, str)
+            ]
+
+        ch = new_msg.get('channel')
+        if isinstance(ch, str) and ch in channel_id_to_name:
+            new_msg['channel_name'] = channel_id_to_name[ch]
+
+        reactions = new_msg.get('reactions')
+        if isinstance(reactions, list):
+            new_reactions = []
+            for r in reactions:
+                if isinstance(r, dict):
+                    new_r = dict(r)
+                    user_list = new_r.get('users')
+                    if isinstance(user_list, list):
+                        new_r['user_display_names'] = [
+                            id_to_name.get(u, u) for u in user_list if isinstance(u, str)
+                        ]
+                    new_reactions.append(new_r)
+                else:
+                    new_reactions.append(r)
+            new_msg['reactions'] = new_reactions
+
+        files = new_msg.get('files')
+        if isinstance(files, list):
+            new_files = []
+            for f in files:
+                if isinstance(f, dict):
+                    new_f = dict(f)
+                    fu = new_f.get('user')
+                    if isinstance(fu, str) and fu in id_to_name:
+                        new_f['user_display_name'] = id_to_name[fu]
+                        if fu in id_to_email:
+                            new_f['user_email'] = id_to_email[fu]
+                    # Files carry epoch fields: `created`, `timestamp`, `updated`.
+                    for f_field in _EPOCH_FIELDS_ON_FILE:
+                        _add_iso_date_sibling(new_f, f_field)
+                    new_files.append(new_f)
+                else:
+                    new_files.append(f)
+            new_msg['files'] = new_files
+
+        edited = new_msg.get('edited')
+        if isinstance(edited, dict):
+            new_edited = dict(edited)
+            eu = new_edited.get('user')
+            if isinstance(eu, str) and eu in id_to_name:
+                new_edited['user_display_name'] = id_to_name[eu]
+            # `edited.ts` is the edit timestamp.
+            _add_iso_date_sibling(new_edited, 'ts')
+            new_msg['edited'] = new_edited
+
+        # Huddle/call rooms (subtype=huddle_thread) carry their own epoch fields,
+        # plus user IDs (`created_by`, `participant_history[]`) and channel IDs
+        # (`channels[]`).
+        room = new_msg.get('room')
+        if isinstance(room, dict):
+            new_room = dict(room)
+            for r_field in _EPOCH_FIELDS_ON_ROOM:
+                _add_iso_date_sibling(new_room, r_field)
+            cb = new_room.get('created_by')
+            if isinstance(cb, str) and cb in id_to_name:
+                new_room['created_by_display_name'] = id_to_name[cb]
+            phist = new_room.get('participant_history')
+            if isinstance(phist, list):
+                new_room['participant_history_display_names'] = [
+                    id_to_name.get(u, u) for u in phist if isinstance(u, str)
+                ]
+            rch = new_room.get('channels')
+            if isinstance(rch, list):
+                new_room['channel_names'] = [
+                    channel_id_to_name.get(c, c) for c in rch if isinstance(c, str)
+                ]
+            new_msg['room'] = new_room
+
+        return new_msg
+
+    async def _enrich_reactable(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich a `{user, reactions[].users[]}`-shaped item (file / file_comment).
+
+        Returns a copy with `user_display_name` injected on the top-level user
+        and `user_display_names` arrays added to each reaction. If the item
+        carries no resolvable user IDs, returns it unchanged.
+        """
+        ids: set = set()
+        u = obj.get('user')
+        if _is_user_id(u):
+            ids.add(u)
+        for r in (obj.get('reactions') or []):
+            if isinstance(r, dict):
+                for ru in (r.get('users') or []):
+                    if _is_user_id(ru):
+                        ids.add(ru)
+        if not ids:
+            return obj
+        resolved = await self._resolve_user_ids(ids)
+        id_to_name = {
+            uid: info['display_name']
+            for uid, info in resolved.items()
+            if info.get('display_name')
+        }
+        new_obj = dict(obj)
+        if isinstance(u, str) and u in id_to_name:
+            new_obj['user_display_name'] = id_to_name[u]
+        new_reactions = []
+        for r in (new_obj.get('reactions') or []):
+            if isinstance(r, dict):
+                new_r = dict(r)
+                user_list = new_r.get('users')
+                if isinstance(user_list, list):
+                    new_r['user_display_names'] = [
+                        id_to_name.get(ru, ru) for ru in user_list if isinstance(ru, str)
+                    ]
+                new_reactions.append(new_r)
+            else:
+                new_reactions.append(r)
+        if new_obj.get('reactions') is not None:
+            new_obj['reactions'] = new_reactions
+        return new_obj
+
+    async def _enrich_messages(self, messages: Optional[List[Any]]) -> List[Any]:
+        """Resolve user + channel IDs across a list of Slack messages and return enriched copies."""
+        if not messages:
+            return messages or []
+        ids: set = set()
+        channel_ids: set = set()
+        for msg in messages:
+            self._collect_user_ids_from_message(msg, ids)
+            self._collect_channel_ids_from_message(msg, channel_ids)
+        resolved, channel_id_to_name = await asyncio.gather(
+            self._resolve_user_ids(ids),
+            self._resolve_channel_ids(channel_ids),
+        )
+        id_to_name = {
+            uid: info['display_name']
+            for uid, info in resolved.items()
+            if info.get('display_name')
+        }
+        id_to_email = {
+            uid: info['email']
+            for uid, info in resolved.items()
+            if info.get('email')
+        }
+        return [
+            self._apply_resolution_to_message(m, id_to_name, id_to_email, channel_id_to_name)
+            for m in messages
+        ]
+
+    async def _resolve_user_id_list(self, ids: Optional[List[Any]]) -> List[Dict[str, Optional[str]]]:
+        """Resolve a flat list of user IDs into a list of `{id, display_name, real_name, email}`.
+
+        Used for `conversations.members`, `usergroup.users[]`, `reactions[].users[]`.
+        Preserves order; silently skips non-string entries.
+        """
+        if not ids:
+            return []
+        deduped = {uid for uid in ids if _is_user_id(uid)}
+        resolved = await self._resolve_user_ids(deduped)
+        out: List[Dict[str, Optional[str]]] = []
+        for uid in ids:
+            if not isinstance(uid, str):
+                continue
+            info = resolved.get(uid) or {}
+            out.append({
+                'id': uid,
+                'display_name': info.get('display_name') or uid,
+                'real_name': info.get('real_name'),
+                'email': info.get('email'),
+            })
+        return out
+
+    async def _enrich_pin_items(self, items: Optional[List[Any]]) -> List[Any]:
+        """Resolve user IDs in a list of pins.list items.
+
+        Resolves: `created_by` (pinner), `message.user` + nested message fields,
+        `file.user` (uploader for file pins), `comment.user` (file_comment pins).
+        """
+        if not items:
+            return items or []
+        ids: set = set()
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            cb = it.get('created_by')
+            if _is_user_id(cb):
+                ids.add(cb)
+            msg = it.get('message')
+            if isinstance(msg, dict):
+                self._collect_user_ids_from_message(msg, ids)
+            f = it.get('file')
+            if isinstance(f, dict):
+                fu = f.get('user')
+                if _is_user_id(fu):
+                    ids.add(fu)
+            c = it.get('comment')
+            if isinstance(c, dict):
+                cu = c.get('user')
+                if _is_user_id(cu):
+                    ids.add(cu)
+        resolved = await self._resolve_user_ids(ids)
+        id_to_name = {
+            uid: info['display_name']
+            for uid, info in resolved.items()
+            if info.get('display_name')
+        }
+        id_to_email = {
+            uid: info['email']
+            for uid, info in resolved.items()
+            if info.get('email')
+        }
+
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                out.append(it)
+                continue
+            new_it = dict(it)
+            cb = new_it.get('created_by')
+            if isinstance(cb, str) and cb in id_to_name:
+                new_it['created_by_display_name'] = id_to_name[cb]
+            # Pin items themselves carry a `created` epoch (when the pin
+            # was added). The nested message / file have their own epoch
+            # fields handled in their respective enrichment branches below.
+            for it_field in _EPOCH_FIELDS_ON_PIN_ITEM:
+                _add_iso_date_sibling(new_it, it_field)
+            msg = new_it.get('message')
+            if isinstance(msg, dict):
+                new_it['message'] = self._apply_resolution_to_message(msg, id_to_name, id_to_email)
+            f = new_it.get('file')
+            if isinstance(f, dict):
+                new_f = dict(f)
+                fu = new_f.get('user')
+                if isinstance(fu, str) and fu in id_to_name:
+                    new_f['user_display_name'] = id_to_name[fu]
+                    if fu in id_to_email:
+                        new_f['user_email'] = id_to_email[fu]
+                for f_field in _EPOCH_FIELDS_ON_FILE:
+                    _add_iso_date_sibling(new_f, f_field)
+                new_it['file'] = new_f
+            c = new_it.get('comment')
+            if isinstance(c, dict):
+                new_c = dict(c)
+                cu = new_c.get('user')
+                if isinstance(cu, str) and cu in id_to_name:
+                    new_c['user_display_name'] = id_to_name[cu]
+                # File-comment pins carry a `created`/`timestamp` epoch.
+                _add_iso_date_sibling(new_c, 'created')
+                _add_iso_date_sibling(new_c, 'timestamp')
+                new_it['comment'] = new_c
+            out.append(new_it)
+        return out
+
+    async def _enrich_conversations(self, conversations: Optional[List[Any]]) -> List[Any]:
+        """Add user_display_name (DM partner) and creator_display_name to channel entries.
+
+        IM (DM) entries carry `user` (the partner's ID); regular channels carry `creator`.
+        """
+        if not conversations:
+            return conversations or []
+        ids: set = set()
+        for c in conversations:
+            if not isinstance(c, dict):
+                continue
+            for field in ('user', 'creator'):
+                v = c.get(field)
+                if _is_user_id(v):
+                    ids.add(v)
+        # Resolve user IDs only if there are any. Date enrichment runs
+        # unconditionally below — every channel has at least `created`.
+        if ids:
+            resolved = await self._resolve_user_ids(ids)
+            id_to_name = {
+                uid: info['display_name']
+                for uid, info in resolved.items()
+                if info.get('display_name')
+            }
+            id_to_email = {
+                uid: info['email']
+                for uid, info in resolved.items()
+                if info.get('email')
+            }
+        else:
+            id_to_name = {}
+            id_to_email = {}
+
+        out = []
+        for c in conversations:
+            if not isinstance(c, dict):
+                out.append(c)
+                continue
+            new_c = dict(c)
+            partner = new_c.get('user')
+            if isinstance(partner, str) and partner in id_to_name:
+                new_c['user_display_name'] = id_to_name[partner]
+                if partner in id_to_email:
+                    new_c['user_email'] = id_to_email[partner]
+            creator = new_c.get('creator')
+            if isinstance(creator, str) and creator in id_to_name:
+                new_c['creator_display_name'] = id_to_name[creator]
+            # Channel-level epoch fields (`created`, `last_read`).
+            for c_field in _EPOCH_FIELDS_ON_CONVERSATION:
+                _add_iso_date_sibling(new_c, c_field)
+            # `latest` is a sub-message preview with its own `ts`.
+            latest = new_c.get('latest')
+            if isinstance(latest, dict):
+                new_latest = dict(latest)
+                _add_iso_date_sibling(new_latest, 'ts')
+                new_c['latest'] = new_latest
+            out.append(new_c)
+        return out
+
+    async def _enrich_usergroups(self, usergroups: Optional[List[Any]]) -> List[Any]:
+        """Resolve `created_by`, `updated_by`, `deleted_by`, and `users[]` per usergroup.
+
+        Adds *_display_name siblings for the by-fields and a `resolved_users[]` array
+        of `{id, display_name, real_name, email}` next to the original `users[]`.
+        """
+        if not usergroups:
+            return usergroups or []
+        ids: set = set()
+        for g in usergroups:
+            if not isinstance(g, dict):
+                continue
+            for field in ('created_by', 'updated_by', 'deleted_by'):
+                v = g.get(field)
+                if _is_user_id(v):
+                    ids.add(v)
+            for u in (g.get('users') or []):
+                if _is_user_id(u):
+                    ids.add(u)
+        if not ids:
+            return usergroups
+        resolved = await self._resolve_user_ids(ids)
+        id_to_name = {
+            uid: info['display_name']
+            for uid, info in resolved.items()
+            if info.get('display_name')
+        }
+        id_to_email = {
+            uid: info['email']
+            for uid, info in resolved.items()
+            if info.get('email')
+        }
+
+        out = []
+        for g in usergroups:
+            if not isinstance(g, dict):
+                out.append(g)
+                continue
+            new_g = dict(g)
+            for field, label in (
+                ('created_by', 'created_by_display_name'),
+                ('updated_by', 'updated_by_display_name'),
+                ('deleted_by', 'deleted_by_display_name'),
+            ):
+                v = new_g.get(field)
+                if isinstance(v, str) and v in id_to_name:
+                    new_g[label] = id_to_name[v]
+            users = new_g.get('users')
+            if isinstance(users, list):
+                new_g['resolved_users'] = [
+                    {
+                        'id': u,
+                        'display_name': id_to_name.get(u, u),
+                        'email': id_to_email.get(u),
+                    }
+                    for u in users if isinstance(u, str)
+                ]
+            out.append(new_g)
+        return out
+
+    async def _enrich_search_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve user IDs inside a Slack search response.
+
+        Handles both `search.messages` and `search.all` shapes:
+          - `messages.matches[]` — message dicts with `user`, `text` (mentions),
+            and `channel.{id,name}`. Enriched via `_enrich_messages`.
+          - `files.matches[]` — file dicts with `user` (uploader). Enriched
+            with `user_display_name` / `user_email` siblings.
+          - `posts.matches[]` — currently undocumented user fields; passed through.
+        """
+        if not isinstance(response, dict):
+            return response
+        new_resp = dict(response)
+
+        msgs_section = new_resp.get('messages')
+        if isinstance(msgs_section, dict):
+            matches = msgs_section.get('matches')
+            if isinstance(matches, list):
+                new_section = dict(msgs_section)
+                new_section['matches'] = await self._enrich_messages(matches)
+                new_resp['messages'] = new_section
+
+        files_section = new_resp.get('files')
+        if isinstance(files_section, dict):
+            matches = files_section.get('matches')
+            if isinstance(matches, list):
+                ids: set = set()
+                for f in matches:
+                    if isinstance(f, dict):
+                        fu = f.get('user')
+                        if _is_user_id(fu):
+                            ids.add(fu)
+                if ids:
+                    resolved = await self._resolve_user_ids(ids)
+                    id_to_name = {
+                        uid: info['display_name']
+                        for uid, info in resolved.items()
+                        if info.get('display_name')
+                    }
+                    id_to_email = {
+                        uid: info['email']
+                        for uid, info in resolved.items()
+                        if info.get('email')
+                    }
+                    new_matches = []
+                    for f in matches:
+                        if isinstance(f, dict):
+                            new_f = dict(f)
+                            fu = new_f.get('user')
+                            if isinstance(fu, str) and fu in id_to_name:
+                                new_f['user_display_name'] = id_to_name[fu]
+                                if fu in id_to_email:
+                                    new_f['user_email'] = id_to_email[fu]
+                            new_matches.append(new_f)
+                        else:
+                            new_matches.append(f)
+                    new_section = dict(files_section)
+                    new_section['matches'] = new_matches
+                    new_resp['files'] = new_section
+
+        return new_resp
+
+    async def _resolve_user_handle(self, user_identifier: str) -> Optional[str]:
+        """Resolve a user identifier to the Slack username/handle.
+
+        Slack search modifiers (`from:@handle`, `with:@handle`) require the username,
+        not the user ID. This helper resolves any identifier (email, display name,
+        real name, or user ID) to the underlying handle via users_info.
+
+        Returns the handle string on success, or None if resolution fails.
+        Raises AmbiguousUserError when the identifier matches multiple users.
+        """
+        user_id = await self._resolve_user_identifier(user_identifier, allow_ambiguous=False)
+        if not user_id:
+            return None
+        try:
+            response = await self.client.users_info(user=user_id)
+            slack_response = self._handle_slack_response(response)
+            if slack_response.success and slack_response.data:
+                user_obj = slack_response.data.get('user') or {}
+                handle = user_obj.get('name')
+                if isinstance(handle, str) and handle:
+                    return handle
+        except Exception as e:
+            logger.debug(f"Failed to fetch handle for '{user_identifier}' (id={user_id}): {e}")
+        return None
 
 
     # @tool(

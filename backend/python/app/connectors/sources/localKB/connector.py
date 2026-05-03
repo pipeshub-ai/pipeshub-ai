@@ -72,7 +72,9 @@ class KnowledgeBaseConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             KBApp(connector_id),
@@ -80,7 +82,9 @@ class KnowledgeBaseConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -257,16 +261,14 @@ class KnowledgeBaseConnector(BaseConnector):
         self.logger.info("✅ Knowledge Base connector cleanup completed")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        """
-        Reindex KB records.
-
-        This delegates to existing KB reindexing logic if available.
-        For now, it's a placeholder that can be extended.
-        """
-        self.logger.info(f"Reindexing {len(record_results)} KB records")
-        # TODO: Implement KB-specific reindexing logic if needed
-        # This could delegate to KB service or trigger indexing events
-        pass
+        """Reindex KB records by publishing them to the indexing service."""
+        # Exclude folders — they can't be indexed
+        file_records = [r for r in record_results if r.mime_type != "application/vnd.folder"]
+        self.logger.info(
+            f"Reindexing {len(file_records)} KB records "
+            f"({len(record_results) - len(file_records)} folders excluded)"
+        )
+        await self.data_entities_processor.reindex_existing_records(file_records)
 
     @classmethod
     async def create_connector(
@@ -274,7 +276,9 @@ class KnowledgeBaseConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "KnowledgeBaseConnector":
         """Factory method to create a KnowledgeBaseConnector instance"""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -282,7 +286,13 @@ class KnowledgeBaseConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return KnowledgeBaseConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )
 
     async def get_filter_options(
@@ -299,8 +309,8 @@ class KnowledgeBaseConnector(BaseConnector):
             FilterOptionsResponse,
         )
         return FilterOptionsResponse(
+            success=True,
             options=[],
-            total=0,
             page=page,
             limit=limit,
             has_more=False

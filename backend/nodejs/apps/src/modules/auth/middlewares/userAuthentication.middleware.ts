@@ -7,7 +7,7 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 export const userValidator = (
@@ -55,13 +55,7 @@ export const adminValidator = async (
       throw new NotFoundError('Account not found');
     }
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('type');
-
-    let isAdmin = groups.find((userGroup: any) => userGroup.type === 'admin');
+    const isAdmin = await isUserOrgAdmin(userId, orgId);
 
     if (!isAdmin) {
       throw new BadRequestError('Admin access required');

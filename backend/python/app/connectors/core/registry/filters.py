@@ -15,7 +15,7 @@ from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -26,7 +26,7 @@ _logger = logging.getLogger(__name__)
 
 # Type alias for filter values (string, bool, list, number, datetime tuple, or None)
 # Datetime values are stored as (start, end) tuple of epoch integers in milliseconds
-FilterValue = Union[str, bool, int, float, List[str], Tuple[Optional[int], Optional[int]], None]
+FilterValue = Union[str, bool, int, float, list[str], tuple[int | None, int | None], None]
 MAX_DATETIME_TUPLE_LENGTH = 2  # (start, end)
 
 class FilterType(str, Enum):
@@ -65,7 +65,7 @@ class FilterOption:
     id: str
     label: str
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> dict[str, str]:
         """Convert to dictionary for JSON serialization"""
         return {
             "id": self.id,
@@ -88,14 +88,14 @@ class FilterOptionsResponse:
         message: Optional error or info message
     """
     success: bool
-    options: List[FilterOption]
+    options: list[FilterOption]
     page: int
     limit: int
     has_more: bool
-    cursor: Optional[str] = None
-    message: Optional[str] = None
+    cursor: str | None = None
+    message: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         result = {
             "success": self.success,
@@ -241,6 +241,8 @@ class SyncFilterKey(str, Enum):
     # User filters
     OWNER_IDS = "owner_ids"
     CREATED_BY = "created_by"
+    USERS = "users"
+    GROUPS = "groups"
 
 
 class IndexingFilterKey(str, Enum):
@@ -275,6 +277,10 @@ class IndexingFilterKey(str, Enum):
     IMAGES = "images"
     VIDEOS = "videos"
 
+    TABLES = "index_stage_tables"
+    VIEWS = "index_stage_views"
+    STAGE_FILES = "index_stage_files"
+    MAX_ROWS_PER_TABLE = "max_rows_per_table"
     # Child content types (generic)
     COMMENTS = "comments"
     ATTACHMENTS = "attachments"
@@ -295,7 +301,7 @@ class IndexingFilterKey(str, Enum):
 
 
 # Type to operators mapping (for validation and UI)
-TYPE_OPERATORS: Dict[FilterType, List[str]] = {
+TYPE_OPERATORS: dict[FilterType, list[str]] = {
     FilterType.STRING: [op.value for op in StringOperator],
     FilterType.BOOLEAN: [op.value for op in BooleanOperator],
     FilterType.DATETIME: [op.value for op in DatetimeOperator],
@@ -305,14 +311,14 @@ TYPE_OPERATORS: Dict[FilterType, List[str]] = {
 }
 
 
-def get_operators_for_type(filter_type: FilterType) -> List[str]:
+def get_operators_for_type(filter_type: FilterType) -> list[str]:
     """Get allowed operators for a filter type"""
     return TYPE_OPERATORS.get(filter_type, [])
 
 
 def get_operator_enum_class(filter_type: FilterType) -> type:
     """Get the operator enum class for a filter type"""
-    operator_map: Dict[FilterType, type] = {
+    operator_map: dict[FilterType, type] = {
         FilterType.STRING: StringOperator,
         FilterType.BOOLEAN: BooleanOperator,
         FilterType.DATETIME: DatetimeOperator,
@@ -363,18 +369,17 @@ class FilterField:
     description: str = ""
     required: bool = False
     default_value: FilterValue = None
-    default_operator: Optional[str] = None
-    options: List[str] = dataclass_field(default_factory=list)
+    default_operator: str | None = None
+    options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
 
     def __post_init__(self) -> None:
         """Validate configuration"""
 
         # Auto-detect option_source_type if not explicitly set
-        if self.option_source_type == OptionSourceType.MANUAL:
-            if self.options:
-                # Has static options defined
-                self.option_source_type = OptionSourceType.STATIC
+        if self.option_source_type == OptionSourceType.MANUAL and self.options:
+            # Has static options defined
+            self.option_source_type = OptionSourceType.STATIC
 
         # Validate option_source_type compatibility
         if self.option_source_type == OptionSourceType.DYNAMIC:
@@ -389,7 +394,7 @@ class FilterField:
                     "option_source_type=STATIC requires options list to be defined"
                 )
 
-    def _get_default_for_type(self) -> Union[str, bool, List[str], tuple, None]:
+    def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
         """Get default value based on type"""
         defaults = {
             FilterType.STRING: "",
@@ -414,11 +419,11 @@ class FilterField:
         return defaults.get(self.filter_type, "")
 
     @property
-    def operators(self) -> List[str]:
+    def operators(self) -> list[str]:
         """Get allowed operators for this filter type"""
         return get_operators_for_type(self.filter_type)
 
-    def to_schema_dict(self) -> Dict[str, Any]:
+    def to_schema_dict(self) -> dict[str, Any]:
         """Convert to dict for connector schema/config"""
         schema = {
             "name": self.name,
@@ -610,7 +615,7 @@ class Filter(BaseModel):
                             f"Invalid datetime tuple item at index {i}: expected int (epoch ms), got {type(item).__name__}"
                         )
             else:
-                expected_types: Dict[FilterType, type | tuple] = {
+                expected_types: dict[FilterType, type | tuple] = {
                     FilterType.STRING: str,
                     FilterType.BOOLEAN: bool,
                     FilterType.LIST: list,
@@ -646,13 +651,13 @@ class Filter(BaseModel):
             return True
         return False
 
-    def as_list(self) -> List[Any]:
+    def as_list(self) -> list[Any]:
         """Get value as list (wraps single values)"""
         if isinstance(self.value, list):
             return self.value
         return [self.value] if self.value is not None else []
 
-    def get_value(self, default: Optional[FilterValue] = None) -> FilterValue:
+    def get_value(self, default: FilterValue | None = None) -> FilterValue:
         """
         Get filter value (raw).
 
@@ -682,7 +687,7 @@ class Filter(BaseModel):
         """
         return self.operator
 
-    def get_datetime_start(self) -> Optional[int]:
+    def get_datetime_start(self) -> int | None:
         """
         Get start epoch from datetime filter value.
 
@@ -695,7 +700,7 @@ class Filter(BaseModel):
             return self.value[0]
         return None
 
-    def get_datetime_end(self) -> Optional[int]:
+    def get_datetime_end(self) -> int | None:
         """
         Get end epoch from datetime filter value.
 
@@ -709,7 +714,7 @@ class Filter(BaseModel):
         return None
 
     @staticmethod
-    def _epoch_to_iso(epoch: Optional[int]) -> Optional[str]:
+    def _epoch_to_iso(epoch: int | None) -> str | None:
         """Convert epoch timestamp (milliseconds) to ISO format string.
 
         Args:
@@ -725,7 +730,7 @@ class Filter(BaseModel):
         dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-    def get_datetime_iso(self) -> Tuple[Optional[str], Optional[str]]:
+    def get_datetime_iso(self) -> tuple[str | None, str | None]:
         """
         Get datetime filter value as ISO format strings.
 
@@ -762,9 +767,9 @@ class FilterCollection(BaseModel):
         - get_value(key, default) → Any: Get value, None if empty
         - is_enabled(key, default=True) → bool: For boolean filters
     """
-    filters: List[Filter] = Field(default_factory=list)
+    filters: list[Filter] = Field(default_factory=list)
 
-    def get(self, key: Union[str, Enum]) -> Optional[Filter]:
+    def get(self, key: str | Enum) -> Filter | None:
         """
         Get filter by key.
 
@@ -778,7 +783,7 @@ class FilterCollection(BaseModel):
         return None
 
     def get_value(
-        self, key: Union[str, Enum], default: Optional[FilterValue] = None
+        self, key: str | Enum, default: FilterValue | None = None
     ) -> FilterValue:
         """
         Get filter value.
@@ -799,7 +804,7 @@ class FilterCollection(BaseModel):
             return default
         return f.value
 
-    def is_enabled(self, key: Union[str, Enum], default: Optional[bool] = True) -> bool:
+    def is_enabled(self, key: str | Enum, default: bool | None = True) -> bool:
         """
         Check if boolean filter is enabled.
 
@@ -856,7 +861,7 @@ class FilterCollection(BaseModel):
             return bool(f.value)
         return True  # Non-empty non-boolean = enabled
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         """Get all filter keys"""
         return [f.key for f in self.filters]
 
@@ -870,8 +875,8 @@ class FilterCollection(BaseModel):
     @classmethod
     def from_dict(
         cls,
-        filter_dict: Dict[str, Any],
-        logger: Optional[Logger] = None
+        filter_dict: dict[str, Any],
+        logger: Logger | None = None
     ) -> 'FilterCollection':
         """
         Create FilterCollection from config dict.
@@ -894,7 +899,7 @@ class FilterCollection(BaseModel):
         if not filter_dict:
             return cls()
 
-        filters: List[Filter] = []
+        filters: list[Filter] = []
         for key, val in filter_dict.items():
             try:
                 # Validate filter structure
@@ -921,8 +926,8 @@ async def load_connector_filters(
     config_service: ConfigurationService,
     connector_name: str,
     connector_id: str,
-    logger: Optional[Logger] = None
-) -> Tuple[FilterCollection, FilterCollection]:
+    logger: Logger | None = None
+) -> tuple[FilterCollection, FilterCollection]:
     """
     Load sync and indexing filters from config service.
 

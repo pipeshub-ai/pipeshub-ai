@@ -1,7 +1,6 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
-from typing import Dict, Optional, Type
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -46,6 +45,9 @@ from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
+from app.connectors.sources.microsoft.outlook_individual.connector import (
+    OutlookIndividualConnector,
+)
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
@@ -57,16 +59,24 @@ from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zoom.connector import ZoomConnector
+from app.connectors.sources.salesforce.connector import SalesforceConnector
 
+from app.connectors.sources.gitlab.connector import GitLabConnector
+
+from app.connectors.sources.snowflake.connector import SnowflakeConnector
+from app.connectors.sources.postgres.connector import PostgreSQLConnector
+from app.connectors.sources.mariadb.connector import MariaDBConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
 
     # Registry of available connectors
-    _connector_registry: Dict[str, Type[BaseConnector]] = {
+    _connector_registry: dict[str, type[BaseConnector]] = {
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "outlook": OutlookConnector,
+        "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
@@ -88,27 +98,33 @@ class ConnectorFactory:
         "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,
         "azurefiles": AzureFilesConnector,
+        "postgresql": PostgreSQLConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
+        "zoom": ZoomConnector,
+        "salesforce": SalesforceConnector,
+        "gitlab": GitLabConnector,
+        "mariadb": MariaDBConnector,
     }
 
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
-    _beta_connector_definitions: Dict[str, Type[BaseConnector]] = {
-        'slack': SlackConnector,
-        'calendar': CalendarConnector,
-        'meet': MeetConnector,
-        'forms': FormsConnector,
-        'slides': SlidesConnector,
-        'docs': DocsConnector,
-        'zendesk': ZendeskConnector,
-        'airtable': AirtableConnector,
+    _beta_connector_definitions: dict[str, type[BaseConnector]] = {
+        "slack": SlackConnector,
+        "calendar": CalendarConnector,
+        "meet": MeetConnector,
+        "forms": FormsConnector,
+        "slides": SlidesConnector,
+        "docs": DocsConnector,
+        "zendesk": ZendeskConnector,
+        "airtable": AirtableConnector,
     }
 
-
     @classmethod
-    def register_connector(cls, name: str, connector_class: Type[BaseConnector]) -> None:
+    def register_connector(
+        cls, name: str, connector_class: type[BaseConnector]
+    ) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
 
@@ -119,7 +135,7 @@ class ConnectorFactory:
             cls.register_connector(name.lower(), connector)
 
     @classmethod
-    def list_beta_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+    def list_beta_connectors(cls) -> dict[str, type[BaseConnector]]:
         """
         Get the dictionary of beta connectors.
 
@@ -132,12 +148,12 @@ class ConnectorFactory:
         return cls._beta_connector_definitions.copy()
 
     @classmethod
-    def get_connector_class(cls, name: str) -> Optional[Type[BaseConnector]]:
+    def get_connector_class(cls, name: str) -> type[BaseConnector] | None:
         """Get connector class by name"""
         return cls._connector_registry.get(name.lower())
 
     @classmethod
-    def list_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+    def list_connectors(cls) -> dict[str, type[BaseConnector]]:
         """List all registered connectors"""
         return cls._connector_registry.copy()
 
@@ -149,8 +165,10 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        scope: str,
+        created_by: str,
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -163,12 +181,16 @@ class ConnectorFactory:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=connector_id,
-                **kwargs
+                scope=scope,
+                created_by=created_by,
+                **kwargs,
             )
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} {connector_id} connector: {str(e)}")
+            logger.error(
+                f"❌ Failed to create {name} {connector_id} connector: {str(e)}"
+            )
             return None
 
     @classmethod
@@ -179,8 +201,10 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        scope: str,
+        created_by: str,
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create and initialize a connector"""
         connector = await cls.create_connector(
             name=name,
@@ -188,19 +212,25 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
-            **kwargs
+            scope=scope,
+            created_by=created_by,
+            **kwargs,
         )
 
         if connector:
             try:
                 success = await connector.init()
                 if not success:
-                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    logger.error(
+                        f"❌ Failed to initialize {name} {connector_id} connector"
+                    )
                     return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}")
+                logger.error(
+                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
+                )
                 return None
 
         return None
@@ -213,8 +243,10 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        scope: str,
+        created_by: str,
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
         connector = await cls.initialize_connector(
             name=name,
@@ -222,21 +254,31 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
-            **kwargs
+            scope=scope,
+            created_by=created_by,
+            **kwargs,
         )
 
-        config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
+        config = await config_service.get_config(
+            f"/services/connectors/{connector_id}/config"
+        )
         sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
         if connector:
             try:
                 if sync_strategy == SyncStrategy.MANUAL.value:
-                    logger.info(f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL")
+                    logger.info(
+                        f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL"
+                    )
                 else:
-                    await sync_task_manager.start_sync(connector_id, connector.run_sync())
+                    await sync_task_manager.start_sync(
+                        connector_id, connector.run_sync()
+                    )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}")
+                logger.error(
+                    f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}"
+                )
                 return None
 
         return None

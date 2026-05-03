@@ -1,0 +1,34 @@
+{
+  "defaultSuggestions": [
+    {
+      "id": "1",
+      "text": "Find all customer feedback from Slack mentioning latency issues.",
+      "icons": ["slack"]
+    },
+    {
+      "id": "2",
+      "text": "List recurring blockers reported in Jira last month.",
+      "icons": ["jira"]
+    },
+    {
+      "id": "3",
+      "text": "Compare notes from Notion and Slack about the new release.",
+      "icons": ["notion"]
+    },
+    {
+      "id": "4",
+      "text": "Summarize Q3 revenue updates from Jira and Google Sheets",
+      "icons": ["sheets", "jira"]
+    },
+    {
+      "id": "5",
+      "text": "Show all documents tagged 'Compliance' from Confluence and Drive.",
+      "icons": ["confluence"]
+    },
+    {
+      "id": "6",
+      "text": "Show activities updated in GitHub and Jira this week",
+      "icons": ["jira", "github"]
+    }
+  ]
+}

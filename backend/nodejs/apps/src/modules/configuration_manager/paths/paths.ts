@@ -37,6 +37,7 @@ export const configPaths = {
     oauth: '/services/auth/oauth',
   },
   aiModels: '/services/aiModels',
+  webSearch: '/services/webSearch',
   slackBot: '/services/slackBot',
   db: {
     mongodb: '/services/mongodb',
@@ -48,6 +49,8 @@ export const configPaths = {
   },
   broker: {
     kafka: '/services/kafka',
+    redisStreams: '/services/redis-streams',
+    messageBroker: '/services/message-broker',
   },
   aiBackend: '/services/query',
   endpoint: '/services/endpoints',
@@ -67,4 +70,5 @@ export const configPaths = {
   platform: {
     settings: '/services/platform/settings',
   },
+  deployment: '/services/deployment',
 };

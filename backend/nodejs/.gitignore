@@ -26,6 +26,12 @@ coverage
 # nyc test coverage
 .nyc_output
 
+# c8 test coverage
+.c8_output
+
+# Test build output
+dist-test
+
 # Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
 .grunt
 

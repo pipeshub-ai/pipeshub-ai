@@ -21,7 +21,6 @@ import {
   DialogContent,
   DialogActions,
   Alert,
-  CircularProgress,
   useTheme,
   alpha,
   Avatar,
@@ -67,103 +66,249 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   const navigate = useNavigate();
   const isDark = theme.palette.mode === 'dark';
 
-  // State management
+  // ── Data ──────────────────────────────────────────────────────────────────
   const [agents, setAgents] = useState<Agent[]>([]);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // UI State
+  // ── Loading states ────────────────────────────────────────────────────────
+  // isFirstLoad  → full-screen skeleton (very first fetch only)
+  // isRefetching → subtle LinearProgress when search/sort changes (grid stays visible)
+  // isLoadingMore→ spinner at bottom when appending the next page
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [isRefetching, setIsRefetching] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  // ── Pagination (server-driven) ────────────────────────────────────────────
+  const [pagination, setPagination] = useState<{
+    currentPage: number;
+    totalPages: number;
+    totalItems: number;
+    limit: number;
+  }>({ currentPage: 1, totalPages: 0, totalItems: 0, limit: 20 });
+
+  // Start false → only set true once the first page confirms there is a next page
+  const [hasMorePages, setHasMorePages] = useState(false);
+
+  // ── Search / sort ─────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState('updatedAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
-  // Dialog states
+  // ── Dialog / menu ─────────────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<AgentTemplate | null>(null);
-
-  // Menu states
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
-
-  // Delete confirmation dialogs
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; agent: Agent | null }>({
-    open: false,
-    agent: null,
+    open: false, agent: null,
   });
-
   const [deleteTemplateDialog, setDeleteTemplateDialog] = useState<{
-    open: boolean;
-    template: AgentTemplate | null;
-  }>({
-    open: false,
-    template: null,
-  });
-
-  // Permissions dialog state
+    open: boolean; template: AgentTemplate | null;
+  }>({ open: false, template: null });
   const [permissionsDialog, setPermissionsDialog] = useState<{ open: boolean; agent: Agent | null }>({
-    open: false,
-    agent: null,
+    open: false, agent: null,
   });
 
-  // Enhanced color scheme
+  // ── Colors ────────────────────────────────────────────────────────────────
   const bgPaper = isDark ? '#1F2937' : '#ffffff';
   const bgHeader = isDark ? 'rgba(255, 255, 255, 0.02)' : 'rgba(0, 0, 0, 0.02)';
   const borderColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)';
   const textPrimary = isDark ? '#ffffff' : '#1f2937';
   const textSecondary = isDark ? '#9ca3af' : '#6b7280';
 
-  // Refs to prevent duplicate API calls (React StrictMode, re-renders)
-  const isLoadingRef = useRef(false);
-  const hasLoadedRef = useRef(false);
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const scrollRootRef = useRef<HTMLDivElement | null>(null);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchInputElRef = useRef<HTMLInputElement | null>(null);
 
-  // Load data - protected against StrictMode double calls
+  // These refs hold the *latest* values so loadMore / triggerRefetch (stable,
+  // zero-dep) can read them without needing to be recreated each render.
+  const isReadyRef = useRef(false);         // true after first fetch completes
+  const isLoadingMoreRef = useRef(false);   // mirrors isLoadingMore state
+  const isRefetchingRef = useRef(false);    // mirrors isRefetching state
+  const hasMorePagesRef = useRef(false);    // mirrors hasMorePages state
+  const currentPageRef = useRef(1);
+  const limitRef = useRef(20);
+  const activeSearchRef = useRef('');
+  const sortByRef = useRef('updatedAtTimestamp');
+  const sortOrderRef = useRef<'asc' | 'desc'>('desc');
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const applyPagination = (p: any, fallbackLimit?: number) => {
+    const cp = Number(p?.currentPage ?? 1);
+    const tp = Number(p?.totalPages ?? 0);
+    const ti = Number(p?.totalItems ?? 0);
+    const lim = Number(p?.limit ?? fallbackLimit ?? 20);
+    currentPageRef.current = cp;
+    limitRef.current = lim;
+    hasMorePagesRef.current = cp < tp;
+    setHasMorePages(cp < tp);
+    setPagination({ currentPage: cp, totalPages: tp, totalItems: ti, limit: lim });
+  };
+
+  const apiSort = (s: string) => (s === 'updatedAt' ? 'updatedAtTimestamp' : s);
+
+  // ── Initial load ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (isLoadingRef.current || hasLoadedRef.current) {
-      return;
-    }
-
-    const loadData = async () => {
-      isLoadingRef.current = true;
-      
+    let cancelled = false;
+    const init = async () => {
+      setIsFirstLoad(true);
       try {
-        setLoading(true);
-        // Load agents and templates in parallel
-        const agentsResponse = await AgentApiService.getAgents();  
-        setAgents(agentsResponse || []);
+        const { agents: page1, pagination: p } = await AgentApiService.getAgents({
+          page: 1,
+          limit: limitRef.current,
+          sort: apiSort(sortBy),
+          order: sortOrder,
+        });
+        if (cancelled) return;
+        setAgents(Array.isArray(page1) ? page1 : []);
+        applyPagination(p);
         setError(null);
-        hasLoadedRef.current = true;
+        isReadyRef.current = true;
       } catch (err) {
-        setError('Failed to load agents');
-        console.error('Error loading agents:', err);
-        setAgents([]);
+        if (!cancelled) {
+          setError('Failed to load agents');
+          setAgents([]);
+        }
       } finally {
-        setLoading(false);
-        isLoadingRef.current = false;
+        if (!cancelled) setIsFirstLoad(false);
       }
     };
-
-    loadData();
+    init();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Debounce searchQuery → activeSearch ref then trigger refetch ──────────
+  useEffect(() => {
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      const trimmed = searchQuery.trim();
+      if (trimmed !== activeSearchRef.current) {
+        activeSearchRef.current = trimmed;
+        // Only refetch once initial load is done
+        if (isReadyRef.current) triggerRefetch();
+      }
+    }, 400);
+    return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
-  // Filter and sort agents with safe array handling
-  const filteredAndSortedAgents = useMemo(() => {
-    if (!Array.isArray(agents)) {
-      return [];
+  // ── Refetch on sort changes ───────────────────────────────────────────────
+  useEffect(() => {
+    sortByRef.current = apiSort(sortBy);
+    sortOrderRef.current = sortOrder;
+    if (isReadyRef.current) triggerRefetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortBy, sortOrder]);
+
+  // ── Refetch: reset list, keep grid visible, show LinearProgress ───────────
+  // Stable callback (zero deps) — everything it needs lives in refs so it
+  // never needs to be recreated, meaning it never forces the observer to
+  // re-subscribe unnecessarily.
+  const triggerRefetch = useCallback(async () => {
+    // Don't start a refetch while a page-append is in flight
+    if (isLoadingMoreRef.current) return;
+    isRefetchingRef.current = true;
+    setIsRefetching(true);
+    try {
+      const { agents: page1, pagination: p } = await AgentApiService.getAgents({
+        page: 1,
+        limit: limitRef.current,
+        search: activeSearchRef.current || undefined,
+        sort: sortByRef.current,
+        order: sortOrderRef.current,
+      });
+      setAgents(Array.isArray(page1) ? page1 : []);
+      applyPagination(p);
+      setError(null);
+    } catch {
+      setError('Failed to load agents');
+      setAgents([]);
+      hasMorePagesRef.current = false;
+      setHasMorePages(false);
+      setPagination((prev) => ({ ...prev, currentPage: 1, totalPages: 0, totalItems: 0 }));
+    } finally {
+      isRefetchingRef.current = false;
+      setIsRefetching(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // zero deps — reads from refs
 
-    const filters: AgentFilterOptions = {
-      searchQuery,
-      tags: selectedTags,
-    };
+  // ── Load next page (stable, zero deps → observer never re-subscribes) ─────
+  const loadMore = useCallback(async () => {
+    if (
+      !isReadyRef.current ||
+      isLoadingMoreRef.current ||
+      isRefetchingRef.current ||
+      !hasMorePagesRef.current
+    ) return;
+    isLoadingMoreRef.current = true;
+    setIsLoadingMore(true);
+    try {
+      const nextPage = currentPageRef.current + 1;
+      const { agents: next, pagination: p } = await AgentApiService.getAgents({
+        page: nextPage,
+        limit: limitRef.current,
+        search: activeSearchRef.current || undefined,
+        sort: sortByRef.current,
+        order: sortOrderRef.current,
+      });
+      setAgents((prev) => [...prev, ...(Array.isArray(next) ? next : [])]);
+      applyPagination(p);
+    } catch (err) {
+      console.error('Error loading more agents:', err);
+      hasMorePagesRef.current = false;
+      setHasMorePages(false);
+    } finally {
+      isLoadingMoreRef.current = false;
+      setIsLoadingMore(false);
+    }
+  }, []); // zero deps — reads from refs
 
-    const filtered = filterAgents(agents, filters);
-    return sortAgents(filtered, sortBy, sortOrder);
-  }, [agents, searchQuery, selectedTags, sortBy, sortOrder]);
+  // ── Sentinel callback ref ─────────────────────────────────────────────────
+  // Using a callback ref (instead of useRef + useEffect) is the correct pattern
+  // here because the sentinel node doesn't exist during the skeleton screen
+  // (isFirstLoad=true).  A callback ref fires the moment the node is actually
+  // inserted into the DOM, so the observer is guaranteed to be created.
+  const sentinelRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      // Tear down the previous observer if the node is being unmounted
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (!node) return;
+
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting) loadMore();
+        },
+        {
+          // Watch intersections within the scrollable container, not the viewport
+          root: scrollRootRef.current,
+          rootMargin: '300px',
+          threshold: 0,
+        },
+      );
+      observerRef.current.observe(node);
+    },
+    [loadMore], // loadMore is stable → sentinelRef is stable too
+  );
+
+  // ── Client-side tag filter (server handles search + sort) ─────────────────
+  const filteredAndSortedAgents = useMemo(() => {
+    if (!Array.isArray(agents)) return [];
+    if (selectedTags.length === 0) return agents;
+    return agents.filter((a) =>
+      Array.isArray(a.tags) && selectedTags.every((t) => a.tags!.includes(t))
+    );
+  }, [agents, selectedTags]);
 
   // Get all available tags with safe array handling
   const availableTags = useMemo(() => {
@@ -587,7 +732,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   );
 
   // Show premium loading state
-  if (loading) {
+  if (isFirstLoad) {
     return (
       <Box sx={{ height: '90vh', display: 'flex', flexDirection: 'column' }}>
         {/* Header Skeleton */}
@@ -691,9 +836,9 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
               }}
             >
               Manage and deploy your AI agents
-              {Array.isArray(agents) && agents.length > 0 && (
+              {Number.isFinite(pagination.totalItems) && pagination.totalItems > 0 && (
                 <Box component="span" sx={{ ml: 1 }}>
-                  • {agents.length} agent{agents.length !== 1 ? 's' : ''}
+                  • {pagination.totalItems} agent{pagination.totalItems !== 1 ? 's' : ''}
                 </Box>
               )}
             </Typography>
@@ -708,6 +853,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               size="small"
+              inputRef={searchInputElRef}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -716,28 +862,31 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                 ),
                 endAdornment: searchQuery && (
                   <InputAdornment position="end">
-                    <Box
-                      component="button"
-                      onClick={handleClearSearch}
+                    <IconButton
+                      aria-label="Clear search"
+                      size="small"
+                      edge="end"
+                      onClick={() => {
+                        handleClearSearch();
+                        // Return focus to the input for quick re-typing
+                        if (searchInputElRef.current) {
+                          searchInputElRef.current.focus();
+                        }
+                      }}
                       sx={{
-                        width: 20,
-                        height: 20,
-                        borderRadius: 0.5,
-                        border: 'none',
-                        backgroundColor: 'transparent',
+                        width: 28,
+                        height: 28,
+                        ml: 0.5,
                         color: 'action.active',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
+                        borderRadius: 1,
                         '&:hover': {
-                          backgroundColor: 'action.hover',
+                          bgcolor: 'action.hover',
                           color: 'text.primary',
                         },
                       }}
                     >
-                      <Icon icon={clearIcon} fontSize={14} />
-                    </Box>
+                      <Icon icon={clearIcon} fontSize={16} />
+                    </IconButton>
                   </InputAdornment>
                 ),
               }}
@@ -777,8 +926,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   fontSize: '0.7rem',
                 }}
               >
-                {Array.isArray(filteredAndSortedAgents) ? filteredAndSortedAgents.length : 0} of{' '}
-                {Array.isArray(agents) ? agents.length : 0} results
+                {filteredAndSortedAgents.length} of{' '}
+                {pagination.totalItems} results
               </Typography>
             )}
           </Box>
@@ -880,25 +1029,28 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         )}
       </Box>
 
-      {/* Content Area */}
+      {/* Subtle progress bar shown during search / sort refetch (grid stays visible) */}
+      {isRefetching && (
+        <LinearProgress
+          sx={{ height: 2, flexShrink: 0 }}
+        />
+      )}
+
+      {/* Content Area — this is the scroll root the IntersectionObserver watches */}
       <Box
+        ref={scrollRootRef}
         sx={{
           flex: 1,
           overflow: 'auto',
+          minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
-          '&::-webkit-scrollbar': {
-            width: '6px',
-          },
-          '&::-webkit-scrollbar-track': {
-            background: 'transparent',
-          },
+          '&::-webkit-scrollbar': { width: '6px' },
+          '&::-webkit-scrollbar-track': { background: 'transparent' },
           '&::-webkit-scrollbar-thumb': {
             background: alpha(theme.palette.grey[500], 0.3),
             borderRadius: '3px',
-            '&:hover': {
-              background: alpha(theme.palette.grey[500], 0.5),
-            },
+            '&:hover': { background: alpha(theme.palette.grey[500], 0.5) },
           },
         }}
       >
@@ -922,12 +1074,15 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           <Box
             sx={{ mb: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
           >
-            <Typography variant="body2" sx={{ color: textSecondary, fontSize: '0.875rem' }}>
-              {Array.isArray(filteredAndSortedAgents) ? filteredAndSortedAgents.length : 0} agent
-              {(Array.isArray(filteredAndSortedAgents) ? filteredAndSortedAgents.length : 0) !== 1
-                ? 's'
-                : ''}{' '}
-              found
+            <Typography
+              variant="body2"
+              sx={{ color: textSecondary, fontSize: '0.875rem' }}
+            >
+              {isRefetching
+                ? 'Loading…'
+                : filteredAndSortedAgents.length > 0 || pagination.totalItems > 0
+                  ? `Showing ${filteredAndSortedAgents.length} of ${pagination.totalItems} agent${pagination.totalItems !== 1 ? 's' : ''}`
+                  : 'No agents found'}
             </Typography>
             {(searchQuery || selectedTags.length > 0) && (
               <Button
@@ -951,60 +1106,73 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
             )}
           </Box>
 
-          <Fade in timeout={300}>
-            <Box sx={{ flex: 1 }}>
-              {/* Agents Grid */}
-              {!Array.isArray(filteredAndSortedAgents) || filteredAndSortedAgents.length === 0 ? (
-                <Paper
-                  sx={{
-                    p: 6,
-                    textAlign: 'center',
-                    bgcolor: alpha(theme.palette.primary.main, 0.04),
-                    border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-                    borderRadius: 2,
-                  }}
-                >
-                  <Icon
-                    icon={sparklesIcon}
-                    width={64}
-                    height={64}
-                    color={theme.palette.text.disabled}
-                  />
-                  <Typography variant="h6" sx={{ mt: 2, mb: 1, color: textPrimary }}>
-                    {searchQuery || selectedTags.length > 0
-                      ? 'No agents found'
-                      : 'No agents in repository'}
-                  </Typography>
-                  <Typography variant="body2" sx={{ color: textSecondary, mb: 3 }}>
-                    {searchQuery || selectedTags.length > 0
-                      ? 'Try adjusting your search criteria or filters'
-                      : 'Create your first AI agent to get started with automation'}
-                  </Typography>
-                  {!searchQuery && !selectedTags.length && (
-                    <Stack direction="row" spacing={2} justifyContent="center">
-                      <Button
-                        variant="outlined"
-                        startIcon={<Icon icon={flowIcon} width={16} height={16} />}
-                        onClick={() => navigate(paths.dashboard.agent.new)}
-                        sx={{
-                          borderRadius: 1.5,
-                          textTransform: 'none',
-                          fontSize: '0.875rem',
-                          fontWeight: 500,
-                        }}
-                      >
-                         Create New Agent
-                      </Button>
-                    </Stack>
-                  )}
-                </Paper>
-              ) : (
-                <Grid container spacing={2.5}>
-                  {filteredAndSortedAgents.map(renderAgentCard).filter(Boolean)}
-                </Grid>
-              )}
-            </Box>
-          </Fade>
+          {/* Agents Grid */}
+          <Box sx={{ flex: 1 }}>
+            {isRefetching ? (
+              // ── Search / sort refetch: show skeleton cards so the user sees
+              //    animated placeholders instead of a frozen stale list.
+              <Fade in timeout={150}>
+                <Box>
+                  <AgentGridSkeleton count={8} />
+                </Box>
+              </Fade>
+            ) : filteredAndSortedAgents.length === 0 ? (
+              // ── Empty state
+              <Paper
+                sx={{
+                  p: 6,
+                  textAlign: 'center',
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                  borderRadius: 2,
+                }}
+              >
+                <Icon icon={sparklesIcon} width={64} height={64} color={theme.palette.text.disabled} />
+                <Typography variant="h6" sx={{ mt: 2, mb: 1, color: textPrimary }}>
+                  {searchQuery || selectedTags.length > 0 ? 'No agents found' : 'No agents in repository'}
+                </Typography>
+                <Typography variant="body2" sx={{ color: textSecondary, mb: 3 }}>
+                  {searchQuery || selectedTags.length > 0
+                    ? 'Try adjusting your search criteria or filters'
+                    : 'Create your first AI agent to get started with automation'}
+                </Typography>
+                {!searchQuery && !selectedTags.length && (
+                  <Stack direction="row" spacing={2} justifyContent="center">
+                    <Button
+                      variant="outlined"
+                      startIcon={<Icon icon={flowIcon} width={16} height={16} />}
+                      onClick={() => navigate(paths.dashboard.agent.new)}
+                      sx={{ borderRadius: 1.5, textTransform: 'none', fontSize: '0.875rem', fontWeight: 500 }}
+                    >
+                      Create New Agent
+                    </Button>
+                  </Stack>
+                )}
+              </Paper>
+            ) : (
+              // ── Real agent cards
+              <Grid container spacing={2.5}>
+                {filteredAndSortedAgents.map(renderAgentCard).filter(Boolean)}
+              </Grid>
+            )}
+
+            {/* ── Sentinel ──────────────────────────────────────────────────
+                Zero-height, always in the DOM.  The IntersectionObserver
+                fires when it comes within rootMargin (300 px) of the scroll
+                root, triggering loadMore before the user reaches the bottom. */}
+            <Box ref={sentinelRef} sx={{ height: 0 }} aria-hidden="true" />
+
+            {/* ── Load-more skeleton ────────────────────────────────────────
+                Skeleton cards appended below the real grid while the next
+                page is being fetched — clearly visible to the user. */}
+            {isLoadingMore && (
+              <Fade in timeout={200}>
+                <Box sx={{ mt: 2.5 }}>
+                  <AgentGridSkeleton count={4} />
+                </Box>
+              </Fade>
+            )}
+          </Box>
         </Container>
       </Box>
 

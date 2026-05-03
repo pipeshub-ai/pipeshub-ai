@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -46,6 +47,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
@@ -144,9 +146,15 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
             )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/zammad.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.ZAMMAD.value))
         .with_realtime_support(False)
+        .add_documentation_link(DocumentationLink(
+            "Zammad API Token Setup",
+            "https://docs.zammad.org/en/latest/api/user-access-token.html",
+            "setup"
+        ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/zammad/zammad',
@@ -205,7 +213,9 @@ class ZammadConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             ZammadApp(connector_id),
@@ -213,7 +223,9 @@ class ZammadConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.external_client: Optional[ZammadClient] = None
         self.data_source: Optional[ZammadDataSource] = None
@@ -3401,7 +3413,9 @@ class ZammadConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """Factory method to create ZammadConnector instance"""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3416,5 +3430,7 @@ class ZammadConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

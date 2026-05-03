@@ -21,6 +21,7 @@ from mailparser_reply import EmailReplyParser
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -28,6 +29,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,12 +46,15 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthBuilder,
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     FilterCategory,
@@ -62,6 +67,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -87,36 +95,51 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Gmail Workspace",
-            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-            token_url="https://oauth2.googleapis.com/token",
-            redirect_uri="connectors/oauth/callback/Gmail",
-            scopes=OAuthScopeConfig(
-                personal_sync=[],
-                team_sync=[
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/drive.readonly",
-                ],
-                agent=[]
-            ),
-            fields=[
-                CommonFields.client_id("Google Cloud Console"),
-                CommonFields.client_secret("Google Cloud Console")
-            ],
-            icon_path="/assets/icons/connectors/gmail.svg",
-            app_group="Google Workspace",
-            app_description="OAuth application for accessing Gmail API and related Google Workspace services",
-            app_categories=["Email"],
-            additional_params={
-                "access_type": "offline",
-                "prompt": "consent",
-                "include_granted_scopes": "true"
-            }
-        )
+        AuthBuilder.type(AuthType.CUSTOM).fields([
+                AuthField(
+                    name="adminEmail",
+                    display_name="Admin Email",
+                    placeholder="admin@yourdomain.com",
+                    description="Google Workspace administrator email address used for domain-wide delegation.",
+                    field_type="TEXT",
+                    required=True,
+                ),
+                AuthField(
+                    name="serviceAccountJson",
+                    display_name="Service Account JSON",
+                    placeholder="Click to upload service account JSON file",
+                    description="Upload the service account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                    field_type="FILE",
+                    required=True,
+                    min_length=0,
+                    accepted_file_types=[".json"],
+                    validation_rules=[
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_VALID,
+                            error_message="File must be valid JSON.",
+                        ),
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_HAS_FIELDS,
+                            required_fields=["type", "client_id", "project_id"],
+                            error_message="Missing required fields: {missing}",
+                        ),
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_FIELD_EQUALS,
+                            field="type",
+                            value="service_account",
+                            error_message=(
+                                "This is not a Google Cloud Service Account JSON file. "
+                                "The 'type' field must be 'service_account'."
+                            ),
+                        ),
+                    ],
+                    is_secret=True,
+                ),
+            ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/gmail.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.GOOGLE_MAIL.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Gmail API Setup",
@@ -169,7 +192,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             GmailTeamApp(connector_id),
@@ -177,7 +202,9 @@ class GoogleGmailTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -318,35 +345,15 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
-    def _pass_date_filter(self, message: dict) -> bool:
-        """
-        Checks if the Gmail message passes the configured RECEIVED_DATE filter.
-        Relies on client-side filtering since Gmail API does not support date filtering.
-        """
-        # Check Received Date Filter
-        received_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
-        if received_filter:
-            # Get start and end timestamps in milliseconds directly
-            start_ts = received_filter.get_datetime_start()
-            end_ts = received_filter.get_datetime_end()
-
-            # Extract internalDate from message (already in epoch milliseconds as string)
-            internal_date = message.get("internalDate")
-            if internal_date:
-                try:
-                    item_ts = int(internal_date)
-                except (ValueError, TypeError):
-                    # If we can't parse the date, skip the filter check
-                    return True
-
-                # Check if message is before start date
-                if start_ts and item_ts < start_ts:
-                    return False
-                # Check if message is after end date
-                if end_ts and item_ts > end_ts:
-                    return False
-
-        return True
+    @staticmethod
+    def _mailbox_external_group_id(user_email: str, label_ids: Optional[List[str]]) -> str:
+        """Mailbox record-group external id from Gmail labelIds (same rule as MailRecord)."""
+        labels = label_ids or []
+        if "SENT" in labels:
+            return f"{user_email}:SENT"
+        if "INBOX" in labels:
+            return f"{user_email}:INBOX"
+        return f"{user_email}:OTHERS"
 
     async def _process_gmail_message(
         self,
@@ -373,24 +380,12 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not message_id:
                 return None
 
-            if not self._pass_date_filter(message):
-                self.logger.debug(f" Skipping message {message_id} due to date filter")
-                return None
-
             # Extract labelIds from message
             label_ids = message.get('labelIds', [])
-            message.get('snippet', '')
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
 
             # Determine external_record_group_id based on labelIds (SENT or INBOX)
-            # Prefer SENT if both are present
-            external_record_group_id = None
-            if "SENT" in label_ids:
-                external_record_group_id = f"{user_email}:SENT"
-            elif "INBOX" in label_ids:
-                external_record_group_id = f"{user_email}:INBOX"
-            else:
-                external_record_group_id = f"{user_email}:OTHERS"
+            external_record_group_id = self._mailbox_external_group_id(user_email, label_ids)
 
             # Parse headers
             payload = message.get('payload', {})
@@ -585,6 +580,8 @@ class GoogleGmailTeamConnector(BaseConnector):
             seen_drive_file_ids = set()  # Track to avoid duplicates
 
             for part in parts_list:
+                if not isinstance(part, dict):
+                    continue
                 body = part.get('body', {})
                 part_id = part.get('partId', 'unknown')
                 mime_type = part.get('mimeType', '')
@@ -701,6 +698,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         message_id: str,
         attachment_info: Dict,
         parent_mail_permissions: List[Permission],
+        external_record_group_id: str,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Gmail attachment and create a FileRecord.
@@ -710,6 +708,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             message_id: ID of the parent message
             attachment_info: Attachment metadata dict with attachmentId, driveFileId, filename, mimeType, size
             parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+            external_record_group_id: Mailbox group key from parent message labelIds (matches MailRecord)
 
         Returns:
             RecordUpdate object or None
@@ -791,6 +790,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.MAILBOX,
                 external_record_id=stable_attachment_id,  # driveFileId for Drive files, stable ID for regular
+                external_record_group_id=external_record_group_id,
                 parent_external_record_id=message_id,
                 parent_record_type=RecordType.MAIL,
                 version=0 if is_new else existing_record.version + 1,
@@ -844,7 +844,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         user_email: str,
         message_id: str,
         attachment_infos: List[Dict],
-        parent_mail_permissions: List[Permission]
+        parent_mail_permissions: List[Permission],
+        external_record_group_id: str,
     ) -> AsyncGenerator[Optional[RecordUpdate], None]:
         """
         Process Gmail attachments and yield RecordUpdate objects.
@@ -855,6 +856,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             message_id: ID of the parent message
             attachment_infos: List of attachment metadata dictionaries
             parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+            external_record_group_id: Mailbox group key from parent message labelIds
         """
         for attach_info in attachment_infos:
             try:
@@ -862,7 +864,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     user_email,
                     message_id,
                     attach_info,
-                    parent_mail_permissions
+                    parent_mail_permissions,
+                    external_record_group_id,
                 )
 
                 if attach_update:
@@ -953,6 +956,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             total_threads = 0
             total_messages = 0
             page_token = None
+            threads_q = build_gmail_received_date_threads_query(
+                self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            if threads_q:
+                self.logger.info(f"Full sync thread list query (RECEIVED_DATE): {threads_q!r}")
 
             # Fetch threads with pagination
             while True:
@@ -961,7 +969,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     threads_response = await user_gmail_client.users_threads_list(
                         userId=user_email,
                         maxResults=100,
-                        pageToken=page_token
+                        pageToken=page_token,
+                        q=threads_q,
                     )
 
                     threads = threads_response.get('threads', [])
@@ -1035,13 +1044,15 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                                     if message:
                                         attachment_infos = self._extract_attachment_infos(message)
+                                        external_record_group_id = mail_record.external_record_group_id
 
                                         # Process attachments using generator
                                         async for attach_update in self._process_gmail_attachment_generator(
                                             user_email,
                                             message_id,
                                             attachment_infos,
-                                            permissions
+                                            permissions,
+                                            external_record_group_id,
                                         ):
                                             if attach_update and attach_update.record:
                                                 # Add attachment to SAME batch_records list
@@ -1121,6 +1132,11 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         Performs an incremental sync of Gmail mailbox contents using history API.
 
+        RECEIVED_DATE applies to full sync via `users.threads.list(q=...)`. The history
+        API has no equivalent `q`; new messages from history are processed without
+        re-applying that date window so incremental sync stays consistent with
+        thread-level indexing.
+
         Args:
             user_email: The user email address
             user_gmail_client: User-specific Gmail data source client
@@ -1145,6 +1161,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     start_history_id,
                     "INBOX"
                 )
+            except HttpError:
+                raise
             except Exception as inbox_error:
                 self.logger.error(f"Error fetching INBOX history changes: {inbox_error}")
                 inbox_changes = {'history': []}
@@ -1157,6 +1175,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     start_history_id,
                     "SENT"
                 )
+            except HttpError:
+                raise
             except Exception as sent_error:
                 self.logger.error(f"Error fetching SENT history changes: {sent_error}")
                 sent_changes = {'history': []}
@@ -1456,11 +1476,13 @@ class GoogleGmailTeamConnector(BaseConnector):
                         # Extract and process attachments
                         attachment_infos = self._extract_attachment_infos(full_message)
                         if attachment_infos:
+                            external_record_group_id = mail_record.external_record_group_id
                             async for attach_update in self._process_gmail_attachment_generator(
                                 user_email,
                                 message_id,
                                 attachment_infos,
-                                permissions
+                                permissions,
+                                external_record_group_id,
                             ):
                                 if attach_update and attach_update.record:
                                     batch_records.append((
@@ -2847,7 +2869,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Gmail workspace."""
         self.logger.info("Running incremental sync for Google Gmail workspace")
-        await self._run_sync()
+        await self.run_sync()
 
 
     def handle_webhook_notification(self, notification: Dict) -> None:
@@ -3097,12 +3119,19 @@ class GoogleGmailTeamConnector(BaseConnector):
                 if parent_mail_update and parent_mail_update.new_permissions:
                     parent_mail_permissions = parent_mail_update.new_permissions
 
+                if parent_mail_update and parent_mail_update.record:
+                    external_record_group_id = parent_mail_update.record.external_record_group_id
+                else:
+                    external_record_group_id = self._mailbox_external_group_id(
+                        user_email, parent_message.get("labelIds")
+                    )
                 # Process Drive attachment
                 record_update = await self._process_gmail_attachment(
                     user_email,
                     parent_message_id,
                     matching_attachment,
-                    parent_mail_permissions
+                    parent_mail_permissions,
+                    external_record_group_id,
                 )
 
                 if not record_update or record_update.is_deleted:
@@ -3188,12 +3217,19 @@ class GoogleGmailTeamConnector(BaseConnector):
             if parent_mail_update and parent_mail_update.new_permissions:
                 parent_mail_permissions = parent_mail_update.new_permissions
 
+            if parent_mail_update and parent_mail_update.record:
+                external_record_group_id = parent_mail_update.record.external_record_group_id
+            else:
+                external_record_group_id = self._mailbox_external_group_id(
+                    user_email, parent_message.get("labelIds")
+                )
             # Process attachment using existing function
             record_update = await self._process_gmail_attachment(
                 user_email,
                 parent_message_id,
                 matching_attachment,
-                parent_mail_permissions
+                parent_mail_permissions,
+                external_record_group_id,
             )
 
             if not record_update or record_update.is_deleted:
@@ -3256,7 +3292,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> BaseConnector:
         """Create a new instance of the Google Gmail workspace connector."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3271,5 +3309,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

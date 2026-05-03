@@ -246,6 +246,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        pass
+    
+    @abstractmethod
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
         pass
 
@@ -285,6 +289,14 @@ class BaseDataStore(ABC):
 
         Returns:
             int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent. Used by TEAM-scope connectors.
         """
         pass
 

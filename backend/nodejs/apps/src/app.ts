@@ -19,6 +19,7 @@ import {
   createConversationalRouter,
   createSemanticSearchRouter,
   createAgentConversationalRouter,
+  createChatSpeechRouter,
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
@@ -60,10 +61,15 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
-import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
+import {
+  resolveMessageBrokerConfig,
+  ensureMessageTopicsExist,
+  REQUIRED_TOPICS,
+} from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { SamlController } from './modules/auth/controller/saml.controller';
 
 const loggerConfig = {
   service: 'Application',
@@ -103,16 +109,16 @@ export class Application {
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
 
-      // Ensure Kafka topics exist (important for Kafka deployments where auto-create is disabled)
+      // Ensure message broker topics/streams exist
       try {
-        this.logger.info('Ensuring Kafka topics exist...');
-        await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
-        this.logger.info('Kafka topics check completed');
-      } catch (kafkaError: any) {
+        this.logger.info('Ensuring message broker topics exist...');
+        const brokerConfig = resolveMessageBrokerConfig(appConfig);
+        await ensureMessageTopicsExist(brokerConfig, this.logger, REQUIRED_TOPICS);
+        this.logger.info('Message broker topics check completed');
+      } catch (brokerError: any) {
         this.logger.warn(
-          `Could not verify/create Kafka topics: ${kafkaError.message}.`
+          `Could not verify/create message broker topics: ${brokerError.message}.`
         );
-        // Don't throw - allow app to continue; topics might already exist or be created elsewhere
       }
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
@@ -250,10 +256,48 @@ export class Application {
       this.app.use(express.static(path.join(__dirname, 'public')));
       // SPA fallback route\
       this.app.get('*', (_req, res) => {
+        // The Next.js static export emits a single index.html for the
+        // slug-less OAuth callback page, but IdPs redirect to per-slug URLs
+        // (e.g. /toolsets/oauth/callback/Gmail) for redirect-URI parity with
+        // the legacy SPA. Resolve those to the matching callback HTML before
+        // falling back to the root index.html; otherwise the wildcard would
+        // send the root page which hydrates as `/` and redirects the popup
+        // to /chat, so OAuth never completes.
+        const oauthCallbackMatch = _req.path.match(
+          /^\/(toolsets|connectors)\/oauth\/callback\/[^/]+\/?$/,
+        );
+        if (oauthCallbackMatch && oauthCallbackMatch[1]) {
+          res.sendFile(
+            path.join(
+              __dirname,
+              'public',
+              oauthCallbackMatch[1],
+              'oauth',
+              'callback',
+              'index.html',
+            ),
+          );
+          return;
+        }
+
+        // `/record/<recordId>` URLs (shared links, backend citation links,
+        // etc.) can't be pre-rendered per id under `output: 'export'` since
+        // `generateStaticParams()` would have to enumerate every record id.
+        // Serve the single `/record/` HTML shell directly — the client reads
+        // the id from `window.location.pathname` — so the URL stays intact
+        // (no redirect, no visible `?recordId=` query param) and matches the
+        // pattern used above for OAuth callback slugs.
+        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        if (recordMatch) {
+          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          return;
+        }
+
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 
       this.logger.info('Application initialized successfully');
+      await this.updateSamlStrategies()
     } catch (error: any) {
       this.logger.error(
         `Failed to initialize application: ${error.message}`,
@@ -319,7 +363,7 @@ export class Application {
     // CORS - ensure this matches your frontend domain
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
@@ -396,6 +440,12 @@ export class Application {
     this.app.use(
       '/api/v1/agents',
       createAgentConversationalRouter(this.esAgentContainer),
+    );
+
+    // chat speech (TTS/STT) proxy routes to the Python AI backend
+    this.app.use(
+      '/api/v1/chat',
+      createChatSpeechRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes
@@ -647,5 +697,17 @@ export class Application {
       });
     }
   }
+  async updateSamlStrategies(): Promise<void> {
+    try {
+      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
+      samlController.updateSamlStrategiesWithCallback()
+      this.logger.info('SSO SAML passport strategies updated successfully')
+    } catch (error) {
+      this.logger.warn('Failed to update passport strategies', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+
 

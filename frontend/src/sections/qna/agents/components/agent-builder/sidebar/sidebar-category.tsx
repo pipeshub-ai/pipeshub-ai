@@ -25,6 +25,15 @@ interface SidebarCategoryProps {
   onConfigureClick?: () => void;
   onDragAttempt?: () => void;
   dragData?: Record<string, any>;
+  configureTooltip?: React.ReactNode;
+  configureIcon?: any;
+  configureIconColor?: string;
+  /**
+   * Small inline action rendered INSIDE the header row, to the right of the
+   * count badge (and before the configure icon). Use for compact chips/buttons
+   * that must stay on the same line as the category label.
+   */
+  headerAction?: React.ReactNode;
   children?: React.ReactNode;
 }
 
@@ -41,6 +50,10 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   onConfigureClick,
   onDragAttempt,
   dragData,
+  configureTooltip,
+  configureIcon,
+  configureIconColor,
+  headerAction,
   children,
 }) => {
   const theme = useTheme();
@@ -178,9 +191,17 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
             </Tooltip>
           )}
           
-          {/* Configure Icon */}
+          {/* Inline header action (e.g. small "Credentials" chip for service-account toolsets) */}
+          {headerAction && (
+            // Stop click from toggling the category expand/collapse
+            <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'flex', alignItems: 'center' }}>
+              {headerAction}
+            </Box>
+          )}
+
+          {/* Configure / alert icon */}
           {showConfigureIcon && onConfigureClick && (
-            <Tooltip title="Configure toolset" placement="right">
+            <Tooltip title={configureTooltip || 'Configure toolset'} placement="right">
               <IconButton
                 size="small"
                 onClick={(e) => {
@@ -189,13 +210,13 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
                 }}
                 sx={{
                   ml: 0.5,
-                  color: theme.palette.error.main,
+                  color: configureIconColor || theme.palette.error.main,
                   '&:hover': {
-                    backgroundColor: alpha(theme.palette.error.main, 0.1),
+                    backgroundColor: alpha((configureIconColor || theme.palette.error.main), 0.1),
                   },
                 }}
               >
-                <Icon icon={UI_ICONS.settings} width={16} height={16} />
+                <Icon icon={configureIcon || UI_ICONS.settings} width={16} height={16} />
               </IconButton>
             </Tooltip>
           )}

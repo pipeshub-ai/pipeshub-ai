@@ -33,11 +33,13 @@ from msgraph.generated.sites.item.pages.pages_request_builder import PagesReques
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -57,6 +59,8 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -281,6 +285,14 @@ class CountryToRegionMapper:
                 description="The Directory (Tenant) ID from Azure AD"
             ),
             AuthField(
+                name="sharepointDomain",
+                display_name="SharePoint Domain",
+                placeholder="https://your-domain.sharepoint.com",
+                description="Your SharePoint domain URL",
+                field_type="URL",
+                max_length=2000
+            ),
+            AuthField(
                 name="hasAdminConsent",
                 display_name="Has Admin Consent",
                 description="Check if admin consent has been granted for the application",
@@ -289,20 +301,75 @@ class CountryToRegionMapper:
                 default_value=False
             ),
             AuthField(
-                name="sharepointDomain",
-                display_name="SharePoint Domain",
-                placeholder="https://your-domain.sharepoint.com",
-                description="Your SharePoint domain URL",
-                field_type="URL",
-                max_length=2000
-            )
+                name="certificate",
+                display_name="Client Certificate",
+                placeholder="Click to upload certificate file (.crt, .cer, or .pem)",
+                description="Upload the client certificate for certificate-based authentication. Required together with Private Key.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".crt", ".cer", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain BEGIN CERTIFICATE marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain END CERTIFICATE marker.",
+                    ),
+                ],
+                is_secret=True,
+            ),
+            AuthField(
+                name="privateKey",
+                display_name="Private Key (PKCS#8)",
+                placeholder="Click to upload private key file (.key or .pem)",
+                description="Upload the private key in PKCS#8 format. Required together with Client Certificate.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".key", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN RSA PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must be in PKCS#8 format, not RSA. Convert with: "
+                            "openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key "
+                            "-out privatekey.key -nocrypt"
+                        ),
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain BEGIN PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain END PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN ENCRYPTED PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must not be encrypted. Use the -nocrypt flag during conversion."
+                        ),
+                    ),
+                ],
+                is_secret=True,
+            ),
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/sharepoint.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.SHAREPOINT_ONLINE.value))
         .add_documentation_link(DocumentationLink(
             "SharePoint Online API Setup",
-            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -314,15 +381,6 @@ class CountryToRegionMapper:
             name="site_ids",
             display_name="Site Names",
             description="Filter specific sites by name.",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            default_value=[],
-            option_source_type=OptionSourceType.DYNAMIC
-        ))
-        .add_filter_field(FilterField(
-            name="page_ids",
-            display_name="Page name",
-            description="Filter specific pages by name.",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             default_value=[],
@@ -384,9 +442,11 @@ class SharePointConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
-        super().__init__(SharePointOnlineApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(SharePointOnlineApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
@@ -490,14 +550,12 @@ class SharePointConnector(BaseConnector):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
             raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
-        has_admin_consent = credentials_config.get("hasAdminConsent", False)
-
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
             sharepoint_domain=normalized_sharepoint_domain,
-            has_admin_consent=has_admin_consent,
+            has_admin_consent=True,
         )
 
         # Store class attributes
@@ -771,8 +829,11 @@ class SharePointConnector(BaseConnector):
 
     async def _get_all_sites(self) -> List[Site]:
         """
-        Get all SharePoint sites in the tenant including root and subsites.
-        Handles permission errors gracefully and continues with accessible sites.
+        Return SharePoint sites that belong in the sync scope.
+
+        Discovery walks the root site, the sites search API, and optionally subsites.
+        Results are validated and SITE_IDS sync filters are applied.
+        Permission failures during discovery are logged; reachable sites are still returned.
         """
         sites = []
 
@@ -878,15 +939,26 @@ class SharePointConnector(BaseConnector):
             if subsite_count > 0:
                 self.logger.info(f"Found {subsite_count} additional subsites")
 
-            # Validate and filter sites
+            # Validate sites, apply SITE_IDS sync filters, and build in-scope list
+            pre_scope_count = len(sites)
             valid_sites = []
             for site in sites:
-                if self._validate_site_id(site.id):
-                    valid_sites.append(site)
-                else:
+                if not self._validate_site_id(site.id):
                     self.logger.warning(f"⚠️ Invalid site ID format, skipping: '{site.id}' ({site.display_name or site.name})")
+                    continue
+                if not self._pass_site_ids_filters(site.id):
+                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
+                    continue
+                valid_sites.append(site)
 
-            self.logger.info(f"Total valid SharePoint sites discovered: {len(valid_sites)}")
+            self.logger.info(
+                f"SharePoint sites in sync scope: {len(valid_sites)} "
+                f"(from {pre_scope_count} discovered before validation and site ID filters)"
+            )
+            if pre_scope_count > 0 and len(valid_sites) == 0:
+                self.logger.warning(
+                    "⚠️ No sites remain after validation and site ID filters — check filters and permissions"
+                )
             return valid_sites
 
         except Exception as e:
@@ -1864,11 +1936,6 @@ class SharePointConnector(BaseConnector):
                         self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
                         continue
 
-                    page_key = f"{page_id}:{site_id}"
-                    if not self._pass_page_ids_filters(page_key):
-                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_key}' {page_name}")
-                        continue
-
                     # Check the 'created_by' field to skip System Account created pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
@@ -2133,56 +2200,6 @@ class SharePointConnector(BaseConnector):
 
         # Unknown operator, default to allowing the drive
         self.logger.warning(f"Unknown filter operator '{operator_str}' for DRIVE_IDS filter, allowing drive")
-        return True
-
-    def _pass_page_ids_filters(self, page_key: str) -> bool:
-        """
-        Checks if the page passes the configured page IDs filter.
-
-        For MULTISELECT filters:
-        - Operator IN: Only allow pages with IDs in the selected list (inclusion list)
-        - Operator NOT_IN: Allow pages with IDs NOT in the selected list (exclusion list)
-
-        Args:
-            page_key: The SharePoint page key to check
-
-        Returns:
-            True if the page should be synced, False if it should be skipped
-        """
-        # Get the page IDs filter
-        page_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
-
-        # If no filter configured or filter is empty, allow all pages
-        if page_ids_filter is None or page_ids_filter.is_empty():
-            return True
-
-        # Get the list of page IDs from the filter value
-        filter_page_ids = page_ids_filter.value
-        if not isinstance(filter_page_ids, list):
-            return True  # Invalid filter value, allow the page
-
-        # Handle empty or None page_key
-        if not page_key:
-            self.logger.warning("Page key is empty or None, skipping")
-            return False
-
-        # Create set for O(1) lookup (case-sensitive for GUIDs)
-        filter_page_ids_set = {pid.strip() for pid in filter_page_ids if pid}
-        page_key_normalized = page_key.strip()
-
-        # Apply the filter based on operator
-        operator = page_ids_filter.get_operator()
-        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-
-        if operator_str == FilterOperator.IN:
-            # Only allow pages with IDs in the inclusion list
-            return page_key_normalized in filter_page_ids_set
-        elif operator_str == FilterOperator.NOT_IN:
-            # Allow pages with IDs NOT in the exclusion list
-            return page_key_normalized not in filter_page_ids_set
-
-        # Unknown operator, default to allowing the page
-        self.logger.warning(f"Unknown filter operator '{operator_str}' for PAGE_IDS filter, allowing page")
         return True
 
     def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
@@ -3626,31 +3643,12 @@ class SharePointConnector(BaseConnector):
             sites = await self._get_all_sites()
 
             if not sites:
-                self.logger.warning("⚠️ No SharePoint sites found - check permissions")
                 return
 
-            self.logger.info(f"📁 Found {len(sites)} SharePoint sites")
+            self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
 
-            # Filter sites based on sync filters BEFORE processing
-            filtered_sites = []
-            for site in sites:
-                if not self._pass_site_ids_filters(site.id):
-                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
-                    continue
-                filtered_sites.append(site)
-
-            self.logger.info(f"📁 {len(filtered_sites)} sites to sync after applying filters (excluded {len(sites) - len(filtered_sites)})")
-
-            if not filtered_sites:
-                self.logger.warning("⚠️ No SharePoint sites to sync after applying filters")
-                return
-
-            # Create site record groups (only for filtered sites)
             site_record_groups_with_permissions = []
-            for site in filtered_sites:  # Use filtered_sites instead of sites
-                if not self._validate_site_id(site.id):
-                    self.logger.warning(f"Invalid site ID format: '{site.id}'")
-                    continue
+            for site in sites:
                 if not site.name and not site.display_name:
                     self.logger.warning(f"Site name is empty: '{site.id}'")
                     continue
@@ -3775,12 +3773,11 @@ class SharePointConnector(BaseConnector):
                 async def generate_page() -> AsyncGenerator[bytes, None]:
                     yield page_content.encode('utf-8')
 
-                return StreamingResponse(
+                return create_stream_record_response(
                     generate_page(),
-                    media_type='text/html',
-                    headers={
-                        "Content-Disposition": f'inline; filename="{record.record_name}.html"'
-                    }
+                    filename=record.record_name,
+                    mime_type='text/html',
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:
@@ -4298,9 +4295,7 @@ class SharePointConnector(BaseConnector):
 
         if filter_key == SyncFilterKey.SITE_IDS:
             return await self._get_site_options(page, limit, search)
-        elif filter_key == SyncFilterKey.PAGE_IDS:
-            return await self._get_page_options(page, limit, search)
-        elif filter_key == SyncFilterKey.DRIVE_IDS:  # Add this
+        elif filter_key == SyncFilterKey.DRIVE_IDS:
             return await self._get_document_library_options(page, limit, search)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
@@ -4361,103 +4356,6 @@ class SharePointConnector(BaseConnector):
                         options.append(FilterOption(
                             id=site_id or web_url,
                             label=label
-                        ))
-
-        has_more = (page * limit) < total
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
-            page=page,
-            limit=limit,
-            has_more=has_more,
-            cursor=None
-        )
-
-    async def _get_page_options(
-        self,
-        page: int,
-        limit: int,
-        search: Optional[str]
-    ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint pages."""
-
-        search_query = search.strip() if search else ""
-        full_query = f"{search_query}* filetype:aspx"
-
-        # 1. Get Raw Result
-        raw_result = await self.msgraph_client.search_query(
-            entity_types=["listItem"],
-            query=full_query,
-            page=page,
-            limit=limit,
-            region=self.tenant_region
-        )
-
-        options = []
-        total = 0
-
-        if raw_result:
-            additional_data = getattr(raw_result, 'additional_data', {}) or {}
-            value_list = additional_data.get('value', [])
-
-            for search_resp in value_list:
-                hits_containers = search_resp.get('hitsContainers', [])
-
-                for container in hits_containers:
-                    total = container.get('total', 0)
-
-                    for hit in container.get('hits', []):
-                        resource = hit.get('resource', {})
-
-                        item_id = resource.get('id')
-                        web_url = resource.get('webUrl')
-                        site_id = resource.get('parentReference', {}).get('siteId')
-
-                        # Skip System Account pages (templates)
-                        created_by = resource.get('createdBy', {})
-                        user = created_by.get('user', {})
-                        user.get('displayName', '').lower()
-
-                        if not site_id:
-                            continue
-
-
-                        if not item_id:
-                            continue
-
-                        # --- 1. Extract Page Name ---
-                        name = resource.get('name')
-                        if not name and web_url:
-                            try:
-                                # Get filename: .../SitePages/Home.aspx -> Home.aspx
-                                name = unquote(web_url.split('/')[-1])
-                            except Exception:
-                                name = "Unknown Page"
-
-                        page_label = name or resource.get('displayName') or "Unknown Page"
-
-                        # --- 2. Extract Site Name from URL ---
-                        # Structure is usually: https://tenant.sharepoint.com/sites/SiteName/...
-                        site_name = "Unknown Site"
-                        if web_url and "/sites/" in web_url:
-                            try:
-                                # Split at /sites/ and take the chunk immediately after
-                                after_sites = web_url.split("/sites/")[1]
-                                raw_site_name = after_sites.split("/")[0]
-                                site_name = unquote(raw_site_name)
-                            except Exception:
-                                pass
-                        elif web_url:
-                            site_name = "Root Site"
-
-                        # --- 3. Format Final Label ---
-                        final_label = f"{page_label} ({site_name})"
-                        page_key = f"{item_id}:{site_id}"
-
-                        options.append(FilterOption(
-                            id=page_key,
-                            label=final_label
                         ))
 
         has_more = (page * limit) < total
@@ -4633,12 +4531,28 @@ class SharePointConnector(BaseConnector):
         return decoded_url
 
     @classmethod
-    async def create_connector(cls, logger: Logger,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        **kwargs,
+    ) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return SharePointConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        return SharePointConnector(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )
 
 # Subscription manager for webhook handling
 class SharePointSubscriptionManager:

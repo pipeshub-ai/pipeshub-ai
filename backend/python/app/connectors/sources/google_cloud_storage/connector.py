@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from itertools import accumulate
 from logging import Logger
+from typing import Any
 from urllib.parse import unquote
 
 from aiolimiter import AsyncLimiter
@@ -26,6 +27,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -51,6 +53,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -78,13 +81,44 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.gcs.gcs import GCSClient
 from app.sources.external.gcs.gcs import GCSDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
 # Base URL for Google Cloud Console
 GCS_CONSOLE_BASE_URL = "https://console.cloud.google.com/storage/browser"
+
+# When sync targets explicit buckets without a prior list response, fetch each bucket's
+# metadata instead of listing every bucket in the project.
+_MAX_BUCKETS_FOR_PER_PROPERTY_TIMESTAMP_FETCH = 128
+
+
+def _gcs_datetime_to_epoch_ms(value: datetime | str | None) -> int | None:
+    """Parse GCS timestamps (ISO strings from GCSDataSource or datetime in tests/mocks)."""
+    return datetime_to_epoch_ms(value) if value is not None else None
+
+
+def _gcs_bucket_source_timestamps_ms_from_api_buckets(
+    api_buckets: list[dict[str, Any]] | None, target_names: set[str]
+) -> dict[str, tuple[int | None, int | None]]:
+    """Map bucket name -> (source_created_ms, source_updated_ms) from list_buckets payload."""
+    out: dict[str, tuple[int | None, int | None]] = {}
+    if not api_buckets or not target_names:
+        return out
+    for b in api_buckets:
+        name = b.get("name")
+        if not name or name not in target_names:
+            continue
+        created_ms = _gcs_datetime_to_epoch_ms(b.get("time_created"))
+        updated_ms = _gcs_datetime_to_epoch_ms(b.get("updated"))
+        if created_ms is None and updated_ms is not None:
+            created_ms = updated_ms
+        if updated_ms is None and created_ms is not None:
+            updated_ms = created_ms
+        if created_ms is not None or updated_ms is not None:
+            out[name] = (created_ms, updated_ms)
+    return out
 
 
 def get_file_extension(key: str) -> str | None:
@@ -257,12 +291,33 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
                 placeholder="Click to upload service account JSON file",
                 description="Upload your Service Account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
                 field_type="FILE",
+                accepted_file_types=[".json"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_VALID,
+                        error_message="File must be valid JSON.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_HAS_FIELDS,
+                        required_fields=["type", "client_id", "project_id"],
+                        error_message="Missing required fields: {missing}",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.JSON_FIELD_EQUALS,
+                        field="type",
+                        value="service_account",
+                        error_message=(
+                            "This is not a Google Cloud Service Account JSON file. "
+                            "The 'type' field must be 'service_account'."
+                        ),
+                    ),
+                ],
                 is_secret=True
             ),
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/gcs.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.GCS.value))
         .add_documentation_link(DocumentationLink(
             "GCS Service Account Setup",
             "https://cloud.google.com/iam/docs/service-accounts-create",
@@ -304,6 +359,8 @@ class GCSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=GCSApp(connector_id),
@@ -312,6 +369,8 @@ class GCSConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.GCS
@@ -333,8 +392,6 @@ class GCSConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.bucket_name: str | None = None
-        self.connector_scope: str | None = None
-        self.created_by: str | None = None
         self.project_id: str | None = None
 
         # Initialize filter collections
@@ -374,14 +431,6 @@ class GCSConnector(BaseConnector):
         if not service_account_json:
             self.logger.error("GCS service account JSON not found in configuration.")
             return False
-
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
 
         try:
             client = await GCSClient.build_from_services(
@@ -425,9 +474,28 @@ class GCSConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -437,7 +505,8 @@ class GCSConnector(BaseConnector):
             selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
 
             # List all buckets or use configured bucket
-            buckets_to_sync = []
+            buckets_to_sync: list[str] = []
+            buckets_list_payload: list[dict[str, Any]] | None = None
             if self.bucket_name:
                 buckets_to_sync = [self.bucket_name]
                 self.logger.info(f"Using configured bucket: {self.bucket_name}")
@@ -453,16 +522,54 @@ class GCSConnector(BaseConnector):
 
                 buckets_data = buckets_response.data
                 if buckets_data and "Buckets" in buckets_data:
+                    buckets_list_payload = buckets_data["Buckets"]
                     buckets_to_sync = [
-                        bucket.get("name") for bucket in buckets_data["Buckets"]
+                        bucket.get("name") for bucket in buckets_list_payload
                     ]
                     self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
                 else:
                     self.logger.warning("No buckets found")
                     return
 
+            target_names = {n for n in buckets_to_sync if n}
+            bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                buckets_list_payload, target_names
+            )
+            if buckets_list_payload is None and target_names:
+                try:
+                    names_for_ts = sorted(n for n in target_names if n)
+                    if (
+                        names_for_ts
+                        and len(names_for_ts) <= _MAX_BUCKETS_FOR_PER_PROPERTY_TIMESTAMP_FETCH
+                    ):
+                        rows: list[dict[str, Any]] = []
+                        for bname in names_for_ts:
+                            one = await self.data_source.get_bucket_properties(bname)
+                            if one.success and one.data:
+                                rows.append(one.data)
+                        if rows:
+                            bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                rows, target_names
+                            )
+                        else:
+                            extra = await self.data_source.list_buckets()
+                            if extra.success and extra.data and "Buckets" in extra.data:
+                                bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                    extra.data["Buckets"], target_names
+                                )
+                    else:
+                        extra = await self.data_source.list_buckets()
+                        if extra.success and extra.data and "Buckets" in extra.data:
+                            bucket_ts_map = _gcs_bucket_source_timestamps_ms_from_api_buckets(
+                                extra.data["Buckets"], target_names
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch bucket timestamps: {e}"
+                    )
+
             # Create record groups for buckets first
-            await self._create_record_groups_for_buckets(buckets_to_sync)
+            await self._create_record_groups_for_buckets(buckets_to_sync, bucket_ts_map)
 
             # Sync each bucket
             for bucket_name in buckets_to_sync:
@@ -482,21 +589,32 @@ class GCSConnector(BaseConnector):
             self.logger.error(f"❌ Error in GCS connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_buckets(self, bucket_names: list[str]) -> None:
+    async def _create_record_groups_for_buckets(
+        self,
+        bucket_names: list[str],
+        bucket_source_timestamps_ms: dict[str, tuple[int | None, int | None]] | None = None,
+    ) -> None:
         """Create record groups for buckets with appropriate permissions.
 
         Processes buckets one at a time to avoid database lock contention issues.
         Includes retry logic with exponential backoff for transient errors.
+
+        Args:
+            bucket_names: GCS bucket names to sync.
+            bucket_source_timestamps_ms: Optional map bucket name -> (created_ms, updated_ms)
+                from list_buckets (time_created / updated) for knowledge hub dates.
         """
         if not bucket_names:
             return
 
+        ts_map = bucket_source_timestamps_ms or {}
+
         # Get user info once upfront to avoid repeated transactions
         creator_email = None
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+        if self.created_by and self.scope != ConnectorScope.TEAM.value:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
+                    user = await tx_store.get_user_by_user_id(self.created_by)
                     if user and user.get("email"):
                         creator_email = user.get("email")
             except Exception as e:
@@ -511,7 +629,7 @@ class GCSConnector(BaseConnector):
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -539,6 +657,12 @@ class GCSConnector(BaseConnector):
                         )
                     )
 
+            pair = ts_map.get(bucket_name)
+            created_ms: int | None = None
+            updated_ms: int | None = None
+            if pair is not None:
+                created_ms, updated_ms = pair
+
             record_group = RecordGroup(
                 name=bucket_name,
                 external_group_id=bucket_name,
@@ -546,6 +670,9 @@ class GCSConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"GCS Bucket: {bucket_name}",
+                web_url=get_parent_weburl_for_gcs(bucket_name),
+                source_created_at=created_ms,
+                source_updated_at=updated_ms,
             )
 
             # Process each record group with retry logic
@@ -671,14 +798,8 @@ class GCSConnector(BaseConnector):
         if not last_modified:
             return True
 
-        # Parse ISO format timestamp
-        if isinstance(last_modified, str):
-            try:
-                obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
-            except ValueError:
-                return True
-        else:
+        obj_timestamp_ms = _gcs_datetime_to_epoch_ms(last_modified)
+        if obj_timestamp_ms is None:
             return True
 
         if modified_after_ms and obj_timestamp_ms < modified_after_ms:
@@ -688,21 +809,16 @@ class GCSConnector(BaseConnector):
             self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
             return False
 
-        # For GCS, we can also check TimeCreated
+        # For GCS, we can also check TimeCreated (separate from updated / LastModified)
         time_created = obj.get("TimeCreated")
-        if time_created and isinstance(time_created, str):
-            try:
-                created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
-                created_timestamp_ms = int(created_dt.timestamp() * 1000)
-
-                if created_after_ms and created_timestamp_ms < created_after_ms:
-                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} before cutoff {created_after_ms}")
-                    return False
-                if created_before_ms and created_timestamp_ms > created_before_ms:
-                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} after cutoff {created_before_ms}")
-                    return False
-            except ValueError:
-                pass
+        created_timestamp_ms = _gcs_datetime_to_epoch_ms(time_created)
+        if created_timestamp_ms is not None:
+            if created_after_ms and created_timestamp_ms < created_after_ms:
+                self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} before cutoff {created_after_ms}")
+                return False
+            if created_before_ms and created_timestamp_ms > created_before_ms:
+                self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} after cutoff {created_before_ms}")
+                return False
 
         return True
 
@@ -813,16 +929,12 @@ class GCSConnector(BaseConnector):
                             ):
                                 continue
 
-                            # Track max timestamp for incremental sync
-                            if not is_folder:
-                                last_modified = obj.get("LastModified")
-                                if last_modified and isinstance(last_modified, str):
-                                    try:
-                                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                                        obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                    except ValueError:
-                                        pass
+                            # Track max timestamp for incremental sync (updated time)
+                            last_modified = obj.get("LastModified")
+                            if last_modified:
+                                obj_ts = _gcs_datetime_to_epoch_ms(last_modified)
+                                if obj_ts is not None:
+                                    max_timestamp = max(max_timestamp, obj_ts)
 
                             # Ensure folder hierarchy exists from file path (GCS has no real folder objects)
                             if not is_folder:
@@ -994,27 +1106,12 @@ class GCSConnector(BaseConnector):
             if not normalized_key:
                 return None, []
 
-            # Parse timestamps
+            # Parse timestamps (updated ≈ LastModified; created from TimeCreated when present)
             last_modified = obj.get("LastModified")
-            if last_modified and isinstance(last_modified, str):
-                try:
-                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                    timestamp_ms = int(obj_dt.timestamp() * 1000)
-                except ValueError:
-                    timestamp_ms = get_epoch_timestamp_in_ms()
-            else:
-                timestamp_ms = get_epoch_timestamp_in_ms()
+            timestamp_ms = _gcs_datetime_to_epoch_ms(last_modified) or get_epoch_timestamp_in_ms()
 
-            # Parse created time
             time_created = obj.get("TimeCreated")
-            if time_created and isinstance(time_created, str):
-                try:
-                    created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
-                    created_timestamp_ms = int(created_dt.timestamp() * 1000)
-                except ValueError:
-                    created_timestamp_ms = timestamp_ms
-            else:
-                created_timestamp_ms = timestamp_ms
+            created_timestamp_ms = _gcs_datetime_to_epoch_ms(time_created) or timestamp_ms
 
             external_record_id = f"{bucket_name}/{normalized_key}"
 
@@ -1137,7 +1234,7 @@ class GCSConnector(BaseConnector):
         try:
             permissions = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1149,7 +1246,7 @@ class GCSConnector(BaseConnector):
                 if self.created_by:
                     try:
                         async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
+                            user = await tx_store.get_user_by_user_id(self.created_by)
                             if user and user.get("email"):
                                 permissions.append(
                                     Permission(
@@ -1490,14 +1587,14 @@ class GCSConnector(BaseConnector):
 
             # Parse timestamps
             last_modified = obj_metadata.get("LastModified")
-            if last_modified and isinstance(last_modified, str):
-                try:
-                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                    timestamp_ms = int(obj_dt.timestamp() * 1000)
-                except ValueError:
-                    timestamp_ms = get_epoch_timestamp_in_ms()
-            else:
-                timestamp_ms = get_epoch_timestamp_in_ms()
+            timestamp_ms = _gcs_datetime_to_epoch_ms(last_modified) or get_epoch_timestamp_in_ms()
+            time_created = obj_metadata.get("TimeCreated")
+            created_ms = _gcs_datetime_to_epoch_ms(time_created)
+            resolved_source_created = (
+                record.source_created_at
+                if record.source_created_at is not None
+                else (created_ms if created_ms is not None else timestamp_ms)
+            )
 
             is_folder = normalized_key.endswith("/")
             is_file = not is_folder
@@ -1529,7 +1626,7 @@ class GCSConnector(BaseConnector):
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                source_created_at=record.source_created_at,
+                source_created_at=resolved_source_created,
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
@@ -1622,6 +1719,8 @@ class GCSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "GCSConnector":
         """Factory method to create and initialize connector."""
@@ -1636,5 +1735,7 @@ class GCSConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

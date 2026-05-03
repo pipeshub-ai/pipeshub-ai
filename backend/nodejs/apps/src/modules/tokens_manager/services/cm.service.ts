@@ -175,6 +175,15 @@ export class ConfigService {
 
   // Redis Configuration
   public async getRedisConfig(): Promise<RedisConfig> {
+    await this.saveConfigToEtcd(configPaths.keyValueStore.redis, {
+      host: process.env.REDIS_HOST!,
+      port: parseInt(process.env.REDIS_PORT!, 10),
+      username: process.env.REDIS_USERNAME,
+      password: process.env.REDIS_PASSWORD,
+      tls: process.env.REDIS_TLS === 'true',
+      db: parseInt(process.env.REDIS_DB || '0', 10),
+    });
+
     return this.getEncryptedConfig<RedisConfig>(
       configPaths.keyValueStore.redis,
       {
@@ -190,6 +199,12 @@ export class ConfigService {
 
   // MongoDB Configuration
   public async getMongoConfig(): Promise<MongoConfig> {
+    
+    await this.saveConfigToEtcd(configPaths.db.mongodb, {
+      uri: process.env.MONGO_URI!,
+      db: MONGO_DB_NAME,
+    });
+
     return this.getEncryptedConfig<MongoConfig>(configPaths.db.mongodb, {
       uri: process.env.MONGO_URI!,
       db: MONGO_DB_NAME,
@@ -198,6 +213,13 @@ export class ConfigService {
 
   // Qdrant Configuration
   public async getQdrantConfig(): Promise<QdrantConfig> {
+    await this.saveConfigToEtcd(configPaths.db.qdrant, {
+      apiKey: process.env.QDRANT_API_KEY!,
+      host: process.env.QDRANT_HOST || 'localhost',
+      port: parseInt(process.env.QDRANT_PORT || '6333', 10),
+      grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+    });
+
     return this.getEncryptedConfig<QdrantConfig>(configPaths.db.qdrant, {
       apiKey: process.env.QDRANT_API_KEY!,
       host: process.env.QDRANT_HOST || 'localhost',
@@ -208,6 +230,13 @@ export class ConfigService {
 
   // Arango Configuration
   public async getArangoConfig(): Promise<ArangoConfig> {
+    await this.saveConfigToEtcd(configPaths.db.arangodb, {
+      url: process.env.ARANGO_URL!,
+      db: ARANGO_DB_NAME,
+      username: process.env.ARANGO_USERNAME!,
+      password: process.env.ARANGO_PASSWORD!,
+    });
+
     return this.getEncryptedConfig<ArangoConfig>(configPaths.db.arangodb, {
       url: process.env.ARANGO_URL!,
       db: ARANGO_DB_NAME,
@@ -654,43 +683,32 @@ export class ConfigService {
 
     const parsedUrl = JSON.parse(url);
 
-    // Only initialize if not already set
-    if (!parsedUrl.oauthProvider?.issuer) {
-      parsedUrl.oauthProvider = {
-        ...parsedUrl.oauthProvider,
-        issuer:
-          normalizeUrl(process.env.OAUTH_ISSUER!) ||
-          (process.env.NODE_ENV === 'development'
-            ? `http://localhost:${process.env.PORT ?? 3000}`
-            : await this.getFrontendUrl()),
-      };
+    parsedUrl.oauthProvider = {
+      ...parsedUrl.oauthProvider,
+      issuer: await this.getOAuthIssuer(),
+    };
 
-      await this.keyValueStoreService.set<string>(
-        configPaths.endpoint,
-        JSON.stringify(parsedUrl),
-      );
-    }
+    await this.keyValueStoreService.set<string>(
+      configPaths.endpoint,
+      JSON.stringify(parsedUrl),
+    );
   }
 
   /**
-   * Get the OAuth issuer URL. This is a pure getter with no side effects.
-   * Call initializeOAuthIssuer() during application startup to seed the config.
+   * Get the OAuth issuer URL.
+   * Priority: OAUTH_ISSUER env var > frontend URL (if it serves the API) > localhost fallback.
    */
   public async getOAuthIssuer(): Promise<string> {
-    const url =
-      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
-      '{}';
+    const explicit = normalizeUrl(process.env.OAUTH_ISSUER!);
+    if (explicit) return explicit;
 
-    const parsedUrl = JSON.parse(url);
+    const frontendUrl = await this.getFrontendUrl();
 
-    // Return stored value, or fall back to env var, or default
-    return (
-      normalizeUrl(process.env.OAUTH_ISSUER!) ||
-      normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
-      (process.env.NODE_ENV === 'development'
-        ? `http://localhost:${process.env.PORT ?? 3000}`
-        : await this.getFrontendUrl())
-    );
+    if (frontendUrl.includes('localhost')) {
+      return `http://localhost:${process.env.PORT ?? 3000}`;
+    }
+
+    return frontendUrl;
   }
 
   public async getMcpScopes(): Promise<string[]> {
@@ -699,6 +717,47 @@ export class ConfigService {
       return DefaultMcpScopes;
     }
     return scopes.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  public async getDeploymentConfig(): Promise<Record<string, string>> {
+    let config: Record<string, string> = {};
+
+    try {
+      const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          config = parsed;
+        }
+      }
+    } catch {
+      config = {};
+    }
+
+    // Node.js owns messageBrokerType and kvStoreType — always overwrite from env
+    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'kafka').toLowerCase();
+    config.kvStoreType = (process.env.KV_STORE_TYPE || 'etcd').toLowerCase();
+
+    // dataStoreType and vectorDbType are owned by Python — never set defaults here
+
+    await this.keyValueStoreService.set(configPaths.deployment, JSON.stringify(config));
+
+    return config;
+  }
+
+  public async readDeploymentConfig(): Promise<Record<string, string>> {
+    try {
+      const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          return parsed;
+        }
+      }
+    } catch {
+      // fall through
+    }
+    return {};
   }
 
   public async getRsAvailable(): Promise<string> {

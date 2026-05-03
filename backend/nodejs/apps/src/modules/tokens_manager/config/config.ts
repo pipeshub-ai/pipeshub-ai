@@ -1,3 +1,4 @@
+import { RedisConfig } from '../../../libs/types/messaging.types';
 import { ConfigService } from '../services/cm.service';
 
 export interface AppConfig {
@@ -28,14 +29,7 @@ export interface AppConfig {
       password: string;
     };
   };
-  redis: {
-    host: string;
-    port: number;
-    username?: string;
-    password?: string;
-    tls?: boolean;
-    db?: number;
-  };
+  redis: RedisConfig;
   mongo: {
     uri: string;
     db: string;
@@ -83,6 +77,14 @@ export interface AppConfig {
   // Rate limit config
   maxRequestsPerMinute: number;
   maxOAuthClientRequestsPerMinute: number;
+
+  // Deployment config — which backing services are in use (read from KV store)
+  deployment: {
+    dataStoreType: string;
+    messageBrokerType: string;
+    kvStoreType: string;
+    vectorDbType: string;
+  };
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
@@ -136,5 +138,7 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
       ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
       : 1000,
+
+    deployment: await configService.getDeploymentConfig() as AppConfig['deployment'],
   };
 };

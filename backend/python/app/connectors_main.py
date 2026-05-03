@@ -1,6 +1,6 @@
 import traceback
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -25,8 +25,10 @@ from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
 )
+from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = ConnectorAppContainer.init("connector_service")
@@ -133,6 +135,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             for app in enabled_apps:
                 connector_id = app.get("_key")
+                scope = app.get("scope", "personal")
+                created_by = app.get("createdBy", "")
 
                 connector_name = app["type"].lower().replace(" ", "")
                 connector = await ConnectorFactory.create_and_start_sync(
@@ -140,7 +144,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                     logger=logger,
                     data_store_provider=data_store,
                     config_service=config_service,
-                    connector_id=connector_id
+                    connector_id=connector_id,
+                    scope=scope,
+                    created_by=created_by
                 )
                 if connector:
                     # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
@@ -186,20 +192,23 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
     logger = app_container.logger()
 
     try:
-        logger.info("🚀 Starting Messaging Producer...")
+        broker_type = get_message_broker_type()
+        logger.info(f"🚀 Starting Messaging Producer (broker: {broker_type})...")
 
-        producer_config = await KafkaUtils.create_producer_config(app_container)
+        producer_config = await MessagingUtils.create_producer_config(app_container)
 
-        # Create and initialize producer
         messaging_producer = MessagingFactory.create_producer(
-            broker_type="kafka",
+            broker_type=broker_type,
             logger=logger,
             config=producer_config
         )
         await messaging_producer.initialize()
 
-        # Attach producer to container
         app_container.messaging_producer = messaging_producer
+
+        # Wire the producer into KafkaService for connector operations
+        kafka_service = app_container.kafka_service()
+        kafka_service.set_producer(messaging_producer)
 
         logger.info("✅ Messaging producer started and attached to container")
 
@@ -207,44 +216,44 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
-async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> List:
-    """Start all Kafka consumers at application level"""
+async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> list:
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
         # 1. Create Entity Consumer
-        logger.info("🚀 Starting Entity Kafka Consumer...")
-        entity_kafka_config = await KafkaUtils.create_entity_kafka_consumer_config(app_container)
-        entity_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+        logger.info(f"🚀 Starting Entity Consumer (broker: {broker_type})...")
+        entity_config = await MessagingUtils.create_entity_consumer_config(app_container)
+        entity_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
             logger=logger,
-            config=entity_kafka_config
+            config=entity_config
         )
         entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container, graph_provider)
-        await entity_kafka_consumer.start(entity_message_handler)
-        consumers.append(("entity", entity_kafka_consumer))
-        logger.info("✅ Entity Kafka consumer started")
+        await entity_consumer.start(entity_message_handler)
+        consumers.append(("entity", entity_consumer))
+        logger.info("✅ Entity consumer started")
 
         # 2. Create Sync Consumer
-        logger.info("🚀 Starting Sync Kafka Consumer...")
-        sync_kafka_config = await KafkaUtils.create_sync_kafka_consumer_config(app_container)
-        sync_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+        logger.info(f"🚀 Starting Sync Consumer (broker: {broker_type})...")
+        sync_config = await MessagingUtils.create_sync_consumer_config(app_container)
+        sync_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
             logger=logger,
-            config=sync_kafka_config
+            config=sync_config
         )
         sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container, graph_provider)
-        await sync_kafka_consumer.start(sync_message_handler)
-        consumers.append(("sync", sync_kafka_consumer))
-        logger.info("✅ Sync Kafka consumer started")
+        await sync_consumer.start(sync_message_handler)
+        consumers.append(("sync", sync_consumer))
+        logger.info("✅ Sync consumer started")
 
-        logger.info(f"✅ All {len(consumers)} Kafka consumers started successfully")
+        logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
-        # Cleanup any started consumers
+        logger.error(f"❌ Error starting consumers: {str(e)}")
         for name, consumer in consumers:
             try:
                 await consumer.stop()
@@ -261,7 +270,7 @@ async def stop_kafka_consumers(container: ConnectorAppContainer) -> None:
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
 
@@ -296,7 +305,7 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling sync tasks at shutdown: {e}")
 
-        # Stop Kafka consumers
+        # Stop message consumers
         await stop_kafka_consumers(container)
 
         # Stop messaging producer
@@ -383,42 +392,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
 
-    # Run OAuth credentials migration (AFTER connector and OAuth registries are initialized)
-    # This migration needs OAuth registry to be populated to get OAuth infrastructure fields
-    # Skip if Neo4j is configured (migration is ArangoDB-specific)
-    if data_store_type != "arangodb":
-        logger.info(f"⏭️ Skipping OAuth credentials migration (DATA_STORE={data_store_type}, migration is ArangoDB-specific)")
-    else:
-        try:
-            logger.info("🔄 Running OAuth credentials migration...")
-            from app.migrations.oauth_credentials_migration import (
-                run_oauth_credentials_migration,
-            )
-
-            migration_result = await run_oauth_credentials_migration(
-                config_service=app_container.config_service(),
-                arango_service=app.state.arango_service,
-                logger=logger,
-                dry_run=False
-            )
-
-            if migration_result.get("success"):
-                if migration_result.get("skipped"):
-                    logger.info("✅ OAuth credentials migration already completed")
-                else:
-                    connectors_migrated = migration_result.get("connectors_migrated", 0)
-                    oauth_configs_created = migration_result.get("oauth_configs_created", 0)
-                    logger.info(
-                        f"✅ OAuth credentials migration completed: "
-                        f"{connectors_migrated} connectors migrated, {oauth_configs_created} OAuth configs created"
-                    )
-            else:
-                error_msg = migration_result.get("error", "Unknown error")
-                logger.error(f"❌ OAuth credentials migration failed: {error_msg}")
-        except Exception as e:
-            logger.error(f"❌ OAuth credentials migration error: {e}")
-            # Don't fail startup - migration is idempotent and can be retried
-
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first
@@ -429,20 +402,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Resume sync services BEFORE starting Kafka consumers so that
+    # Resume sync services BEFORE starting message consumers so that
     # connectors_map is populated before we begin processing sync events.
     try:
         await resume_sync_services(app_container, data_store)
     except Exception as e:
         logger.error(f"❌ Error during sync service resumption: {str(e)}")
 
-    # Start all Kafka consumers centrally - pass already resolved graph_provider
+    # Start all message consumers centrally - pass already resolved graph_provider
     try:
         consumers = await start_kafka_consumers(app_container, graph_provider)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
@@ -578,6 +551,8 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
     """Run the application"""
+    if reload and workers > 1:
+        workers = 1
     uvicorn.run(
         "app.connectors_main:app",
         host=host,

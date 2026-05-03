@@ -1,8 +1,8 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from io import BytesIO
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, Optional
 
 import aiohttp  # type: ignore
 
@@ -20,10 +20,15 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
+from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
 class RecordEventHandler(BaseEventService):
@@ -77,7 +82,7 @@ class RecordEventHandler(BaseEventService):
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
 
-    async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[PipelineEvent, None]:
         """Process record events, yielding phase completion events.
 
         Yields:
@@ -109,8 +114,8 @@ class RecordEventHandler(BaseEventService):
                     f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
                     f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
                 )
-                yield {"event": "parsing_complete", "data": {"record_id": "bulk_delete", "count": len(virtual_record_ids)}}
-                yield {"event": "indexing_complete", "data": {"record_id": "bulk_delete", "count": len(virtual_record_ids)}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return
 
             # For all other event types, require record_id
@@ -123,7 +128,7 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
-
+            asyncio.get_event_loop
             record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -138,8 +143,8 @@ class RecordEventHandler(BaseEventService):
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 # Yield both events since delete is complete
-                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
             if record is None:
@@ -149,15 +154,30 @@ class RecordEventHandler(BaseEventService):
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            if event_type == EventTypes.UPDATE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+            #Reconciliation
+            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+                from app.config.constants.arangodb import (
+                    RECONCILIATION_ENABLED_EXTENSIONS,
+                    RECONCILIATION_ENABLED_MIME_TYPES,
+                )
+                is_reconciliation_type = (
+                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                )
+                if is_reconciliation_type:
+                    self.logger.info(
+                        f"📊 Reconciliation-enabled type detected for record {record_id}, "
+                        f"skipping full embedding deletion"
+                    )
+                else:
+                    await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             doc = dict(record)
 
             if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
-                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
             # Check if record is from a connector and if the connector is active
@@ -173,8 +193,8 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} not found (possibly deleted)."
                         )
-                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return
                     if not connector_instance.get("isActive", False):
                         self.logger.info(
@@ -188,8 +208,8 @@ class RecordEventHandler(BaseEventService):
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
                             reason="Connector is inactive"
                         )
-                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return
 
 
@@ -238,6 +258,8 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
                 MimeTypes.TSV.value,
+                MimeTypes.SQL_TABLE.value,
+                MimeTypes.SQL_VIEW.value,
             ]
 
             supported_extensions = [
@@ -259,6 +281,8 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
                 ExtensionTypes.TSV.value,
+                ExtensionTypes.SQL_TABLE.value,
+                ExtensionTypes.SQL_VIEW.value,
             ]
 
             if (
@@ -281,8 +305,8 @@ class RecordEventHandler(BaseEventService):
                 )
 
                 # Yield both events for unsupported file types
-                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
 
@@ -407,7 +431,7 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         indexing_status: str,
         extraction_status: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> dict|None:
         """Update document status in database"""
         try:

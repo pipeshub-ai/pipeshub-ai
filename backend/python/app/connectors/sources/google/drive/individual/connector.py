@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -40,6 +41,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -59,6 +61,10 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
+)
+from app.connectors.sources.google.common.drive_file_fields import (
+    DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+    DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -99,7 +105,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/drive.svg",
+            icon_path=IconPaths.connector_icon(Connectors.GOOGLE_DRIVE.value),
             app_group="Google Workspace",
             app_description="OAuth application for accessing Google Drive API and related Google Workspace services",
             app_categories=["Storage"],
@@ -110,8 +116,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             }
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/drive.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.GOOGLE_DRIVE.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
@@ -164,7 +171,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             GoogleDriveApp(connector_id),
@@ -172,7 +181,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -211,7 +222,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             self.config = {"credentials": config}
 
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
@@ -373,6 +384,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     is_updated = True
 
                 if existing_record and drive_id != existing_record.external_record_group_id:
+                    is_updated = True
+                    metadata_changed = True
+
+                parent_external_record_id = (metadata.get("parents") or [None])[0]
+                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
                     is_updated = True
                     metadata_changed = True
 
@@ -767,7 +783,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 # Using fields that match the working example from drive_user_service.py
                 # Note: etag, ctag, quickXorHash, crc32Hash are not available in files.list() - they require files.get()
                 list_params = {
-                    "fields": "nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, md5Checksum, sha1Checksum, sha256Checksum, parents)",
+                    "fields": DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
                 }
 
                 if page_token:
@@ -1090,17 +1106,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _get_file_metadata_from_drive(self, file_id: str) -> Dict:
         """
-        Get file metadata from Google Drive API.
+        Get file metadata from Google Drive API via ``files.get``.
 
         Args:
             file_id: Google Drive file ID
 
         Returns:
-            Dictionary with file metadata including mimeType
+            Dictionary with file metadata from Drive
         """
         try:
             drive_service = self.google_client.get_client()
-            file_metadata = drive_service.files().get(fileId=file_id, fields="id,name,mimeType").execute()
+            file_metadata = drive_service.files().get(
+                fileId=file_id,
+                fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+            ).execute()
             return file_metadata
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
@@ -1314,7 +1333,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.config_service, "drive", self.connector_id, self.logger
             )
 
-
         # Fetch app user
         fields = 'user(displayName,emailAddress,permissionId),storageQuota(limit,usage,usageInDrive)'
         await self._get_fresh_datasource()
@@ -1323,7 +1341,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Create user personal drive
         display_name = f"Google Drive - {user_about.get('user').get('emailAddress')}"
-        drive_info = await self.drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+        drive_info = await self.drive_data_source.files_get(
+            fileId="root",
+            supportsAllDrives=True,
+            fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+        )
         drive_id = drive_info.get("id")
 
         if not drive_id:
@@ -1447,7 +1469,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 await self._get_fresh_datasource()
                 file_metadata = await self.drive_data_source.files_get(
                     fileId=file_id,
-                    supportsAllDrives=True
+                    supportsAllDrives=True,
+                    fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
                 )
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -1500,7 +1523,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive connector."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1515,5 +1541,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

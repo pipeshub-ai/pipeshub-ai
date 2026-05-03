@@ -14,8 +14,16 @@ orgs_schema = {
             "accountType": {"type": "string", "enum": ["individual", "enterprise"]},
             "name": {"type": "string"},
             "isActive": {"type": "boolean", "default": False},
+            "website": {"type": ["string", "null"]},
+            "industry": {"type": ["string", "null"]},
+            "ownershipType": {"type": ["string", "null"]},
+            "phone": {"type": ["string", "null"]},
+            "dunsId": {"type": ["string", "null"]},
+            "isExternal": {"type": "boolean", "default": False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -37,6 +45,7 @@ user_schema = {
             "fullName": {"type": "string"},
             "email": {"type": "string", "format": "email"},
             "designation": {"type": "string"},
+            "profileId": {"type": ["string", "null"]},
             "businessPhones": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -102,6 +111,7 @@ app_role_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalRoleId": {"type": "string", "minLength": 1},
+            "parentRoleId": {"type": ["string", "null"]},
             "connectorName": {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
@@ -247,6 +257,10 @@ record_schema = {
             "isInternal": {"type": "boolean", "default": False},
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
+            # SQL record fields (tables/views)
+            "definition": {"type": ["string", "null"]},
+            "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},
+            "rowCount": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -288,6 +302,30 @@ file_record_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file record schema.",
+}
+
+artifact_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "extension": {"type": ["string", "null"]},
+            "mimeType": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
+            "description": {"type": ["string", "null"]},
+            "lifecycleStatus": {"type": ["string", "null"]},
+            "artifactType": {"type": ["string", "null"]},
+            "sourceTool": {"type": ["string", "null"]},
+            "conversationId": {"type": ["string", "null"]},
+            "isTemporary": {"type": ["boolean", "null"]},
+            "expiresAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "orgId"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the artifact record schema.",
 }
 
 drive_record_schema = {
@@ -400,16 +438,17 @@ ticket_record_schema = {
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reporterName": {"type": ["string", "null"]},
+            "dueDateTimestamp": {"type": ["number", "null"]},
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assignee_source_id":{
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
@@ -433,6 +472,24 @@ project_record_schema = {
     },
 }
 
+meeting_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "hostEmail": {"type": ["string", "null"]},
+            "hostId": {"type": ["string", "null"]},
+            "meetingType": {"type": ["integer", "number", "null"]},
+            "durationMinutes": {"type": ["integer", "number", "null"]},
+            "startTime": {"type": ["string", "null"]},
+            "endTime": {"type": ["string", "null"]},
+            "timezone": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the meeting record schema.",
+}
+
 
 pull_request_record_schema = {
     "rule": {
@@ -443,36 +500,144 @@ pull_request_record_schema = {
             "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "assignee":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assigneeEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reviewEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "reviewName":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
+            "lastCommitSha": {"type": ["string", "null"]},
         },
     },
+}
+
+code_file_record_schema={
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "filePath": {"type": "string", "minLength": 0},
+            "fileHash": {"type": "string", "minLength": 0},
+        },
+    },
+}
+sql_table_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "databaseName": {"type": ["string", "null"]},
+            "schemaName": {"type": ["string", "null"]},
+            "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
+            "rowCount": {"type": ["number", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
+            "columnCount": {"type": ["number", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
+            "primaryKeys": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "foreignKeys": {
+                "type": ["array", "null"],
+                "items": {"type": "object"},
+            },
+            "comment": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL table record schema.",
+}
+
+sql_view_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "databaseName": {"type": ["string", "null"]},
+            "schemaName": {"type": ["string", "null"]},
+            "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.view
+            "definition": {"type": ["string", "null"]},  # CREATE VIEW statement
+            "sourceTables": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "isSecure": {"type": "boolean", "default": False},
+            "comment": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL view record schema.",
+}
+
+product_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "productCode": {"type": ["string", "null"]},
+            "productFamily": {"type": ["string", "null"]},
+            "isActive": {"type": ["boolean", "null"]},
+            "sku": {"type": ["string", "null"]},
+            "listPrice": {"type": ["number", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the product record schema.",
+
+}
+
+deal_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": ["string", "null"]},
+            "amount": {"type": ["number", "null"]},
+            "expectedRevenue": {"type": ["number", "null"]},
+            "expectedCloseDate": {"type": ["string", "null"]},
+            "conversionProbability": {"type": ["number", "null"]},
+            "type": {"type": ["string", "null"]},
+            "ownerId": {"type": ["string", "null"]},
+            "isWon": {"type": ["boolean", "null"]},
+            "isClosed": {"type": ["boolean", "null"]},
+            "createdDate": {"type": ["string", "null"]},
+            "closeDate": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the deal record schema.",
 }
 
 record_group_schema = {
@@ -625,7 +790,9 @@ agent_schema = {
                 "items": {"type": "string"},
                 "default": [],
             },
+            "webSearch": {"type": ["string", "null"]},
             "isActive": {"type": "boolean", "default": True},
+            "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -941,6 +1108,9 @@ people_schema = {
             "email": {"type": "string", "format": "email"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "firstName": {"type": ["string", "null"]},
+            "lastName": {"type": ["string", "null"]},
+            "phone": {"type": ["string", "null"]},
         },
         "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,

@@ -220,7 +220,7 @@ class ToolsetRegistry:
             return icon
 
         # Default
-        return '/assets/icons/toolsets/default.svg'
+        return '/icons/toolsets/default.svg'
 
     def _normalize_toolset_name(self, name: str) -> str:
         """Normalize toolset name (lowercase, no spaces/underscores)"""
@@ -378,6 +378,9 @@ class ToolsetRegistry:
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
             'app.agents.actions.knowledge_hub.knowledge_hub',
+            'app.agents.actions.coding_sandbox.coding_sandbox',
+            'app.agents.actions.database_sandbox.database_sandbox',
+            'app.agents.actions.image_generator.image_generator',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -395,11 +398,11 @@ class ToolsetRegistry:
             'app.agents.actions.github.github',
             'app.agents.actions.mariadb.mariadb',
             'app.agents.actions.lumos.lumos',
-            # 'app.agents.actions.github.github',
+            'app.agents.actions.redshift.redshift',
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',
-            # 'app.agents.actions.microsoft.one_drive.one_drive',
+            'app.agents.actions.microsoft.one_drive.one_drive',
             # 'app.agents.actions.microsoft.sharepoint.sharepoint',
             'app.agents.actions.microsoft.teams.teams',
             'app.agents.actions.microsoft.outlook.outlook',
@@ -415,6 +418,8 @@ class ToolsetRegistry:
             # 'app.agents.actions.evernote.evernote',
             # 'app.agents.actions.freshdesk.freshdesk',
             # 'app.agents.actions.bookstack.bookstack',
+            'app.agents.actions.zoom.zoom',
+            'app.agents.actions.salesforce.salesforce',
         ]
         self.discover_toolsets(standard_paths)
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
@@ -626,6 +631,7 @@ class ToolsetRegistry:
                     if isinstance(tool_def, dict)
                 )
 
+            serialized_cfg = serialized_metadata.get('config', {}) or {}
             toolset_info = {
                 'name': serialized_metadata['name'],
                 'normalized_name': normalized_name,
@@ -635,9 +641,10 @@ class ToolsetRegistry:
                 'appGroup': serialized_metadata['app_group'],
                 'supportedAuthTypes': serialized_metadata['supported_auth_types'],
                 'iconPath': serialized_metadata['icon_path'],
+                'documentationLinks': serialized_cfg.get('documentationLinks', []),
                 'toolCount': len(serialized_metadata.get('tools', [])),
                 'tools': tools,  # Include tools for drag-and-drop
-                'config': serialized_metadata.get('config', {}),  # Serialized config (OAuth as dicts)
+                'config': serialized_cfg,  # Serialized config (OAuth as dicts)
             }
             all_toolsets.append(toolset_info)
 

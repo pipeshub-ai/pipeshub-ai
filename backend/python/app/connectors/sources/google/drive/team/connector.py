@@ -17,12 +17,14 @@ from googleapiclient.http import MediaIoBaseDownload
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -36,12 +38,15 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeConfig
 from app.connectors.core.registry.connector_builder import (
     AuthBuilder,
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -56,6 +61,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
+from app.connectors.sources.google.common.drive_file_fields import (
+    DRIVE_WORKSPACE_FILE_GET_FIELDS,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -80,42 +88,51 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Drive Workspace",
-            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-            token_url="https://oauth2.googleapis.com/token",
-            redirect_uri="connectors/oauth/callback/Drive",
-            scopes=OAuthScopeConfig(
-                personal_sync=[],
-                team_sync=[
-                    "https://www.googleapis.com/auth/drive.readonly",
-                    "https://www.googleapis.com/auth/drive.metadata.readonly",
-                    "https://www.googleapis.com/auth/drive.metadata",
-                    "https://www.googleapis.com/auth/documents.readonly",
-                    "https://www.googleapis.com/auth/spreadsheets.readonly",
-                    "https://www.googleapis.com/auth/presentations.readonly",
-                    "https://www.googleapis.com/auth/drive.file",
-                    "https://www.googleapis.com/auth/drive",
-                ],
-                agent=[]
-            ),
-            fields=[
-                CommonFields.client_id("Google Cloud Console"),
-                CommonFields.client_secret("Google Cloud Console")
-            ],
-            icon_path="/assets/icons/connectors/drive.svg",
-            app_group="Google Workspace",
-            app_description="OAuth application for accessing Google Drive API and related Google Workspace services",
-            app_categories=["Storage"],
-            additional_params={
-                "access_type": "offline",
-                "prompt": "consent",
-                "include_granted_scopes": "true"
-            }
-        )
+        AuthBuilder.type(AuthType.CUSTOM).fields([
+                AuthField(
+                    name="adminEmail",
+                    display_name="Admin Email",
+                    placeholder="admin@yourdomain.com",
+                    description="Google Workspace administrator email address used for domain-wide delegation.",
+                    field_type="TEXT",
+                    required=True,
+                ),
+                AuthField(
+                    name="serviceAccountJson",
+                    display_name="Service Account JSON",
+                    placeholder="Click to upload service account JSON file",
+                    description="Upload the service account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                    field_type="FILE",
+                    required=True,
+                    min_length=0,
+                    accepted_file_types=[".json"],
+                    validation_rules=[
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_VALID,
+                            error_message="File must be valid JSON.",
+                        ),
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_HAS_FIELDS,
+                            required_fields=["type", "client_id", "project_id"],
+                            error_message="Missing required fields: {missing}",
+                        ),
+                        FileContentValidationRule(
+                            type=ValidationRuleType.JSON_FIELD_EQUALS,
+                            field="type",
+                            value="service_account",
+                            error_message=(
+                                "This is not a Google Cloud Service Account JSON file. "
+                                "The 'type' field must be 'service_account'."
+                            ),
+                        ),
+                    ],
+                    is_secret=True,
+                ),
+            ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/drive.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.GOOGLE_DRIVE.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
@@ -177,7 +194,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             GoogleDriveTeamApp(connector_id),
@@ -185,7 +204,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -1010,7 +1031,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             # Fetch root drive info to get the actual drive ID
-            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_info = await user_drive_data_source.files_get(
+                fileId="root",
+                supportsAllDrives=True,
+                fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+            )
             drive_id = drive_info.get("id")
 
             if not drive_id:
@@ -1425,6 +1450,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     content_changed = True
                     is_updated = True
 
+                parent_external_record_id = (metadata.get("parents") or [None])[0]
+                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
+                    is_updated = True
+                    metadata_changed = True
+
             # Determine if it's a file or folder
             mime_type = metadata.get("mimeType", "")
             is_file = mime_type != MimeTypes.GOOGLE_DRIVE_FOLDER.value
@@ -1660,7 +1690,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.error(f"Failed to get user permissionId for {user.email}")
                 return
 
-            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_info = await user_drive_data_source.files_get(
+                fileId="root",
+                supportsAllDrives=True,
+                fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+            )
             drive_id = drive_info.get("id")
 
             if not drive_id:
@@ -2747,7 +2781,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 file_metadata = await user_drive_data_source.files_get(
                     fileId=file_id,
-                    supportsAllDrives=True
+                    supportsAllDrives=True,
+                    fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
                 )
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -2834,7 +2869,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive enterprise connector."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -2849,5 +2886,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

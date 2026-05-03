@@ -50,6 +50,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -57,7 +58,9 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-
+from app.connectors.core.constants import (
+    IconPaths,
+)
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -177,15 +180,16 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
                 CommonFields.client_id("Dropbox App Console"),
                 CommonFields.client_secret("Dropbox App Console")
             ],
-            icon_path="/assets/icons/connectors/dropbox.svg",
+            icon_path=IconPaths.connector_icon(Connectors.DROPBOX.value),
             app_group="Cloud Storage",
             app_description="OAuth application for accessing Dropbox Personal account API",
             app_categories=["Storage"],
             token_access_type="offline"
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/dropbox.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.DROPBOX.value))
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Dropbox App Setup",
@@ -224,7 +228,9 @@ class DropboxIndividualConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
 
         """Initialize the Dropbox Individual connector."""
@@ -235,7 +241,9 @@ class DropboxIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         self.connector_name = Connectors.DROPBOX_PERSONAL
@@ -1249,7 +1257,9 @@ class DropboxIndividualConnector(BaseConnector):
         logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
@@ -1260,5 +1270,7 @@ class DropboxIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import {
   fetchConfigJwtGenerator,
   jwtGeneratorForNewAccountPassword,
+  jwtGeneratorForValidateEmailLink,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
 import {
@@ -30,6 +31,12 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { UserGroups } from '../schema/userGroup.schema';
+import type {
+  GraphUserListResponse,
+  UserGroupSummary,
+} from '../types/user_management.types';
+import { safeParsePagination } from '../../../utils/safe-integer';
+import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
@@ -38,6 +45,11 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import {
+  OAuthApp,
+  OAuthAppStatus,
+} from '../../oauth_provider/schema/oauth.app.schema';
+import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 
 @injectable()
 export class UserController {
@@ -100,6 +112,162 @@ export class UserController {
       return;
     }
 
+    // ── Paginated + filtered path (when page param is present) ──
+    const { page: pageParam, limit: limitParam, search, hasLoggedIn, isBlocked, groupIds } = req.query;
+
+    if (pageParam) {
+      const orgId = req.user?.orgId;
+      const orgIdObj = new mongoose.Types.ObjectId(orgId);
+      const { page, limit, skip } = safeParsePagination(
+        pageParam as string,
+        limitParam as string,
+        1, 25, 100,
+      );
+
+      // Build MongoDB filter
+      const filter: Record<string, any> = { orgId: orgIdObj, isDeleted: { $ne: true } };
+
+      if (search) {
+        const searchRegex = { $regex: String(search), $options: 'i' };
+        filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
+      }
+
+      // Status filters: hasLoggedIn and isBlocked
+      // When both are present, combine with $or so users matching either condition are returned.
+      const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
+      const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
+
+      if (isBlockedFilter) {
+        // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
+        const blockedCreds = await UserCredentials.find({
+          orgId, isBlocked: true, isDeleted: false,
+        }).select('userId').lean().exec();
+        const blockedIds = blockedCreds
+          .filter((c) => c.userId)
+          .map((c) => new mongoose.Types.ObjectId(c.userId!));
+
+        if (String(isBlocked) === 'true') {
+          const statusConditions: Record<string, any>[] = [];
+          if (hasLoggedInFilter) {
+            statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
+          }
+          // Always include the blocked constraint when isBlocked=true; an empty
+          // $in correctly matches nothing so "Blocked" with zero blocked users
+          // returns an empty list rather than the entire org.
+          statusConditions.push({ _id: { $in: blockedIds } });
+          // Merge with any existing $or (search) using $and
+          if (filter.$or) {
+            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+            delete filter.$or;
+          } else {
+            filter.$or = statusConditions;
+          }
+        } else {
+          if (hasLoggedInFilter) {
+            filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+          }
+          if (blockedIds.length > 0) {
+            filter._id = { ...filter._id, $nin: blockedIds };
+          }
+        }
+      } else if (hasLoggedInFilter) {
+        filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+      }
+
+      // groupIds filter: restrict to users belonging to any of the specified groups
+      if (groupIds) {
+        const gids = String(groupIds).split(',').filter(Boolean);
+        if (gids.length > 0) {
+          const groups = await UserGroups.find({
+            _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
+            isDeleted: false,
+          }).select('users').lean().exec();
+          const userIdsInGroups = groups.flatMap((g) =>
+            g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
+          );
+          // If we already have $in from isBlocked, intersect
+          if (filter._id?.$in) {
+            const existing = new Set(filter._id.$in.map((id: any) => id.toString()));
+            filter._id.$in = userIdsInGroups.filter((id) => existing.has(id.toString()));
+          } else {
+            filter._id = { ...filter._id, $in: userIdsInGroups };
+          }
+        }
+      }
+
+      const [mongoUsers, totalCount] = await Promise.all([
+        Users.find(filter).sort({ fullName: 1 }).skip(skip).limit(limit).lean().exec(),
+        Users.countDocuments(filter),
+      ]);
+
+      const userIds = mongoUsers.map((u) => u._id.toString());
+
+      // Enrich with profile pictures, groups, and blocked status
+      const [dpDocs, groupDocs, credDocs] = userIds.length > 0
+        ? await Promise.all([
+            UserDisplayPicture.find({
+              orgId, userId: { $in: userIds }, pic: { $ne: null },
+            }).lean().exec(),
+            UserGroups.find({
+              orgId: orgIdObj, isDeleted: false,
+              users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
+            }).select('_id name type users').lean().exec(),
+            UserCredentials.find({
+              orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
+            }).select('userId').lean().exec(),
+          ])
+        : [[], [], []];
+
+      const dpMap = new Map<string, string>();
+      for (const dp of dpDocs) {
+        if (dp.userId && dp.pic) {
+          const mime = dp.mimeType || 'image/jpeg';
+          dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+        }
+      }
+
+      const blockedUserIds = new Set(credDocs.map((c) => c.userId?.toString()));
+
+      // Build per-user group data
+      const userGroupsMap = new Map<string, { _id: string; name: string; type: string }[]>();
+      for (const g of groupDocs) {
+        for (const uid of g.users) {
+          const uidStr = uid.toString();
+          if (!userGroupsMap.has(uidStr)) userGroupsMap.set(uidStr, []);
+          userGroupsMap.get(uidStr)!.push({ _id: g._id.toString(), name: g.name, type: g.type });
+        }
+      }
+
+      const enrichedUsers = mongoUsers.map((u) => {
+        const uid = u._id.toString();
+        const timestamps = u as typeof u & { createdAt?: Date; updatedAt?: Date };
+        const groups = userGroupsMap.get(uid) ?? [];
+        return {
+          id: uid,
+          userId: uid,
+          orgId: u.orgId?.toString(),
+          name: u.fullName,
+          email: u.email,
+          isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
+          hasLoggedIn: u.hasLoggedIn ?? false,
+          isBlocked: blockedUserIds.has(uid),
+          createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
+          updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
+          profilePicture: dpMap.get(uid),
+          role: groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member',
+          groupCount: groups.filter((g) => g.type !== 'everyone').length,
+          userGroups: groups,
+        };
+      });
+
+      res.status(200).json({
+        users: enrichedUsers,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+      });
+      return;
+    }
+
+    // ── Legacy path (no pagination — returns all users as array) ──
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,
@@ -234,7 +402,7 @@ export class UserController {
           isBlocked: true,
           isDeleted: false,
         },
-        { $set: { isBlocked: false, wrongCredentialCount: 0 } },
+        { $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null } },
         { new: true }
       );
 
@@ -581,6 +749,8 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
+      let emailChangeRequested = 'notNeeded';
+
 
       // Define whitelist of allowed fields that can be updated
       const ALLOWED_UPDATE_FIELDS = [
@@ -662,7 +832,18 @@ export class UserController {
           if (existingUser) {
             throw new BadRequestError('Email already exists for another user');
           }
-          user.email = email;
+
+          const emailSentResponse = await this.emailChange(
+            email,
+            newEmail,
+            user,
+          )
+
+          if (emailSentResponse.statusCode !== 200) {
+            emailChangeRequested = 'failed';
+          } else {
+            emailChangeRequested = 'sent';
+          }
         }
       }
 
@@ -687,7 +868,12 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       // Save the updated user
-      res.json(user.toObject());
+      res.json({
+        ...user.toObject(),
+        meta: {
+          emailChangeMailStatus: emailChangeRequested,
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -927,6 +1113,67 @@ export class UserController {
     }
   }
 
+  /**
+   * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
+   */
+  private async softDeleteOAuthAppsForUser(
+    orgId: unknown,
+    createdByUserId: unknown,
+    actorUser: Record<string, unknown>,
+  ): Promise<void> {
+    const orgOid =
+      orgId instanceof mongoose.Types.ObjectId
+        ? orgId
+        : new mongoose.Types.ObjectId(String(orgId));
+    const creatorOid =
+      createdByUserId instanceof mongoose.Types.ObjectId
+        ? createdByUserId
+        : new mongoose.Types.ObjectId(String(createdByUserId));
+
+    const apps = await OAuthApp.find({
+      orgId: orgOid,
+      createdBy: creatorOid,
+      isDeleted: false,
+    })
+      .select('clientId')
+      .lean()
+      .exec();
+
+    const oauthTokenService = resolveOAuthTokenService();
+    if (oauthTokenService && apps.length > 0) {
+      for (const app of apps) {
+        if (!app?.clientId) {
+          continue;
+        }
+        try {
+          await oauthTokenService.revokeAllTokensForApp(app.clientId);
+        } catch (err) {
+          this.logger.error(
+            'Failed to revoke OAuth tokens when deleting user',
+            { clientId: app.clientId, err },
+          );
+        }
+      }
+    }
+
+    const actorIdRaw = actorUser.userId ?? actorUser._id;
+    const deletedBy =
+      actorIdRaw != null
+        ? new mongoose.Types.ObjectId(String(actorIdRaw))
+        : creatorOid;
+
+    await OAuthApp.updateMany(
+      { orgId: orgOid, createdBy: creatorOid, isDeleted: false },
+      {
+        $set: {
+          isDeleted: true,
+          status: OAuthAppStatus.REVOKED,
+          deletedBy,
+        },
+      },
+    );
+  }
+
   async deleteUser(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -971,6 +1218,8 @@ export class UserController {
         { orgId, users: userId },
         { $pull: { users: userId } },
       );
+
+      await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
 
       user.isDeleted = true;
       user.hasLoggedIn = false;
@@ -1168,7 +1417,7 @@ export class UserController {
           templateData: {
             invitee: user?.fullName,
             orgName: org?.shortName || org?.registeredName,
-            link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
           },
         });
         if (result.statusCode !== 200) {
@@ -1242,6 +1491,31 @@ export class UserController {
 
       const activeEmails = activeUsers.map((user) => user.email);
       const deletedEmails = deletedUsers.map((user) => user.email);
+      const pendingUsers = activeUsers.filter((user) => !user.hasLoggedIn);
+      const pendingUserIds = pendingUsers
+        .map((user) => user._id)
+        .filter((userId): userId is mongoose.Types.ObjectId => Boolean(userId));
+
+      const blockedPendingCredentialDocs = pendingUserIds.length > 0
+        ? await UserCredentials.find({
+            orgId: req.user?.orgId,
+            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
+            isBlocked: true,
+            isDeleted: false,
+          })
+            .select('userId')
+            .lean()
+            .exec()
+        : [];
+
+      const blockedPendingUserIds = new Set(
+        blockedPendingCredentialDocs
+          .map((doc) => doc.userId?.toString())
+          .filter((userId): userId is string => Boolean(userId)),
+      );
+      const pendingUsersToReinvite = pendingUsers.filter(
+        (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
+      );
 
       // Restore deleted accounts
       let restoredUsers: User[] = [];
@@ -1299,7 +1573,11 @@ export class UserController {
         );
       }
       // If nothing was done, return 409
-      if (newUsers.length === 0 && restoredUsers.length === 0) {
+      if (
+        newUsers.length === 0 &&
+        restoredUsers.length === 0 &&
+        pendingUsersToReinvite.length === 0
+      ) {
         res.status(200).json({
           errorMessage: 'All provided emails already have active accounts',
         });
@@ -1308,36 +1586,50 @@ export class UserController {
       let errorSendingMail = false;
 
       await this.eventService.start();
-      for (let i = 0; i < emailsForNewAccounts.length; ++i) {
-        const email = emailsForNewAccounts[i];
-        const userId = newUsers[i]?._id;
+      const newUserByEmail = new Map(
+        newUsers.map((user) => [user.email, user]),
+      );
+      const pendingUserByEmail = new Map(
+        pendingUsersToReinvite.map((user) => [user.email, user]),
+      );
+      const emailsForPendingAccounts = pendingUsersToReinvite
+        .map((user) => user.email)
+        .filter((email): email is string => Boolean(email));
+      const emailsForInvites = [...emailsForNewAccounts, ...emailsForPendingAccounts];
+
+      for (let i = 0; i < emailsForInvites.length; ++i) {
+        const email = emailsForInvites[i];
+        const pendingUser = pendingUserByEmail.get(email);
+        const userId = pendingUser?._id || newUserByEmail.get(email)?._id;
         if (!userId) {
           throw new InternalServerError(
             'User ID missing while inviting restored user. Please ensure user restoration was successful.',
           );
         }
-        await UserGroups.updateMany(
-          { _id: { $in: groupIds }, orgId },
-          { $addToSet: { users: userId } },
-          { new: true },
-        );
+        if (!pendingUser) {
+          await UserGroups.updateMany(
+            { _id: { $in: groupIds }, orgId },
+            { $addToSet: { users: userId } },
+            { new: true },
+          );
 
-        await UserGroups.updateOne(
-          { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
-          { $addToSet: { users: userId } }, // Add user to the group if not already present
-        );
+          await UserGroups.updateOne(
+            { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
+            { $addToSet: { users: userId } }, // Add user to the group if not already present
+          );
 
-        const event: Event = {
-          eventType: EventType.NewUserEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: req.user?.orgId.toString(),
-            userId: userId,
-            email: email,
-            syncAction: SyncAction.Immediate,
-          } as UserAddedEvent,
-        };
-        await this.eventService.publishEvent(event);
+          const event: Event = {
+            eventType: EventType.NewUserEvent,
+            timestamp: Date.now(),
+            payload: {
+              orgId: req.user?.orgId.toString(),
+              userId: userId,
+              email: email,
+              syncAction: SyncAction.Immediate,
+            } as UserAddedEvent,
+          };
+          await this.eventService.publishEvent(event);
+        }
 
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),
@@ -1369,7 +1661,7 @@ export class UserController {
             templateData: {
               invitee: req.user?.fullName,
               orgName: org?.shortName || org?.registeredName,
-              link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+              link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
             },
           });
           if (result.statusCode !== 200) {
@@ -1456,7 +1748,7 @@ export class UserController {
             templateData: {
               invitee: req.user?.fullName,
               orgName: org?.shortName || org?.registeredName,
-              link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+              link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
             },
           });
           if (result.statusCode !== 200) {
@@ -1550,13 +1842,85 @@ export class UserController {
         },
         method: HttpMethod.GET,
       };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<GraphUserListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw new BadRequestError('Failed to get users');
       }
-      const users = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(users);
+      const data = aiResponse.data;
+      const usersArray = data?.users ?? [];
+
+      const userMongoIds = usersArray.map((u) => u.userId).filter(Boolean);
+
+      if (userMongoIds.length > 0) {
+        const orgIdObj = new mongoose.Types.ObjectId(orgId);
+
+        // Parallel: fetch DPs, mongo user docs (hasLoggedIn), and group memberships
+        const [dpDocs, mongoUsers, groupDocs] = await Promise.all([
+          UserDisplayPicture.find({
+            orgId,
+            userId: { $in: userMongoIds },
+            pic: { $ne: null },
+          }).lean().exec(),
+          Users.find({
+            _id: { $in: userMongoIds },
+            orgId: orgIdObj,
+          }).select('_id hasLoggedIn fullName').lean().exec(),
+          UserGroups.find({
+            orgId: orgIdObj,
+            isDeleted: false,
+            users: { $in: userMongoIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
+          }).select('_id name type users').lean().exec(),
+        ]);
+
+        // Build lookup maps
+        const dpMap = new Map<string, string>();
+        for (const dp of dpDocs) {
+          if (dp.userId && dp.pic) {
+            const mime = dp.mimeType || 'image/jpeg';
+            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          }
+        }
+
+        const mongoUserMap = new Map<string, { hasLoggedIn?: boolean; fullName?: string }>();
+        for (const mu of mongoUsers) {
+          mongoUserMap.set(mu._id.toString(), { hasLoggedIn: mu.hasLoggedIn, fullName: mu.fullName });
+        }
+
+        // Build per-user groups
+        const userGroupsMap = new Map<string, UserGroupSummary[]>();
+        for (const g of groupDocs) {
+          for (const uid of g.users) {
+            const uidStr = uid.toString();
+            if (!userGroupsMap.has(uidStr)) {
+              userGroupsMap.set(uidStr, []);
+            }
+            userGroupsMap.get(uidStr)!.push({
+              _id: g._id.toString(),
+              name: g.name,
+              type: g.type,
+            });
+          }
+        }
+
+        // Enrich each user
+        for (const user of usersArray) {
+          const uid = user.userId;
+          if (!uid) continue;
+          if (dpMap.has(uid)) user.profilePicture = dpMap.get(uid);
+          const mu = mongoUserMap.get(uid);
+          if (mu) {
+            user.hasLoggedIn = mu.hasLoggedIn ?? true;
+            if (!user.name && mu.fullName) user.name = mu.fullName;
+          }
+          const groups = userGroupsMap.get(uid) ?? [];
+          user.userGroups = groups;
+          user.groupCount = groups.filter((g) => g.type !== 'everyone').length;
+          user.role = groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member';
+        }
+      }
+
+      res.status(HTTP_STATUS.OK).json(data);
     } catch (error: any) {
       this.logger.error('Error getting users', {
         requestId,
@@ -1667,4 +2031,83 @@ export class UserController {
       fullName,
     };
   }
+
+  async emailChange(
+    email: string,
+    newEmail: string,
+    user: Record<string, any>,
+    // authToken: string,
+  ) {
+    try {
+      if (!email) {
+        throw new BadRequestError('Email is required');
+      }
+      const result = await this.sendValidateEmailIdEmail(user, newEmail);
+
+      if (result.statusCode !== 200) {
+        return {
+          statusCode: 400,
+          data: 'Failed to send email',
+        };
+      }
+      return {
+        statusCode: 200,
+        data: 'Email change verification mail sent',
+      };
+      // res.status(200).send({ data: 'email change verification mail sent' });
+      // return;
+    } catch (error) {
+      return {
+        statusCode: 400,
+        data: 'Failed to send email',
+      };
+    }
+  };
+
+
+  async sendValidateEmailIdEmail(user: Record<string, any>, newEmail: string) {
+    try {
+      const { validateEmailToken, mailAuthToken } =
+        jwtGeneratorForValidateEmailLink(
+          user.email,
+          newEmail,
+          user._id,
+          user.orgId,
+          this.config.scopedJwtSecret,
+        );
+
+      const validateEmailLink = `${this.config.frontendUrl}/reset-email#token=${validateEmailToken}`;
+      const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
+      const emailSentResponse = await this.mailService.sendMail({
+        emailTemplateType: 'resetEmail',
+        initiator: { jwtAuthToken: mailAuthToken },
+        usersMails: [newEmail],
+        subject: 'PipesHub | Verify your email !',
+        templateData: {
+          orgName: org?.shortName || org?.registeredName,
+          name: user.fullName,
+          link: validateEmailLink,
+        },
+      });
+
+
+      if (emailSentResponse.statusCode !== 200) {
+        return {
+          statusCode: 400,
+          data: 'Failed to send email',
+        };
+      }
+
+      return {
+        statusCode: 200,
+        data: 'mail sent',
+      };
+    } catch (error) {
+      return {
+        statusCode: 400,
+        data: 'Failed to send email',
+      };
+    }
+  }
 }
+

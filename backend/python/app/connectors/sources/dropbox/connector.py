@@ -56,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -66,7 +67,9 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-
+from app.connectors.core.constants import (
+    IconPaths,
+)
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -195,15 +198,16 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
                 CommonFields.client_id("Dropbox App Console"),
                 CommonFields.client_secret("Dropbox App Console")
             ],
-            icon_path="/assets/icons/connectors/dropbox.svg",
+            icon_path=IconPaths.connector_icon(Connectors.DROPBOX.value),
             app_group="Cloud Storage",
             app_description="OAuth application for accessing Dropbox API and team collaboration features",
             app_categories=["Storage"],
             token_access_type="offline"
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/dropbox.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.DROPBOX.value))
         .add_documentation_link(DocumentationLink(
             "Dropbox App Setup",
             "https://developers.dropbox.com/oauth-guide",
@@ -248,9 +252,20 @@ class DropboxConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
 
-        super().__init__(DropboxApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(
+            DropboxApp(connector_id),
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )
 
         self.connector_name = Connectors.DROPBOX
         self.connector_id = connector_id
@@ -1995,14 +2010,23 @@ class DropboxConnector(BaseConnector):
         self.logger.debug(f"Event details type: {type(details_obj)}")
         self.logger.debug(f"Event details: {details_obj}")
 
+        old_name: Optional[str] = None
+        new_name_from_details: Optional[str] = None
+
         # Try different ways to access the GroupRenameDetails
         if hasattr(details_obj, 'get_group_rename_details'):
             group_rename_details = details_obj.get_group_rename_details()
             old_name = group_rename_details.previous_value
-            new_name = group_rename_details.new_value
-            self.logger.debug("Used get_group_rename_details() method: old_name=%s, new_name=%s", old_name, new_name)
+            new_name_from_details = group_rename_details.new_value
+            self.logger.debug(
+                "Used get_group_rename_details() method: old_name=%s, new_name=%s",
+                old_name,
+                new_name_from_details,
+            )
 
-        if not group_id or not new_group_name:
+        new_name = new_name_from_details or new_group_name
+
+        if not group_id or not new_name:
             self.logger.warning(
                 f"Could not extract required info from group_rename event. "
                 f"group_id={group_id}, new_name={new_name}"
@@ -3114,12 +3138,24 @@ class DropboxConnector(BaseConnector):
 
     @classmethod
     async def create_connector(
-        cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str
+        cls,
+        logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
         return DropboxConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )

@@ -1,0 +1,160 @@
+# -----------------------------------------------------------------------------
+# Stage 1: Build Base - Contains all build tools (NOT in final image)
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS build-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    gnupg \
+    wget \
+    librocksdb-dev \
+    libgflags-dev \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
+    libssl-dev \
+    libspatialindex-dev \
+    libmariadb-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust with minimal profile (only needed for building certain pip packages)
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install uv for faster pip operations
+RUN pip install --no-cache-dir uv
+
+# -----------------------------------------------------------------------------
+# Stage 2: Python Dependencies Build
+# -----------------------------------------------------------------------------
+FROM build-base AS python-deps
+WORKDIR /app/python
+
+COPY ./backend/python/pyproject.toml ./
+
+# Install Python dependencies + watchdog for hot reload (watchmedo command)
+RUN uv pip install --system -e . && \
+    uv pip install --system watchdog && \
+    # Download ML models
+    python -m spacy download en_core_web_sm && \
+    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    # Clean up caches to save space
+    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
+
+# -----------------------------------------------------------------------------
+# Stage 3: Node.js Backend (DEV - keep devDependencies for nodemon + ts-node)
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS nodejs-backend
+WORKDIR /app/backend
+
+COPY backend/nodejs/apps/package*.json ./
+COPY backend/nodejs/apps/tsconfig.json ./
+
+# Install ALL dependencies including devDependencies (nodemon, ts-node, typescript)
+RUN set -e; \
+    ARCH=$(uname -m); \
+    echo "Building for architecture: $ARCH"; \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
+        echo "Detected ARM architecture"; \
+        npm install && \
+        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
+        npm install sharp --save || true; \
+    else \
+        echo "Detected x86 architecture"; \
+        npm install; \
+    fi
+
+COPY backend/nodejs/apps/src ./src
+# DEV: no npm run build — runtime uses "npm run dev" (nodemon) for hot reload
+
+# -----------------------------------------------------------------------------
+# Stage 4: Frontend (DEV - no build, use npm run dev / Vite at runtime)
+# Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS frontend-dev
+WORKDIR /app/frontend
+
+RUN mkdir -p packages
+COPY frontend/package*.json ./
+COPY frontend/packages ./packages/
+
+RUN npm config set legacy-peer-deps true && \
+    npm install && \
+    npm cache clean --force
+
+COPY frontend/ ./
+# DEV: no npm run build — runtime uses "npm run dev" (Vite HMR) for hot reload
+
+# -----------------------------------------------------------------------------
+# Stage 5: Runtime Base - Minimal runtime dependencies only
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    iputils-ping \
+    dnsutils \
+    libsnappy1v5 \
+    zlib1g \
+    liblz4-1 \
+    libzstd1 \
+    libpq5 \
+    libmariadb3 \
+    libgl1 \
+    libglib2.0-0 \
+    ocrmypdf \
+    tesseract-ocr \
+    ghostscript \
+    unpaper \
+    qpdf \
+    libreoffice-writer-nogui \
+    libreoffice-calc-nogui \
+    libreoffice-impress-nogui \
+    procps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install Node.js runtime
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Stage 6: Final Dev Runtime Image
+# -----------------------------------------------------------------------------
+FROM runtime-base AS runtime
+WORKDIR /app
+
+# Copy Python site-packages from build stage (includes watchdog / watchmedo)
+COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=python-deps /usr/local/bin /usr/local/bin
+
+# Copy ML model data
+COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=python-deps /root/nltk_data /root/nltk_data
+
+# Copy Node.js backend (WITH devDependencies: nodemon, ts-node, typescript)
+COPY --from=nodejs-backend /app/backend/ ./backend/
+
+# Copy full frontend source + node_modules for Vite dev server at runtime
+COPY --from=frontend-dev /app/frontend/ ./frontend/
+
+# Ensure backend public dir exists (used by Node when serving static in prod; ignored in dev)
+RUN mkdir -p ./backend/dist/public
+
+# Copy Python application code (will be overridden by bind-mount in docker-compose)
+COPY backend/python/app/ /app/python/app/
+
+EXPOSE 3000 3001 8000 8088 8091 8081
+
+# Entrypoint script is bind-mounted from docker-compose for easy editing without rebuild
+CMD ["/app/dev_process_monitor.sh"]

@@ -9,6 +9,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -76,7 +77,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/s3.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.S3.value))
         .add_documentation_link(DocumentationLink(
             "S3 Access Key Setup",
             "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
@@ -118,6 +119,8 @@ class S3Connector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=S3App(connector_id),
@@ -126,6 +129,8 @@ class S3Connector(S3CompatibleBaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             connector_name=Connectors.S3,
             filter_key="s3",
             base_console_url="https://s3.console.aws.amazon.com",
@@ -148,14 +153,6 @@ class S3Connector(S3CompatibleBaseConnector):
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
             return False
-
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
 
         try:
             client = await S3Client.build_from_services(
@@ -204,6 +201,8 @@ class S3Connector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
@@ -222,6 +221,8 @@ class S3Connector(S3CompatibleBaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 
         # Update processor with connector-specific URL generator

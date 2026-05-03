@@ -216,6 +216,13 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     fields: COMMON_API_FIELDS,
   },
   {
+    id: 'minimax',
+    label: 'MiniMax',
+    description: 'Enter your MiniMax API credentials to get started.',
+    modelPlaceholder: 'e.g., MiniMax-M2.7, MiniMax-M2.7-highspeed',
+    fields: COMMON_API_FIELDS,
+  },
+  {
     id: 'fireworks',
     label: 'Fireworks',
     description: 'Enter your Fireworks API credentials to get started.',
@@ -451,12 +458,12 @@ export const STORAGE_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Configure Amazon S3 storage for your application data.',
     fields: ['s3AccessKeyId', 's3SecretAccessKey', 's3Region', 's3BucketName'],
   },
-  {
-    id: 'azureBlob',
-    label: 'Azure Blob Storage',
-    description: 'Configure Azure Blob Storage for your application data.',
-    fields: ['accountName', 'accountKey', 'containerName', 'endpointProtocol', 'endpointSuffix'],
-  },
+  // {
+ //   id: 'azureBlob',
+  //   label: 'Azure Blob Storage',
+  //   description: 'Configure Azure Blob Storage for your application data.',
+  //   fields: ['accountName', 'accountKey', 'containerName', 'endpointProtocol', 'endpointSuffix'],
+  // },
 ] as const;
 
 // SMTP PROVIDERS

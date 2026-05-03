@@ -193,6 +193,16 @@ backend/python/cleanup.ps1
 .vscode/settings.json
 pyrightconfig.json
 .claude/settings.local.json
-CLAUDE.md
 nul
 backend/python/requirements.txt
+
+# TypeScript build cache files
+*.tsbuildinfo
+backend/python/r.txt
+backend/python/uv.lock
+.claude/skills/unit-test/SKILL.md
+
+# others
+tasks
+backend/python/.claude/settings.local.json
+.cursor/*
