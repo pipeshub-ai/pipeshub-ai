@@ -638,7 +638,7 @@ clean-all: ## Clean all setups with hard Docker cleanup
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
 	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Stopping docker-compose containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai down -v 2>/dev/null || true
+	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.arango.yml -p pipeshub-ai down -v 2>/dev/null || true
 	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down -v 2>/dev/null || true
 	@echo "$(YELLOW)Removing all containers...$(NC)"
 	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
@@ -848,23 +848,23 @@ dev-docker-up: check-and-kill-ports ## Start development deployment with build
 	@echo "$(BLUE)Injecting build metadata...$(NC)"
 	@cd $(ROOT_DIR)/deployment/docker-compose && \
 		BUILD_COMMIT_ID=$$(git -C $(ROOT_DIR) rev-parse HEAD) \
-		docker compose -f docker-compose.dev.yml -p pipeshub-ai up --build -d
+		docker compose -f docker-compose.build.arango.yml -p pipeshub-ai up --build -d
 	@echo "$(GREEN)Development deployment started!$(NC)"
-	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai logs -f$(NC)"
+	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && docker compose -f docker-compose.build.arango.yml -p pipeshub-ai logs -f$(NC)"
 
 dev-docker-down: ## Stop and remove development containers
 	@echo "$(YELLOW)Stopping development deployment...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.arango.yml -p pipeshub-ai down
 	@echo "$(GREEN)Development deployment stopped and removed!$(NC)"
 
 dev-docker-stop: ## Stop development containers only
 	@echo "$(YELLOW)Stopping development containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai stop
+	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.arango.yml -p pipeshub-ai stop
 	@echo "$(GREEN)Development containers stopped!$(NC)"
 
 dev-docker-clean: ## Stop and remove development containers
 	@echo "$(YELLOW)Stopping and removing development containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.arango.yml-p pipeshub-ai down
 	@echo "$(GREEN)Development containers cleaned!$(NC)"
 
 dev-docker-hard-clean: ## Stop, remove containers and clean volumes
@@ -874,7 +874,7 @@ dev-docker-hard-clean: ## Stop, remove containers and clean volumes
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Stopping and removing development containers with volumes...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai down -v
+	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.arango.yml -p pipeshub-ai down -v
 	@echo "$(GREEN)Development deployment and volumes cleaned!$(NC)"
 
 # ==============================================================================
