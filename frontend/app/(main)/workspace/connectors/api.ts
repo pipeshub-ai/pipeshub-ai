@@ -125,7 +125,8 @@ export const ConnectorsApi = {
   /** Delete a connector instance; response is normalized for optimistic store merge. */
   async deleteConnectorInstance(connectorId: string): Promise<DeleteConnectorInstanceMerge> {
     const { data } = await apiClient.delete<DeleteConnectorInstanceResponseBody | null>(
-      `${BASE_URL}/${connectorId}`
+      `${BASE_URL}/${connectorId}`,
+      { suppressErrorToast: true }
     );
     return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
