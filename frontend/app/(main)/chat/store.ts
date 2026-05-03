@@ -32,6 +32,12 @@ export interface ChatPreviewFile {
   blob?: Blob;
   type: string;
   size?: number;
+  /** Record type hint available before `recordDetails` finishes loading. */
+  recordType?: string | null;
+  /** Connector hint (e.g. WEB) available before `recordDetails` loads. */
+  connectorName?: string | null;
+  /** Hint that the record has a file payload (`fileRecord`) in KB details. */
+  hasFileRecord?: boolean;
   isLoading?: boolean;
   error?: string;
   recordDetails?: RecordDetailsResponse;

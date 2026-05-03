@@ -446,6 +446,9 @@ function KnowledgeBasePageContent() {
     isLoading?: boolean;
     error?: string;
     recordDetails?: RecordDetailsResponse;
+    recordType?: string | null;
+    connectorName?: string | null;
+    hasFileRecord?: boolean;
     webUrl?: string;
     previewRenderable?: boolean;
   } | null>(null);
@@ -1597,6 +1600,9 @@ function KnowledgeBasePageContent() {
           type: item.mimeType || item.extension || '',
           size: item.sizeInBytes || undefined,
           isLoading: true,
+          recordType: item.recordType ?? null,
+          connectorName: item.connector ?? null,
+          hasFileRecord: item.recordType === 'FILE',
           webUrl: item.webUrl,
         });
         setPreviewMode('sidebar');
@@ -1643,6 +1649,9 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          recordType: recordDetails.record.recordType,
+          connectorName: recordDetails.record.connectorName ?? null,
+          hasFileRecord: !!recordDetails.record.fileRecord,
           webUrl: recordDetails.record.webUrl || undefined,
           previewRenderable: recordDetails.record.previewRenderable,
         });
@@ -1671,6 +1680,8 @@ function KnowledgeBasePageContent() {
           type: item.fileType || '',
           size: item.size,
           isLoading: true,
+          recordType: 'FILE',
+          hasFileRecord: true,
         });
         setPreviewMode('sidebar');
 
@@ -1713,6 +1724,9 @@ function KnowledgeBasePageContent() {
             undefined,
           isLoading: false,
           recordDetails,
+          recordType: recordDetails.record.recordType,
+          connectorName: recordDetails.record.connectorName ?? null,
+          hasFileRecord: !!recordDetails.record.fileRecord,
           webUrl: recordDetails.record.webUrl || undefined,
           previewRenderable: recordDetails.record.previewRenderable,
         });
@@ -2403,6 +2417,9 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            recordType: previewFile.recordType,
+            connectorName: previewFile.connectorName,
+            hasFileRecord: previewFile.hasFileRecord,
             ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
             previewRenderable: previewFile.previewRenderable,
           }}
@@ -2433,6 +2450,9 @@ function KnowledgeBasePageContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            recordType: previewFile.recordType,
+            connectorName: previewFile.connectorName,
+            hasFileRecord: previewFile.hasFileRecord,
             ...(previewFile.webUrl ? { webUrl: previewFile.webUrl } : {}),
             previewRenderable: previewFile.previewRenderable,
           }}

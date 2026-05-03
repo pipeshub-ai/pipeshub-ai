@@ -81,6 +81,12 @@ export interface FilePreviewProps {
     url: string;
     type: string;
     size?: number;
+    /** Record type hint available before `recordDetails` finishes loading. */
+    recordType?: string | null;
+    /** Connector hint (e.g. WEB) available before `recordDetails` loads. */
+    connectorName?: string | null;
+    /** Hint that the record has a file payload (`fileRecord`) in KB details. */
+    hasFileRecord?: boolean;
     /**
      * In-memory file data. Used by renderers that work better with a raw
      * Blob/ArrayBuffer than a blob URL (e.g. DOCX via `docx-preview`), which
