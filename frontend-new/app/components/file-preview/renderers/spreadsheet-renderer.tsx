@@ -8,6 +8,9 @@ import type { PreviewCitation } from '../types';
 
 // ─── Constants ──────────────────────────────────────────────────────
 const MAX_ROWS = 5_000;
+const COL_DEFAULT_WIDTH = 150;
+const COL_MIN_WIDTH = 30;
+const RESIZE_EDGE_PX = 5;
 
 const XLSX_READ_OPTIONS = {
   type: 'array' as const,
@@ -289,7 +292,7 @@ const TableCellMemo = memo(function TableCellMemo({
     <td
       style={{
         width: `var(--cw-${colIndex})`,
-        minWidth: '30px',
+        minWidth: `${COL_MIN_WIDTH}px`,
         padding: '6px 10px',
         borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
         borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
@@ -391,7 +394,6 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   }, [state.workbookData, state.selectedSheet]);
 
   // ── Initialize column widths as CSS variables on the <table> ────
-  const COL_DEFAULT_WIDTH = 150;
   useEffect(() => {
     const tableEl = tableElRef.current;
     if (!tableEl || !currentSheetData.headers.length) return;
@@ -405,50 +407,45 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   // ── Column resize: cursor hint on hover near any cell border ───
   const handleResizeMove = useCallback((e: React.MouseEvent) => {
     if (resizingRef.current) return;
-    const cell = (e.target as HTMLElement).closest('td, th') as HTMLElement | null;
+    const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
     const container = tableRef.current;
     if (!cell || !container) {
       if (container) container.style.cursor = '';
       return;
     }
-    const tr = cell.parentElement;
-    if (!tr) return;
-    const cellIndex = Array.from(tr.children).indexOf(cell);
-    if (cellIndex < 1) {
+    if (cell.cellIndex < 1) {
       container.style.cursor = '';
       return;
     }
     const rect = cell.getBoundingClientRect();
-    container.style.cursor = e.clientX > rect.right - 5 ? 'col-resize' : '';
+    container.style.cursor = e.clientX > rect.right - RESIZE_EDGE_PX ? 'col-resize' : '';
   }, []);
 
   // ── Column resize: drag start from any cell's right edge ───────
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    const cell = (e.target as HTMLElement).closest('td, th') as HTMLElement | null;
+    const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
     if (!cell) return;
-    const tr = cell.parentElement;
-    if (!tr) return;
-    const cellIndex = Array.from(tr.children).indexOf(cell);
-    if (cellIndex < 1) return;
+    const cellIdx = cell.cellIndex;
+    if (cellIdx < 1) return;
     const rect = cell.getBoundingClientRect();
-    if (e.clientX <= rect.right - 5) return;
+    if (e.clientX <= rect.right - RESIZE_EDGE_PX) return;
 
     e.preventDefault();
     e.stopPropagation();
     resizingRef.current = true;
 
-    const colIndex = cellIndex - 1;
+    const colIndex = cellIdx - 1;
     const tableEl = tableElRef.current;
     if (!tableEl) return;
 
     const currentWidth = parseInt(
-      tableEl.style.getPropertyValue(`--cw-${colIndex}`) || '120', 10
+      tableEl.style.getPropertyValue(`--cw-${colIndex}`) || `${COL_DEFAULT_WIDTH}`, 10
     );
     const startX = e.clientX;
 
     let prevWidth = currentWidth;
     const onMove = (ev: MouseEvent) => {
-      const newWidth = Math.max(30, currentWidth + ev.clientX - startX);
+      const newWidth = Math.max(COL_MIN_WIDTH, currentWidth + ev.clientX - startX);
       tableEl.style.setProperty(`--cw-${colIndex}`, `${newWidth}px`);
       const tableWidth = parseInt(tableEl.style.width || '0', 10);
       tableEl.style.width = `${tableWidth + (newWidth - prevWidth)}px`;
@@ -699,7 +696,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                   key={index}
                   style={{
                     width: `var(--cw-${index})`,
-                    minWidth: '30px',
+                    minWidth: `${COL_MIN_WIDTH}px`,
                     padding: '4px 6px',
                     fontSize: '10px',
                     fontWeight: 600,
