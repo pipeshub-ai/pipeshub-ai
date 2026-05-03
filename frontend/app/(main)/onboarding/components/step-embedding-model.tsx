@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from '../store';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
 import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
 import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
@@ -193,8 +194,12 @@ export function StepEmbeddingModel({
       toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
       closeDeleteDialog();
       loadModels();
-    } catch {
-      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } catch (error: unknown) {
+      const detail =
+        isProcessedError(error) && error.message.trim() ? error.message.trim() : undefined;
+      toast.error(t('workspace.aiModels.toastDeleteError'), {
+        ...(detail ? { description: detail } : {}),
+      });
     } finally {
       setIsDeleting(false);
     }
