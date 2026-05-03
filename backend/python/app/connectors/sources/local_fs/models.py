@@ -10,6 +10,9 @@ class LocalFsFileEvent(BaseModel):
     timestamp: int
     size: int | None = None
     isDirectory: bool
+    contentField: str | None = None
+    sha256: str | None = None
+    mimeType: str | None = None
 
 
 class LocalFsFileEventBatchRequest(BaseModel):

@@ -13,6 +13,7 @@ import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
+import multer from 'multer';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -51,6 +52,7 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   submitConnectorFileEvents,
+  submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
@@ -81,6 +83,13 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
+});
+const localFsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 1024 * 1024 * 300,
+    files: 100,
+  },
 });
 
 // Configure axios retry logic
@@ -580,6 +589,15 @@ export function createConnectorRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config)
+  );
+
+  router.post(
+    '/:connectorId/file-events/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    localFsUpload.any(),
+    submitConnectorFileEventUploads(config),
   );
 
   router.post(

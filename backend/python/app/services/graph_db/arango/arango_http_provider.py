@@ -6274,6 +6274,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return await self.delete_gmail_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.OUTLOOK.value:
                 return await self.delete_outlook_record(record_id, user_id, record, transaction)
+            elif connector_name == Connectors.LOCAL_FS.value:
+                return await self.delete_local_fs_record(record_id, user_id, record, transaction)
             else:
                 return {
                     "success": False,
@@ -7336,6 +7338,150 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "code": 500,
                 "reason": f"Outlook record deletion failed: {str(e)}"
             }
+
+    async def delete_local_fs_record(
+        self,
+        record_id: str,
+        user_id: str,
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
+        """
+        Delete a Local FS record. Local FS DELETED events come from the
+        connector itself (running as the connector owner), so we only allow
+        the OWNER role to delete — protects against a stray batch holding a
+        record_id from a different tenant.
+
+        The connector loop passes ``User.id`` (Arango ``_key``) rather than the
+        external ``userId``, so accept both — first try ``userId`` (the normal
+        lookup), then fall back to fetching by ``_key`` so deletions from the
+        Local FS connector don't 404 on a user/key vs. user/userId mismatch.
+        """
+        try:
+            self.logger.info(f"📁 Deleting Local FS record {record_id}")
+
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                user = await self.http_client.get_document(
+                    collection=CollectionNames.USERS.value,
+                    key=user_id,
+                    txn_id=transaction
+                )
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_role = await self._check_record_permission(record_id, user.get('_key'), transaction)
+            if user_role != "OWNER":
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Only the connector owner can delete Local FS records. Role: {user_role}"
+                }
+
+            return await self._execute_local_fs_record_deletion(record_id, record, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Local FS record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Local FS record deletion failed: {str(e)}"
+            }
+
+    async def _execute_local_fs_record_deletion(
+        self,
+        record_id: str,
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
+        """Delete edges + file record + main record for a Local FS record."""
+        try:
+            file_record = await self.http_client.get_document(
+                collection=CollectionNames.FILES.value,
+                key=record_id,
+                txn_id=transaction
+            )
+
+            await self._delete_local_fs_edges(record_id, transaction)
+
+            if file_record:
+                await self._delete_file_record(record_id, transaction)
+
+            await self._delete_main_record(record_id, transaction)
+
+            self.logger.info(f"✅ Deleted Local FS record {record_id}")
+
+            try:
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    payload["connectorName"] = Connectors.LOCAL_FS.value
+                    payload["origin"] = OriginTypes.CONNECTOR.value
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create Local FS deletion event payload: {str(e)}")
+                event_data = None
+
+            return {
+                "success": True,
+                "record_id": record_id,
+                "connector": Connectors.LOCAL_FS.value,
+                "eventData": event_data
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Local FS deletion failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_local_fs_edges(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """Delete edges attached to a Local FS record."""
+        edge_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.PERMISSION.value: {
+                "filter": "edge._to == @record_to",
+                "bind_vars": {"record_to": f"records/{record_id}"},
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+        }
+
+        query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        for collection, strategy in edge_strategies.items():
+            try:
+                query = query_template.format(filter=strategy["filter"])
+                bind_vars = {"@edge_collection": collection}
+                bind_vars.update(strategy["bind_vars"])
+                await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+            except Exception as e:
+                self.logger.error(f"Failed to delete Local FS edges from {collection}: {e}")
+                raise
 
     async def get_key_by_external_file_id(
         self,

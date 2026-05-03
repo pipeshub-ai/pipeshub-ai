@@ -7,6 +7,8 @@
  */
 
 import { NextFunction, Response } from 'express';
+import axios from 'axios';
+import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -1291,6 +1293,84 @@ export const submitConnectorFileEvents =
       const handledError = handleBackendError(
         error,
         'submit connector file events',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEventUploads =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      if (!req.body?.manifest) {
+        throw new BadRequestError("Multipart field 'manifest' is required");
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const form = new FormData();
+      form.append('manifest', String(req.body.manifest));
+
+      const files = ((req as AuthenticatedUserRequest & { files?: Express.Multer.File[] }).files || []);
+      for (const file of files) {
+        form.append(file.fieldname, file.buffer, {
+          filename: file.originalname || file.fieldname,
+          contentType: file.mimetype || 'application/octet-stream',
+          knownLength: file.size,
+        });
+      }
+
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === 'string') {
+          headers[key] = value;
+        } else if (Array.isArray(value)) {
+          headers[key] = value.join(',');
+        }
+      }
+      delete headers['content-type'];
+      delete headers['Content-Type'];
+      delete headers['content-length'];
+      delete headers['Content-Length'];
+      headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
+
+      const response = await axios.post(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/file-events/upload`,
+        form,
+        {
+          headers: { ...headers, ...form.getHeaders() },
+          timeout: 120_000,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error: unknown) {
+      const { message, status, data } = getConnectorErrorLogFields(error);
+      logger.error('Error submitting connector file event uploads', {
+        error: message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status,
+        data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file event uploads',
       );
       next(handledError);
     }

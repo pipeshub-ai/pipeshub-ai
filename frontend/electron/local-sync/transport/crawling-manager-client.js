@@ -1,4 +1,4 @@
-const { buildCronFromSchedule } = require('./cron-from-schedule');
+const { buildCronFromSchedule } = require('../cron-from-schedule');
 
 function trimTrailingSlash(value) {
   return String(value || '').replace(/\/$/, '');

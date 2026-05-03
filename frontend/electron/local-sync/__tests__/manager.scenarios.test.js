@@ -16,7 +16,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
-const { LocalSyncManager } = require('./manager');
+const { LocalSyncManager } = require('../manager');
 
 const TOKEN = 'test-token';
 // Unreachable; we never pass connectorDisplayType, so scheduleCrawlingManagerJob
@@ -210,4 +210,43 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
     1,
     `expected a.txt in full-sync CREATED events, got ${created.length}`,
   );
+});
+
+test('Duplicate root path: one local folder is watched by at most one connector', async () => {
+  const { manager, syncRoot } = setup();
+
+  const starts = await Promise.allSettled([
+    manager.start({
+      connectorId: 'c-one',
+      connectorName: 'First Local FS',
+      rootPath: syncRoot,
+      apiBaseUrl: API_BASE,
+      accessToken: TOKEN,
+      syncStrategy: 'MANUAL',
+    }),
+    manager.start({
+      connectorId: 'c-two',
+      connectorName: 'Second Local FS',
+      rootPath: path.join(syncRoot, '.'),
+      apiBaseUrl: API_BASE,
+      accessToken: TOKEN,
+      syncStrategy: 'MANUAL',
+    }),
+  ]);
+
+  assert.equal(starts.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(starts.filter((result) => result.status === 'rejected').length, 1);
+  assert.match(
+    String(starts.find((result) => result.status === 'rejected').reason?.message || ''),
+    /already watched/,
+  );
+
+  const statuses = manager.getStatus();
+  assert.equal(
+    statuses.filter((s) => s.watcherState === 'watching' || s.watcherState === 'starting').length,
+    1,
+    `expected only one active watcher, got ${JSON.stringify(statuses)}`,
+  );
+
+  await manager.shutdown();
 });

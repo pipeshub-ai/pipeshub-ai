@@ -1,7 +1,7 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
-const { normalizeRelKey } = require('./watcher-state');
+const { normalizeRelKey } = require('../persistence/watcher-state-store');
 
 const QUICK_HASH_BYTES = 4096;
 const MAX_PENDING_UNLINK_ENTRIES = 10000;
