@@ -93,6 +93,8 @@ LOCAL_FS_STORAGE_DOCUMENT_PATH_PREFIX = "local-fs"
 # surfaces in the journal so the dispatcher can retry instead of hanging.
 LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS = 120
 LOCAL_FS_STORAGE_DELETE_TIMEOUT_SECONDS = 30
+# Node may respond with these when storage uses presigned direct upload (Location).
+STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
 
 
 def _stat_created_epoch_ms(st: os.stat_result) -> int:
@@ -786,11 +788,20 @@ class LocalFsConnector(BaseConnector):
             if session is None:
                 async with aiohttp.ClientSession(timeout=timeout) as owned_session:
                     return await self._do_upload(
-                        owned_session, url, form, storage_token,
+                        owned_session,
+                        url,
+                        form,
+                        storage_token,
                         existing_document_id,
+                        content,
                     )
             return await self._do_upload(
-                session, url, form, storage_token, existing_document_id,
+                session,
+                url,
+                form,
+                storage_token,
+                existing_document_id,
+                content,
             )
         except asyncio.TimeoutError as exc:
             raise HTTPException(
@@ -817,17 +828,75 @@ class LocalFsConnector(BaseConnector):
         form: aiohttp.FormData,
         storage_token: str,
         existing_document_id: str | None,
+        file_content: bytes,
     ) -> str:
+        # Do not follow 301/302: aiohttp would re-issue as GET to Location, which
+        # breaks presigned PUT URLs (see aiohttp issue #3082).
         async with session.post(
             url,
             data=form,
             headers={"Authorization": f"Bearer {storage_token}"},
+            allow_redirects=False,
         ) as response:
             raw_text = await response.text()
             try:
                 payload: Any = json.loads(raw_text) if raw_text else {}
             except json.JSONDecodeError:
                 payload = raw_text
+
+            if response.status in STORAGE_UPLOAD_REDIRECT_STATUS_CODES:
+                location = response.headers.get("Location") or response.headers.get(
+                    "location"
+                )
+                if not location:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_GATEWAY.value,
+                        detail={
+                            "message": (
+                                "Storage direct-upload redirect missing Location "
+                                "header"
+                            ),
+                            "status": response.status,
+                            "response": payload,
+                            "url": url,
+                        },
+                    )
+                put_headers = {"Content-Length": str(len(file_content))}
+                async with session.put(
+                    location,
+                    data=file_content,
+                    headers=put_headers,
+                ) as put_resp:
+                    put_text = await put_resp.text()
+                    if put_resp.status < 200 or put_resp.status >= 300:
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_GATEWAY.value,
+                            detail={
+                                "message": (
+                                    "Direct upload to storage (presigned URL) failed"
+                                ),
+                                "status": put_resp.status,
+                                "response": put_text,
+                                "location": location,
+                            },
+                        )
+                if existing_document_id:
+                    return existing_document_id
+                doc_hdr = response.headers.get("x-document-id") or response.headers.get(
+                    "X-Document-Id"
+                )
+                if isinstance(doc_hdr, str) and doc_hdr.strip():
+                    return doc_hdr.strip()
+                if isinstance(payload, dict):
+                    return self._extract_storage_document_id(payload)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=(
+                        "Storage direct-upload response missing document id "
+                        "(expected x-document-id header or JSON body)"
+                    ),
+                )
+
             if response.status < 200 or response.status >= 300:
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_GATEWAY.value,
