@@ -30,9 +30,7 @@ function isSvgPath(src: string): boolean {
   return src.trim().toLowerCase().endsWith('.svg');
 }
 
-function stripScripts(s: string): string {
-  // Remove `<script>...</script>` in a loop so nested / overlapping patterns cannot leave
-  // a residual `<script` after one pass; allow whitespace before `>` on the closing tag.
+function stripScriptsRegex(s: string): string {
   const re = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
   let prev: string;
   do {
@@ -40,6 +38,26 @@ function stripScripts(s: string): string {
     s = s.replace(re, '');
   } while (s !== prev);
   return s;
+}
+
+function stripScripts(s: string): string {
+  if (typeof DOMParser === 'undefined') {
+    return stripScriptsRegex(s);
+  }
+  try {
+    const doc = new DOMParser().parseFromString(s, 'image/svg+xml');
+    if (doc.querySelector('parsererror')) {
+      return stripScriptsRegex(s);
+    }
+    doc.querySelectorAll('script').forEach((el) => el.remove());
+    const root = doc.documentElement;
+    if (!root || root.tagName.toLowerCase() !== 'svg') {
+      return stripScriptsRegex(s);
+    }
+    return new XMLSerializer().serializeToString(root);
+  } catch {
+    return stripScriptsRegex(s);
+  }
 }
 
 function svgMarkupUsesCurrentColor(svgText: string): boolean {
