@@ -48,8 +48,8 @@ import {
   AppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
-import { CliRpcSocketGateway } from './modules/cli_rpc/socket/socket_gateway';
-import { SocketIoRestProxyContainer } from './modules/cli_rpc/container/socket-io-rest-proxy.container';
+import { CliRpcSocketGateway } from './modules/socket_io_rest_proxy/socket/socket_gateway';
+import { SocketIoRestProxyContainer } from './modules/socket_io_rest_proxy/container/socket-io-rest-proxy.container';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';

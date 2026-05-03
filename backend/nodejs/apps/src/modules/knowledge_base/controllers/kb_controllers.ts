@@ -35,7 +35,7 @@ import {
   executeConnectorCommand,
   handleBackendError,
   handleConnectorResponse,
-} from '../../tokens_manager/utils/connector-service-http';
+} from '../../tokens_manager/utils/connector.utils';
 import { NotificationService } from '../../notification/service/notification.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
