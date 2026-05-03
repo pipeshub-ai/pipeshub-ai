@@ -24,7 +24,11 @@ function toPosixRelKey(rel) {
 function normalizeRelKey(absPath, syncRoot) {
   const rel = path.relative(syncRoot, absPath);
   if (rel === '' || rel === '.') return '';
-  return toPosixRelKey(rel);
+  // NFC so macOS HFS+/APFS NFD filenames hash identically to user-space
+  // NFC paths on the Python side. Without this, a CREATED in NFC and a
+  // RENAMED whose oldPath chokidar reports in NFD compute different
+  // external_record_ids and the server treats them as unrelated files.
+  return toPosixRelKey(rel).normalize('NFC');
 }
 
 function dirnamePosix(p) {

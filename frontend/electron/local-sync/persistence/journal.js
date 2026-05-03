@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { connectorFileSegment } = require('./watcher-state');
+const { connectorFileSegment } = require('./watcher-state-store');
 
 const JOURNAL_VERSION = 1;
 const MAX_JOURNAL_BYTES = 10 * 1024 * 1024;

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import types
 from pathlib import Path
@@ -77,6 +78,7 @@ from app.connectors.core.registry.filters import (  # noqa: E402
 )
 from app.connectors.sources.local_fs.connector import (  # noqa: E402
     LOCAL_FS_CONNECTOR_NAME,
+    LOCAL_FS_STORAGE_PATH_PREFIX,
     LocalFsApp,
     LocalFsConnector,
     SYNC_ROOT_PATH_KEY,
@@ -118,6 +120,88 @@ class TestLocalFsConnectorHelpers:
         a = folder_connector._external_record_id_for_rel_path("a\\b.txt")
         b = folder_connector._external_record_id_for_rel_path("a/b.txt")
         assert a == b
+
+    def test_external_record_id_nfc_equivalent_to_nfd(
+        self, folder_connector: LocalFsConnector
+    ):
+        # macOS APFS often hands NFD-encoded filenames to chokidar; user-space
+        # APIs use NFC. Both forms must hash identically.
+        nfc = "café.txt"            # café in NFC
+        nfd = "café.txt"           # café in NFD
+        assert nfc != nfd
+        assert (
+            folder_connector._external_record_id_for_rel_path(nfc)
+            == folder_connector._external_record_id_for_rel_path(nfd)
+        )
+
+    def test_extract_storage_document_id_top_level_id(self):
+        assert (
+            LocalFsConnector._extract_storage_document_id({"_id": "abc"}) == "abc"
+        )
+        assert (
+            LocalFsConnector._extract_storage_document_id({"id": "xyz"}) == "xyz"
+        )
+        assert (
+            LocalFsConnector._extract_storage_document_id({"documentId": "qq"})
+            == "qq"
+        )
+
+    def test_extract_storage_document_id_mongo_extended_oid(self):
+        assert (
+            LocalFsConnector._extract_storage_document_id({"_id": {"$oid": "m1"}})
+            == "m1"
+        )
+
+    def test_extract_storage_document_id_wrapped_response(self):
+        # Some internal callers wrap the document under data/document/result.
+        assert (
+            LocalFsConnector._extract_storage_document_id(
+                {"data": {"_id": "wrapped"}}
+            )
+            == "wrapped"
+        )
+        assert (
+            LocalFsConnector._extract_storage_document_id(
+                {"document": {"id": "doc-x"}}
+            )
+            == "doc-x"
+        )
+
+    def test_extract_storage_document_id_rejects_non_string_id(self):
+        # {"_id": false} or {"_id": [...]} should NOT silently produce a string;
+        # must surface as a clean BAD_GATEWAY rather than letting str(False)
+        # flow through as a fake document id.
+        with pytest.raises(HTTPException) as ei:
+            LocalFsConnector._extract_storage_document_id({"_id": False})
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+        with pytest.raises(HTTPException) as ei:
+            LocalFsConnector._extract_storage_document_id({"_id": ["a"]})
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    def test_decode_storage_buffer_payload_node_buffer_envelope(self):
+        body = LocalFsConnector._decode_storage_buffer_payload(
+            {"type": "Buffer", "data": [104, 105]}
+        )
+        assert body == b"hi"
+
+    def test_decode_storage_buffer_payload_data_wrapped(self):
+        body = LocalFsConnector._decode_storage_buffer_payload(
+            {"data": {"type": "Buffer", "data": [65, 66, 67]}}
+        )
+        assert body == b"ABC"
+
+    def test_decode_storage_buffer_payload_unknown_shape_raises(self):
+        with pytest.raises(HTTPException) as ei:
+            LocalFsConnector._decode_storage_buffer_payload({"weird": "x"})
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    def test_require_org_id_raises_when_unset(
+        self, folder_connector: LocalFsConnector
+    ):
+        folder_connector.data_entities_processor.org_id = None
+        with pytest.raises(HTTPException) as ei:
+            folder_connector._require_org_id()
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     def test_resolve_event_file_path_ok(self, folder_connector: LocalFsConnector, tmp_path: Path):
         root = tmp_path / "root"
@@ -313,6 +397,30 @@ class TestLocalFsConnectorAsync:
         body = b"".join(chunks)
         assert body == b"hello-stream"
 
+    async def test_stream_record_storage_path_delegates_to_storage(
+        self, folder_connector: LocalFsConnector
+    ):
+        rec = FileRecord(
+            record_name="blob.bin",
+            record_type=RecordType.FILE,
+            external_record_id="e1",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-123",
+            mime_type="application/octet-stream",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        expected = MagicMock()
+        folder_connector._stream_storage_record = AsyncMock(return_value=expected)
+
+        resp = await folder_connector.stream_record(rec)
+
+        assert resp is expected
+        folder_connector._stream_storage_record.assert_awaited_once_with(rec, "doc-123")
+
     async def test_apply_file_event_batch_reset_before_apply_rebuilds_from_disk(
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
@@ -436,6 +544,246 @@ class TestLocalFsConnectorAsync:
     async def test_init_no_config_ok(self, folder_connector: LocalFsConnector):
         folder_connector.config_service.get_config = AsyncMock(return_value=None)
         assert await folder_connector.init() is True
+
+    async def test_reload_sync_settings_reads_nested_custom_values(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={
+                "sync": {
+                    "customValues": {
+                        "sync_root_path": str(tmp_path),
+                        "include_subfolders": "false",
+                        "batchSize": "11",
+                    }
+                }
+            }
+        )
+
+        await folder_connector._reload_sync_settings()
+
+        assert folder_connector.sync_root_path == str(tmp_path)
+        assert folder_connector.include_subfolders is False
+        assert folder_connector.batch_size == 11
+
+    async def test_apply_uploaded_file_event_batch_uses_storage_without_backend_path(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
+        )
+        user = User(email="u@x.com", id="u1", org_id="org-1")
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        txn.get_user_by_user_id = AsyncMock(return_value=user)
+        txn.get_record_by_external_id = AsyncMock(return_value=None)
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+
+        async def fake_upload(**kwargs):
+            assert kwargs["content"] == b"hello upload"
+            assert kwargs["rel_path"] == "notes/a.txt"
+            return "doc-123"
+
+        folder_connector._upload_storage_file = AsyncMock(side_effect=fake_upload)
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        ):
+            folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+            folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            folder_connector.data_entities_processor.on_new_records = AsyncMock()
+            stats = await folder_connector.apply_uploaded_file_event_batch(
+                [
+                    LocalFsFileEvent(
+                        type="CREATED",
+                        path="notes/a.txt",
+                        timestamp=1000,
+                        size=12,
+                        isDirectory=False,
+                        contentField="file_0",
+                        sha256="2d119f1cd272958a492a144af600b9dc36531f73027b34073967345b027021b1",
+                        mimeType="text/plain",
+                    )
+                ],
+                {"file_0": b"hello upload"},
+            )
+
+        assert stats.processed == 1
+        folder_connector.data_entities_processor.on_new_records.assert_awaited_once()
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        record, permissions = records[0]
+        assert record.path == f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-123"
+        assert record.record_name == "a.txt"
+        assert record.external_revision_id == "2d119f1cd272958a492a144af600b9dc36531f73027b34073967345b027021b1"
+        assert permissions[0].type == PermissionType.OWNER
+
+    async def test_apply_uploaded_delete_removes_storage_document_and_record(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
+        )
+        user = User(email="u@x.com", id="u1", org_id="org-1")
+        existing = FileRecord(
+            record_name="old.txt",
+            record_type=RecordType.FILE,
+            external_record_id=folder_connector._external_record_id_for_rel_path("old.txt"),
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id=folder_connector.connector_id,
+            is_file=True,
+            path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-del",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        txn.get_user_by_user_id = AsyncMock(return_value=user)
+        txn.get_record_by_external_id = AsyncMock(return_value=existing)
+        txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector._delete_storage_document = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        ):
+            folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+            folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            stats = await folder_connector.apply_uploaded_file_event_batch(
+                [
+                    LocalFsFileEvent(
+                        type="DELETED",
+                        path="old.txt",
+                        timestamp=1000,
+                        isDirectory=False,
+                    )
+                ],
+                {},
+            )
+
+        assert stats.deleted == 1
+        # Storage GC reuses the open aiohttp session; allow any session arg.
+        assert folder_connector._delete_storage_document.await_count == 1
+        gc_call = folder_connector._delete_storage_document.await_args
+        assert gc_call.args == ("doc-del",)
+        assert "session" in gc_call.kwargs
+        txn.delete_record_by_external_id.assert_awaited_once_with(
+            folder_connector.connector_id,
+            folder_connector._external_record_id_for_rel_path("old.txt"),
+            user.id,
+        )
+
+    async def test_apply_uploaded_rename_upserts_before_deleting_old(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """Rename ordering invariant: the new record must be persisted via
+        on_new_records before the old record's external_id is removed.
+        Without this, a mid-batch failure would drop the old row leaving
+        nothing in its place — visible data loss in search.
+        """
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
+        )
+        user = User(email="u@x.com", id="u1", org_id="org-1")
+        old_ext_id = folder_connector._external_record_id_for_rel_path("a/old.txt")
+        existing_old = FileRecord(
+            record_name="old.txt",
+            record_type=RecordType.FILE,
+            external_record_id=old_ext_id,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id=folder_connector.connector_id,
+            is_file=True,
+            path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-old",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+
+        # data_store_provider.transaction is called twice: once for the bulk
+        # pre-fetch (returns existing_old for old_ext_id; None for new_ext_id),
+        # and once when _delete_external_ids runs after the upsert flush.
+        bulk_txn = MagicMock()
+        bulk_txn.__aenter__ = AsyncMock(return_value=bulk_txn)
+        bulk_txn.__aexit__ = AsyncMock(return_value=None)
+        bulk_txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        bulk_txn.get_user_by_user_id = AsyncMock(return_value=user)
+
+        async def _bulk_lookup(connector_id, ext_id):
+            if ext_id == old_ext_id:
+                return existing_old
+            return None
+
+        bulk_txn.get_record_by_external_id = AsyncMock(side_effect=_bulk_lookup)
+        bulk_txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(
+            return_value=bulk_txn
+        )
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-new")
+        folder_connector._delete_storage_document = AsyncMock()
+
+        # Track relative ordering of upsert vs old-delete vs old-blob GC.
+        order: list[str] = []
+        order_lock = asyncio.Lock()
+
+        async def _record_upsert(_records):
+            async with order_lock:
+                order.append("upsert_new")
+
+        async def _record_delete(_connector_id, _ext_id, _uid):
+            async with order_lock:
+                order.append("delete_old_record")
+
+        async def _record_gc(_doc_id, **_kw):
+            async with order_lock:
+                order.append("gc_old_blob")
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        ):
+            folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+            folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            folder_connector.data_entities_processor.on_new_records = AsyncMock(
+                side_effect=_record_upsert
+            )
+            bulk_txn.delete_record_by_external_id = AsyncMock(
+                side_effect=_record_delete
+            )
+            folder_connector._delete_storage_document = AsyncMock(
+                side_effect=_record_gc
+            )
+
+            await folder_connector.apply_uploaded_file_event_batch(
+                [
+                    LocalFsFileEvent(
+                        type="RENAMED",
+                        path="a/new.txt",
+                        oldPath="a/old.txt",
+                        timestamp=1000,
+                        size=4,
+                        isDirectory=False,
+                        contentField="file_0",
+                        sha256=hashlib.sha256(b"data").hexdigest(),
+                        mimeType="text/plain",
+                    )
+                ],
+                {"file_0": b"data"},
+            )
+
+        # The upsert of the new record MUST land before the old-row delete.
+        # The old-blob GC must run after the row is gone (so a half-failed
+        # batch can't strand an in-storage blob whose record is still live).
+        assert order.index("upsert_new") < order.index("delete_old_record")
+        assert order.index("delete_old_record") < order.index("gc_old_blob")
+        folder_connector._upload_storage_file.assert_awaited_once()
 
 
 @pytest.mark.asyncio

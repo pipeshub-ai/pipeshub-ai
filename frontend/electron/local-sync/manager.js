@@ -1,12 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const { safeStorage } = require('electron');
-const { ConnectorFsWatcher } = require('./watcher');
-const { LocalSyncJournal } = require('./journal');
-const { dispatchFileEventBatch: defaultDispatchFileEventBatch } = require('./dispatcher');
-const { expandWatchEventsForReplay } = require('./replayer');
-const { connectorFileSegment, scanSyncRoot } = require('./watcher-state');
-const { scheduleCrawlingManagerJob, unscheduleCrawlingManagerJob } = require('./backend-client');
+const { ConnectorFsWatcher } = require('./watcher/connector-fs-watcher');
+const { LocalSyncJournal } = require('./persistence/journal');
+const { dispatchFileEventBatch: defaultDispatchFileEventBatch } = require('./transport/file-event-dispatcher');
+const { expandWatchEventsForReplay } = require('./watcher/replay-event-expander');
+const { connectorFileSegment, scanSyncRoot } = require('./persistence/watcher-state-store');
+const {
+  scheduleCrawlingManagerJob,
+  unscheduleCrawlingManagerJob,
+} = require('./transport/crawling-manager-client');
 const { buildCronFromSchedule } = require('./cron-from-schedule');
 
 const RETRY_BASE_MS = 5_000;
@@ -80,6 +83,15 @@ function buildFullSyncSignature(meta) {
   });
 }
 
+function normalizeSyncRootPath(rootPath) {
+  const resolved = path.resolve(String(rootPath || ''));
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 /**
  * Identity for an in-flight runtime. Includes everything that requires
  * recreating the watcher or scheduled timer; **excludes** accessToken so
@@ -139,6 +151,15 @@ class LocalSyncManager {
     this.lastReplaceSyncSignature = new Map();
     /** @type {Map<string, Promise<void>>} */
     this.fullSyncInFlight = new Map();
+    /** @type {Map<string, { connectorId: string, connectorName?: string }>} */
+    this.rootPathStartLocks = new Map();
+    // Per-connector replay serialization. Without this, an armed retry timer
+    // and a live-event-driven replay() can fire concurrently — both iterate
+    // the journal in order, both POST the first failed batch, the backend
+    // sees duplicates, and the second to finish clobbers the other's
+    // status update. Coalesce them into one in-flight replay per connector.
+    /** @type {Map<string, Promise<{replayedBatches:number,replayedEvents:number,skippedBatches:number}>>} */
+    this.replayInFlight = new Map();
   }
 
   async init() {
@@ -182,6 +203,28 @@ class LocalSyncManager {
     return this.runtimes.get(connectorId);
   }
 
+  findRuntimeByRootPath(normalizedRootPath, excludeConnectorId) {
+    for (const [runtimeConnectorId, runtime] of this.runtimes) {
+      if (runtimeConnectorId === excludeConnectorId) continue;
+      const runtimeRootPath = runtime.normalizedRootPath || normalizeSyncRootPath(runtime.rootPath);
+      if (runtimeRootPath === normalizedRootPath) return runtime;
+    }
+    return null;
+  }
+
+  assertRootPathAvailable(normalizedRootPath, connectorId) {
+    const existingRuntime = this.findRuntimeByRootPath(normalizedRootPath, connectorId);
+    if (existingRuntime) {
+      const owner = existingRuntime.connectorName || existingRuntime.connectorId;
+      throw new Error(`Local sync root is already watched by connector "${owner}": ${normalizedRootPath}`);
+    }
+    const lock = this.rootPathStartLocks.get(normalizedRootPath);
+    if (lock && lock.connectorId !== connectorId) {
+      const owner = lock.connectorName || lock.connectorId;
+      throw new Error(`Local sync root is already watched by connector "${owner}": ${normalizedRootPath}`);
+    }
+  }
+
   async start({
     connectorId, connectorName, rootPath, apiBaseUrl, accessToken,
     allowedExtensions, includeSubfolders,
@@ -217,6 +260,10 @@ class LocalSyncManager {
       this.emitStatus(connectorId);
       return this.getStatus(connectorId);
     }
+
+    const normalizedRootPath = normalizeSyncRootPath(rootPath);
+    this.assertRootPathAvailable(normalizedRootPath, connectorId);
+    this.rootPathStartLocks.set(normalizedRootPath, { connectorId, connectorName });
 
     await this.stop(connectorId);
 
@@ -257,7 +304,7 @@ class LocalSyncManager {
     }
 
     const runtime = {
-      connectorId, connectorName, rootPath, apiBaseUrl, accessToken,
+      connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl, accessToken,
       connectorDisplayType,
       syncStrategy: strategy,
       scheduledConfig: strategy === 'SCHEDULED' ? scheduledConfig : null,
@@ -267,6 +314,7 @@ class LocalSyncManager {
       startSignature,
     };
     this.runtimes.set(connectorId, runtime);
+    this.rootPathStartLocks.delete(normalizedRootPath);
     const currentMeta = this.journal.getMeta(connectorId);
     const currentFullSyncSignature = buildFullSyncSignature(currentMeta);
     const shouldRunReplaceFullSync = this.lastReplaceSyncSignature.get(connectorId) !== currentFullSyncSignature;
@@ -314,6 +362,7 @@ class LocalSyncManager {
             accessToken: runtime.accessToken,
             connectorId,
             batchId, timestamp, events,
+            rootPath: runtime.rootPath,
           });
           this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
         }
@@ -507,6 +556,7 @@ class LocalSyncManager {
           timestamp: Date.now(),
           events: batch.events,
           resetBeforeApply: batch.resetBeforeApply,
+          rootPath: meta.rootPath,
         });
       }
     } catch (err) {
@@ -729,6 +779,21 @@ class LocalSyncManager {
    * @returns {{ replayedBatches: number, replayedEvents: number, skippedBatches: number }}
    */
   async replay(connectorId, opts) {
+    // Single-flight per connector: an armed retry timer and a live-event
+    // dispatch can both call replay() concurrently. Without coalescing,
+    // both iterate the journal in order and re-dispatch the same first
+    // pending batch — backend sees duplicates and the slower finisher's
+    // status write clobbers the faster one's mark.
+    const existing = this.replayInFlight.get(connectorId);
+    if (existing) return existing;
+    const promise = this._replayInner(connectorId, opts).finally(() => {
+      this.replayInFlight.delete(connectorId);
+    });
+    this.replayInFlight.set(connectorId, promise);
+    return promise;
+  }
+
+  async _replayInner(connectorId, opts) {
     const meta = this.journal.getMeta(connectorId);
     if (!meta || !meta.apiBaseUrl) {
       return { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
@@ -766,6 +831,7 @@ class LocalSyncManager {
           batchId: batch.batchId,
           timestamp: batch.timestamp,
           events,
+          rootPath: meta.rootPath,
         });
         this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
         replayedBatches += 1;

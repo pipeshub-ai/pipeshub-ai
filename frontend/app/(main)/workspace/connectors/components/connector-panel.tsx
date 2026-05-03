@@ -126,6 +126,8 @@ export function ConnectorPanel() {
 
   const [syncSaveConfirmOpen, setSyncSaveConfirmOpen] = useState(false);
   const [syncSaveConfirmKind, setSyncSaveConfirmKind] = useState<'manual' | 'wide_sync'>('wide_sync');
+  const authSaveInFlightRef = useRef(false);
+  const configSaveInFlightRef = useRef(false);
 
   const connectorPanelNestedModalHost = useWorkspaceDrawerNestedModalHost(isPanelOpen);
 
@@ -482,9 +484,13 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveAuth = useCallback(async () => {
+    if (authSaveInFlightRef.current) {
+      return;
+    }
     if (!resolveAuthenticateOrReturn()) {
       return;
     }
+    authSaveInFlightRef.current = true;
     setIsSavingAuth(true);
 
     if (isCreateMode) {
@@ -551,6 +557,7 @@ export function ConnectorPanel() {
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
+        authSaveInFlightRef.current = false;
       }
     } else {
       // Edit mode: PUT /config/auth
@@ -600,6 +607,7 @@ export function ConnectorPanel() {
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
+        authSaveInFlightRef.current = false;
       }
     }
   }, [
@@ -622,6 +630,9 @@ export function ConnectorPanel() {
   ]);
 
   const performSaveConfig = useCallback(async () => {
+    if (configSaveInFlightRef.current) {
+      return;
+    }
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -649,6 +660,7 @@ export function ConnectorPanel() {
       return;
     }
 
+    configSaveInFlightRef.current = true;
     try {
       setIsSavingConfig(true);
       const syncPayload: {
@@ -707,6 +719,7 @@ export function ConnectorPanel() {
       setSaveError(message);
     } finally {
       setIsSavingConfig(false);
+      configSaveInFlightRef.current = false;
     }
   }, [
     panelConnectorId,
@@ -725,6 +738,9 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveConfig = useCallback(() => {
+    if (configSaveInFlightRef.current) {
+      return;
+    }
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 

@@ -297,6 +297,7 @@ function PersonalConnectorsPageContent() {
       void ConnectorsApi.getConnectorStats(connectorId)
         .then((res) => setInstanceStats(connectorId, res.data))
         .catch(() => {});
+      return fresh;
     },
     [upsertConnectorInstance, setInstanceStats]
   );
@@ -434,10 +435,10 @@ function PersonalConnectorsPageContent() {
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
           duration: 2500,
         });
-        await refreshConnectorRowQuiet(instance._key);
+        const fresh = await refreshConnectorRowQuiet(instance._key);
         const configRes = await ConnectorsApi.getConnectorConfig(instance._key);
         setInstanceConfig(instance._key, configRes);
-        await ensureLocalWatcherForInstance(instance, configRes);
+        await ensureLocalWatcherForInstance(fresh, configRes);
         await refreshConnectorsListsQuiet();
       } catch {
         addToast({
@@ -471,21 +472,16 @@ function PersonalConnectorsPageContent() {
 
     try {
       await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
-      const instance = activeConnectors.find((item) => item._key === instanceId) as
-        | ConnectorInstance
-        | undefined;
-      if (instance) {
-        const configRes = await ConnectorsApi.getConnectorConfig(instanceId);
-        setInstanceConfig(instanceId, configRes);
-        await ensureLocalWatcherForInstance(instance, configRes);
-      }
+      const fresh = await refreshConnectorRowQuiet(instanceId);
+      const configRes = await ConnectorsApi.getConnectorConfig(instanceId);
+      setInstanceConfig(instanceId, configRes);
+      await ensureLocalWatcherForInstance(fresh, configRes);
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
         description: t('workspace.connectors.toasts.syncStartedLongDescription'),
         duration: 3000,
       });
-      await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
@@ -495,7 +491,6 @@ function PersonalConnectorsPageContent() {
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
-    activeConnectors,
     addToast,
     refreshConnectorRowQuiet,
     setInstanceConfig,

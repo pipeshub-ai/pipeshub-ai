@@ -2,14 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
 const { EventCorrelator } = require('./event-correlator');
-const { BatchDispatcher } = require('./batch-dispatcher');
-const { expandWatchEventsForReplay } = require('./replayer');
+const { BatchDispatcher } = require('../transport/batch-dispatcher');
+const { expandWatchEventsForReplay } = require('./replay-event-expander');
 const {
   WatcherStateStore,
   scanSyncRoot,
   contentQuickHash,
   normalizeRelKey,
-} = require('./watcher-state');
+} = require('../persistence/watcher-state-store');
 const { IGNORED_PATTERNS } = require('./ignored-patterns');
 
 /**
@@ -287,7 +287,13 @@ class ConnectorFsWatcher {
       alwaysStat: true,
       usePolling: this.usePolling,
       interval: this.pollInterval,
-      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
+      // 200 ms was too aggressive for cp/rsync of multi-GB files over a
+      // network drive — the writer is still flushing when the watcher
+      // fires CREATED, the dispatcher reads a half-written file, and the
+      // stat-time size disagrees with the bytes we end up uploading.
+      // 1500 ms quiet window catches cold-cached writes without making
+      // small-file edits feel sluggish.
+      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
       ignorePermissionErrors: true,
       atomic: 200,
     });

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { LocalSyncJournal } = require('./journal');
+const { LocalSyncJournal } = require('../persistence/journal');
 
 function withTempDir(run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'local-sync-journal-'));

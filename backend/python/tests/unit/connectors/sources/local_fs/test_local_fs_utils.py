@@ -61,6 +61,7 @@ from app.connectors.core.registry.filters import (  # noqa: E402
 from app.connectors.sources.local_fs.connector import (  # noqa: E402
     _local_fs_passes_date_filters as local_fs_passes_date_filters,
     _parse_batch_size_from_sync as parse_batch_size_from_sync,
+    _read_sync_settings_from_config as read_sync_settings_from_config,
     _stat_created_epoch_ms as stat_created_epoch_ms,
     _validate_host_path as validate_host_path,
 )
@@ -132,12 +133,53 @@ def test_stat_created_epoch_ms_falls_back_to_ctime():
         ({"batchSize": "10"}, 10),
         ({"batch_size": 3}, 3),
         ({"batchSize": "", "batch_size": "7"}, 7),
+        ({"customValues": {"batchSize": "8"}}, 8),
+        ({"values": {"batch_size": "9"}}, 9),
         ({"batchSize": "0"}, 1),
         ({"batchSize": "not-int"}, 50),
     ],
 )
 def test_parse_batch_size_from_sync(sync_cfg, expected):
     assert parse_batch_size_from_sync(sync_cfg) == expected
+
+
+def test_read_sync_settings_accepts_custom_values_shape():
+    root, include, batch_size = read_sync_settings_from_config(
+        {
+            "sync": {
+                "customValues": {
+                    "sync_root_path": "/Users/me/Documents",
+                    "include_subfolders": "false",
+                    "batchSize": "17",
+                }
+            }
+        }
+    )
+
+    assert root == "/Users/me/Documents"
+    assert include is False
+    assert batch_size == 17
+
+
+def test_read_sync_settings_flat_values_take_priority():
+    root, include, batch_size = read_sync_settings_from_config(
+        {
+            "sync": {
+                "sync_root_path": "/server/mount",
+                "include_subfolders": True,
+                "batchSize": "3",
+                "customValues": {
+                    "sync_root_path": "/desktop/path",
+                    "include_subfolders": "false",
+                    "batchSize": "99",
+                },
+            }
+        }
+    )
+
+    assert root == "/server/mount"
+    assert include is True
+    assert batch_size == 3
 
 
 def test_validate_host_path_empty_ok():
