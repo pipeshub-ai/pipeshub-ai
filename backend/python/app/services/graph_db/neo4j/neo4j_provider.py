@@ -12341,9 +12341,11 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def batch_update_connector_status(
         self,
-        connector_ids: list[str],
+        collection: str,
+        connector_keys: list[str],
         *,
         is_active: bool,
+        is_agent_active: bool,
         transaction: str | None = None,
     ) -> int:
         """Batch update connector status."""
@@ -12351,13 +12353,17 @@ class Neo4jProvider(IGraphDBProvider):
             query = """
             UNWIND $connector_ids AS connector_id
             MATCH (app:App {id: connector_id})
-            SET app.isActive = $is_active
+            SET app.isActive = $is_active, app.isAgentActive = $is_agent_active
             RETURN count(app) as updated_count
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_ids": connector_ids, "is_active": is_active},
-                txn_id=transaction
+                parameters={
+                    "connector_ids": connector_keys,
+                    "is_active": is_active,
+                    "is_agent_active": is_agent_active,
+                },
+                txn_id=transaction,
             )
             return results[0].get("updated_count", 0) if results else 0
         except Exception as e:
