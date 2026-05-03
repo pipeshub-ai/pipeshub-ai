@@ -53,7 +53,7 @@ DEFAULT_CPU_LIMIT = 0.5
 # Single unified Docker image for all sandbox languages.
 # Default tag is for local builds from ``deployment/sandbox/Dockerfile``.
 # Override ``SANDBOX_DOCKER_IMAGE`` for a registry image (e.g. production:
-# ``pipeshubai/pipeshub-sandbox:${TAG}`` per docker-compose.prod.yml).
+# pipeshubai/pipeshub-sandbox:${IMAGE_TAG} per docker-compose.prod.yml).
 SANDBOX_IMAGE = os.environ.get("SANDBOX_DOCKER_IMAGE", "pipeshub/sandbox:latest")
 
 # MIME type detection by extension
