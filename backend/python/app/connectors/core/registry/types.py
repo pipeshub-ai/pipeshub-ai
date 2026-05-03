@@ -43,7 +43,7 @@ class FileContentValidationRule(BaseModel):
     """One validation step for uploaded connector file contents (wire shape shared with the frontend).
 
     Use :meth:`model_json_schema` for OpenAPI/JSON Schema tooling; TS types in
-    ``frontend-new`` remain the contract for the dashboard until codegen is wired.
+    ``frontend`` remain the contract for the dashboard until codegen is wired.
     """
 
     model_config = ConfigDict(extra="forbid", use_enum_values=True, populate_by_name=True)
