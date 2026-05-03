@@ -114,7 +114,7 @@ export function useCitationActions(): CitationCallbacks {
           type: citation.mimeType || citation.extension || '',
           recordType: citation.recordType ?? null,
           connectorName: citation.connector ?? null,
-          hasFileRecord: citation.recordType?.toUpperCase() === 'FILE',
+          hasFileRecord: citation.recordType === 'FILE',
           isLoading: true,
           initialPage,
           highlightBox,

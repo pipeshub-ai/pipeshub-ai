@@ -76,12 +76,13 @@ export function FilePreviewSidebar({
     // rendering Preview first and then removing it (tab flicker).
     const hintedRecordType = file.recordType?.trim().toUpperCase();
     const hintedConnector = file.connectorName?.trim().toUpperCase();
+    const isWebConnector = hintedConnector === 'WEB';
+    if (isWebConnector) return false;
     if (!hintedRecordType) return true;
 
-    const isWebConnector = hintedConnector === 'WEB';
-    const isFileRecord = hintedRecordType === 'FILE' && (file.hasFileRecord ?? true);
+    const isFileRecord = hintedRecordType === 'FILE';
     return isFileRecord && !isWebConnector;
-  }, [recordDetails, file.recordType, file.connectorName, file.hasFileRecord]);
+  }, [recordDetails, file.recordType, file.connectorName]);
 
   const tabs = useMemo(() => {
     const baseTabs = getTabsForSource(source, { hideFileDetails });
