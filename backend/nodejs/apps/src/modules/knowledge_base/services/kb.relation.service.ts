@@ -22,7 +22,7 @@ import {
   Event as SyncEvent,
   BaseSyncEvent,
 } from './sync_events.service';
-import { isLocalFsConnector } from '../utils/local_fs_connector';
+import { isLocalFsConnector } from '../utils/local_fs_connector_name';
 import {
   IServiceFileRecord,
   IServiceRecord

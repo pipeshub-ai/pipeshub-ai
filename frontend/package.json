@@ -4,7 +4,7 @@
   "description": "PipesHub Desktop App",
   "author": "PipesHub",
   "private": true,
-  "main": "electron/main.js",
+  "main": "electron/compile/main.js",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
@@ -22,12 +22,13 @@
     "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed",
     "test:e2e:coverage": "COVERAGE=true npx playwright test",
     "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html",
-    "build:electron": "node scripts/next-build-electron.mjs",
-    "electron:prepare": "node scripts/electron-prepare.mjs",
+    "build:electron": "node scripts/electron/next-build-electron.mjs",
+    "build:electron:typescript": "tsc -p electron/tsconfig.json",
+    "electron:prepare": "npm run build:electron:typescript && node scripts/electron/electron-prepare.mjs",
     "electron:build:mac": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --config electron-builder.yml --publish never",
     "electron:build:win": "npm run build:electron && npm run electron:prepare && npx electron-builder --win --config electron-builder.yml --publish never",
     "electron:build:mac-win": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --win --config electron-builder.yml --publish never",
-    "electron:dmg": "npm run build && npm run electron:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.yml --mac dmg --publish never"
+    "test:electron:local-sync": "npm run build:electron:typescript && node --test electron/compile/local-sync/__tests__/*.test.js"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",

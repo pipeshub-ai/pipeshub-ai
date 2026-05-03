@@ -5,7 +5,7 @@ import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
 import { CrawlingResult, ICrawlingTaskService } from './task/crawling_task_service';
-import { isLocalFsConnector } from '../../knowledge_base/utils/local_fs_connector';
+import { isLocalFsConnector } from '../../knowledge_base/utils/local_fs_connector_name';
 
 @injectable()
 export class CrawlingWorkerService {

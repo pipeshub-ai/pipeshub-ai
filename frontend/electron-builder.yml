@@ -4,11 +4,11 @@ icon: electron/out/logo/pipes-hub-1024.png
 directories:
   output: dist-electron
 files:
-  - electron/main.js
-  - electron/preload.js
+  - electron/compile/main.js
+  - electron/compile/preload.js
   - electron/package.json
-  - electron/local-sync/**/*.js
-  - "!electron/local-sync/**/*.test.js"
+  - electron/compile/local-sync/**/*.js
+  - "!electron/compile/local-sync/**/*.test.js"
   - electron/out/**/*
   - "!electron/node_modules"
   # Only keep the runtime deps the Electron main process actually needs.
@@ -30,7 +30,7 @@ files:
   - node_modules/to-regex-range/**/*
   - node_modules/fsevents/**/*
 asarUnpack:
-  - electron/preload.js
+  - electron/compile/preload.js
 mac:
   category: public.app-category.productivity
   target:

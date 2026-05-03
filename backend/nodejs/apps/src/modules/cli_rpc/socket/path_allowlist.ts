@@ -1,3 +1,7 @@
+/**
+ * REST path allowlist for the CLI/desktop Socket.IO → HTTP proxy (`CliRpcSocketGateway`).
+ * Only paths under these prefixes may be forwarded to the local Node API.
+ */
 import * as path from 'path';
 
 /** Allowed REST path roots for the CLI Socket.IO → HTTP proxy. */
@@ -7,7 +11,7 @@ export const DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES = [
   '/api/v1/crawlingManager',
 ] as const;
 
-export type CliRpcPathCheck =
+type CliRpcPathCheck =
   | { ok: true; normalizedPath: string }
   | { ok: false; reason: string };
 

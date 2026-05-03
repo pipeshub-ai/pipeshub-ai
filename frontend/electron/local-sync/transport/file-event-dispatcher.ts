@@ -1,12 +1,13 @@
-const crypto = require('crypto');
-const fs = require('fs/promises');
-const path = require('path');
+import * as crypto from 'crypto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import type { WatchEvent } from '../watcher/replay-event-expander';
 
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 500;
 const REQUEST_TIMEOUT_MS = 30000;
 const CONTENT_EVENT_TYPES = new Set(['CREATED', 'MODIFIED', 'RENAMED', 'MOVED']);
-const MIME_BY_EXT = new Map(Object.entries({
+const MIME_BY_EXT = new Map<string, string>(Object.entries({
   txt: 'text/plain',
   log: 'text/plain',
   md: 'text/markdown',
@@ -37,15 +38,27 @@ const MIME_BY_EXT = new Map(Object.entries({
   zip: 'application/zip',
 }));
 
-function trimTrailingSlash(value) {
+export interface DispatchFileEventBatchArgs {
+  apiBaseUrl: string;
+  accessToken: string;
+  connectorId: string;
+  batchId: string;
+  timestamp?: number;
+  events: WatchEvent[];
+  resetBeforeApply?: boolean;
+  rootPath?: string | null;
+  refreshAccessToken?: () => Promise<string | null>;
+}
+
+function trimTrailingSlash(value: unknown): string {
   return String(value || '').replace(/\/$/, '');
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function computeRetryAfterMs(response) {
+function computeRetryAfterMs(response: Response): number | null {
   const header = response.headers && response.headers.get && response.headers.get('retry-after');
   if (!header) return null;
   const asSeconds = Number(header);
@@ -55,7 +68,7 @@ function computeRetryAfterMs(response) {
   return null;
 }
 
-async function postWithTimeout(url, init) {
+async function postWithTimeout(url: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -65,18 +78,18 @@ async function postWithTimeout(url, init) {
   }
 }
 
-function eventNeedsContent(event) {
+function eventNeedsContent(event: WatchEvent): boolean {
   return !!event
     && !event.isDirectory
     && CONTENT_EVENT_TYPES.has(String(event.type || '').toUpperCase());
 }
 
-function mimeTypeForPath(relPath) {
+function mimeTypeForPath(relPath: string): string {
   const ext = path.extname(String(relPath || '')).replace(/^\./, '').toLowerCase();
   return MIME_BY_EXT.get(ext) || 'application/octet-stream';
 }
 
-function resolveEventFilePath(rootPath, relPath) {
+function resolveEventFilePath(rootPath: string, relPath: string): string {
   const root = path.resolve(String(rootPath || ''));
   const candidate = path.resolve(root, String(relPath || ''));
   const relative = path.relative(root, candidate);
@@ -86,8 +99,18 @@ function resolveEventFilePath(rootPath, relPath) {
   return candidate;
 }
 
-async function buildMultipartUploadBody({ batchId, timestamp, events, resetBeforeApply, rootPath }) {
-  const manifestEvents = [];
+interface MultipartArgs {
+  batchId: string;
+  timestamp?: number;
+  events: WatchEvent[];
+  resetBeforeApply?: boolean;
+  rootPath: string;
+}
+
+async function buildMultipartUploadBody(
+  { batchId, timestamp, events, resetBeforeApply, rootPath }: MultipartArgs,
+): Promise<FormData> {
+  const manifestEvents: Array<WatchEvent & { contentField?: string; sha256?: string; mimeType?: string }> = [];
   const form = new FormData();
   let fileIndex = 0;
 
@@ -106,7 +129,7 @@ async function buildMultipartUploadBody({ batchId, timestamp, events, resetBefor
     const filename = path.basename(event.path) || contentField;
     form.append(
       contentField,
-      new Blob([content], { type: mimeType }),
+      new Blob([new Uint8Array(content)], { type: mimeType }),
       filename,
     );
     manifestEvents.push({
@@ -131,11 +154,8 @@ async function buildMultipartUploadBody({ batchId, timestamp, events, resetBefor
 /**
  * Dispatch a file-event batch with automatic retry on transient errors
  * (network, 5xx, 429 with Retry-After) and a hook for token refresh on 401.
- *
- * @param {object} args
- * @param {() => Promise<string|null>} [args.refreshAccessToken] Called once on 401 to fetch a fresh token.
  */
-async function dispatchFileEventBatch({
+export async function dispatchFileEventBatch({
   apiBaseUrl,
   accessToken,
   connectorId,
@@ -145,7 +165,7 @@ async function dispatchFileEventBatch({
   resetBeforeApply,
   rootPath,
   refreshAccessToken,
-}) {
+}: DispatchFileEventBatchArgs): Promise<unknown> {
   const baseUrl = trimTrailingSlash(apiBaseUrl);
   if (!baseUrl) throw new Error('Missing API base URL for local sync dispatch');
   if (!accessToken) throw new Error('Missing access token for local sync dispatch');
@@ -153,13 +173,13 @@ async function dispatchFileEventBatch({
 
   const shouldUploadContent = !!rootPath;
   const url = `${baseUrl}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events${shouldUploadContent ? '/upload' : ''}`;
-  const body = shouldUploadContent
+  const body: FormData | string = shouldUploadContent
     ? await buildMultipartUploadBody({
       batchId,
       timestamp,
       events,
       resetBeforeApply,
-      rootPath,
+      rootPath: rootPath as string,
     })
     : JSON.stringify({
       batchId,
@@ -170,10 +190,10 @@ async function dispatchFileEventBatch({
 
   let token = accessToken;
   let attempted401Refresh = false;
-  let lastError;
+  let lastError: unknown;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    let response;
+    let response: Response;
     try {
       response = await postWithTimeout(url, {
         method: 'POST',
@@ -208,7 +228,7 @@ async function dispatchFileEventBatch({
     if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
       const retryAfter = computeRetryAfterMs(response);
       const wait = retryAfter != null ? retryAfter : BASE_BACKOFF_MS * 2 ** attempt;
-      let parsed = null;
+      let parsed: unknown = null;
       try { parsed = await response.json(); } catch { /* ignore */ }
       lastError = new Error(`File-event dispatch ${response.status}: ${JSON.stringify(parsed)}`);
       if (attempt === MAX_ATTEMPTS - 1) break;
@@ -217,12 +237,10 @@ async function dispatchFileEventBatch({
     }
 
     // Non-retryable error.
-    let parsed = null;
+    let parsed: unknown = null;
     try { parsed = await response.json(); } catch { /* ignore */ }
     throw new Error(`File-event dispatch failed (${response.status}): ${JSON.stringify(parsed)}`);
   }
 
-  throw lastError || new Error('File-event dispatch failed after retries');
+  throw lastError instanceof Error ? lastError : new Error('File-event dispatch failed after retries');
 }
-
-module.exports = { dispatchFileEventBatch };

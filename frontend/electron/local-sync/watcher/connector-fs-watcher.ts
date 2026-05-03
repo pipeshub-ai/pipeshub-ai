@@ -1,16 +1,53 @@
-const fs = require('fs');
-const path = require('path');
-const chokidar = require('chokidar');
-const { EventCorrelator } = require('./event-correlator');
-const { BatchDispatcher } = require('../transport/batch-dispatcher');
-const { expandWatchEventsForReplay } = require('./replay-event-expander');
-const {
+import * as fs from 'fs';
+import * as path from 'path';
+import * as chokidar from 'chokidar';
+import { EventCorrelator, type ChokidarEventName } from './event-correlator';
+import { BatchDispatcher, type BatchMeta } from '../transport/batch-dispatcher';
+import { expandWatchEventsForReplay, type WatchEvent } from './replay-event-expander';
+import {
   WatcherStateStore,
   scanSyncRoot,
   contentQuickHash,
   normalizeRelKey,
-} = require('../persistence/watcher-state-store');
-const { IGNORED_PATTERNS } = require('./ignored-patterns');
+  type FileSnapshotEntry,
+  type FileSnapshotMap,
+} from '../persistence/watcher-state-store';
+import { IGNORED_PATTERNS } from './ignored-patterns';
+
+export interface ConnectorFsWatcherStatus {
+  running: boolean;
+  rootPath: string;
+  connectorId: string;
+  trackedFiles: number;
+  pendingEvents: number;
+}
+
+export interface BatchPayload {
+  connectorId: string;
+  batchId: string;
+  timestamp: number;
+  source: string;
+  events: WatchEvent[];
+}
+
+export type BatchHandler = (payload: BatchPayload) => Promise<unknown> | unknown;
+
+export interface ConnectorFsWatcherArgs {
+  connectorId: string;
+  rootPath: string;
+  baseDir: string;
+  onBatch?: BatchHandler;
+  flushMs?: number;
+  maxBatchSize?: number;
+  allowedExtensions?: string[];
+  includeSubfolders?: boolean;
+  correlationWindowMs?: number;
+  changeDebounceMs?: number;
+  stateSyncDebounceMs?: number;
+  usePolling?: boolean;
+  pollInterval?: number;
+  log?: (msg: string) => void;
+}
 
 /**
  * Watches `rootPath` with chokidar, correlates raw events into high-level FileEvents
@@ -18,7 +55,29 @@ const { IGNORED_PATTERNS } = require('./ignored-patterns');
  * emits batches via onBatch. Performs startup reconciliation against a persisted
  * per-connector watcher_state.*.json so offline changes are captured.
  */
-class ConnectorFsWatcher {
+export class ConnectorFsWatcher {
+  connectorId: string;
+  rootPath: string;
+  baseDir: string;
+  onBatch?: BatchHandler;
+  includeSubfolders: boolean;
+  allowedExtensions: Set<string>;
+  log: (msg: string) => void;
+  usePolling: boolean;
+  pollInterval: number;
+  stateSyncDebounceMs: number;
+
+  private watcher: chokidar.FSWatcher | null;
+  private running: boolean;
+  private ready: boolean;
+  private stateSyncTimer: NodeJS.Timeout | null;
+  private syntheticSuppressionWindowMs: number;
+  private suppressedEventKeys: Map<string, number>;
+
+  stateStore: WatcherStateStore;
+  dispatcher: BatchDispatcher;
+  correlator: EventCorrelator;
+
   constructor({
     connectorId,
     rootPath,
@@ -34,7 +93,7 @@ class ConnectorFsWatcher {
     usePolling,
     pollInterval,
     log,
-  }) {
+  }: ConnectorFsWatcherArgs) {
     if (!connectorId) throw new Error('connectorId is required');
     if (!rootPath) throw new Error('rootPath is required');
     if (!baseDir) throw new Error('baseDir is required');
@@ -46,7 +105,7 @@ class ConnectorFsWatcher {
     this.allowedExtensions = new Set(
       (allowedExtensions || []).map((e) => String(e).toLowerCase().replace(/^\./, ''))
     );
-    this.log = log || ((msg) => console.log(`[local-sync:${connectorId}]`, msg));
+    this.log = log || ((msg: string) => console.log(`[local-sync:${connectorId}]`, msg));
     this.usePolling = usePolling === true;
     this.pollInterval = typeof pollInterval === 'number' && pollInterval > 0 ? pollInterval : 1000;
     this.stateSyncDebounceMs = typeof stateSyncDebounceMs === 'number' && stateSyncDebounceMs >= 0 ? stateSyncDebounceMs : 500;
@@ -65,7 +124,7 @@ class ConnectorFsWatcher {
     });
 
     this.dispatcher = new BatchDispatcher(
-      async (events, meta) => {
+      async (events: WatchEvent[], meta: BatchMeta) => {
         if (!this.onBatch) return;
         await this.onBatch({
           connectorId: this.connectorId,
@@ -78,7 +137,9 @@ class ConnectorFsWatcher {
       {
         maxBatchSize: maxBatchSize != null ? maxBatchSize : 50,
         flushIntervalMs: flushMs != null ? flushMs : 1000,
-        onError: (err) => this.log(`Batch dispatch error: ${err && err.message ? err.message : String(err)}`),
+        onError: (err: unknown) => this.log(
+          `Batch dispatch error: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       }
     );
 
@@ -93,10 +154,10 @@ class ConnectorFsWatcher {
         const cur = await contentQuickHash(ev.absPath);
         return cur !== undefined && cur === prev.quickHash;
       },
-      getPreviousFileEntry: (relKey) => this.stateStore.getSnapshot().files[relKey],
+      getPreviousFileEntry: (relKey: string) => this.stateStore.getSnapshot().files[relKey],
     });
 
-    this.correlator.setListener((events) => {
+    this.correlator.setListener((events: WatchEvent[]) => {
       const filtered = this.dropSuppressedEvents(this.applyFilters(events));
       const dispatchable = this.expandForDispatch(filtered);
       if (dispatchable.length > 0) {
@@ -107,7 +168,7 @@ class ConnectorFsWatcher {
     });
   }
 
-  scanOptions() {
+  private scanOptions() {
     return {
       includeSubfolders: this.includeSubfolders,
       previousByRelPath: new Map(Object.entries(this.stateStore.getSnapshot().files)),
@@ -115,7 +176,7 @@ class ConnectorFsWatcher {
     };
   }
 
-  scheduleStateSyncFromDisk() {
+  private scheduleStateSyncFromDisk(): void {
     if (this.stateSyncTimer) clearTimeout(this.stateSyncTimer);
     this.stateSyncTimer = setTimeout(() => {
       this.stateSyncTimer = null;
@@ -123,17 +184,17 @@ class ConnectorFsWatcher {
     }, this.stateSyncDebounceMs);
   }
 
-  async syncStateFromDisk() {
+  private async syncStateFromDisk(): Promise<void> {
     try {
       const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
       this.stateStore.applyScan(scan);
       this.stateStore.flushSave();
     } catch (err) {
-      this.log(`State rescan error: ${err && err.message ? err.message : String(err)}`);
+      this.log(`State rescan error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  applyFilters(events) {
+  private applyFilters(events: WatchEvent[]): WatchEvent[] {
     if (this.allowedExtensions.size === 0) return events;
     return events.filter((ev) => {
       if (ev.isDirectory) return true;
@@ -153,16 +214,16 @@ class ConnectorFsWatcher {
     });
   }
 
-  expandForDispatch(events, filesSnapshot) {
+  private expandForDispatch(events: WatchEvent[], filesSnapshot?: FileSnapshotMap): WatchEvent[] {
     if (!events || events.length === 0) return [];
     if (!events.some((event) => event.isDirectory)) return events;
     return expandWatchEventsForReplay(
       events,
-      filesSnapshot || this.stateStore.getSnapshot().files
+      filesSnapshot || this.stateStore.getSnapshot().files,
     );
   }
 
-  dropSuppressedEvents(events) {
+  private dropSuppressedEvents(events: WatchEvent[]): WatchEvent[] {
     if (!events || events.length === 0) return [];
     const now = Date.now();
     for (const [key, expiresAt] of this.suppressedEventKeys) {
@@ -176,7 +237,7 @@ class ConnectorFsWatcher {
     });
   }
 
-  noteSyntheticFollowupSuppressions(events) {
+  private noteSyntheticFollowupSuppressions(events: WatchEvent[]): void {
     if (!events || events.length === 0) return;
     const expiresAt = Date.now() + this.syntheticSuppressionWindowMs;
     for (const event of events) {
@@ -186,7 +247,11 @@ class ConnectorFsWatcher {
     }
   }
 
-  async captureRawState(eventName, absPath, stats) {
+  private async captureRawState(
+    eventName: string,
+    absPath: string,
+    stats?: fs.Stats,
+  ): Promise<void> {
     if (!stats) return;
     if (!['add', 'addDir'].includes(eventName)) return;
     const relKey = normalizeRelKey(absPath, this.rootPath);
@@ -208,7 +273,7 @@ class ConnectorFsWatcher {
     this.stateStore.scheduleSave();
   }
 
-  async applyEventsToState(events) {
+  private async applyEventsToState(events: WatchEvent[]): Promise<void> {
     if (!events || events.length === 0) return;
     let touched = false;
 
@@ -230,13 +295,14 @@ class ConnectorFsWatcher {
         if (!stats.isFile()) continue;
         const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
         const quickHash = await contentQuickHash(absPath);
-        this.stateStore.getSnapshot().files[nextPath] = {
+        const entry: FileSnapshotEntry = {
           inode,
           size: stats.size,
           mtimeMs: stats.mtimeMs,
           isDirectory: false,
           quickHash,
         };
+        this.stateStore.getSnapshot().files[nextPath] = entry;
         touched = true;
       } catch {
         delete this.stateStore.getSnapshot().files[nextPath];
@@ -247,7 +313,7 @@ class ConnectorFsWatcher {
     if (touched) this.stateStore.scheduleSave();
   }
 
-  async start() {
+  async start(): Promise<void> {
     if (this.running) return;
     if (!fs.existsSync(this.rootPath)) {
       throw new Error(`Local sync root folder does not exist: ${this.rootPath}`);
@@ -279,7 +345,7 @@ class ConnectorFsWatcher {
 
     const depth = this.includeSubfolders ? undefined : 0;
     this.watcher = chokidar.watch(this.rootPath, {
-      ignored: IGNORED_PATTERNS,
+      ignored: IGNORED_PATTERNS as unknown as RegExp,
       persistent: true,
       ignoreInitial: true,
       followSymlinks: false,
@@ -301,9 +367,9 @@ class ConnectorFsWatcher {
     this.watcher.on('all', async (eventName, filePath, stats) => {
       if (!this.ready) return;
       if (!['add', 'addDir', 'unlink', 'unlinkDir', 'change'].includes(eventName)) return;
-      await this.captureRawState(filePath ? eventName : '', filePath, stats).catch(() => { /* ignore */ });
+      await this.captureRawState(eventName, filePath, stats).catch(() => { /* ignore */ });
       this.scheduleStateSyncFromDisk();
-      this.correlator.push(eventName, filePath, stats).catch(() => { /* ignore */ });
+      this.correlator.push(eventName as ChokidarEventName, filePath, stats).catch(() => { /* ignore */ });
     });
 
     this.watcher.on('ready', async () => {
@@ -316,7 +382,7 @@ class ConnectorFsWatcher {
           this.stateStore.flushSave();
           this.log(`Baseline captured: ${scan.size} entries tracked.`);
         } catch (err) {
-          this.log(`Baseline scan error: ${err && err.message ? err.message : String(err)}`);
+          this.log(`Baseline scan error: ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
         this.log('Watcher ready.');
@@ -324,11 +390,11 @@ class ConnectorFsWatcher {
     });
 
     this.watcher.on('error', (err) => {
-      this.log(`Watcher error: ${err && err.message ? err.message : String(err)}`);
+      this.log(`Watcher error: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
-  async stop() {
+  async stop(): Promise<void> {
     if (!this.running) return;
     this.log('Stopping file watcher...');
     if (this.stateSyncTimer) { clearTimeout(this.stateSyncTimer); this.stateSyncTimer = null; }
@@ -345,7 +411,7 @@ class ConnectorFsWatcher {
     this.log('File watcher stopped.');
   }
 
-  getStatus() {
+  getStatus(): ConnectorFsWatcherStatus {
     const state = this.stateStore.getSnapshot();
     return {
       running: this.running,
@@ -356,7 +422,7 @@ class ConnectorFsWatcher {
     };
   }
 
-  async rescan() {
+  async rescan(): Promise<WatchEvent[]> {
     const replayFiles = { ...this.stateStore.getSnapshot().files };
     const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
     const events = this.stateStore.commitReconcile(scan);
@@ -381,10 +447,8 @@ class ConnectorFsWatcher {
    * and replay() finds nothing in the journal yet, so the change defers to
    * the *next* tick.
    */
-  async drainLiveEvents() {
+  async drainLiveEvents(): Promise<void> {
     await this.correlator.drain();
     await this.dispatcher.flush();
   }
 }
-
-module.exports = { ConnectorFsWatcher };

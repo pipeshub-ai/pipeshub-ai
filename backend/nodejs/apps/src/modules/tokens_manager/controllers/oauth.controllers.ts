@@ -17,7 +17,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
+import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector-service-http';
 import { isUserAdmin } from './connector.controllers';
 
 const logger = Logger.getInstance({

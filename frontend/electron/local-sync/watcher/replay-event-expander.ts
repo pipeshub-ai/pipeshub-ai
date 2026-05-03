@@ -1,4 +1,29 @@
-function listFilesUnderPrefix(files, prefix) {
+/**
+ * Per-file expansion of directory-level events. Needed for replay because the
+ * backend expects file granularity, and by the time we replay a failed batch
+ * the directory may already be gone from disk — so we expand against the
+ * persisted watcher state snapshot we captured at the time the event fired.
+ */
+export interface FileStateEntry {
+  inode?: number;
+  size?: number;
+  mtimeMs?: number;
+  isDirectory: boolean;
+  quickHash?: string;
+}
+
+export type FileStateMap = Record<string, FileStateEntry>;
+
+export interface WatchEvent {
+  type: string;
+  path: string;
+  oldPath?: string;
+  timestamp: number;
+  size?: number;
+  isDirectory: boolean;
+}
+
+function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
   const normalizedPrefix = String(prefix || '').replace(/\/+$/, '');
   const childPrefix = normalizedPrefix ? `${normalizedPrefix}/` : '';
   return Object.keys(files)
@@ -9,14 +34,11 @@ function listFilesUnderPrefix(files, prefix) {
     .sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Expand directory-level events (DIR_DELETED / DIR_MOVED / DIR_RENAMED)
- * into per-file events using the persisted watcher state snapshot.
- * Needed when replaying a failed batch because the backend expects file
- * granularity (the directory may already be gone from disk).
- */
-function expandWatchEventsForReplay(events, files) {
-  const expanded = [];
+export function expandWatchEventsForReplay(
+  events: WatchEvent[],
+  files: FileStateMap,
+): WatchEvent[] {
+  const expanded: WatchEvent[] = [];
   for (const event of events) {
     if (!event.isDirectory) { expanded.push(event); continue; }
     if (event.type === 'DIR_DELETED') {
@@ -41,5 +63,3 @@ function expandWatchEventsForReplay(events, files) {
   }
   return expanded;
 }
-
-module.exports = { expandWatchEventsForReplay };

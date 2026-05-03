@@ -417,7 +417,7 @@ describe('Crawling Manager Controller', () => {
       const mockService = createMockCrawlingService()
       mockService.getJobStatus.resolves(null)
       // Stub validateConnectorAccess dependency
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -445,7 +445,7 @@ describe('Crawling Manager Controller', () => {
       const mockService = createMockCrawlingService()
       const jobStatus = { id: 'j-1', state: 'active', connector: 'google' }
       mockService.getJobStatus.resolves(jobStatus)
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -473,7 +473,7 @@ describe('Crawling Manager Controller', () => {
     it('should call next on error', async () => {
       const mockService = createMockCrawlingService()
       mockService.getJobStatus.rejects(new Error('Redis error'))
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -501,7 +501,7 @@ describe('Crawling Manager Controller', () => {
   describe('removeCrawlingJob (extended)', () => {
     it('should remove job successfully', async () => {
       const mockService = createMockCrawlingService()
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -527,7 +527,7 @@ describe('Crawling Manager Controller', () => {
     it('should call next on remove error', async () => {
       const mockService = createMockCrawlingService()
       mockService.removeJob.rejects(new Error('fail'))
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -555,7 +555,7 @@ describe('Crawling Manager Controller', () => {
   describe('pauseCrawlingJob (extended)', () => {
     it('should pause job successfully', async () => {
       const mockService = createMockCrawlingService()
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -584,7 +584,7 @@ describe('Crawling Manager Controller', () => {
     it('should call next on pause error', async () => {
       const mockService = createMockCrawlingService()
       mockService.pauseJob.rejects(new Error('pause failed'))
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -612,7 +612,7 @@ describe('Crawling Manager Controller', () => {
   describe('resumeCrawlingJob (extended)', () => {
     it('should resume job successfully', async () => {
       const mockService = createMockCrawlingService()
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },
@@ -641,7 +641,7 @@ describe('Crawling Manager Controller', () => {
     it('should call next on resume error', async () => {
       const mockService = createMockCrawlingService()
       mockService.resumeJob.rejects(new Error('resume failed'))
-      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector-service-http')
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connector: { scope: 'team', createdBy: 'user-1' } },

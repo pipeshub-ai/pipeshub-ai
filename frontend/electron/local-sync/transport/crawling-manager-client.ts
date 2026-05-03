@@ -1,6 +1,21 @@
-const { buildCronFromSchedule } = require('../cron-from-schedule');
+import { buildCronFromSchedule } from '../cron-from-schedule';
 
-function trimTrailingSlash(value) {
+export interface ScheduleCrawlingJobArgs {
+  apiBaseUrl: string;
+  accessToken: string;
+  connectorDisplayType: string;
+  connectorInstanceId: string;
+  intervalMinutes: number;
+  startTime?: number;
+  timezone?: string;
+}
+
+export interface ScheduleCrawlingJobResult {
+  cron: string;
+  response: unknown;
+}
+
+function trimTrailingSlash(value: unknown): string {
   return String(value || '').replace(/\/$/, '');
 }
 
@@ -8,7 +23,7 @@ function trimTrailingSlash(value) {
  * Register a repeating BullMQ job with the crawling manager so the backend
  * triggers scheduled Local FS resyncs. Mirrors CLI BackendClient.scheduleCrawlingManagerJob.
  */
-async function scheduleCrawlingManagerJob({
+export async function scheduleCrawlingManagerJob({
   apiBaseUrl,
   accessToken,
   connectorDisplayType,
@@ -16,7 +31,7 @@ async function scheduleCrawlingManagerJob({
   intervalMinutes,
   startTime,
   timezone,
-}) {
+}: ScheduleCrawlingJobArgs): Promise<ScheduleCrawlingJobResult> {
   const base = trimTrailingSlash(apiBaseUrl);
   if (!base) throw new Error('apiBaseUrl required');
   if (!accessToken) throw new Error('accessToken required');
@@ -50,35 +65,10 @@ async function scheduleCrawlingManagerJob({
     },
     body: JSON.stringify(body),
   });
-  let parsed = null;
+  let parsed: unknown = null;
   try { parsed = await resp.json(); } catch { /* ignore */ }
   if (!resp.ok) {
     throw new Error(`crawlingManager schedule failed (${resp.status}): ${JSON.stringify(parsed)}`);
   }
   return { cron, response: parsed };
 }
-
-/** Tear down the scheduled job. */
-async function unscheduleCrawlingManagerJob({
-  apiBaseUrl,
-  accessToken,
-  connectorDisplayType,
-  connectorInstanceId,
-}) {
-  const base = trimTrailingSlash(apiBaseUrl);
-  if (!base || !accessToken || !connectorDisplayType || !connectorInstanceId) return null;
-  const connSeg = encodeURIComponent(String(connectorDisplayType).trim().toLowerCase());
-  const idSeg = encodeURIComponent(connectorInstanceId);
-  const url = `${base}/api/v1/crawlingManager/${connSeg}/${idSeg}/schedule`;
-  try {
-    const resp = await fetch(url, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    return { ok: resp.ok, status: resp.status };
-  } catch {
-    return null;
-  }
-}
-
-module.exports = { scheduleCrawlingManagerJob, unscheduleCrawlingManagerJob };

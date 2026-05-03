@@ -1,3 +1,6 @@
+/**
+ * Socket.IO gateway for desktop/CLI clients: authenticated REST proxy over `/cli-rpc`.
+ */
 import { Server as HttpServer } from 'http';
 import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -6,7 +9,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
   normalizeAndAssertCliRpcProxyPath,
-} from './cli_rpc_path_allowlist';
+} from './path_allowlist';
 
 type CliRpcSocketData = {
   userId: string;

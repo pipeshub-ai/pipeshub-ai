@@ -56,6 +56,7 @@ next-env.d.ts
 
 # electron build output
 /electron/out/
+/electron/compile/
 /dist-electron/
 
 # local postman collection dump

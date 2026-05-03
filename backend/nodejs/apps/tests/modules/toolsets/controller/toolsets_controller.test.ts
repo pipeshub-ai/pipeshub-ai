@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector-service-http'
 import {
   getRegistryToolsets,
   getConfiguredToolsets,

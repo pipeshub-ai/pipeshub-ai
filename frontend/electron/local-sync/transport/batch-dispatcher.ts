@@ -1,16 +1,56 @@
-class BatchDispatcher {
-  constructor(dispatchFn, opts = {}) {
+import type { WatchEvent } from '../watcher/replay-event-expander';
+
+export interface BatchDispatcherOptions {
+  maxBatchSize?: number;
+  flushIntervalMs?: number;
+  onError?: (err: unknown) => void;
+}
+
+export interface BatchPushOptions {
+  source?: string;
+}
+
+export interface BatchMeta {
+  batchId: string;
+  source: string;
+}
+
+export type BatchDispatchFn = (events: WatchEvent[], meta: BatchMeta) => Promise<unknown> | unknown;
+
+interface BufferedChunk {
+  events: WatchEvent[];
+  source: string;
+}
+
+/**
+ * In-memory event buffer with timer-based flush. Coalesces watcher event
+ * spurts into batches no larger than `maxBatchSize`, dedupes redundant
+ * per-path events (CREATED+MODIFIED, MODIFIED+DELETED, ...) inside a flush,
+ * and serializes the underlying `dispatch` callback so a slow consumer
+ * doesn't get re-entered.
+ */
+export class BatchDispatcher {
+  private dispatch: BatchDispatchFn;
+  private maxBatch: number;
+  private flushIntervalMs: number;
+  private onError: (err: unknown) => void;
+  private buffer: BufferedChunk[];
+  private flushTimer: NodeJS.Timeout | null;
+  private flushing: boolean;
+  private paused: boolean;
+
+  constructor(dispatchFn: BatchDispatchFn, opts: BatchDispatcherOptions = {}) {
     this.dispatch = dispatchFn;
     this.maxBatch = opts.maxBatchSize != null ? opts.maxBatchSize : 50;
     this.flushIntervalMs = opts.flushIntervalMs != null ? opts.flushIntervalMs : 1000;
-    this.onError = opts.onError || ((err) => console.error('[BatchDispatcher] error:', err));
+    this.onError = opts.onError || ((err: unknown) => console.error('[BatchDispatcher] error:', err));
     this.buffer = [];
     this.flushTimer = null;
     this.flushing = false;
     this.paused = false;
   }
 
-  push(events, opts) {
+  push(events: WatchEvent[], opts?: BatchPushOptions): void {
     if (!events || events.length === 0) return;
     const source = (opts && opts.source) || 'live';
     this.buffer.push({ events: [...events], source });
@@ -21,17 +61,17 @@ class BatchDispatcher {
     }
   }
 
-  get pending() {
+  get pending(): number {
     return this.buffer.reduce((n, c) => n + c.events.length, 0);
   }
 
-  pause() { this.paused = true; }
-  resume() {
+  pause(): void { this.paused = true; }
+  resume(): void {
     this.paused = false;
     if (this.pending > 0) this.scheduleFlush();
   }
 
-  scheduleFlush() {
+  private scheduleFlush(): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
@@ -39,7 +79,7 @@ class BatchDispatcher {
     }, this.flushIntervalMs);
   }
 
-  async flush() {
+  async flush(): Promise<void> {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     if (this.buffer.length === 0 || this.flushing || this.paused) return;
     this.flushing = true;
@@ -59,14 +99,14 @@ class BatchDispatcher {
     }
   }
 
-  deduplicate(events) {
-    const byPath = new Map();
+  private deduplicate(events: WatchEvent[]): WatchEvent[] {
+    const byPath = new Map<string, WatchEvent[]>();
     for (const ev of events) {
       const arr = byPath.get(ev.path) || [];
       arr.push(ev);
       byPath.set(ev.path, arr);
     }
-    const result = [];
+    const result: WatchEvent[] = [];
     for (const [, pathEvents] of byPath) {
       if (pathEvents.length === 1) { result.push(pathEvents[0]); continue; }
       const types = new Set(pathEvents.map((e) => e.type));
@@ -83,11 +123,12 @@ class BatchDispatcher {
       }
       if (types.has('CREATED') && types.has('MODIFIED')) {
         const created = pathEvents.find((e) => e.type === 'CREATED');
-        result.push({ ...created, size: last.size, timestamp: last.timestamp });
+        if (created) result.push({ ...created, size: last.size, timestamp: last.timestamp });
         continue;
       }
       if (types.has('MODIFIED') && types.has('DELETED')) {
-        result.push(pathEvents.find((e) => e.type === 'DELETED'));
+        const deleted = pathEvents.find((e) => e.type === 'DELETED');
+        if (deleted) result.push(deleted);
         continue;
       }
       const renameOrMove = pathEvents.find((e) =>
@@ -103,5 +144,3 @@ class BatchDispatcher {
     return result;
   }
 }
-
-module.exports = { BatchDispatcher };

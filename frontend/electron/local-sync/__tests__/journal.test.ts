@@ -1,11 +1,11 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { LocalSyncJournal } = require('../persistence/journal');
+import test from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { LocalSyncJournal } from '../persistence/journal';
 
-function withTempDir(run) {
+function withTempDir(run: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'local-sync-journal-'));
   try {
     run(dir);
@@ -55,7 +55,7 @@ test('failed batch becomes replayable and clears once marked synced', () => {
     journal.appendBatch(connectorId, {
       batchId: 'batch-r1',
       timestamp: Date.now(),
-      events: [{ type: 'CREATED', path: 'a.txt', isDirectory: false }],
+      events: [{ type: 'CREATED', path: 'a.txt', timestamp: Date.now(), isDirectory: false }],
     });
     journal.updateBatchStatus(connectorId, 'batch-r1', 'failed', { lastError: 'offline' });
 
@@ -82,7 +82,7 @@ test('startup replay sees pending batches left from prior session', () => {
     j1.appendBatch(connectorId, {
       batchId: 'batch-s1',
       timestamp: Date.now(),
-      events: [{ type: 'CREATED', path: 'b.txt', isDirectory: false }],
+      events: [{ type: 'CREATED', path: 'b.txt', timestamp: Date.now(), isDirectory: false }],
     });
 
     // Simulate app restart: new journal instance over the same baseDir.
