@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { GuestGuard } from '@/app/components/ui/guest-guard';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
@@ -163,7 +164,8 @@ export default function LoginPage() {
   function renderForm() {
     switch (step.type) {
       case 'loading':
-        return null;
+        // Avoid empty FormPanel (especially with narrow layout / AuthHero hidden === null).
+        return <LoadingScreen />;
 
       case 'single':
         return (

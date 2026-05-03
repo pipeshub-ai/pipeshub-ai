@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
 import { isElectron, getApiBaseUrl, setApiBaseUrl } from '@/lib/utils/api-base-url';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
 
 // Launch-scoped flag: main process assigns one APP_LAUNCH_ID per app process;
 // preload exposes it on every load. We persist the confirmed id in localStorage;
@@ -27,7 +28,11 @@ function getLaunchId(): string | null {
 export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so we commit the real route before the
+  // first browser paint. A plain effect runs after paint — on full navigations
+  // (logout → /login, or after URL setup "Continue") users briefly saw a blank
+  // white screen because we returned null until the effect ran.
+  useLayoutEffect(() => {
     if (!isElectron()) {
       setNeedsSetup(false);
       return;
@@ -44,8 +49,9 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
     setNeedsSetup(confirmedLaunch !== launchId);
   }, []);
 
-  // SSR / first render — show nothing until we know
-  if (needsSetup === null) return null;
+  // Until we know Electron vs web and launch confirmation — match AuthGuard
+  // loading chrome instead of returning null (which flashes white).
+  if (needsSetup === null) return <LoadingScreen />;
 
   if (needsSetup) {
     return <ServerUrlSetupScreen onComplete={() => setNeedsSetup(false)} />;

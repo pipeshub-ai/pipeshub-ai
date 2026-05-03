@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
-import { hydrateAuthStore } from './auth-store';
+import { useRouter } from 'next/navigation';
+import { hydrateAuthStore, LOGIN_NAVIGATION_EVENT } from './auth-store';
 
 /**
  * Client-only component that hydrates the auth store from localStorage
@@ -10,8 +11,19 @@ import { hydrateAuthStore } from './auth-store';
  * and downstream gates (AuthGuard, GuestGuard, login page) can proceed.
  */
 export function AuthHydrator(): null {
+  const router = useRouter();
+
   useEffect(() => {
     hydrateAuthStore();
   }, []);
+
+  useEffect(() => {
+    const goLogin = () => {
+      router.replace('/login');
+    };
+    window.addEventListener(LOGIN_NAVIGATION_EVENT, goLogin);
+    return () => window.removeEventListener(LOGIN_NAVIGATION_EVENT, goLogin);
+  }, [router]);
+
   return null;
 }
