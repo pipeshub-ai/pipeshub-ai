@@ -4,7 +4,9 @@ import React from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConnectorIcon } from '@/app/components/ui';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { DotSeparator } from '../instance-card/primitives';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
 
@@ -50,6 +52,9 @@ export function SettingsTab({
   const displayCreatorAvatar =
     creatorAvatarUrl ?? instance.enabledBy?.avatar ?? undefined;
 
+  const displayName = instance.name?.trim() ? instance.name.trim() : null;
+  const displayAppGroup = instance.appGroup?.trim() ? instance.appGroup.trim() : null;
+
   const removeConnectorButton = onRequestRemoveConnector ? (
     <Button
       type="button"
@@ -80,6 +85,61 @@ export function SettingsTab({
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
+      {/* ── Connector name & ID ── */}
+      <SectionCard title={t('workspace.connectors.settingsTab.connectorIdentitySection')}>
+        <Flex direction="column" gap="4">
+          <InfoRow
+            label={t('workspace.connectors.settingsTab.connectorNameLabel')}
+            value={
+              <Flex align="center" gap="2" style={{ flexWrap: 'wrap', minWidth: 0 }}>
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    padding: 8,
+                    backgroundColor: 'var(--gray-a2)',
+                    borderRadius: 'var(--radius-2)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <ConnectorIcon type={instance.type} size={16} />
+                </Flex>
+                <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+                  <Text size="2" style={{ color: 'var(--gray-12)' }}>
+                    {displayName ?? '-'}
+                  </Text>
+                  {displayAppGroup ? (
+                    <>
+                      <DotSeparator />
+                      <Text size="2" style={{ color: 'var(--gray-11)' }}>
+                        {displayAppGroup}
+                      </Text>
+                    </>
+                  ) : null}
+                </Flex>
+              </Flex>
+            }
+          />
+          <InfoRow
+            label={t('workspace.connectors.settingsTab.connectorIdLabel')}
+            value={
+              <Text
+                size="2"
+                style={{
+                  color: 'var(--gray-12)',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {instance._key ?? '-'}
+              </Text>
+            }
+          />
+        </Flex>
+      </SectionCard>
+
       {/* ── Created by ── */}
       <SectionCard title={t('workspace.connectors.settingsTab.createdBySection')}>
         <Flex direction="column" gap="4">
