@@ -25,9 +25,11 @@
     "build:electron": "node scripts/electron/next-build-electron.mjs",
     "build:electron:typescript": "tsc -p electron/tsconfig.json",
     "electron:prepare": "npm run build:electron:typescript && node scripts/electron/electron-prepare.mjs",
-    "electron:build:mac": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --config electron-builder.yml --publish never",
-    "electron:build:win": "npm run build:electron && npm run electron:prepare && npx electron-builder --win --config electron-builder.yml --publish never",
-    "electron:build:mac-win": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --win --config electron-builder.yml --publish never",
+    "electron:build:mac": "node scripts/electron/build-electron.mjs mac",
+    "electron:build:win": "node scripts/electron/build-electron.mjs win",
+    "electron:build:mac-win": "node scripts/electron/build-electron.mjs mac-win",
+    "electron:build:all": "node scripts/electron/build-electron.mjs all",
+    "electron:build:mac:dmg-retry": "node scripts/electron/retry-mac-dmg.mjs",
     "test:electron:local-sync": "npm run build:electron:typescript && node --test electron/compile/local-sync/__tests__/*.test.js"
   },
   "dependencies": {

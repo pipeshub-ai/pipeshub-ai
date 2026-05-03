@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
-import { hydrateAuthStore } from './auth-store';
+import { useRouter } from 'next/navigation';
+import { hydrateAuthStore, LOGIN_NAVIGATION_EVENT } from './auth-store';
 import { initTokenRefreshScheduler } from '@/lib/api/token-refresh-scheduler';
 
 /**
@@ -14,11 +15,25 @@ import { initTokenRefreshScheduler } from '@/lib/api/token-refresh-scheduler';
  * module-level singleton and `initTokenRefreshScheduler` is idempotent,
  * so mounting `<AuthHydrator />` in both the public and main layouts is
  * safe.
+ *
+ * Listens for `LOGIN_NAVIGATION_EVENT` from `logoutAndRedirect()` so auth
+ * failures use App Router navigation (including Electron without a full reload).
  */
 export function AuthHydrator(): null {
+  const router = useRouter();
+
   useEffect(() => {
     hydrateAuthStore();
     initTokenRefreshScheduler();
   }, []);
+
+  useEffect(() => {
+    const goLogin = () => {
+      router.replace('/login');
+    };
+    window.addEventListener(LOGIN_NAVIGATION_EVENT, goLogin);
+    return () => window.removeEventListener(LOGIN_NAVIGATION_EVENT, goLogin);
+  }, [router]);
+
   return null;
 }

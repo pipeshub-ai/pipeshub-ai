@@ -147,15 +147,21 @@ if (typeof window !== 'undefined') {
   hydrateAuthStore();
 }
 
+/** Dispatched after logout; AuthHydrator listens and runs client-side navigation. */
+export const LOGIN_NAVIGATION_EVENT = 'pipeshub:request-login-navigation';
+
 /**
  * Clears all auth state and redirects the user to the login page.
  * Single source of truth used by both the axios interceptor and UI buttons.
+ *
+ * Uses a custom event + Next.js router (see AuthHydrator) instead of
+ * `window.location.href` so Electron (`app://`) does not full-reload into an empty
+ * shell, and so the App Router stays consistent with soft navigation.
  */
 export function logoutAndRedirect(): void {
   useAuthStore.getState().logout();
-  if (typeof window !== 'undefined') {
-    window.location.href = '/login';
-  }
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(LOGIN_NAVIGATION_EVENT));
 }
 
 // Selectors for common access patterns
