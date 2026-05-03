@@ -427,6 +427,8 @@ function ConnectorFilterMultiSelect({
   const [initialLoading, setInitialLoading] = useState(false);
   const fetchingRef = useRef(false);
   const cursorRef = useRef<string | undefined>(undefined);
+  /** Last page fetched for page-based dynamic options (SharePoint, etc.); cursor APIs ignore updates here. */
+  const pageRef = useRef(0);
   const searchRef = useRef('');
 
   const loadOptions = useCallback(
@@ -437,30 +439,52 @@ function ConnectorFilterMultiSelect({
         setInitialLoading(true);
         setOptions([]);
         setHasMore(false);
+        pageRef.current = 0;
       }
       if (append) setLoadingMore(true);
       try {
-        const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, append
-          ? {
-              limit: PAGE_LIMIT,
-              cursor: cursorRef.current,
-              search: searchRef.current.trim() || undefined,
-            }
-          : {
-              page: 1,
-              limit: INITIAL_LIMIT,
-              search: searchRef.current.trim() || undefined,
-            });
+        const search = searchRef.current.trim() || undefined;
+        const prevCursorForAppend = append ? cursorRef.current : undefined;
+
+        const params =
+          !append
+            ? {
+                page: 1,
+                limit: INITIAL_LIMIT,
+                ...(search ? { search } : {}),
+              }
+            : prevCursorForAppend
+              ? {
+                  limit: PAGE_LIMIT,
+                  cursor: prevCursorForAppend,
+                  ...(search ? { search } : {}),
+                }
+              : {
+                  page: pageRef.current + 1,
+                  limit: PAGE_LIMIT,
+                  ...(search ? { search } : {}),
+                };
+
+        const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
 
         const rows = res.options ?? [];
         cursorRef.current = res.cursor;
 
         setOptions((prev) => {
           const merged = append ? dedupeAppend(prev, rows) : dedupeAppend([], rows);
-          const canLoadMore = Boolean(res.hasMore && merged.length < MAX_OPTIONS_IN_MEMORY);
+          const noNewRows = append && merged.length === prev.length;
+          const canLoadMore = Boolean(
+            res.hasMore && merged.length < MAX_OPTIONS_IN_MEMORY && !noNewRows
+          );
           setHasMore(canLoadMore);
           return merged;
         });
+
+        if (!append) {
+          pageRef.current = res.page ?? 1;
+        } else if (!prevCursorForAppend) {
+          pageRef.current = res.page ?? pageRef.current + 1;
+        }
       } catch {
         if (!append) {
           setOptions([]);
