@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useCallback, useReducer, memo } from 'react';
-import { Box, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import * as XLSX from 'xlsx';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import type { PreviewCitation } from '../types';
@@ -11,6 +11,7 @@ const MAX_ROWS = 5_000;
 const COL_DEFAULT_WIDTH = 150;
 const COL_MIN_WIDTH = 30;
 const RESIZE_EDGE_PX = 5;
+const ROW_NUM_COL_WIDTH = 50;
 
 const XLSX_READ_OPTIONS = {
   type: 'array' as const,
@@ -264,32 +265,9 @@ const TableCellMemo = memo(function TableCellMemo({
     bg = 'rgba(16, 185, 129, 0.15)';
   }
 
-  const cellContent = text ? (
-    <Tooltip
-      content={
-        <Text
-          as="span"
-          size="1"
-          style={{
-            display: 'block',
-            maxWidth: 400,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            lineHeight: 1.5,
-          }}
-        >
-          {text}
-        </Text>
-      }
-    >
-      <span>{text}</span>
-    </Tooltip>
-  ) : (
-    isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : ''
-  );
-
   return (
     <td
+      title={text || undefined}
       style={{
         width: `var(--cw-${colIndex})`,
         minWidth: `${COL_MIN_WIDTH}px`,
@@ -307,7 +285,7 @@ const TableCellMemo = memo(function TableCellMemo({
         fontFamily: "'Manrope', sans-serif",
       }}
     >
-      {cellContent}
+      {text || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')}
     </td>
   );
 });
@@ -331,6 +309,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   const tableRef = useRef<HTMLDivElement>(null);
   const tableElRef = useRef<HTMLTableElement>(null);
   const resizingRef = useRef(false);
+  const sheetColWidthsRef = useRef<Map<string, number[]>>(new Map());
   // Abort any outstanding scroll-retry loop so a newer citation click doesn't
   // race with an older pending scroll.
   const scrollTokenRef = useRef(0);
@@ -394,18 +373,26 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   }, [state.workbookData, state.selectedSheet]);
 
   // ── Initialize column widths as CSS variables on the <table> ────
+  // Restores previously-saved widths when switching back to a sheet,
+  // otherwise falls back to COL_DEFAULT_WIDTH for every column.
   useEffect(() => {
     const tableEl = tableElRef.current;
     if (!tableEl || !currentSheetData.headers.length) return;
     const numCols = currentSheetData.headers.length;
-    currentSheetData.headers.forEach((_header, i) => {
-      tableEl.style.setProperty(`--cw-${i}`, `${COL_DEFAULT_WIDTH}px`);
-    });
-    tableEl.style.width = `${50 + numCols * COL_DEFAULT_WIDTH}px`;
-  }, [currentSheetData.headers]);
+
+    const savedWidths = sheetColWidthsRef.current.get(state.selectedSheet);
+    let totalColWidth = 0;
+
+    for (let i = 0; i < numCols; i++) {
+      const w = savedWidths?.[i] ?? COL_DEFAULT_WIDTH;
+      tableEl.style.setProperty(`--cw-${i}`, `${w}px`);
+      totalColWidth += w;
+    }
+    tableEl.style.width = `${ROW_NUM_COL_WIDTH + totalColWidth}px`;
+  }, [currentSheetData.headers, state.selectedSheet]);
 
   // ── Column resize: cursor hint on hover near any cell border ───
-  const handleResizeMove = useCallback((e: React.MouseEvent) => {
+  const handleResizeMove = useCallback((e: React.PointerEvent) => {
     if (resizingRef.current) return;
     const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
     const container = tableRef.current;
@@ -422,7 +409,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   }, []);
 
   // ── Column resize: drag start from any cell's right edge ───────
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+  const handleResizeStart = useCallback((e: React.PointerEvent) => {
     const cell = (e.target as HTMLElement).closest('td, th') as HTMLTableCellElement | null;
     if (!cell) return;
     const cellIdx = cell.cellIndex;
@@ -438,31 +425,32 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
     const tableEl = tableElRef.current;
     if (!tableEl) return;
 
-    const currentWidth = parseInt(
+    const currentColWidth = parseInt(
       tableEl.style.getPropertyValue(`--cw-${colIndex}`) || `${COL_DEFAULT_WIDTH}`, 10
     );
     const startX = e.clientX;
+    let prevColWidth = currentColWidth;
+    let runningTableWidth = parseInt(tableEl.style.width || '0', 10);
 
-    let prevWidth = currentWidth;
-    const onMove = (ev: MouseEvent) => {
-      const newWidth = Math.max(COL_MIN_WIDTH, currentWidth + ev.clientX - startX);
+    const onMove = (ev: PointerEvent) => {
+      const newWidth = Math.max(COL_MIN_WIDTH, currentColWidth + ev.clientX - startX);
       tableEl.style.setProperty(`--cw-${colIndex}`, `${newWidth}px`);
-      const tableWidth = parseInt(tableEl.style.width || '0', 10);
-      tableEl.style.width = `${tableWidth + (newWidth - prevWidth)}px`;
-      prevWidth = newWidth;
+      runningTableWidth += newWidth - prevColWidth;
+      tableEl.style.width = `${runningTableWidth}px`;
+      prevColWidth = newWidth;
     };
 
     const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       if (tableRef.current) tableRef.current.style.cursor = '';
-      setTimeout(() => { resizingRef.current = false; }, 100);
+      requestAnimationFrame(() => { resizingRef.current = false; });
     };
 
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
@@ -587,8 +575,20 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
 
   // ── Sheet change ────────────────────────────────────────────────
   const handleSheetSelect = useCallback((sheet: string) => {
+    const tableEl = tableElRef.current;
+    if (tableEl && state.selectedSheet) {
+      const widths: number[] = [];
+      for (let i = 0; ; i++) {
+        const val = tableEl.style.getPropertyValue(`--cw-${i}`);
+        if (!val) break;
+        widths.push(parseInt(val, 10));
+      }
+      if (widths.length > 0) {
+        sheetColWidthsRef.current.set(state.selectedSheet, widths);
+      }
+    }
     dispatch({ type: 'SET_SELECTED_SHEET', sheet });
-  }, []);
+  }, [state.selectedSheet]);
 
   // ── Loading state ───────────────────────────────────────────────
   if (state.loading) {
@@ -651,8 +651,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
       {/* Table area */}
       <Box
         ref={tableRef}
-        onMouseMove={handleResizeMove}
-        onMouseDown={handleResizeStart}
+        onPointerMove={handleResizeMove}
+        onPointerDown={handleResizeStart}
         style={{
           flex: 1,
           overflow: 'auto',
@@ -674,8 +674,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
               {/* Row number column header */}
               <th
                 style={{
-                  width: '50px',
-                  minWidth: '50px',
+                  width: `${ROW_NUM_COL_WIDTH}px`,
+                  minWidth: `${ROW_NUM_COL_WIDTH}px`,
                   padding: '4px 6px',
                   fontSize: '10px',
                   fontWeight: 600,
@@ -744,8 +744,8 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                   {/* Row number cell (sticky left) */}
                   <td
                     style={{
-                      width: '50px',
-                      minWidth: '50px',
+                      width: `${ROW_NUM_COL_WIDTH}px`,
+                      minWidth: `${ROW_NUM_COL_WIDTH}px`,
                       padding: '4px 6px',
                       fontSize: '10px',
                       fontWeight: 500,
