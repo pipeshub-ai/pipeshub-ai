@@ -1182,8 +1182,13 @@ describe('ConfigurationManager Controller', () => {
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves('encrypted:data'),
       })
+      // Pre-deletion usage check returns no agents → deletion proceeds.
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [] },
+      })
       const eventService = createMockEventService()
-      const handler = deleteAIModelProvider(kvs, eventService, { cmBackend: 'http://cm' } as any)
+      const handler = deleteAIModelProvider(kvs, eventService, { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
       const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2543,8 +2548,13 @@ describe('ConfigurationManager Controller', () => {
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves('encrypted:data'),
       })
+      // Pre-deletion usage check returns no agents → deletion proceeds.
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [] },
+      })
       const eventService = createMockEventService()
-      const handler = deleteAIModelProvider(kvs, eventService, { cmBackend: 'http://cm' } as any)
+      const handler = deleteAIModelProvider(kvs, eventService, { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
       const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k2' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2554,6 +2564,81 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
       const response = res.json.firstCall.args[0]
       expect(response.details.wasDefault).to.be.false
+    })
+
+    it('should return 409 when an agent is using the model', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [{ name: 'kb-agent', _key: 'a1' }] },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(409)).to.be.true
+      // Etcd write must NOT happen when blocked.
+      expect(kvs.set.called).to.be.false
+      const body = res.json.firstCall.args[0]
+      expect(body.agents).to.have.length(1)
+    })
+
+    it('should return 500 (fail-closed) when usage check throws', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('aiBackend unreachable'))
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('should return 500 (fail-closed) when usage check returns non-200', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 500,
+        data: { success: false },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(kvs.set.called).to.be.false
     })
   })
 
