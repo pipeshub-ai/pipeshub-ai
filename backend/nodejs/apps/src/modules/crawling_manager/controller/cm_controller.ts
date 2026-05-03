@@ -7,7 +7,7 @@ import { CrawlingJobData } from '../schema/interface';
 import { Job } from 'bullmq';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
 import { isUserAdmin } from '../../tokens_manager/controllers/connector.controllers';
-import { executeConnectorCommand, handleBackendError } from '../../tokens_manager/utils/connector-service-http';
+import { executeConnectorCommand, handleBackendError } from '../../tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 

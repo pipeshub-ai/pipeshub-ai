@@ -24,7 +24,7 @@ import {
   getConnectorErrorLogFields,
   handleBackendError,
   handleConnectorResponse,
-} from '../utils/connector-service-http';
+} from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,

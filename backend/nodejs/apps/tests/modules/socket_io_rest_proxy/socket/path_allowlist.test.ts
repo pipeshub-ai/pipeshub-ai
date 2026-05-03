@@ -2,7 +2,7 @@ import { expect } from 'chai'
 import {
   DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
   normalizeAndAssertCliRpcProxyPath,
-} from '../../../../src/modules/cli_rpc/socket/path_allowlist'
+} from '../../../../src/modules/socket_io_rest_proxy/socket/path_allowlist'
 
 describe('normalizeAndAssertCliRpcProxyPath', () => {
   it('accepts exact prefix and nested allowed path', () => {
