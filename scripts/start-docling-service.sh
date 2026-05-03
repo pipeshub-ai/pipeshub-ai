@@ -28,7 +28,7 @@ fi
 
 # Start the service using docker-compose
 echo "🚀 Starting main service with Docling service included..."
-docker-compose -f deployment/docker-compose/docker-compose.dev.yml up -d pipeshub-ai
+docker-compose -f deployment/docker-compose/docker-compose.build.neo4j.yml up -d pipeshub-ai
 
 if [ $? -eq 0 ]; then
     echo "✅ Main service with Docling started successfully"
@@ -39,7 +39,6 @@ if [ $? -eq 0 ]; then
     echo "   - Indexing Service: http://localhost:8091"
     echo "   - Docling Service: http://localhost:8081"
     echo "🔍 Docling Health check: http://localhost:8081/health"
-    echo "📊 View logs: docker-compose -f deployment/docker-compose/docker-compose.dev.yml logs -f pipeshub-ai"
 else
     echo "❌ Failed to start main service"
     exit 1
