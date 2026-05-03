@@ -112,6 +112,12 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      # Code execution sandbox (subprocess vs Docker ephemeral containers).
+      # Default docker image uses the same IMAGE_TAG as pipeshubai/pipeshub-ai; build and
+      # push it from deployment/sandbox/Dockerfile as pipeshubai/pipeshub-sandbox:${IMAGE_TAG}.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -125,9 +131,12 @@ services:
         condition: service_healthy
       arango:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -274,6 +283,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
+  # Release: docker build -f deployment/sandbox/Dockerfile -t pipeshubai/pipeshub-sandbox:$TAG deployment/sandbox
+  #          && docker push pipeshubai/pipeshub-sandbox:$TAG
+  # Override with SANDBOX_DOCKER_IMAGE if you host the image under another name.
+  sandbox-image:
+    image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+    restart: "no"
+    command: ["sh", "-c", "echo 'sandbox image ready'"]
 
 volumes:
   mongodb_data:

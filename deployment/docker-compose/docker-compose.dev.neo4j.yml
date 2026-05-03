@@ -136,6 +136,8 @@ services:
       # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
       # Defaults to "docker" -- the sandbox-image service below builds the required
       # pipeshub/sandbox:latest image before pipeshub-ai starts.
+      # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
+      # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
 
     depends_on:
