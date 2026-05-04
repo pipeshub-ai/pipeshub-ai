@@ -431,8 +431,6 @@ PRODUCTS_SYNC_POINT_KEY = "products"
 SOLD_IN_SYNC_POINT_KEY = "sold_in"
 DEALS_SYNC_POINT_KEY = "deals"
 CASES_SYNC_POINT_KEY = "cases"
-TASKS_SYNC_POINT_KEY = "tasks"
-FILES_SYNC_POINT_KEY = "files"
 ACCOUNTS_SYNC_POINT_KEY = "accounts"
 DISCUSSIONS_SYNC_POINT_KEY = "discussions"
 
@@ -2332,7 +2330,7 @@ class SalesforceConnector(BaseConnector):
                     {"lastSyncTimestamp": get_epoch_timestamp_in_ms()},
                 )
 
-                # Step 10: Incremental sync for Tasks
+                # Step 10: Sync Tasks
                 # 10.1 make a record group for tasks with no account id
                 org_permission = Permission(
                     entity_type=EntityType.ORG,
@@ -2348,56 +2346,18 @@ class SalesforceConnector(BaseConnector):
                 await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
                 self.logger.info(f"Ensured task record group for tasks with no account id.")
 
-                self.logger.info("Syncing Tasks (incremental)...")
-                tasks_sync_point = await self.records_sync_point.read_sync_point(TASKS_SYNC_POINT_KEY)
-                tasks_last_ts_ms = tasks_sync_point.get("lastSyncTimestamp")
+                self.logger.info("Syncing Tasks (full)...")
                 base_tasks_soql = (
                     "SELECT Id, Subject, Status, Priority, ActivityDate, Description, WhoId, Who.Email, WhatId, What.Name, What.Type, OwnerId, TaskSubtype, "
                     "Owner.Name, Owner.Email, CreatedBy.Name, CreatedBy.Email, CreatedDate, LastModifiedDate, SystemModstamp FROM Task"
                 )
-                task_records = await self._get_updated_task(api_version, tasks_last_ts_ms, base_tasks_soql)
-
-                # Filter tasks: only keep those whose WhatId (parent entity) belongs to a
-                # record already synced by this connector (Opportunity, Case, Product, …).
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
-                    synced_nodes = await tx_store.get_nodes_by_field_in(
-                        collection=CollectionNames.RECORDS.value,
-                        field="connectorId",
-                        values=[self.connector_id],
-                        return_fields=["externalRecordId"],
-                    )
-                synced_external_ids: set[str] = {
-                    node["externalRecordId"]
-                    for node in (synced_nodes or [])
-                    if node.get("externalRecordId")
-                }
-                before_task_count = len(task_records)
-                task_records = [
-                    task for task in task_records
-                    if task.WhatId and task.WhatId in synced_external_ids
-                ]
-                self.logger.info(
-                    "Parent-entity filter: kept %d/%d tasks (WhatId matched a synced record)",
-                    len(task_records),
-                    before_task_count,
-                )
+                task_records = await self._get_updated_task(api_version, None, base_tasks_soql)
                 await self._sync_tasks(task_records)
-                await self.records_sync_point.update_sync_point(
-                    TASKS_SYNC_POINT_KEY,
-                    {"lastSyncTimestamp": get_epoch_timestamp_in_ms()},
-                )
 
                 # Step 11: Sync Files
                 self.logger.info("Syncing Files...")
-                files_sync_point = await self.records_sync_point.read_sync_point(FILES_SYNC_POINT_KEY)
-                files_last_ts_ms = files_sync_point.get("lastSyncTimestamp")
-                file_data = await self._get_updated_file(api_version, files_last_ts_ms)
+                file_data = await self._get_updated_file(api_version, None)
                 await self._sync_files(api_version=api_version, file_records=file_data)
-
-                await self.records_sync_point.update_sync_point(
-                    FILES_SYNC_POINT_KEY,
-                    {"lastSyncTimestamp": get_epoch_timestamp_in_ms()},
-                )
 
                 # Step 12: Sync permissions edges
                 self.logger.info("Syncing permissions edges...")
@@ -4562,6 +4522,38 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info("No tasks found in Salesforce")
                 return
 
+            # Filter: only sync tasks whose parent (WhatId) is either a record already
+            # synced by this connector, or whose parent object type is Account.
+            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                synced_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORDS.value,
+                    field="connectorId",
+                    values=[self.connector_id],
+                    return_fields=["externalRecordId"],
+                )
+            synced_external_ids: set[str] = {
+                node["externalRecordId"]
+                for node in (synced_nodes or [])
+                if node.get("externalRecordId")
+            }
+            before_count = len(task_records)
+            task_records = [
+                task for task in task_records
+                if task.WhatId and (
+                    task.WhatId in synced_external_ids
+                    or (task.What or {}).get("Type") == "Account"
+                )
+            ]
+            self.logger.info(
+                "Parent-entity filter: kept %d/%d tasks (WhatId matched a synced record or Account)",
+                len(task_records),
+                before_count,
+            )
+
+            if not task_records:
+                self.logger.info("No tasks remain after parent-entity filter")
+                return
+
             records: List[Record] = []
             for task_row in task_records:
                 try:
@@ -4729,7 +4721,6 @@ class SalesforceConnector(BaseConnector):
                     # For non-Account parents (Opportunity, Case, Task) skip the file if
                     # the parent record hasn't been synced by this connector yet.
                     if linked_entity_type != "Account" and linked_entity_id not in synced_external_ids:
-                        print(synced_external_ids)
                         self.logger.debug(
                             "Skipping file %s: parent %s (%s) not in synced records",
                             doc_id, linked_entity_id, linked_entity_type,
