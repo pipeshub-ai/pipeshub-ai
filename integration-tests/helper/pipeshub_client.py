@@ -20,6 +20,9 @@ import requests
 
 logger = logging.getLogger("pipeshub-client")
 
+# Refresh this many seconds before the token expires (client_credentials + typical 1h JWT).
+_TOKEN_REFRESH_SKEW_SEC = 120
+
 
 class PipeshubClientError(Exception):
     """Base error for Pipeshub client issues."""
@@ -49,11 +52,42 @@ class PipeshubClient:
         self.timeout_seconds = timeout_seconds
         self._access_token: Optional[str] = None
         self._token_claims: Optional[Dict[str, Any]] = None
+        # Unix time (seconds): refresh before this moment (from expires_in / JWT exp / default).
+        self._token_expires_at: float = 0.0
 
         if not self.base_url:
             raise PipeshubClientError(
                 "PIPESHUB_BASE_URL must be set in integration-tests/.env to talk to test.pipeshub.com"
             )
+
+    def _use_connector_direct_api(self) -> bool:
+        """True when ``base_url`` targets the Python connector app (8088), not the Node gateway."""
+        explicit = os.getenv("PIPESHUB_USE_CONNECTOR_API", "").strip().lower()
+        if explicit in ("1", "true", "yes"):
+            return True
+        if explicit in ("0", "false", "no"):
+            return False
+        try:
+            if urlparse(self.base_url).port == 8088:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _reindex_record_path(self, record_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/records/{record_id}/reindex"
+        return f"/api/v1/knowledgeBase/reindex/record/{record_id}"
+
+    def _reindex_record_group_path(self, record_group_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/record-groups/{record_group_id}/reindex"
+        return f"/api/v1/knowledgeBase/reindex/record-group/{record_group_id}"
+
+    def _stream_record_path(self, record_id: str) -> str:
+        if self._use_connector_direct_api():
+            return f"/api/v1/stream/record/{record_id}"
+        return f"/api/v1/knowledgeBase/stream/record/{record_id}"
 
     # --------------------------------------------------------------------- #
     # JWT claim helpers — mirrors the backend's extractOrgId/extractUserId
@@ -107,16 +141,33 @@ class PipeshubClient:
     # --------------------------------------------------------------------- #
     # Internal helpers
     # --------------------------------------------------------------------- #
-    def _ensure_access_token(self) -> None:
-        """
-        Fetch an access token using client_credentials if we don't already have one.
+    def _invalidate_access_token(self) -> None:
+        self._access_token = None
+        self._token_claims = None
+        self._token_expires_at = 0.0
 
-        Uses CLIENT_ID and CLIENT_SECRET from integration-tests/.env against:
-            POST /api/v1/oauth2/token
-        """
-        if self._access_token:
-            return
+    def _set_token_expiry_from_token_response(self, data: Dict[str, Any]) -> None:
+        """Set _token_expires_at from OAuth expires_in, else JWT exp, else a safe default."""
+        now = time.time()
+        candidate = now + 3300.0
+        expires_in = data.get("expires_in")
+        if isinstance(expires_in, (int, float)) and float(expires_in) > _TOKEN_REFRESH_SKEW_SEC:
+            candidate = now + float(expires_in) - _TOKEN_REFRESH_SKEW_SEC
+        elif self._access_token:
+            try:
+                claims = self._decode_jwt_claims(self._access_token)
+                exp = claims.get("exp")
+                if isinstance(exp, (int, float)):
+                    candidate = float(exp) - _TOKEN_REFRESH_SKEW_SEC
+            except Exception:
+                logger.warning(
+                    "Could not decode JWT exp for token expiry; using default TTL",
+                    exc_info=True,
+                )
+        self._token_expires_at = max(now + 60.0, candidate)
 
+    def _fetch_access_token(self) -> None:
+        """Always request a new token (caller clears old state first)."""
         client_id = os.getenv("CLIENT_ID")
         client_secret = os.getenv("CLIENT_SECRET")
         if not client_id or not client_secret:
@@ -135,7 +186,19 @@ class PipeshubClient:
             },
             timeout=self.timeout_seconds,
         )
-        data = self._handle_response(resp)
+        if resp.status_code >= 400:
+            msg = f"HTTP {resp.status_code} {token_url}"
+            try:
+                msg += f" - {resp.json()}"
+            except Exception:
+                if resp.text:
+                    msg += f" - {resp.text[:200]}"
+            raise PipeshubAuthError(msg)
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise PipeshubAuthError("Token endpoint did not return JSON") from exc
+
         access_token = data.get("access_token")
         if not access_token:
             raise PipeshubAuthError(
@@ -143,6 +206,17 @@ class PipeshubClient:
             )
 
         self._access_token = str(access_token)
+        self._token_claims = None
+        self._set_token_expiry_from_token_response(data)
+
+    def _ensure_access_token(self) -> None:
+        """
+        Ensure a valid access token: reuse until near expiry, then client_credentials again.
+        """
+        if self._access_token and time.time() < self._token_expires_at:
+            return
+        self._invalidate_access_token()
+        self._fetch_access_token()
 
     def _headers(self, is_admin: bool = True) -> Dict[str, str]:
         self._ensure_access_token()
@@ -151,6 +225,31 @@ class PipeshubClient:
             "Content-Type": "application/json",
         }
         return headers
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        is_admin: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        """Authorized JSON API request; refresh on expiry, retry once on 401."""
+        url = self._url(path)
+        kwargs.setdefault("timeout", self.timeout_seconds)
+        last_resp: Optional[requests.Response] = None
+        for attempt in range(2):
+            self._ensure_access_token()
+            headers = self._headers(is_admin=is_admin)
+            kwargs_with_headers = {**kwargs, "headers": headers}
+            last_resp = requests.request(method, url, **kwargs_with_headers)
+            if last_resp.status_code == 401 and attempt == 0:
+                logger.warning("Pipeshub API returned 401; invalidating token and retrying once")
+                self._invalidate_access_token()
+                continue
+            return self._handle_response(last_resp)
+        assert last_resp is not None
+        return self._handle_response(last_resp)
 
     def _url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -208,13 +307,12 @@ class PipeshubClient:
         if auth_type:
             payload["authType"] = auth_type
 
-        resp = requests.post(
-            self._url("/api/v1/connectors/"),
-            headers=self._headers(is_admin=is_admin),
+        data = self._request_json(
+            "POST",
+            "/api/v1/connectors/",
+            is_admin=is_admin,
             json=payload,
-            timeout=self.timeout_seconds,
         )
-        data = self._handle_response(resp)
         if not data.get("success"):
             raise PipeshubClientError("Failed to create connector (API returned success=false)")
 
@@ -241,22 +339,18 @@ class PipeshubClient:
         if search:
             params["search"] = search
 
-        resp = requests.get(
-            self._url("/api/v1/connectors/"),
-            headers=self._headers(),
+        return self._request_json(
+            "GET",
+            "/api/v1/connectors/",
             params=params,
-            timeout=self.timeout_seconds,
         )
-        return self._handle_response(resp)
 
     def get_connector(self, connector_id: str) -> Dict[str, Any]:
         """Fetch a connector instance document."""
-        resp = requests.get(
-            self._url(f"/api/v1/connectors/{connector_id}"),
-            headers=self._headers(),
-            timeout=self.timeout_seconds,
+        data = self._request_json(
+            "GET",
+            f"/api/v1/connectors/{connector_id}",
         )
-        data = self._handle_response(resp)
         if not data.get("success"):
             raise PipeshubClientError(
                 f"Failed to fetch connector {connector_id} (API returned success=false)"
@@ -285,22 +379,18 @@ class PipeshubClient:
         return self._do_toggle(connector_id)
 
     def _do_toggle(self, connector_id: str) -> Dict[str, Any]:
-        resp = requests.post(
-            self._url(f"/api/v1/connectors/{connector_id}/toggle"),
-            headers=self._headers(),
+        return self._request_json(
+            "POST",
+            f"/api/v1/connectors/{connector_id}/toggle",
             json={"type": "sync"},
-            timeout=self.timeout_seconds,
         )
-        return self._handle_response(resp)
 
     def delete_connector(self, connector_id: str) -> Dict[str, Any]:
         """Delete a connector instance and all associated data."""
-        resp = requests.delete(
-            self._url(f"/api/v1/connectors/{connector_id}"),
-            headers=self._headers(),
-            timeout=self.timeout_seconds,
+        return self._request_json(
+            "DELETE",
+            f"/api/v1/connectors/{connector_id}",
         )
-        return self._handle_response(resp)
 
     # --------------------------------------------------------------------- #
     # Public API - Sync helpers
@@ -351,3 +441,185 @@ class PipeshubClient:
     def get_connector_status(self, connector_id: str) -> Dict[str, Any]:
         """Get connector status including isActive and sync timestamps."""
         return self.get_connector(connector_id)
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Reindex
+    # --------------------------------------------------------------------- #
+    def reindex_record(self, record_id: str) -> Dict[str, Any]:
+        """
+        Trigger reindex for a specific record.
+        
+        Args:
+            record_id: Internal record ID (_key)
+            
+        Returns:
+            API response with success status
+        """
+        return self._request_json(
+            "POST",
+            self._reindex_record_path(record_id),
+        )
+    
+    def reindex_record_group(self, record_group_id: str, depth: int = 0) -> Dict[str, Any]:
+        """
+        Trigger reindex for a record group and its children.
+        
+        Args:
+            record_group_id: Internal record group ID (_key)
+            depth: How many levels of children to reindex (0 = group only)
+            
+        Returns:
+            API response with success status
+        """
+        return self._request_json(
+            "POST",
+            self._reindex_record_group_path(record_group_id),
+            json={"depth": depth},
+        )
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Config Management
+    # --------------------------------------------------------------------- #
+    def update_connector_config(
+        self, connector_id: str, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Update connector configuration including filters.
+        
+        Args:
+            connector_id: Connector ID
+            config: Configuration object with filters, auth, etc.
+            
+        Returns:
+            Updated connector document
+        """
+        return self._request_json(
+            "PUT",
+            f"/api/v1/connectors/{connector_id}/config",
+            json=config,
+        )
+    
+    def update_connector_filters_sync_config(
+        self, connector_id: str, filters: Optional[Dict[str, Any]] = None, 
+        sync: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Update connector filters and sync configuration using the filters-sync endpoint.
+        
+        Note: Backend requires connector to be disabled before updating filters/sync.
+        Use update_connector_filters_sync_safe() for automatic disable/enable handling.
+        
+        Args:
+            connector_id: Connector ID
+            filters: Filter configuration (optional)
+            sync: Sync configuration (optional)
+            
+        Returns:
+            API response with syncFiltersChanged flag
+        """
+        if not filters and not sync:
+            raise PipeshubClientError("Either filters or sync configuration must be provided")
+        
+        payload: Dict[str, Any] = {}
+        if filters:
+            payload["filters"] = filters
+        if sync:
+            payload["sync"] = sync
+        
+        return self._request_json(
+            "PUT",
+            f"/api/v1/connectors/{connector_id}/config/filters-sync",
+            json=payload,
+        )
+    
+    def update_connector_filters_sync_safe(
+        self, connector_id: str, filters: Optional[Dict[str, Any]] = None,
+        sync: Optional[Dict[str, Any]] = None, wait_before_enable: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Safely update connector filters and sync configuration.
+        
+        This method handles the backend requirement that connectors must be disabled
+        before updating filters/sync configuration. It:
+        1. Checks if connector is currently active
+        2. Disables connector if active
+        3. Updates filters and/or sync configuration
+        4. Re-enables connector if it was originally active
+        
+        This pattern mirrors the frontend's approach and ensures integration tests
+        can update filters/sync without violating backend constraints.
+        
+        Args:
+            connector_id: Connector ID
+            filters: Filter configuration (optional)
+            sync: Sync configuration (optional)
+            wait_before_enable: Seconds to wait before re-enabling (default 3)
+            
+        Returns:
+            API response from the filters-sync update call
+            
+        Example:
+            # Update space filter for Confluence connector
+            client.update_connector_filters_sync_safe(
+                connector_id,
+                filters={
+                    "space_keys": {
+                        "operator": "IN",
+                        "values": ["MYSPACE"]
+                    }
+                }
+            )
+        """
+        # Get current connector status
+        connector = self.get_connector(connector_id)
+        was_active = bool(connector.get("isActive"))
+        
+        # Disable if active
+        if was_active:
+            logger.info(f"Connector {connector_id} is active, disabling before config update")
+            self.toggle_sync(connector_id, enable=False)
+            self.wait(wait_before_enable)
+        
+        # Update filters and sync configuration
+        logger.info(f"Updating filters/sync config for connector {connector_id}")
+        response = self.update_connector_filters_sync_config(
+            connector_id, filters=filters, sync=sync
+        )
+        
+        # Re-enable if it was originally active
+        if was_active:
+            logger.info(f"Re-enabling connector {connector_id}")
+            self.wait(wait_before_enable)
+            self.toggle_sync(connector_id, enable=True)
+        
+        return response
+    
+    # --------------------------------------------------------------------- #
+    # Public API - Stream Content
+    # --------------------------------------------------------------------- #
+    def stream_record(self, record_id: str) -> requests.Response:
+        """
+        Stream record content (for testing streaming responses).
+        
+        Args:
+            record_id: Internal record ID (_key)
+            
+        Returns:
+            Response object (caller can iterate over response.iter_content())
+        """
+        url = self._url(self._stream_record_path(record_id))
+        for attempt in range(2):
+            self._ensure_access_token()
+            resp = requests.get(
+                url,
+                headers=self._headers(),
+                timeout=self.timeout_seconds,
+                stream=True,
+            )
+            if resp.status_code == 401 and attempt == 0:
+                logger.warning("Pipeshub stream returned 401; invalidating token and retrying once")
+                self._invalidate_access_token()
+                continue
+            resp.raise_for_status()
+            return resp
+        raise PipeshubAuthError("stream_record failed after token retry")
