@@ -315,35 +315,35 @@ async def _execute_postgres_query(
         
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_postgres_query] Client built: {client.get_connection_info()}")
-        
-        with client:
-            connection_info = client.get_connection_info()
-            logger.debug(f"🔍 [_execute_postgres_query] Connected to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
-            logger.debug(f"🔍 [_execute_postgres_query] Full connection info: {connection_info}")
-            logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
-            
-            columns, rows = client.execute_query_raw(query)
-            
-            # Log what we got from the database
-            logger.info(f"🔍 [_execute_postgres_query] Query returned {len(columns)} columns, {len(rows)} rows")
-            logger.debug(f"🔍 [_execute_postgres_query] Columns: {columns}")
-            
-            if rows:
-                logger.debug(f"🔍 [_execute_postgres_query] First row: {rows[0]}")
-                logger.debug(f"🔍 [_execute_postgres_query] Row types: {[type(cell).__name__ for cell in rows[0]]}")
-            else:
-                # IMPORTANT: Log warning when no rows returned - this helps debug "empty result" issues
-                logger.warning(f"🔍 [_execute_postgres_query] ⚠️ QUERY RETURNED NO ROWS!")
-                logger.warning(f"🔍 [_execute_postgres_query] Query was: {query}")
-                logger.warning(f"🔍 [_execute_postgres_query] Database: {connection_info.get('database')} on {connection_info.get('host')}")
-            
-            result = {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
-            logger.info(f"🔍 [_execute_postgres_query] Returning result with ok=True")
-            return result
+
+        def _run_blocking() -> tuple:
+            with client:
+                return client.execute_query_raw(query)
+
+        connection_info = client.get_connection_info()
+        logger.debug(f"🔍 [_execute_postgres_query] Connecting to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
+        logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
+
+        columns, rows = await asyncio.to_thread(_run_blocking)
+
+        logger.info(f"🔍 [_execute_postgres_query] Query returned {len(columns)} columns, {len(rows)} rows")
+        logger.debug(f"🔍 [_execute_postgres_query] Columns: {columns}")
+
+        if rows:
+            logger.debug(f"🔍 [_execute_postgres_query] First row: {rows[0]}")
+            logger.debug(f"🔍 [_execute_postgres_query] Row types: {[type(cell).__name__ for cell in rows[0]]}")
+        else:
+            logger.warning(f"🔍 [_execute_postgres_query] ⚠️ QUERY RETURNED NO ROWS!")
+            logger.warning(f"🔍 [_execute_postgres_query] Query was: {query}")
+            logger.warning(f"🔍 [_execute_postgres_query] Database: {connection_info.get('database')} on {connection_info.get('host')}")
+
+        result = {
+            "ok": True,
+            "columns": columns,
+            "rows": rows,
+        }
+        logger.info(f"🔍 [_execute_postgres_query] Returning result with ok=True")
+        return result
             
     except Exception as e:
         logger.error(f"PostgreSQL query execution failed: {e}", exc_info=True)
@@ -468,28 +468,31 @@ async def _execute_mariadb_query(
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_mariadb_query] Client built: {client.get_connection_info()}")
 
-        with client:
-            connection_info = client.get_connection_info()
-            logger.debug(
-                "🔍 [_execute_mariadb_query] Connected to MariaDB: "
-                f"host={connection_info.get('host')}, "
-                f"port={connection_info.get('port')}, "
-                f"database={connection_info.get('database')}, "
-                f"user={connection_info.get('user')}"
-            )
-            logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
+        def _run_blocking() -> tuple:
+            with client:
+                return client.execute_query_raw(query)
 
-            columns, rows = client.execute_query_raw(query)
+        connection_info = client.get_connection_info()
+        logger.debug(
+            "🔍 [_execute_mariadb_query] Connecting to MariaDB: "
+            f"host={connection_info.get('host')}, "
+            f"port={connection_info.get('port')}, "
+            f"database={connection_info.get('database')}, "
+            f"user={connection_info.get('user')}"
+        )
+        logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
-            logger.info(
-                f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
-            )
+        columns, rows = await asyncio.to_thread(_run_blocking)
 
-            return {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
+        logger.info(
+            f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
+        )
+
+        return {
+            "ok": True,
+            "columns": columns,
+            "rows": rows,
+        }
     except Exception as e:
         logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
         return {

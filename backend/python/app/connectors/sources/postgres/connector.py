@@ -434,8 +434,8 @@ class PostgreSQLConnector(BaseConnector):
                 password=password,
             )
             client = pg_config.create_client()
-            client.connect()
-            
+            await asyncio.to_thread(client.connect)
+
             self.data_source = PostgreSQLDataSource(client)
 
 
@@ -897,7 +897,7 @@ class PostgreSQLConnector(BaseConnector):
             if self.data_source:
                 client = self.data_source.get_client()
                 if client:
-                    client.close()
+                    await asyncio.to_thread(client.close)
                 self.data_source = None
 
             self._record_id_cache.clear()

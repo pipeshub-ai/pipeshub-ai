@@ -9,6 +9,7 @@ Provides async wrapper methods for PostgreSQL operations:
 - Index information
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -176,7 +177,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             databases = [DatabaseInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(databases)} databases")
             
@@ -213,7 +214,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             schemas = [SchemaInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(schemas)} schemas")
             
@@ -253,7 +254,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await asyncio.to_thread(self._client.execute_query,query, (schema,))
             tables = [TableListEntry.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(tables)} tables")
             
@@ -339,7 +340,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            table_info_raw = self._client.execute_query(table_query, (schema, table))
+            table_info_raw = await asyncio.to_thread(self._client.execute_query,table_query, (schema, table))
             if not table_info_raw:
                 return PostgreSQLResponse(
                     success=False,
@@ -347,9 +348,9 @@ class PostgreSQLDataSource:
                     message=f"Table {schema}.{table} not found"
                 )
             
-            columns_raw = self._client.execute_query(columns_query, (schema, table))
-            unique_cols_raw = self._client.execute_query(unique_query, (schema, table))
-            check_raw = self._client.execute_query(check_query, (schema, table))
+            columns_raw = await asyncio.to_thread(self._client.execute_query,columns_query, (schema, table))
+            unique_cols_raw = await asyncio.to_thread(self._client.execute_query,unique_query, (schema, table))
+            check_raw = await asyncio.to_thread(self._client.execute_query,check_query, (schema, table))
             
             unique_column_names = {row.get('column_name') for row in unique_cols_raw}
             
@@ -402,7 +403,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await asyncio.to_thread(self._client.execute_query,query, (schema,))
             views = [ViewInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(views)} views")
             
@@ -451,7 +452,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await asyncio.to_thread(self._client.execute_query,query, (schema, table))
             foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(foreign_keys)} foreign keys")
             
@@ -494,7 +495,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await asyncio.to_thread(self._client.execute_query,query, (schema, table))
             primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(primary_keys)} primary key columns")
             
@@ -620,11 +621,11 @@ class PostgreSQLDataSource:
         """
         
         try:
-            columns_raw = self._client.execute_query(columns_query, (schema, table))
-            pk_raw = self._client.execute_query(pk_query, (schema, table))
-            unique_raw = self._client.execute_query(unique_query, (schema, table))
-            fk_raw = self._client.execute_query(fk_query, (schema, table))
-            check_raw = self._client.execute_query(check_query, (schema, table))
+            columns_raw = await asyncio.to_thread(self._client.execute_query,columns_query, (schema, table))
+            pk_raw = await asyncio.to_thread(self._client.execute_query,pk_query, (schema, table))
+            unique_raw = await asyncio.to_thread(self._client.execute_query,unique_query, (schema, table))
+            fk_raw = await asyncio.to_thread(self._client.execute_query,fk_query, (schema, table))
+            check_raw = await asyncio.to_thread(self._client.execute_query,check_query, (schema, table))
             
             columns = [_DDLColumnDef.model_validate(c) for c in columns_raw]
             if not columns:
@@ -695,7 +696,7 @@ class PostgreSQLDataSource:
         query = "SELECT version() as version, current_database() as database, current_user as user;"
         
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             logger.info("🔧 [PostgreSQLDataSource] Connection test successful")
             
             conn_info = ConnectionTestResult.model_validate(results[0]) if results else ConnectionTestResult()
@@ -725,7 +726,7 @@ class PostgreSQLDataSource:
         logger.debug(f"🔧 [PostgreSQLDataSource] execute_query called")
         
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(self._client.execute_query,query, params)
             logger.debug(f"🔧 [PostgreSQLDataSource] Query returned {len(results)} rows")
             
             return PostgreSQLResponse(
@@ -813,7 +814,7 @@ class PostgreSQLDataSource:
         query += " ORDER BY schemaname, relname;"
         
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(self._client.execute_query,query, params)
             stats = [TableStats.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found stats for {len(stats)} tables")
             
