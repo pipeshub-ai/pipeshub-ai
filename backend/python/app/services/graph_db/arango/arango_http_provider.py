@@ -18478,9 +18478,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "toolset_ids": toolset_ids,
             }, txn_id=transaction)
 
-            # Handle None or empty results, and filter out any None values
+            # Dedupe by agentId (not name) so two agents with the same display name
+            # both count, otherwise the 409 message under-reports the true blocker count.
             if agents:
-                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for a in agents:
+                    if not a or not isinstance(a, dict):
+                        continue
+                    aid = a.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(a.get("agentName", "Unknown"))
+                return names
 
             return []
 
@@ -18527,8 +18537,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "knowledge_ids": knowledge_ids,
             }, txn_id=transaction)
 
+            # Dedupe by agentId (not name) so two agents with the same display name
+            # both count, otherwise the 409 message under-reports the true blocker count.
             if agents:
-                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for a in agents:
+                    if not a or not isinstance(a, dict):
+                        continue
+                    aid = a.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(a.get("agentName", "Unknown"))
+                return names
 
             return []
 
