@@ -3192,6 +3192,28 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def check_connector_in_use(
+        self,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Check if a connector is currently in use by any active agents.
+
+        Finds all agentKnowledge nodes referencing the given connectorId and
+        returns the names of non-deleted agents linked to them via
+        agentHasKnowledge edges.
+
+        Args:
+            connector_id (str): Connector ID to check.
+            transaction (Optional[str]): Optional transaction ID.
+
+        Returns:
+            List[str]: Agent names using the connector. Empty list if not in use.
+        """
+        pass
+
     # ==================== Knowledge Hub Operations ====================
 
     @abstractmethod
@@ -4023,6 +4045,29 @@ class IGraphDBProvider(ABC):
         Args:
             org_id:   The organisation key.
             provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``).
+
+        Returns:
+            List of dicts with ``{name, _key, creatorName}`` for each matching
+            agent.  Returns an empty list when no agents match.
+        """
+        pass
+
+    @abstractmethod
+    async def get_agents_by_model_key(
+        self, org_id: str, model_key: str
+    ) -> list[dict]:
+        """
+        Find all agents in the organisation that use a specific AI model.
+
+        Agents store models in a ``models`` array as either ``"{modelKey}"`` or
+        ``"{modelKey}_{modelName}"``; both forms are matched.
+
+        Scoped to the organisation via the same BELONGS_TO + permission edge
+        skeleton used by ``get_agents_by_web_search_provider``.
+
+        Args:
+            org_id:    The organisation key.
+            model_key: The model key to match (e.g. a UUID assigned at create time).
 
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching

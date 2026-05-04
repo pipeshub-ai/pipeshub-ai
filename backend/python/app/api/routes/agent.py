@@ -2155,6 +2155,40 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
+    """Return agents in the org that use a specific AI model."""
+    try:
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
+
+        model_key = model_key.strip()
+        if not model_key:
+            return JSONResponse(
+                status_code=200,
+                content={"success": True, "agents": []},
+            )
+
+        agents = await services["graph_provider"].get_agents_by_model_key(
+            org_key, model_key
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "agents": agents},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Server-side failure (graph DB outage, etc.) — return 500 so callers
+        # treat this as a transient backend error and fail-closed on deletion.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while checking model usage: {str(e)}",
+        ) from e
+
+
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""

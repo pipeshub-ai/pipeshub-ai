@@ -86,7 +86,8 @@ export const AIModelsApi = {
 
   deleteProvider: async (modelType: string, modelKey: string) => {
     const { data } = await apiClient.delete(
-      `${BASE}/ai-models/providers/${modelType}/${modelKey}`
+      `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
+      { suppressErrorToast: true }
     );
     return data;
   },

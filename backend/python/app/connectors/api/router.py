@@ -1589,6 +1589,25 @@ async def reindex_record_group(
             detail=f"Internal server error while reindexing record group: {str(e)}"
         ) from e
 
+_MAX_AGENT_NAMES_DISPLAY = 3
+
+
+def _format_connector_in_use_detail(connector_name: str, agent_names: list[str]) -> str:
+    """Build the 409 detail message for a connector that is in use by agents."""
+    if len(agent_names) == 1:
+        return (
+            f"Cannot delete connector '{connector_name}': currently in use by "
+            f"agent '{agent_names[0]}'. Remove it from the agent first."
+        )
+    names_display = ", ".join(f"'{n}'" for n in agent_names[:_MAX_AGENT_NAMES_DISPLAY])
+    if len(agent_names) > _MAX_AGENT_NAMES_DISPLAY:
+        names_display += f" and {len(agent_names) - _MAX_AGENT_NAMES_DISPLAY} more"
+    return (
+        f"Cannot delete connector '{connector_name}': currently in use by "
+        f"{len(agent_names)} agents ({names_display}). Remove it from all agents first."
+    )
+
+
 def _validate_connector_deletion_permissions(
     instance: dict[str, Any],
     user_id: str,
@@ -5615,6 +5634,42 @@ async def delete_connector_instance(
                 status_code=HttpStatusCode.CONFLICT.value,
                 detail="Connector deletion is already in progress"
             )
+
+        # 4a. Block deletion if any active agent has this connector as a knowledge source.
+        # Must run BEFORE the Kafka events below — once those publish, the deletion is
+        # effectively committed. Fail-closed: if the check itself errors, block deletion.
+        try:
+            agent_names = await graph_provider.check_connector_in_use(connector_id)
+            if not isinstance(agent_names, list):
+                logger.error(
+                    f"check_connector_in_use returned unexpected type: {type(agent_names)} "
+                    f"for connector {connector_id}"
+                )
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Cannot delete connector: Invalid response from agent usage check. Please try again or contact support."
+                )
+            if agent_names:
+                connector_name = instance.get("name") or instance.get("type") or connector_id
+                logger.warning(
+                    f"⚠️ Blocking deletion of connector {connector_id}: "
+                    f"found {len(agent_names)} agent(s) using it"
+                )
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail=_format_connector_in_use_detail(connector_name, agent_names)
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Failed to check agent usage for connector {connector_id}: {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Cannot delete connector: Unable to verify if it's in use by agents. Please try again or contact support."
+            ) from e
 
         logger.info(f"🗑️ Initiating async deletion of connector {connector_id} by user {user_id}")
 

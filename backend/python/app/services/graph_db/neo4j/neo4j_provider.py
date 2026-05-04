@@ -16428,12 +16428,14 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
 
-            # Find all toolset nodes with the given instanceId, then check for agents using them
+            # Return agent id alongside name so we can dedupe by id in Python.
+            # Cypher's RETURN DISTINCT agent.name would collapse two distinct agents
+            # with the same display name into one row, under-counting the blockers.
             query = f"""
             MATCH (ts:{toolset_label} {{instanceId: $instance_id}})
             MATCH (agent:{agent_label})-[r:{agent_has_toolset_rel}]->(ts)
             WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            RETURN DISTINCT agent.name AS agentName
+            RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
             """
 
             results = await self.client.execute_query(
@@ -16443,12 +16445,74 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                return list({r.get("agentName", "Unknown") for r in results if r})
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for r in results:
+                    if not r:
+                        continue
+                    aid = r.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(r.get("agentName", "Unknown"))
+                return names
 
             return []
 
         except Exception as e:
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
+            raise
+
+    async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
+        """
+        Check if a connector is currently in use by any active agents.
+
+        Finds AgentKnowledge nodes referencing the given connectorId and returns
+        the names of non-deleted agents linked to them via AGENT_HAS_KNOWLEDGE.
+
+        Args:
+            connector_id: Connector ID to check.
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of agent names using the connector. Empty list if not in use.
+        """
+        try:
+            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+
+            # Return agent id alongside name so we can dedupe by id in Python.
+            # Cypher's RETURN DISTINCT agent.name would collapse two distinct agents
+            # with the same display name into one row, under-counting the blockers.
+            query = f"""
+            MATCH (k:{knowledge_label} {{connectorId: $connector_id}})
+            MATCH (agent:{agent_label})-[r:{agent_has_knowledge_rel}]->(k)
+            WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            if results:
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for r in results:
+                    if not r:
+                        continue
+                    aid = r.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(r.get("agentName", "Unknown"))
+                return names
+
+            return []
+
+        except Exception as e:
+            self.logger.error(f"Failed to check connector usage: {str(e)}")
             raise
 
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
@@ -16804,6 +16868,57 @@ class Neo4jProvider(IGraphDBProvider):
             return deduped
         except Exception as e:
             self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+            return []
+
+    async def get_agents_by_model_key(
+        self, org_id: str, model_key: str
+    ) -> list[dict]:
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            org_label = collection_to_label(CollectionNames.ORGS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
+
+            query = f"""
+            // Agents owned by users in this org
+            MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
+            MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'USER' AND p.role = 'OWNER'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
+            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+            RETURN DISTINCT agent.name AS name,
+                   agent.id AS _key,
+                   COALESCE(creator.fullName, creator.name) AS creatorName
+
+            UNION
+
+            // Agents shared directly with this org
+            MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'ORG'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
+            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+            RETURN DISTINCT agent.name AS name,
+                   agent.id AS _key,
+                   COALESCE(creator.fullName, creator.name) AS creatorName
+            """
+            result = await self.client.execute_query(
+                query, parameters={"org_id": org_id, "model_key": model_key}
+            )
+            if not result:
+                return []
+            seen = set()
+            deduped = []
+            for row in result:
+                key = row.get("_key")
+                if key and key not in seen:
+                    seen.add(key)
+                    deduped.append(row)
+            return deduped
+        except Exception as e:
+            self.logger.error(f"Failed to get agents by model key: {str(e)}")
             return []
 
     async def get_all_agents(

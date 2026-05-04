@@ -1168,3 +1168,99 @@ class TestKBFilterHandling:
 
             result = await chat_stream(request, "agentIdPlaceholder")
             assert isinstance(result, StreamingResponse)
+
+
+# =============================================================================
+# get_model_usage route — used by Node.js precheck before deleting AI models
+# =============================================================================
+
+
+class TestGetModelUsage:
+    """Tests for /model-usage/{model_key} agent route."""
+
+    @pytest.mark.asyncio
+    async def test_returns_agents_using_model(self) -> None:
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(
+            return_value=[
+                {"name": "Agent A", "_key": "a1", "creatorName": "Alice"},
+                {"name": "Agent B", "_key": "a2", "creatorName": "Bob"},
+            ]
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "model-key-abc")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert len(body["agents"]) == 2
+        graph_provider.get_agents_by_model_key.assert_awaited_once_with(
+            "o1", "model-key-abc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_agents_returns_empty_list(self) -> None:
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "unused-model")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert body["agents"] == []
+
+    @pytest.mark.asyncio
+    async def test_blank_model_key_short_circuits_to_empty(self) -> None:
+        """Blank/whitespace key should not hit the graph provider."""
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "   ")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["agents"] == []
+        graph_provider.get_agents_by_model_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_provider_exception_raises_500(self) -> None:
+        """Server-side failure (graph DB down) → 500 so the Node.js caller fails-closed."""
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_model_usage(request, "k1")
+
+        assert exc_info.value.status_code == 500
+        assert "graph down" in exc_info.value.detail
