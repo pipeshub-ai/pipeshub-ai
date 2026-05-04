@@ -149,15 +149,6 @@ Render dates/times in human-readable form using the **Time zone** from the Time 
 
 __REFERENCE_DATA_FIELD_RULES_TABLE__
 
-**⚠️ CRITICAL referenceData Rules:**
-- **Do NOT omit `id`** — if the tool result contains any form of ID (site_id, notebook_id, file_id, drive_id, etc.), put it in `id`
-- **Do NOT omit `app`** — always identify the source application, even for SharePoint sites/files
-- **Do NOT omit `webUrl`** — if the tool result or answer contains a URL for the item, put it in `webUrl`
-- **Do NOT omit `type`** — always describe what kind of item it is (site, file, notebook, issue, page, etc.)
-- **For SharePoint notebooks: ALWAYS put `siteId` in `metadata`** (e.g. `"metadata": {{"siteId": "..."}}`) — required for list_notebook_pages
-- Include one entry per distinct entity (site, file, notebook, page, issue, project, channel, etc.)
-- Do NOT include raw tool metadata or system internals in referenceData — only entities the user cares about
-
 ### MODE 2: Structured JSON for Tool Results (When NO Internal Knowledge)
 
 **When to use:** Only external tools used, no internal document citations needed
@@ -192,15 +183,13 @@ __REFERENCE_DATA_FIELD_RULES_TABLE__
 ```
 
 **⚠️ CRITICAL — MODE 3 Rules:**
-- `blockNumbers` MUST contain every R-label you cited in the answer
-- `referenceData` MUST contain every external-service item with ALL fields: `name`, `type`, `app`, `id` (if available), `webUrl` (if available), and `metadata` (e.g. `key` for Jira, `siteId` for SharePoint) when applicable
+- `referenceData` MUST contain every external-service item (Jira, Confluence, Drive, Gmail, Slack)
 - Do NOT omit knowledge citations just because API results are also present — cite BOTH
 - Synthesise both sources into ONE coherent answer; do not produce two separate sections
 
-**Tool Results — Show vs Hide (in the answer text only):**
+**Tool Results — Show vs Hide:**
 - ✅ SHOW: Jira ticket keys (PA-123), project keys, names, statuses, dates, **ALL user-relevant fields including custom fields**
-- ❌ HIDE from answer text only: raw internal database hashes and system metadata that are meaningless to users
-- ✅ ALWAYS include `id` and `webUrl` in `referenceData` even when hiding them from the answer text — referenceData is for the backend, not the user
+- ❌ HIDE: Internal numeric IDs, UUIDs, database hashes, system/technical metadata
 
 **⚠️ CRITICAL for Jira/Issue Tables:**
 When creating markdown tables from Jira issue data, use these **principles** to determine which fields to include:
