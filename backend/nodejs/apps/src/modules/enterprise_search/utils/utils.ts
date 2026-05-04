@@ -90,9 +90,9 @@ function extractSearchParameter(searchParam: unknown): string {
   return searchParam;
 }
 
-export const buildAIFailureResponseMessage = (): IMessage => ({
+export const buildAIFailureResponseMessage = (content?: string): IMessage => ({
   messageType: 'error',
-  content: 'Error Generating Response, Please try again',
+  content: content ?? 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -1086,8 +1086,9 @@ export const markAgentConversationFailed = async (
       metadata,
     );
 
-    // Add failure message
+    // Add failure message (same as markConversationFailed: persist exact reason for the user)
     const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    failedMessage.content = failReason;
     conversation.messages.push(failedMessage);
 
     // Save failed conversation
