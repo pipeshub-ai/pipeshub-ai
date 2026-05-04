@@ -582,18 +582,25 @@ class MSGraphClient:
         query: str = "*",
         page: int = 1,
         limit: int = 20,
-        region: str = "NAM"
+        region: str = "NAM",
+        from_offset: Optional[int] = None,
     ) -> dict:
         """
         Raw Search via MS Graph. Returns the raw response object/dict.
         Automatically detects region from error and retries if region is invalid.
+
+        Pagination uses Microsoft Search ``from`` / ``size``. Pass ``from_offset`` for an
+        explicit starting index (0-based); when set, ``page`` is ignored for the request.
         """
 
         if region is None:
             region = "NAM"
 
         async def _execute_search(search_region: str) -> dict:
-            offset = (page - 1) * limit
+            if from_offset is not None:
+                offset = from_offset
+            else:
+                offset = (page - 1) * limit
             search_query_str = query.strip() if query and query.strip() else "*"
 
             search_request = {
