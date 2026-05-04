@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Box, Text, Heading } from '@radix-ui/themes';
@@ -180,9 +180,20 @@ export function AnswerContent({
   citationMaps,
   citationCallbacks,
 }: AnswerContentProps) {
-  // Stable `components` so parent re-renders (e.g. sibling message streaming) do
-  // not replace react-markdown's custom component fns and tear down popovers and
-  // other interactive content for this message.
+  // Keep refs to the latest citationMaps/citationCallbacks so the `components`
+  // object below can be fully stable (empty useMemo deps). Without this,
+  // `components` recreates on every streaming chunk that brings new citation
+  // data, causing react-markdown to unmount+remount ALL DOM elements — including
+  // table scroll containers (resetting horizontal scroll position) and citation
+  // badge buttons (breaking the inline-citation popover anchor).
+  const citationMapsRef = useRef(citationMaps);
+  citationMapsRef.current = citationMaps;
+  const citationCallbacksRef = useRef(citationCallbacks);
+  citationCallbacksRef.current = citationCallbacks;
+
+  // Stable `components` — never recreated after mount. Callbacks read from refs
+  // at call-time so they always use the latest citationMaps/citationCallbacks.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const components = useMemo(
     () => ({
     h1: ({ children }: { children?: React.ReactNode }) => (
@@ -207,7 +218,7 @@ export function AnswerContent({
     ),
     p: ({ children }: { children?: React.ReactNode }) => (
       <Text size="2" as="p" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
-        {processChildren(children, citationMaps, citationCallbacks)}
+        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),
     ul: ({ children }: { children?: React.ReactNode }) => (
@@ -234,17 +245,17 @@ export function AnswerContent({
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
       <li style={{ marginBottom: 'var(--space-4)', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)', fontSize: '14px' }}>
-        {processChildren(children, citationMaps, citationCallbacks)}
+        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </li>
     ),
     strong: ({ children }: { children?: React.ReactNode }) => (
       <Text weight="bold" style={{ color: 'var(--slate-12)' }}>
-        {processChildren(children, citationMaps, citationCallbacks)}
+        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),
     em: ({ children }: { children?: React.ReactNode }) => (
       <Text style={{ fontStyle: 'italic' }}>
-        {processChildren(children, citationMaps, citationCallbacks)}
+        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),
     code: ({ children }: { children?: React.ReactNode }) => (
@@ -302,7 +313,7 @@ export function AnswerContent({
           fontSize: 'var(--font-size-2)',
         }}
       >
-        {processChildren(children, citationMaps, citationCallbacks)}
+        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </a>
     ),
     table: ({ children }: { children?: React.ReactNode }) => (
@@ -365,7 +376,7 @@ export function AnswerContent({
         }}
       >
         <Text size="2" weight="bold">
-          {processChildren(children, citationMaps, citationCallbacks)}
+          {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
         </Text>
       </th>
     ),
@@ -378,13 +389,15 @@ export function AnswerContent({
         }}
       >
         <Text size="2">
-          {processChildren(children, citationMaps, citationCallbacks)}
+          {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
         </Text>
       </td>
     ),
   }),
-    [citationMaps, citationCallbacks],
-  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  []);
+  // ^ empty deps: components is stable for the lifetime of this instance.
+  // Citation data is read from citationMapsRef/citationCallbacksRef at call-time.
 
   return (
     <Box>
