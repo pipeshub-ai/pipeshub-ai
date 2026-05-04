@@ -16439,12 +16439,14 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
 
-            # Find all toolset nodes with the given instanceId, then check for agents using them
+            # Return agent id alongside name so we can dedupe by id in Python.
+            # Cypher's RETURN DISTINCT agent.name would collapse two distinct agents
+            # with the same display name into one row, under-counting the blockers.
             query = f"""
             MATCH (ts:{toolset_label} {{instanceId: $instance_id}})
             MATCH (agent:{agent_label})-[r:{agent_has_toolset_rel}]->(ts)
             WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            RETURN DISTINCT agent.name AS agentName
+            RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
             """
 
             results = await self.client.execute_query(
@@ -16454,7 +16456,16 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                return list({r.get("agentName", "Unknown") for r in results if r})
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for r in results:
+                    if not r:
+                        continue
+                    aid = r.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(r.get("agentName", "Unknown"))
+                return names
 
             return []
 
@@ -16481,11 +16492,14 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
 
+            # Return agent id alongside name so we can dedupe by id in Python.
+            # Cypher's RETURN DISTINCT agent.name would collapse two distinct agents
+            # with the same display name into one row, under-counting the blockers.
             query = f"""
             MATCH (k:{knowledge_label} {{connectorId: $connector_id}})
             MATCH (agent:{agent_label})-[r:{agent_has_knowledge_rel}]->(k)
             WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            RETURN DISTINCT agent.name AS agentName
+            RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
             """
 
             results = await self.client.execute_query(
@@ -16495,7 +16509,16 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                return list({r.get("agentName", "Unknown") for r in results if r})
+                seen_ids: set[str] = set()
+                names: list[str] = []
+                for r in results:
+                    if not r:
+                        continue
+                    aid = r.get("agentId")
+                    if aid and aid not in seen_ids:
+                        seen_ids.add(aid)
+                        names.append(r.get("agentName", "Unknown"))
+                return names
 
             return []
 
