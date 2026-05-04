@@ -23,7 +23,7 @@ import {
   readAuthValueFromFlatRecord,
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
-import { getConnectorInfoText } from '../../utils/connector-metadata';
+import { getConnectorInfoText, getConnectorDocumentationUrl } from '../../utils/connector-metadata';
 import { useTranslation } from 'react-i18next';
 
 export function AuthenticateTab() {
@@ -206,6 +206,16 @@ export function AuthenticateTab() {
       : null;
 
   const docLinks = connectorSchema.documentationLinks ?? [];
+
+  const emailVisibilityDocUrl = useMemo(() => {
+    if (!panelConnector || (panelConnector.type !== 'Confluence' && panelConnector.type !== 'Jira')) {
+      return null;
+    }
+    const fromRegistry = registryConnectors.find((c) => c.type === panelConnector.type);
+    const baseUrl = getConnectorDocumentationUrl(fromRegistry ?? panelConnector, docLinks);
+    if (!baseUrl) return null;
+    return `${baseUrl}#prerequisite-email-visibility`;
+  }, [panelConnector, registryConnectors, docLinks]);
 
   const showOAuthConnectionCard =
     isOAuthType(selectedAuthType) &&
@@ -390,6 +400,23 @@ export function AuthenticateTab() {
               }}
             >
               {connectorInfoText}
+              {emailVisibilityDocUrl && (
+                <>
+                  {'\n\n'}
+                  <a
+                    href={emailVisibilityDocUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: 'var(--accent-11)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Email visibility setup guide →
+                  </a>
+                </>
+              )}
             </Text>
           </Flex>
         </Box>

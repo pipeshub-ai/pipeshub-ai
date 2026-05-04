@@ -7,7 +7,7 @@ import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
-import { getConnectorInfoText } from '../utils/connector-metadata';
+import { getConnectorInfoText, getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 // ========================================
 // Props
@@ -64,6 +64,15 @@ export function ConnectorDetailsLayout({
   const { t } = useTranslation();
   const connectorName = connector?.name ?? '';
   const connectorInfoText = getConnectorInfoText(connector);
+
+  const emailVisibilityDocUrl = React.useMemo(() => {
+    if (!connector || (connector.type !== 'Confluence' && connector.type !== 'Jira')) {
+      return null;
+    }
+    const baseUrl = getConnectorDocumentationUrl(connector);
+    if (!baseUrl) return null;
+    return `${baseUrl}#prerequisite-email-visibility`;
+  }, [connector]);
 
   return (
     <Flex
@@ -175,6 +184,23 @@ export function ConnectorDetailsLayout({
               }}
             >
               {connectorInfoText}
+              {emailVisibilityDocUrl && (
+                <>
+                  {'\n\n'}
+                  <a
+                    href={emailVisibilityDocUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: 'var(--accent-11)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Email visibility setup guide →
+                  </a>
+                </>
+              )}
             </Text>
           </Flex>
         </Box>
