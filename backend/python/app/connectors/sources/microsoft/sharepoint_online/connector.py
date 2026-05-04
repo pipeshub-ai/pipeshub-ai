@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -102,6 +103,32 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
+
+
+def _sharepoint_filter_options_graph_batch_size(filtered_page_limit: int) -> int:
+    """Microsoft Search ``size`` for one batch when building site / library filter options."""
+    # Pull roughly twice the requested filtered page so post-filtering still fills the page; bound 20–100.
+    widened = max(filtered_page_limit * 2, 20)
+    return max(20, min(100, widened))
+
+
+def _sharepoint_filter_options_max_search_batches(
+    page: int,
+    filtered_page_limit: int,
+    graph_batch: int,
+    *,
+    resume_with_cursor: bool,
+) -> int:
+    """Max Graph search calls allowed while handling one filter-options request (loop guard)."""
+    batch = max(graph_batch, 1)
+    if resume_with_cursor:
+        from_limit = filtered_page_limit * 10 // batch
+        at_least = max(60, from_limit)
+    else:
+        from_page = page * filtered_page_limit * 15 // batch
+        at_least = max(100, from_page)
+    return min(500, at_least)
+
 
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
@@ -4319,7 +4346,7 @@ class SharePointConnector(BaseConnector):
         full_query = f"{search_query}*"
         query_key = hashlib.sha256(full_query.encode("utf-8")).hexdigest()[:16]
 
-        graph_batch = max(20, min(100, max(limit * 2, 20)))
+        graph_batch = _sharepoint_filter_options_graph_batch_size(limit)
 
         use_cursor = False
         scan_from = 0
@@ -4340,15 +4367,11 @@ class SharePointConnector(BaseConnector):
 
         if use_cursor:
             skip_remaining = 0
-            max_graph_iterations = min(
-                500, max(60, limit * 10 // max(graph_batch, 1))
-            )
         else:
             skip_remaining = max(0, (page - 1) * limit)
-            max_graph_iterations = min(
-                500,
-                max(100, (page * limit * 15) // max(graph_batch, 1)),
-            )
+        max_graph_iterations = _sharepoint_filter_options_max_search_batches(
+            page, limit, graph_batch, resume_with_cursor=use_cursor
+        )
 
         collected: List[FilterOption] = []
         seen_keys: set[str] = set()
@@ -4478,7 +4501,13 @@ class SharePointConnector(BaseConnector):
             if "f" not in data or "b" not in data or "q" not in data:
                 return None
             return {"f": int(data["f"]), "b": int(data["b"]), "q": str(data["q"])}
-        except Exception:
+        except (
+            binascii.Error,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            ValueError,
+            TypeError,
+        ):
             return None
 
     async def _get_document_library_options(
@@ -4514,7 +4543,7 @@ class SharePointConnector(BaseConnector):
             'AppCatalog',
         }
 
-        graph_batch = max(20, min(100, max(limit * 2, 20)))
+        graph_batch = _sharepoint_filter_options_graph_batch_size(limit)
 
         use_cursor = False
         scan_from = 0
@@ -4535,15 +4564,11 @@ class SharePointConnector(BaseConnector):
 
         if use_cursor:
             skip_remaining = 0
-            max_graph_iterations = min(
-                500, max(60, limit * 10 // max(graph_batch, 1))
-            )
         else:
             skip_remaining = max(0, (page - 1) * limit)
-            max_graph_iterations = min(
-                500,
-                max(100, (page * limit * 15) // max(graph_batch, 1)),
-            )
+        max_graph_iterations = _sharepoint_filter_options_max_search_batches(
+            page, limit, graph_batch, resume_with_cursor=use_cursor
+        )
 
         collected: List[FilterOption] = []
         seen_keys: set[str] = set()
