@@ -1,12 +1,16 @@
+import io
 import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
+from googleapiclient.http import MediaIoBaseDownload
 from pydantic import BaseModel, Field
 
+from app.agents.actions.util.parse_file import FileContentParser
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -19,10 +23,22 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.models.entities import FileRecord, RecordType
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
+
+_MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Maps Google Workspace MIME types to (export_mime_type, file_extension) tuples.
+_GOOGLE_WORKSPACE_EXPORT_FORMATS: dict[str, tuple[str, str]] = {
+    "application/vnd.google-apps.document": ("text/plain", "txt"),
+    "application/vnd.google-apps.spreadsheet": ("text/csv", "csv"),
+    "application/vnd.google-apps.presentation": ("text/plain", "txt"),
+    "application/vnd.google-apps.drawing": ("image/png", "png"),
+}
 
 # Operators that indicate a query is already in Google Drive query syntax.
 # Checked against query.lower() so all entries must be lowercase.
@@ -36,6 +52,25 @@ _STRUCTURED_QUERY_OPERATORS = frozenset([
 # filtering). Kept as a single source of truth used in both the detection and
 # the post-call filtering branches.
 _SIZE_OPERATORS = ('size=', 'size =', 'size>', 'size<', 'size>=', 'size<=')
+
+
+def _raw_drive_service(data_source: GoogleDriveDataSource) -> object:
+    """Return the googleapiclient Drive ``Resource`` (unwrap ``GoogleClient`` if present)."""
+    inner = data_source.client
+    if hasattr(inner, "files"):
+        return inner
+    return inner.get_client()
+
+
+def _execute_media_download(request: object) -> bytes:
+    """Stream a get_media or export_media request to bytes (chunked download)."""
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    buffer.seek(0)
+    return buffer.read()
 
 
 def _is_structured_query(query: str) -> bool:
@@ -121,6 +156,11 @@ class GetSharedDrivesInput(BaseModel):
     query: Optional[str] = Field(default=None, description="Search query for shared drives")
 
 
+class GetFileContentInput(BaseModel):
+    """Schema for reading file content"""
+    file_id: str = Field(description="The ID of the file to read")
+
+
 # Register Google Drive toolset
 @ToolsetBuilder("Drive")\
     .in_group("Google Workspace")\
@@ -170,16 +210,38 @@ class GetSharedDrivesInput(BaseModel):
     .build_decorator()
 class GoogleDrive:
     """Drive tool exposed to the agents using DriveDataSource"""
-    def __init__(self, client: GoogleClient) -> None:
-        """Initialize the Google Drive tool"""
-        """
+    def __init__(self, client: GoogleClient, state: Optional[ChatState] = None, **kwargs) -> None:
+        """Initialize the Google Drive tool
+
         Args:
             client: Authenticated Google Drive client
-        Returns:
-            None
+            state: Chat state for model config and configuration service
         """
         self.client = GoogleDriveDataSource(client)
+        self.state: Optional[ChatState] = state or kwargs.get("state")
 
+    def _files_get_media_bytes(
+        self,
+        file_id: str,
+        acknowledge_abuse: Optional[bool] = None,
+        supports_all_drives: Optional[bool] = None,
+    ) -> bytes:
+        api = _raw_drive_service(self.client)
+        kwargs: Dict[str, Any] = {"fileId": file_id}
+        if acknowledge_abuse is not None:
+            kwargs["acknowledgeAbuse"] = acknowledge_abuse
+        if supports_all_drives is not None:
+            kwargs["supportsAllDrives"] = supports_all_drives
+        request = api.files().get_media(**kwargs)  # type: ignore
+        return _execute_media_download(request)
+
+    def _files_export_media_bytes(self, file_id: str, export_mime: str) -> bytes:
+        api = _raw_drive_service(self.client)
+        request = api.files().export_media(
+            fileId=file_id,
+            mimeType=export_mime,
+        )  # type: ignore
+        return _execute_media_download(request)
 
     @tool(
         app_name="drive",
@@ -685,6 +747,110 @@ class GoogleDrive:
             logger.error(f"Failed to get permissions for file {file_id}: {e}")
             return False, json.dumps({"error": str(e)})
 
+
+    @tool(
+        app_name="drive",
+        tool_name="get_file_content",
+        description="Download and return the text content of a Google Drive file.",
+        args_schema=GetFileContentInput,
+        when_to_use=[
+            "User wants to read, summarise, or ask questions about a Drive file",
+            "User says 'read this file', 'what's in this document', or 'summarise this spreadsheet'",
+            "File is a format: PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, or a Google Workspace document (Docs, Sheets, Slides)",
+        ],
+        when_not_to_use=[
+            "User only wants metadata (size, dates) — use get_file_details",
+            "file_id is unknown — call get_files_list and/or search_files first",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Read the contents of this file in Drive",
+            "Summarise the spreadsheet in my Drive",
+            "What does this document contain?",
+            "Show me what's in notes.txt",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def get_file_content(
+        self,
+        file_id: str,
+    ) -> tuple[bool, str]:
+        try:
+            file_info = await self.client.files_get(
+                fileId=file_id,
+                fields="id,name,mimeType,size,fileExtension",
+                supportsAllDrives=True,
+            )
+
+            mime_type: str = file_info.get("mimeType", "")
+            file_name: str = file_info.get("name", f"document_{file_id}")
+            file_size = file_info.get("size")
+            file_extension: str = file_info.get("fileExtension", "")
+
+            if mime_type == "application/vnd.google-apps.folder":
+                return False, json.dumps({"error": "Cannot read content of a folder"})
+
+            if file_size is not None and int(file_size) > _MAX_FILE_CONTENT_BYTES:
+                return False, json.dumps({
+                    "data": file_info,
+                    "error": "File is too large to be processed",
+                })
+
+            model_name = (self.state or {}).get("model_name")
+            model_key = (self.state or {}).get("model_key")
+            configuration_service = (self.state or {}).get("config_service")
+
+            is_workspace_doc = mime_type.startswith("application/vnd.google-apps.")
+            if is_workspace_doc:
+                export_mime, ext = _GOOGLE_WORKSPACE_EXPORT_FORMATS.get(
+                    mime_type, ("text/plain", "txt")
+                )
+                raw = self._files_export_media_bytes(file_id, export_mime)
+                effective_mime = export_mime
+            else:
+                raw = self._files_get_media_bytes(
+                    file_id,
+                    supports_all_drives=True,
+                )
+                ext = (file_extension or "").strip().lower().lstrip(".")
+                effective_mime = mime_type
+
+            if not isinstance(raw, (bytes, bytearray)):
+                return False, json.dumps({
+                    "error": "Unexpected download response type; expected raw bytes",
+                    "detail": str(raw)[:500],
+                })
+
+            record_name = file_name if file_name else f"document.{ext}"
+            file_record = FileRecord(
+                org_id="",
+                record_name=record_name,
+                record_type=RecordType.FILE,
+                external_record_id=file_id,
+                version=1,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.GOOGLE_DRIVE,
+                connector_id=file_id,
+                mime_type=effective_mime or "application/octet-stream",
+                extension=ext,
+                is_file=True,
+            )
+
+            parser = FileContentParser(logger=logger, config_service=configuration_service)
+            status, payload = await parser.parse(
+                file_record,
+                bytes(raw),
+                model_name,
+                model_key,
+                configuration_service,
+            )
+            serialized = [item.model_dump() for item in payload]
+            if status:
+                return True, json.dumps(serialized)
+            return False, json.dumps(serialized)
+        except Exception as e:
+            logger.error("Failed to get content for file %s: %s", file_id, e)
+            return False, json.dumps({"error": str(e)})
 
     # @tool(
     #     app_name="drive",
