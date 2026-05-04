@@ -881,6 +881,27 @@ class TestGetFileContent:
         download_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_unknown_size_rejected_before_download(self):
+        """If Graph omits the `size` field, treat as oversize and refuse to read.
+
+        Defends against unbounded downloads when metadata is incomplete.
+        """
+        download_mock = AsyncMock(return_value=_mock_response(data=b"x"))
+        sp = _build_sharepoint({
+            "get_drive_item_metadata": AsyncMock(
+                return_value=_mock_response(data={
+                    "name": "unknown_size.bin",
+                    # no `size` key — simulate Graph omitting it
+                    "file": {"mimeType": "application/octet-stream"},
+                })
+            ),
+            "get_drive_item_content": download_mock,
+        })
+        body = _err_tuple(await sp.get_file_content(site_id="s1", drive_id="d1", item_id="f1"))
+        assert "could not be determined" in body["error"] or "too large" in body["error"]
+        download_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_empty_file_handled(self):
         sp = _build_sharepoint({
             "get_drive_item_metadata": AsyncMock(

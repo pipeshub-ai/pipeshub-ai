@@ -46,6 +46,13 @@ REFERENCE_DATA_FIELDS: list[ReferenceDataField] = [
         is_core=False,
         condition="SharePoint notebooks",
     ),
+    ReferenceDataField(
+        "accountId",
+        "Jira user accountId — required for assignee/reporter JQL filters",
+        "when_available",
+        is_core=False,
+        condition="Jira user references",
+    ),
 ]
 
 CORE_FIELDS = [f.name for f in REFERENCE_DATA_FIELDS if f.is_core]
