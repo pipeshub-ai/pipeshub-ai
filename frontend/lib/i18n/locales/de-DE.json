@@ -1469,6 +1469,7 @@
       "backFromConfigure": "← Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
+      "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
       "toasts": {
         "loadError": "Konnektoren konnten nicht geladen werden",
         "syncStarted": "{{name}} wird jetzt synchronisiert",
@@ -1527,7 +1528,8 @@
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
         "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
         "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
-        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
+        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
+        "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →"
       },
       "docSection": {
         "title": "Einrichtungsdokumentation",

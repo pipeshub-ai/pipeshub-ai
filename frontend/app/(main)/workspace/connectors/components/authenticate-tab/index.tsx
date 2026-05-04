@@ -413,7 +413,7 @@ export function AuthenticateTab() {
                       cursor: 'pointer',
                     }}
                   >
-                    Email visibility setup guide →
+                    {t('workspace.connectors.authTab.emailVisibilityDocLink')}
                   </a>
                 </>
               )}

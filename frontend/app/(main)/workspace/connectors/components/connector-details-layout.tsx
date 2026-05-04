@@ -197,7 +197,7 @@ export function ConnectorDetailsLayout({
                       cursor: 'pointer',
                     }}
                   >
-                    Email visibility setup guide →
+                    {t('workspace.connectors.emailVisibilityDocLink')}
                   </a>
                 </>
               )}
