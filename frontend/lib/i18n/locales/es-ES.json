@@ -1466,6 +1466,7 @@
       "backFromConfigure": "← Atrás",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
+      "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1524,7 +1525,8 @@
         "oauthCredentialsSubtextNonAdmin": "Se utiliza la app OAuth seleccionada en esta instancia. Los secretos de cliente los gestionan los administradores; no es necesario introducirlos aquí.",
         "redirectUrlDescription": "Añade esta URL exacta a la lista de redirecciones permitidas de tu proveedor de identidad.",
         "redirectUrlHelperNonOauth": "Registra la URL de redirección en tu proveedor de identidad y luego completa los campos siguientes.",
-        "noAuthRequired": "No authentication required for this connector"
+        "noAuthRequired": "No authentication required for this connector",
+        "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →"
       },
       "docSection": {
         "title": "Setup Documentation",
