@@ -68,9 +68,22 @@ serviceAccount:
 podAnnotations: {}
 podLabels: {}
 
-podSecurityContext: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
-securityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
 
 service:
   type: ClusterIP
@@ -254,6 +267,8 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
+  backendPort: 3001  # Backend HTTP port; should match service.port and probe ports
+  kvStoreType: "redis"  # Key-value store backend (e.g. "redis")
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
   # For development: --set config.allowedOrigins="http://localhost:3001"
@@ -270,7 +285,7 @@ secretKey: "" # Fill
 
 mongodb:
   replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
-  replicaSetAvailable: false  # Set true only when MongoDB is configured as a replica set
+  replicaSetAvailable: true  # Default true to match replicaCount=3; set false when running standalone
   tls:
     enabled: false
     securityContext:
