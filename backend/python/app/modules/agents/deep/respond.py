@@ -33,6 +33,7 @@ from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
+from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import build_direct_answer_time_context
 
@@ -533,7 +534,7 @@ async def _deep_respond_impl(
                 citations = event_data.get("citations", [])
                 reason = event_data.get("reason")
                 confidence = event_data.get("confidence")
-                reference_data = event_data.get("referenceData", [])
+                reference_data = normalize_reference_data_items(event_data.get("referenceData", []))
 
         # Handle empty response — only emit fallback events if no chunks
         # were already sent to the client (avoids duplicate/contradictory output)
@@ -931,7 +932,7 @@ def _extract_reference_links(
             cleaned_url = url.rstrip(".,;:!?\"'")
             if cleaned_url not in seen:
                 seen.add(cleaned_url)
-                links.append({"url": cleaned_url})
+                links.append({"webUrl": cleaned_url})
 
     # From tool results
     for r in tool_results:
@@ -950,7 +951,7 @@ def _extract_urls_from_value(value: object, seen: set, links: list, depth: int =
             cleaned_url = url.rstrip(".,;:!?\"'")
             if cleaned_url not in seen:
                 seen.add(cleaned_url)
-                links.append({"url": cleaned_url})
+                links.append({"webUrl": cleaned_url})
     elif isinstance(value, dict):
         # Check common URL fields first
         url_fields = ("url", "webLink", "webViewLink", "htmlUrl", "permalink",
@@ -959,7 +960,7 @@ def _extract_urls_from_value(value: object, seen: set, links: list, depth: int =
             val = value.get(field)
             if isinstance(val, str) and val.startswith("http") and val not in seen:
                 seen.add(val)
-                links.append({"url": val})
+                links.append({"webUrl": val})
         # Recurse into values
         for v in value.values():
             _extract_urls_from_value(v, seen, links, depth + 1)

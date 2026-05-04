@@ -21,6 +21,8 @@ from typing import Any
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
 from app.utils.time_conversion import build_llm_time_context
 
+from app.modules.agents.qna.reference_data import format_reference_data, generate_field_rules_table
+
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
 CONVERSATION_PREVIEW_LENGTH = 300
@@ -141,6 +143,12 @@ Render dates/times in human-readable form using the **Time zone** from the Time 
 }}
 ```
 
+### referenceData Field Rules (MANDATORY — apply to ALL modes)
+
+`referenceData` is a machine-readable index of every entity returned from tool results. The backend uses it across conversation turns to avoid re-fetching already-known IDs and URLs. **Every entry MUST include all available fields below — never omit them.**
+
+__REFERENCE_DATA_FIELD_RULES_TABLE__
+
 ### MODE 2: Structured JSON for Tool Results (When NO Internal Knowledge)
 
 **When to use:** Only external tools used, no internal document citations needed
@@ -151,9 +159,10 @@ Render dates/times in human-readable form using the **Time zone** from the Time 
   "confidence": "High",
   "answerMatchType": "Derived From Tool Execution",
   "referenceData": [
-    {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}},
-    {{"name": "API Docs", "id": "12345", "type": "confluence_page", "url": "https://org.atlassian.net/wiki/spaces/ENG/pages/12345"}},
-    {{"name": "Design Brief.pdf", "id": "1abc", "type": "drive_file", "url": "https://drive.google.com/file/d/1abc/view"}}
+    {{"name": "PA-123: Fix login bug", "id": "12345", "type": "issue", "app": "jira", "webUrl": "https://org.atlassian.net/browse/PA-123", "metadata": {{"key": "PA-123"}}}},
+    {{"name": "API Docs", "id": "12345", "type": "page", "app": "confluence", "webUrl": "https://org.atlassian.net/wiki/spaces/ENG/pages/12345"}},
+    {{"name": "mp_plan", "id": "notebook-uuid-here", "type": "notebook", "app": "sharepoint", "webUrl": "https://pipeshubinc.sharepoint.com/sites/testing_site/Shared%20Documents/Notebooks/mp_plan", "metadata": {{"siteId": "site-uuid-here"}}}},
+    {{"name": "Design Brief.pdf", "id": "1abc", "type": "file", "app": "drive", "webUrl": "https://drive.google.com/file/d/1abc/view"}}
   ]
 }}
 ```
@@ -168,7 +177,7 @@ Render dates/times in human-readable form using the **Time zone** from the Time 
   "confidence": "High",
   "answerMatchType": "Derived From Blocks",
   "referenceData": [
-    {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}}
+    {{"name": "PA-123: Fix login bug", "id": "12345", "type": "issue", "app": "jira", "webUrl": "https://org.atlassian.net/browse/PA-123", "metadata": {{"key": "PA-123"}}}}
   ]
 }}
 ```
@@ -234,13 +243,13 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 - Example: "John Doe (john.doe@example.com)" instead of just "John Doe"
 
 **🔗 Links — MANDATORY for External Service Items:**
-- **Jira issue**: Always format as a clickable link `[KEY-123](url)` using the `url` field.
+- **Jira issue**: Always format as a clickable link `[KEY-123](webUrl)` using the `webUrl` field.
   If no URL is present, write `KEY-123` so the user can search for it.
-- **Confluence page/space**: Format as `[Page Title](url)` using the `url` field.
-- **Google Drive file**: Format as `[filename](url)` using the `webViewLink` / `url` field.
-- **Gmail message**: Format as `[subject](url)` using the Gmail URL.
+- **Confluence page/space**: Format as `[Page Title](webUrl)` using the `webUrl` field.
+- **Google Drive file**: Format as `[filename](webUrl)` using the `webUrl` field.
+- **Gmail message**: Format as `[subject](webUrl)` using the `webUrl` field.
 - **Slack channel/message**: Include `#channel-name` and link if a URL is available.
-- Include every item's `url` in the `referenceData` array so the frontend can render it.
+- Include every item's `webUrl` in the `referenceData` array so the frontend can render it.
 </output_format_rules>
 
 <tool_output_transformation>
@@ -276,6 +285,11 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
 """
+
+response_system_prompt = response_system_prompt.replace(
+    "__REFERENCE_DATA_FIELD_RULES_TABLE__",
+    generate_field_rules_table(),
+)
 
 
 # ============================================================================
@@ -532,26 +546,12 @@ def create_response_messages(state) -> list[Any]:
 
 
 def _format_reference_data_for_response(all_reference_data: list[dict]) -> str:
-    """Format reference data for inclusion in response messages"""
-    if not all_reference_data:
-        return ""
-
-    result = "## Reference Data (from previous responses):\n"
-    spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
-    projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
-    issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
-    pages = [item for item in all_reference_data if item.get("type") == "confluence_page"]
-    max_items = 10
-
-    if spaces:
-        result += "**Confluence Spaces**: " + ", ".join([f"{i.get('name','?')} (id={i.get('id','?')})" for i in spaces[:max_items]]) + "\n"
-    if projects:
-        result += "**Jira Projects**: " + ", ".join([f"{i.get('name','?')} (key={i.get('key','?')})" for i in projects[:max_items]]) + "\n"
-    if issues:
-        result += "**Jira Issues**: " + ", ".join([f"{i.get('key','?')}" for i in issues[:max_items]]) + "\n"
-    if pages:
-        result += "**Confluence Pages**: " + ", ".join([f"{i.get('title','?')} (id={i.get('id','?')})" for i in pages[:max_items]]) + "\n"
-    return result
+    """Format reference data for inclusion in response messages (generic, app-based)."""
+    return format_reference_data(
+        all_reference_data,
+        header="## Reference Data (from previous responses — use these IDs/keys directly):",
+        max_items=10,
+    )
 
 
 # ============================================================================

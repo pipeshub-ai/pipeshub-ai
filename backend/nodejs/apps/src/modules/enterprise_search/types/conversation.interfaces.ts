@@ -65,10 +65,12 @@ interface IMessageMetadata {
 // Reference data item for follow-up queries (stores IDs that were in the response)
 export interface IReferenceDataItem {
   name?: string;        // Display name shown to user
-  id?: string;         // Technical ID (numeric ID, UUID, etc.) - Optional
-  type?: string;       // Item type (e.g., "jira_project", "jira_issue", "google_file")
-  key?: string;        // Short key/code (e.g., "PA" for Jira project, "PA-123" for issue) - CRITICAL for JQL
-  accountId?: string;  // Jira user accountId - needed for assignee/reporter JQL filters
+  id?: string;         // Technical ID (numeric ID, UUID, etc.)
+  type?: string;       // Item type (e.g., "project", "issue", "file", "notebook", "page")
+  app?: string;        // Application name (jira, confluence, sharepoint, slack, drive, gmail, etc.)
+  webUrl?: string;     // Web URL to open the item in the browser
+  /** App-specific fields (e.g. key for Jira, siteId for SharePoint) — extend without schema churn */
+  metadata?: Record<string, string>;
 }
 
 export interface IAppliedFilterNode {
