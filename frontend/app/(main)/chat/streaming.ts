@@ -315,23 +315,21 @@ export async function streamMessageForSlot(
             // Non-blocking: if the fetch fails or the pending entry is already
             // resolved by onComplete before this returns, the update is a no-op
             // (updatePendingConversationTitle checks existence).
-            const titleFetch = request.agentId
-              ? AgentsApi.fetchAgentConversation(request.agentId, earlyId)
-                  .then((res) => res.conversation?.title)
-              : ChatApi.fetchConversation(earlyId)
-                  .then((res) => res.conversation?.title);
-
-            titleFetch
-              .then((title) => {
+            (async () => {
+              try {
+                const res = request.agentId
+                  ? await AgentsApi.fetchAgentConversation(request.agentId, earlyId)
+                  : await ChatApi.fetchConversation(earlyId);
+                const title = res.conversation?.title;
                 if (title) {
                   useChatStore
                     .getState()
                     .updatePendingConversationTitle(slotId, title);
                 }
-              })
-              .catch(() => {
+              } catch {
                 // Non-critical — sidebar will show shimmer until complete event
-              });
+              }
+            })();
           }
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));
