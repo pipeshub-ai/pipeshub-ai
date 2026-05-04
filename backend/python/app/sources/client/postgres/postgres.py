@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 try:
     import psycopg2
     import psycopg2.extras
+    from psycopg2 import pool as psycopg2_pool
 except ImportError:
     psycopg2 = None
+    psycopg2_pool = None
 
 
 class PostgreSQLClient:
@@ -49,9 +51,11 @@ class PostgreSQLClient:
         port: int = 5432,
         timeout: int = 30,
         sslmode: str = "prefer",
+        min_pool_size: int = 1,
+        max_pool_size: int = 10,
     ) -> None:
         """Initialize PostgreSQL client.
-        
+
         Args:
             host: PostgreSQL server host (e.g., localhost, 192.168.1.1)
             database: Database name to connect to (REQUIRED)
@@ -60,15 +64,22 @@ class PostgreSQLClient:
             port: PostgreSQL server port (default: 5432)
             timeout: Connection timeout in seconds
             sslmode: SSL mode (disable, allow, prefer, require, verify-ca, verify-full)
+            min_pool_size: Minimum number of connections kept open in the pool
+            max_pool_size: Maximum number of connections the pool may open
         """
         if psycopg2 is None:
             raise ImportError(
                 "psycopg2 is required for PostgreSQL client. "
                 "Install with: pip install psycopg2-binary"
             )
-        
+
+        if min_pool_size < 1:
+            raise ValueError("min_pool_size must be >= 1")
+        if max_pool_size < min_pool_size:
+            raise ValueError("max_pool_size must be >= min_pool_size")
+
         logger.debug(f"🔧 [PostgreSQLClient] Initializing with host={host}, port={port}, database={database}, user={user}")
-        
+
         self.host = host
         self.port = port
         self.database = database
@@ -76,27 +87,38 @@ class PostgreSQLClient:
         self.password = password
         self.timeout = timeout
         self.sslmode = sslmode
-        self._connection = None
-        
+        self.min_pool_size = min_pool_size
+        self.max_pool_size = max_pool_size
+        self._pool: Any = None  # psycopg2_pool.ThreadedConnectionPool when connected
+
         logger.info(f"🔧 [PostgreSQLClient] Initialized successfully for {user}@{host}:{port}/{database}")
     
     def connect(self) -> "PostgreSQLClient":
-        """Establish connection to PostgreSQL.
-        
+        """Initialize the PostgreSQL connection pool.
+
+        Opens a thread-safe pool of connections that callers check out per query.
+        Safe to call repeatedly — a no-op if the pool is already initialized.
+
         Returns:
             Self for method chaining
-            
+
         Raises:
-            ConnectionError: If connection fails
+            ConnectionError: If pool initialization fails
         """
-        if self._connection is not None and not self._connection.closed:
-            logger.debug("🔧 [PostgreSQLClient] Already connected")
+        if self._pool is not None and not self._pool.closed:
+            logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
             return self
-        
+
         try:
-            logger.debug(f"🔧 [PostgreSQLClient] Connecting to {self.host}:{self.port}/{self.database}")
-            
-            self._connection = psycopg2.connect(
+            logger.debug(
+                f"🔧 [PostgreSQLClient] Initializing pool to "
+                f"{self.host}:{self.port}/{self.database} "
+                f"(min={self.min_pool_size}, max={self.max_pool_size})"
+            )
+
+            self._pool = psycopg2_pool.ThreadedConnectionPool(
+                self.min_pool_size,
+                self.max_pool_size,
                 host=self.host,
                 port=self.port,
                 database=self.database,
@@ -105,111 +127,140 @@ class PostgreSQLClient:
                 connect_timeout=self.timeout,
                 sslmode=self.sslmode,
             )
-            
-            logger.info(f"🔧 [PostgreSQLClient] Successfully connected to PostgreSQL")
+
+            logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
             return self
-            
+
         except Exception as e:
-            logger.error(f"🔧 [PostgreSQLClient] Connection failed: {e}")
+            logger.error(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
             raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
-    
+
     def close(self) -> None:
-        """Close the PostgreSQL connection."""
-        if self._connection is not None:
+        """Close all connections in the pool."""
+        if self._pool is not None:
             try:
-                self._connection.close()
-                logger.info("🔧 [PostgreSQLClient] Connection closed")
+                self._pool.closeall()
+                logger.info("🔧 [PostgreSQLClient] Connection pool closed")
             except Exception as e:
-                logger.warning(f"🔧 [PostgreSQLClient] Failed to close connection gracefully: {e}")
+                logger.warning(f"🔧 [PostgreSQLClient] Failed to close pool gracefully: {e}")
             finally:
-                self._connection = None
-    
+                self._pool = None
+
     def is_connected(self) -> bool:
-        """Check if connection is active."""
-        return self._connection is not None and not self._connection.closed
+        """Check if the connection pool is active."""
+        return self._pool is not None and not self._pool.closed
     
+    def _checkout_conn(self) -> Any:
+        """Check out a connection from the pool, initializing it if needed."""
+        if not self.is_connected():
+            self.connect()
+        return self._pool.getconn()
+
+    def _return_conn(self, conn: Any, broken: bool = False) -> None:
+        """Return a connection to the pool. Drop it if broken or already closed."""
+        if conn is None or self._pool is None:
+            return
+        try:
+            discard = broken or bool(getattr(conn, "closed", 0))
+            self._pool.putconn(conn, close=discard)
+        except Exception as e:
+            logger.warning(f"🔧 [PostgreSQLClient] Failed to return connection to pool: {e}")
+
     def execute_query(
         self,
         query: str,
         params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
     ) -> List[Dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
-        
+
+        Checks out a connection from the pool, runs the query, and returns the
+        connection (or discards it if the connection is broken).
+
         Args:
             query: SQL query to execute
             params: Optional query parameters (for parameterized queries)
-            
+
         Returns:
             List of dictionaries containing query results
-            
+
         Raises:
-            ConnectionError: If not connected
+            ConnectionError: If pool is not initialized
             RuntimeError: If query execution fails
         """
-        if not self.is_connected():
-            self.connect()
-        
+        conn = self._checkout_conn()
+        cursor = None
+        broken = False
         try:
-            cursor = self._connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
-            
+
             # For SELECT queries, fetch results
             if cursor.description:
                 results = [dict(row) for row in cursor.fetchall()]
             else:
                 # For INSERT/UPDATE/DELETE, return affected rows count
                 results = [{"affected_rows": cursor.rowcount}]
-            
-            self._connection.commit()
-            cursor.close()
-            
+
+            conn.commit()
             return results
-            
+
         except Exception as e:
-            self._connection.rollback()
+            broken = True
+            try:
+                conn.rollback()
+                # If rollback succeeded the connection is reusable.
+                broken = bool(getattr(conn, "closed", 0))
+            except Exception:
+                broken = True
             logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
-    
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            self._return_conn(conn, broken=broken)
+
     def execute_query_raw(
         self,
         query: str,
         params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
     ) -> tuple:
         """Execute a SQL query and return raw cursor results.
-        
+
         Args:
             query: SQL query to execute
             params: Optional query parameters
-            
+
         Returns:
             Tuple of (columns, rows) where columns is list of column names
             and rows is list of tuples
-            
+
         Raises:
-            ConnectionError: If not connected
+            ConnectionError: If pool is not initialized
             RuntimeError: If query execution fails
         """
         logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] Executing query: {query[:200]}...")
-        
-        if not self.is_connected():
-            logger.debug("🔧 [PostgreSQLClient.execute_query_raw] Not connected, connecting...")
-            self.connect()
-        
+
+        conn = self._checkout_conn()
+        cursor = None
+        broken = False
         try:
-            cursor = self._connection.cursor()
+            cursor = conn.cursor()
             logger.debug("🔧 [PostgreSQLClient.execute_query_raw] Cursor created")
-            
+
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
-            
+
             logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] Query executed, cursor.description={cursor.description is not None}")
-            
+
             if cursor.description:
                 columns = [desc[0] for desc in cursor.description]
                 rows = cursor.fetchall()
@@ -220,17 +271,27 @@ class PostgreSQLClient:
                 columns = []
                 rows = []
                 logger.warning("🔧 [PostgreSQLClient.execute_query_raw] cursor.description is None - no result set")
-            
-            self._connection.commit()
-            cursor.close()
-            
+
+            conn.commit()
             logger.info(f"🔧 [PostgreSQLClient.execute_query_raw] Returning {len(columns)} columns, {len(rows)} rows")
             return (columns, rows)
-            
+
         except Exception as e:
-            self._connection.rollback()
+            broken = True
+            try:
+                conn.rollback()
+                broken = bool(getattr(conn, "closed", 0))
+            except Exception:
+                broken = True
             logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            self._return_conn(conn, broken=broken)
     
     def get_connection_info(self) -> Dict[str, Any]:
         """Get connection information."""
@@ -279,7 +340,9 @@ class PostgreSQLConfig(BaseModel):
         default="prefer",
         description="SSL mode (disable, allow, prefer, require, verify-ca, verify-full)"
     )
-    
+    min_pool_size: int = Field(default=1, description="Min pool size", ge=1)
+    max_pool_size: int = Field(default=10, description="Max pool size", ge=1)
+
     def create_client(self) -> PostgreSQLClient:
         """Create a PostgreSQL client."""
         return PostgreSQLClient(
@@ -290,6 +353,8 @@ class PostgreSQLConfig(BaseModel):
             password=self.password,
             timeout=self.timeout,
             sslmode=self.sslmode,
+            min_pool_size=self.min_pool_size,
+            max_pool_size=self.max_pool_size,
         )
 
 

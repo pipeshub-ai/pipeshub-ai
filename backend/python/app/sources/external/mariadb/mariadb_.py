@@ -9,6 +9,7 @@ Provides async wrapper methods for MariaDB operations:
 - Index information
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -157,7 +158,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             databases = [DatabaseInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [MariaDBDataSource] Found {len(databases)} databases")
 
@@ -198,7 +199,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (database,))
+            results = await asyncio.to_thread(self._client.execute_query,query, (database,))
             tables = [TableListEntry.model_validate(row) for row in results]
             logger.debug(f"🔧 [MariaDBDataSource] Found {len(tables)} tables")
 
@@ -279,7 +280,7 @@ class MariaDBDataSource:
         """
 
         try:
-            table_info_raw = self._client.execute_query(table_query, (database, table))
+            table_info_raw = await asyncio.to_thread(self._client.execute_query,table_query, (database, table))
             if not table_info_raw:
                 return MariaDBResponse(
                     success=False,
@@ -287,11 +288,11 @@ class MariaDBDataSource:
                     message=f"Table {database}.{table} not found"
                 )
 
-            columns_raw = self._client.execute_query(columns_query, (database, table))
-            unique_cols_raw = self._client.execute_query(unique_query, (database, table))
+            columns_raw = await asyncio.to_thread(self._client.execute_query,columns_query, (database, table))
+            unique_cols_raw = await asyncio.to_thread(self._client.execute_query,unique_query, (database, table))
 
             try:
-                check_raw = self._client.execute_query(check_query, (database, table))
+                check_raw = await asyncio.to_thread(self._client.execute_query,check_query, (database, table))
             except Exception:
                 check_raw = []
 
@@ -347,7 +348,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (database,))
+            results = await asyncio.to_thread(self._client.execute_query,query, (database,))
             views = [ViewInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [MariaDBDataSource] Found {len(views)} views")
 
@@ -397,7 +398,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (database, table))
+            results = await asyncio.to_thread(self._client.execute_query,query, (database, table))
             foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [MariaDBDataSource] Found {len(foreign_keys)} foreign keys")
 
@@ -444,7 +445,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (database, table))
+            results = await asyncio.to_thread(self._client.execute_query,query, (database, table))
             primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
             logger.debug(
                 f"🔧 [MariaDBDataSource] Found {len(primary_keys)} primary key columns"
@@ -486,7 +487,7 @@ class MariaDBDataSource:
         query = f"SHOW CREATE TABLE `{safe_database}`.`{safe_table}`"
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             if not results:
                 return MariaDBResponse(
                     success=False,
@@ -527,7 +528,7 @@ class MariaDBDataSource:
         """
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query,query)
             logger.info("🔧 [MariaDBDataSource] Connection test successful")
 
             conn_info = ConnectionTestResult.model_validate(results[0]) if results else ConnectionTestResult()
@@ -559,7 +560,7 @@ class MariaDBDataSource:
         logger.debug("🔧 [MariaDBDataSource] execute_query called")
 
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(self._client.execute_query,query, params)
             logger.debug(f"🔧 [MariaDBDataSource] Query returned {len(results)} rows")
 
             return MariaDBResponse(
@@ -656,7 +657,7 @@ class MariaDBDataSource:
         query += " ORDER BY TABLE_SCHEMA, TABLE_NAME;"
 
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(self._client.execute_query,query, params)
             stats = [TableStatsEntry.model_validate(row) for row in results]
             logger.debug(
                 f"🔧 [MariaDBDataSource] Found stats for {len(stats)} tables"
