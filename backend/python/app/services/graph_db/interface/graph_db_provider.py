@@ -1325,12 +1325,19 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_account_type(self, org_id: str) -> str | None:
+    async def get_account_type(
+        self,
+        org_id: str,
+        is_external: bool = False,
+        transaction: str | None = None,
+    ) -> str | None:
         """
         Get account type for an organization.
 
         Args:
             org_id: Organization ID
+            is_external (bool): Filter by external flag (default False)
+            transaction (Optional[str]): Optional transaction ID
 
         Returns:
             Optional[str]: Account type ('individual' or 'business'), or None
@@ -1904,6 +1911,7 @@ class IGraphDBProvider(ABC):
         self,
         *,
         active: bool = True,
+        is_external: bool = False,
         transaction: str | None = None,
     ) -> list[dict]:
         """
@@ -1911,6 +1919,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             active (bool): Filter by active status
+            is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -2821,13 +2830,15 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def organization_exists(
         self,
-        organization_name: str
+        organization_name: str,
+        is_external: bool = False,
     ) -> bool:
         """
         Check if an organization exists.
 
         Args:
             organization_name (str): Organization name
+            is_external (bool): Filter by external flag (default False)
 
         Returns:
             bool: True if exists, False otherwise
