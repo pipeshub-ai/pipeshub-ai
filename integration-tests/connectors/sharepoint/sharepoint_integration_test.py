@@ -4,7 +4,7 @@
 SharePoint Online Connector – Integration Tests
 ================================================
 
-Uses module-scoped ``sharepoint_connector`` fixture: certificate auth from env file paths,
+Uses module-scoped ``sharepoint_connector`` fixture: certificate auth from ``SHAREPOINT_TEST_CERTIFICATE`` / ``SHAREPOINT_TEST_PRIVATE_KEY`` (contents of .crt / .key),
 ``site_ids`` sync filter for three named sites, full sync via Pipeshub.
 
 Note: SharePoint connector syncs **tenant-wide** Microsoft 365 users before applying the

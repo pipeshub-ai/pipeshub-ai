@@ -78,23 +78,24 @@ class SharePointGraphClientHolder:
             self._temp_cert_path = None
 
 
-def sharepoint_build_graph_client_from_certificate_files(
+def sharepoint_build_graph_client_from_certificate_text(
     tenant_id: str,
     client_id: str,
-    certificate_file_path: str,
-    private_key_file_path: str,
+    certificate: str,
+    private_key: str,
 ) -> SharePointGraphClientHolder:
     """
-    Build a GraphServiceClient using app-only certificate auth (same PEM approach as SharePoint connector).
+    Build a GraphServiceClient using app-only certificate auth from raw file contents.
 
-    Reads PEM contents from disk at call time. Caller must ``await holder.aclose()`` when finished.
+    ``certificate`` / ``private_key`` are the full text read from your ``.crt`` and ``.key`` files
+    (typically PEM-encoded, including ``BEGIN``/``END`` lines — same format the file-based helper reads).
+
+    Caller must ``await holder.aclose()`` when finished (cleans up the temp combined PEM).
     """
     from azure.identity.aio import CertificateCredential  # type: ignore
 
-    cert_pem = Path(certificate_file_path).expanduser().read_text(encoding="utf-8")
-    key_pem = Path(private_key_file_path).expanduser().read_text(encoding="utf-8")
-    combined_pem = f"{key_pem.strip()}\n{cert_pem.strip()}\n"
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
+    combined_pem = f"{private_key.strip()}\n{certificate.strip()}\n"
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False, encoding="utf-8")
     tmp.write(combined_pem)
     tmp.flush()
     tmp.close()
@@ -113,6 +114,27 @@ def sharepoint_build_graph_client_from_certificate_files(
         client=graph_client,
         _credential=credential,
         _temp_cert_path=temp_path,
+    )
+
+
+def sharepoint_build_graph_client_from_certificate_files(
+    tenant_id: str,
+    client_id: str,
+    certificate_file_path: str,
+    private_key_file_path: str,
+) -> SharePointGraphClientHolder:
+    """
+    Build a GraphServiceClient using app-only certificate auth (same PEM approach as SharePoint connector).
+
+    Reads PEM contents from disk at call time. Caller must ``await holder.aclose()`` when finished.
+    """
+    cert_pem = Path(certificate_file_path).expanduser().read_text(encoding="utf-8")
+    key_pem = Path(private_key_file_path).expanduser().read_text(encoding="utf-8")
+    return sharepoint_build_graph_client_from_certificate_text(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        certificate=cert_pem,
+        private_key=key_pem,
     )
 
 

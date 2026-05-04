@@ -19,7 +19,7 @@ if str(_ROOT) not in sys.path:
 
 from app.sources.external.microsoft.sharepoint.sharepoint import (  # noqa: E402
     SharePointDataSource,
-    sharepoint_build_graph_client_from_certificate_files,
+    sharepoint_build_graph_client_from_certificate_text,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
@@ -48,8 +48,8 @@ async def sharepoint_connector(
     tenant_id = os.getenv("SHAREPOINT_TEST_TENANT_ID")
     client_id = os.getenv("SHAREPOINT_TEST_CLIENT_ID")
     sharepoint_domain = os.getenv("SHAREPOINT_TEST_SHAREPOINT_DOMAIN")
-    cert_path = os.getenv("SHAREPOINT_TEST_CERTIFICATE_FILE")
-    key_path = os.getenv("SHAREPOINT_TEST_PRIVATE_KEY_FILE")
+    cert_text = os.getenv("SHAREPOINT_TEST_CERTIFICATE")
+    key_text = os.getenv("SHAREPOINT_TEST_PRIVATE_KEY")
 
     missing = [
         name
@@ -57,8 +57,8 @@ async def sharepoint_connector(
             ("SHAREPOINT_TEST_TENANT_ID", tenant_id),
             ("SHAREPOINT_TEST_CLIENT_ID", client_id),
             ("SHAREPOINT_TEST_SHAREPOINT_DOMAIN", sharepoint_domain),
-            ("SHAREPOINT_TEST_CERTIFICATE_FILE", cert_path),
-            ("SHAREPOINT_TEST_PRIVATE_KEY_FILE", key_path),
+            ("SHAREPOINT_TEST_CERTIFICATE", cert_text),
+            ("SHAREPOINT_TEST_PRIVATE_KEY", key_text),
         )
         if not val
     ]
@@ -67,19 +67,16 @@ async def sharepoint_connector(
             "SharePoint integration credentials not set: " + ", ".join(missing),
         )
 
-    cert_pem = Path(cert_path).expanduser().read_text(encoding="utf-8")
-    key_pem = Path(key_path).expanduser().read_text(encoding="utf-8")
-
     site_names = _default_site_display_names()
     holder: Any = None
     connector_id: str | None = None
 
     try:
-        holder = sharepoint_build_graph_client_from_certificate_files(
+        holder = sharepoint_build_graph_client_from_certificate_text(
             tenant_id=tenant_id,
             client_id=client_id,
-            certificate_file_path=cert_path,
-            private_key_file_path=key_path,
+            certificate=cert_text,
+            private_key=key_text,
         )
         datasource = SharePointDataSource(holder.client)
         site_graph_ids = await datasource.integration_resolve_site_graph_ids_by_display_names(
@@ -94,8 +91,8 @@ async def sharepoint_connector(
                 "clientId": client_id,
                 "sharepointDomain": sharepoint_domain,
                 "hasAdminConsent": True,
-                "certificate": cert_pem,
-                "privateKey": key_pem,
+                "certificate": cert_text,
+                "privateKey": key_text,
             },
             "filters": {
                 "sync": {
