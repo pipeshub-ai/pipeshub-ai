@@ -274,7 +274,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   // createMCPServer arguments
   // =========================================================================
   describe('createMCPServer configuration', () => {
-    it('should call createMCPServer with dynamic: true', async () => {
+    it('should call createMCPServer with dynamic: false', async () => {
       const createStub = sinon.stub().returns({
         server: { connect: sinon.stub().resolves() },
       })
@@ -287,7 +287,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       await handleMCPRequest(appConfig)(req, res as any, next)
 
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].dynamic).to.be.true
+      expect(createStub.firstCall.args[0].dynamic).to.be.false
     })
 
     it('should call createMCPServer with correct serverURL', async () => {
