@@ -51,7 +51,7 @@ export const handleMCPRequest =
           warning: logger.warn.bind(logger),
           error: logger.error.bind(logger),
         },
-        dynamic: true,
+        dynamic: false,
         serverURL,
         getSDK: () =>
           new PipeshubCore({
