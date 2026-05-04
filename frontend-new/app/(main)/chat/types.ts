@@ -275,6 +275,16 @@ export interface UploadedFile {
   preview?: string;
 }
 
+export interface ChatAttachmentRef {
+  recordId: string;
+  recordName?: string;
+  mimeType?: string;
+  extension?: string;
+  virtualRecordId?: string;
+  ocrMode?: 'pymupdf' | 'image_direct';
+  deduplicated?: boolean;
+}
+
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
 
 // SSE Event Types
@@ -431,6 +441,7 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  attachments?: ChatAttachmentRef[];
 }
 
 export interface ConversationCompleteData {
@@ -505,6 +516,7 @@ export interface StreamChatRequest {
   timezone?: string;
   /** ISO-8601 timestamp of when the request was built. */
   currentTime?: string;
+  attachments?: ChatAttachmentRef[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

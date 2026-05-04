@@ -7,7 +7,13 @@ import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
-import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
+import {
+  buildAssistantApiFilters,
+  type ChatAttachmentRef,
+  type ChatCollectionAttachment,
+  type SearchRequest,
+  type UploadedFile,
+} from '@/chat/types';
 import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
@@ -109,7 +115,7 @@ export function ChatInputWrapper() {
     }
   };
 
-  const handleSend = (message: string) => {
+  const handleSend = async (message: string, files?: UploadedFile[]) => {
     if (!message.trim()) return;
 
     const store = useChatStore.getState();
@@ -168,6 +174,21 @@ export function ChatInputWrapper() {
       });
     }
 
+    let attachmentRefs: ChatAttachmentRef[] | undefined;
+    if (files && files.length > 0) {
+      try {
+        const existingConversationId = store.slots[activeSlotId]?.convId || undefined;
+        const uploaded = await ChatApi.uploadChatAttachments(
+          files.map((f) => f.file),
+          existingConversationId
+        );
+        attachmentRefs = uploaded.attachments;
+      } catch (error) {
+        console.error('Failed to upload chat attachments', error);
+        return;
+      }
+    }
+
     // Use assistant-ui runtime to send message
     // startRun: true triggers the runtime's onNew callback
     threadRuntime.append({
@@ -176,6 +197,7 @@ export function ChatInputWrapper() {
       metadata: {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
+          attachments: attachmentRefs,
         },
       },
       startRun: true,

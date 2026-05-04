@@ -78,6 +78,14 @@ export interface IAppliedFilterNode {
   connector: string;
 }
 
+export interface IChatAttachmentRef {
+  recordId: string;
+  recordName?: string;
+  mimeType?: string;
+  extension?: string;
+  virtualRecordId?: string;
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system';
   content: string;
@@ -94,6 +102,7 @@ export interface IMessage {
     apps?: IAppliedFilterNode[];
     kb?: IAppliedFilterNode[];
   };
+  attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
 }

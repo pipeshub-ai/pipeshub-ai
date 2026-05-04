@@ -3,6 +3,7 @@ import {
   IAgentConversation,
   IAIModel,
   IAppliedFilterNode,
+  IChatAttachmentRef,
   IConversation,
   IConversationDocument,
   IMessage,
@@ -61,11 +62,13 @@ export const extractModelInfo = (
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+  attachments?: IChatAttachmentRef[],
 ): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
   ...(appliedFilters ? { appliedFilters } : {}),
+  ...(attachments && attachments.length > 0 ? { attachments } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
@@ -261,6 +264,9 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
     .map((msg) => ({
       content: msg.content,
       role: msg.messageType,
+      ...(msg.attachments && msg.attachments.length > 0 && {
+        attachments: msg.attachments,
+      }),
       // Include referenceData for follow-up queries (IDs from tool responses)
       ...(msg.referenceData && msg.referenceData.length > 0 && { referenceData: msg.referenceData }),
     }));

@@ -35,7 +35,11 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _overlap_ratio,
     _reading_order_key,
 )
-from app.utils.indexing_helpers import get_rows_text, get_table_summary_n_headers
+from app.utils.indexing_helpers import (
+    generate_simple_row_text,
+    get_rows_text,
+    get_table_summary_n_headers,
+)
 
 
 def _normalize_bbox_to_points(
@@ -149,6 +153,7 @@ class PyMuPDFOpenCVProcessor:
         self,
         parsed_data: List[ParsedPageData],
         page_number: Optional[int] = None,
+        skip_llm_enrichment: bool = False,
     ) -> BlocksContainer:
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
@@ -160,7 +165,8 @@ class PyMuPDFOpenCVProcessor:
             for region in pd.regions:
                 if region.type == LayoutRegionType.TABLE:
                     await self._build_table_group(
-                        region, pd, blocks, block_groups
+                        region, pd, blocks, block_groups,
+                        skip_llm_enrichment=skip_llm_enrichment,
                     )
                 elif region.type == LayoutRegionType.IMAGE:
                     self._build_image_block(region, pd, blocks)
@@ -238,21 +244,43 @@ class PyMuPDFOpenCVProcessor:
         page_data: ParsedPageData,
         blocks: List[Block],
         block_groups: List[BlockGroup],
+        skip_llm_enrichment: bool = False,
     ) -> Optional[BlockGroup]:
         grid = region.table_grid
         if not grid or len(grid) == 0:
             return None
 
-        response = await get_table_summary_n_headers(self.config, grid)
-        table_summary = response.summary if response else ""
-        column_headers = response.headers if response else []
+        if skip_llm_enrichment:
+            table_summary = ""
+            column_headers: List[str] = []
+            # Derive headers from the first row if it looks like a header row
+            first_row = grid[0] if grid else []
+            raw_headers = [
+                (cell.get("text", "") if isinstance(cell, dict) else str(cell or ""))
+                for cell in first_row
+            ]
+            data_rows = grid[1:] if grid else []
+            table_rows_text = []
+            for row in data_rows:
+                row_dict = {
+                    (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
+                        cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
+                    )
+                    for i, cell in enumerate(row)
+                }
+                table_rows_text.append(generate_simple_row_text(row_dict))
+            table_rows = data_rows
+        else:
+            response = await get_table_summary_n_headers(self.config, grid)
+            table_summary = response.summary if response else ""
+            column_headers = response.headers if response else []
 
-        table_rows_text, table_rows = await get_rows_text(
-            self.config,
-            {"grid": grid},
-            table_summary,
-            column_headers,
-        )
+            table_rows_text, table_rows = await get_rows_text(
+                self.config,
+                {"grid": grid},
+                table_summary,
+                column_headers,
+            )
 
         num_rows = len(grid)
         num_cols = len(grid[0]) if grid else 0

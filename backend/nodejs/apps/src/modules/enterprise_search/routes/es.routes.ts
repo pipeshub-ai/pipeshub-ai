@@ -26,6 +26,7 @@ import {
   updateFeedback,
   updateTitle,
   streamChat,
+  uploadChatAttachments,
   addMessageStream,
   createAgentConversation,
   streamAgentConversation,
@@ -98,6 +99,10 @@ export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
+  const chatPdfUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+  });
   /**
    * @route POST /api/v1/conversations
    * @desc Create a new conversation with initial query
@@ -143,6 +148,15 @@ export function createConversationalRouter(container: Container): Router {
    *   filters: object
    * }
    */
+  router.post(
+    '/attachments/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    chatPdfUpload.array('files'),
+    uploadChatAttachments(appConfig),
+  );
+
   router.post(
     '/stream',
     authMiddleware.authenticate,

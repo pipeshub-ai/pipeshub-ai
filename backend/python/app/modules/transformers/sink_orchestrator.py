@@ -12,6 +12,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class SinkOrchestrator(Transformer):
@@ -71,6 +72,9 @@ class SinkOrchestrator(Transformer):
 
         record = ctx.record
         full_block_containers = None
+        skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
+            ctx.settings.get("sink_only")
+        )
 
         is_sql = any(
             bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
@@ -95,6 +99,27 @@ class SinkOrchestrator(Transformer):
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
+
+        if skip_vector_store:
+            timestamp = get_epoch_timestamp_in_ms()
+            await self.graph_provider.batch_upsert_nodes(
+                [
+                    {
+                        "id": record_id,
+                        "virtualRecordId": record.virtual_record_id,
+                        "indexingStatus": ProgressStatus.COMPLETED.value,
+                        "lastIndexTimestamp": timestamp,
+                        "isDirty": False,
+                    }
+                ],
+                CollectionNames.RECORDS.value,
+            )
+            self.logger.info(
+                "✅ Sink-only mode completed for record %s (vector indexing skipped)",
+                record_id,
+            )
+            return
+
         indexing_status = record_doc.get("indexingStatus")
         if indexing_status != ProgressStatus.COMPLETED.value:
             result = await self.vector_store.apply(ctx)

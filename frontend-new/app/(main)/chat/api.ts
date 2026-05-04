@@ -20,6 +20,7 @@ import {
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
+  ChatAttachmentRef,
   streamChatModeToAgentApiChatMode,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
@@ -116,6 +117,30 @@ function buildAgentFiltersPayload(
 
 // Chat API endpoints
 export const ChatApi = {
+  async uploadChatAttachments(
+    files: File[],
+    conversationId?: string
+  ): Promise<{ conversationId?: string; attachments: ChatAttachmentRef[] }> {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('files', file);
+    });
+    if (conversationId) {
+      formData.append('conversationId', conversationId);
+    }
+
+    const { data } = await apiClient.post<{ conversationId?: string; attachments: ChatAttachmentRef[] }>(
+      '/api/v1/conversations/attachments/upload',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      }
+    );
+    return data;
+  },
+
   // Fetch one page of conversations for a single source (owned or shared).
   // Call once per tab if you need both lists.
   async fetchConversations(
@@ -249,6 +274,7 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         tools: [...(request.agentStreamTools ?? [])],
+        ...(request.attachments ? { attachments: request.attachments } : {}),
         ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
       };

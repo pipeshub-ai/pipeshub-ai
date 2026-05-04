@@ -49,23 +49,12 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
+const SUPPORTED_FILE_TYPES = ['PDF'];
 const ACCEPTED_MIME_TYPES = {
-  'text/plain': 'TXT',
   'application/pdf': 'PDF',
-  'application/msword': 'DOC',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
-  'application/vnd.ms-excel': 'XLS',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
-  'text/csv': 'CSV',
-  'application/csv': 'CSV',
-  'image/png': 'PNG',
-  'image/jpeg': 'JPEG',
-  'image/svg+xml': 'SVG',
 };
-// Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
+// Extension fallback for files that arrive without a recognisable MIME type.
+const ACCEPTED_EXTENSIONS = ['pdf'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -211,6 +200,8 @@ export function ChatInput({
   const resolvedWidgetPlaceholder = widgetPlaceholder || resolvedPlaceholder;
 
   const isSearchMode = settings.mode === 'search' && !isAgentChat;
+  const canShowAttachmentUI =
+    !isAgentChat && settings.mode !== 'search' && settings.queryMode === 'chat';
   const selectedKbCount = (settings.filters?.apps?.length ?? 0) + (settings.filters?.kb?.length ?? 0);
   const agentResourcesCustomized =
     isAgentChat &&
@@ -607,9 +598,15 @@ export function ChatInput({
   };
 
   const toggleUploadArea = () => {
+    if (!canShowAttachmentUI) return;
     setShowUploadArea((prev) => {
       if (!prev) {
-        dismissExpansionPanels();
+        // Close other panels, but do not close upload area itself.
+        setIsModePanelOpen(false);
+        setIsAgentStrategyPanelOpen(false);
+        setIsCollectionsPanelOpen(false);
+        setIsAgentResourcesPanelOpen(false);
+        setIsModelPanelOpen(false);
         setExpansionViewMode('inline');
       }
       return !prev;
@@ -637,6 +634,12 @@ export function ChatInput({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [modeChromeOpen, isCollectionsPanelOpen, isModelPanelOpen, showUploadArea, expansionViewMode]);
+
+  useEffect(() => {
+    if (!canShowAttachmentUI && showUploadArea) {
+      setShowUploadArea(false);
+    }
+  }, [canShowAttachmentUI, showUploadArea]);
 
   const handleExpand = () => {
     if (expandable && !isExpanded) {
@@ -1230,18 +1233,18 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
-              <IconButton
-                variant={showUploadArea ? 'soft' : 'ghost'}
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                onClick={toggleUploadArea}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
-              */}
+              {canShowAttachmentUI && (
+                <IconButton
+                  variant={showUploadArea ? 'soft' : 'ghost'}
+                  color="gray"
+                  size="2"
+                  disabled={isRegenerateMode}
+                  onClick={toggleUploadArea}
+                  style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                >
+                  <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                </IconButton>
+              )}
               <IconButton
                 variant="ghost"
                 color="gray"
@@ -1375,23 +1378,20 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                {/* Attach button — temporarily hidden until the upload flow is
-                    wired up end-to-end. Keep the JSX commented so it can be
-                    restored alongside the rest of the upload UI. */}
-                {/*
-                <Tooltip content={t('chat.attachmentTooltip')} side="top">
-                  <IconButton
-                    variant={showUploadArea ? 'soft' : 'ghost'}
-                    color="gray"
-                    size="2"
-                    disabled={isRegenerateMode}
-                    onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
-                  >
-                    <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                  </IconButton>
-                </Tooltip>
-                */}
+                {canShowAttachmentUI && (
+                  <Tooltip content={t('chat.attachmentTooltip')} side="top">
+                    <IconButton
+                      variant={showUploadArea ? 'soft' : 'ghost'}
+                      color="gray"
+                      size="2"
+                      disabled={isRegenerateMode}
+                      onClick={toggleUploadArea}
+                      style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                    </IconButton>
+                  </Tooltip>
+                )}
                 <Tooltip
                   content={
                     !isSpeechSupported

@@ -1850,6 +1850,19 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
         message_content_array = [item for sublist in message_content_array for item in sublist]
 
+        if vrids_only_in_map:
+            logger.info(
+                "get_message_content: adding %d full records from virtual_record_id_to_result (missing in flattened_results)",
+                len(vrids_only_in_map),
+            )
+            for vrid in vrids_only_in_map:
+                record = virtual_record_id_to_result.get(vrid)
+                if not record:
+                    continue
+                record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
+                if record_content:
+                    message_content_array.extend(record_content)
+
         content.extend(message_content_array)
         # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)

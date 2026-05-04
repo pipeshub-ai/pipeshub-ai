@@ -1,23 +1,38 @@
 from collections.abc import AsyncGenerator
+import base64
+import logging
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from jinja2 import Template
+import fitz
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.arangodb import CollectionNames
 from app.containers.query import QueryAppContainer
+from app.events.events import EventProcessor
+from app.events.processor import convert_record_dict_to_record
+from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.qna.prompt_templates import (
     web_search_system_prompt,
     web_search_user_prompt,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.graphdb import GraphDBTransformer
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
@@ -40,6 +55,9 @@ from app.utils.time_conversion import build_llm_time_context
 from app.utils.web_search_tool import create_web_search_tool
 
 DEFAULT_CONTEXT_LENGTH = 128000
+logger = logging.getLogger(__name__)
+ATTACHMENT_CONTEXT_RATIO = 0.5
+OCR_IMAGE_PAGE_CAP = 30
 
 router = APIRouter()
 
@@ -59,6 +77,59 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    attachments: list[dict[str, Any]] = []
+
+
+class AttachmentUploadItem(BaseModel):
+    fileName: str
+    mimeType: str
+    size: int
+    contentBase64: str
+
+
+class AttachmentUploadRequest(BaseModel):
+    conversationId: str | None = None
+    attachments: list[AttachmentUploadItem]
+
+
+class InternalSearchToolArgs(BaseModel):
+    query: str = Field(description="Search query for internal knowledge retrieval")
+    reason: str = Field(
+        default="Retrieve relevant internal records for the user question",
+        description="Why this retrieval is needed",
+    )
+
+
+def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
+    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
+        for page in temp_doc:
+            if OCRStrategy.needs_ocr(page, logger):
+                return True
+    return False
+
+
+def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
+    blocks: list[Block] = []
+    with fitz.open(stream=file_content, filetype="pdf") as pdf_doc:
+        for idx, page in enumerate(pdf_doc):
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            png_bytes = pix.tobytes("png")
+            data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
+            blocks.append(
+                Block(
+                    index=idx,
+                    type=BlockType.IMAGE,
+                    format=DataFormat.BASE64,
+                    data={"uri": data_uri},
+                    citation_metadata=CitationMetadata(page_number=idx + 1),
+                )
+            )
+    return BlocksContainer(blocks=blocks, block_groups=[])
+
+
+def _pdf_page_count(file_content: bytes) -> int:
+    with fitz.open(stream=file_content, filetype="pdf") as pdf_doc:
+        return len(pdf_doc)
 
 
 # Dependency injection functions
@@ -442,38 +513,79 @@ async def _generate_internal_search_stream(
             org_id = request.state.user.get("orgId")
             user_id = request.state.user.get("userId")
 
-            yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-
-            result = await retrieval_service.search_with_filters(
-                queries=all_queries,
-                org_id=org_id,
-                user_id=user_id,
-                limit=query_info.limit,
-                filter_groups=query_info.filters,
-            )
-
-            search_results = result.get("searchResults", [])
-            virtual_to_record_map = result.get("virtual_to_record_map", {})
-            status_code = result.get("status_code", 500)
-
-            if status_code in [202, 500, 503, 404]:
-                raise HTTPException(status_code=status_code, detail=result)
-
-            yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-
             blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
-
             virtual_record_id_to_result: dict[str, Any] = {}
-            flattened_results = await get_flattened_results(
-                search_results, blob_store, org_id, is_multimodal_llm,
-                virtual_record_id_to_result, virtual_to_record_map,
-                graph_provider=graph_provider,
-            )
-            await enrich_virtual_record_id_to_result_with_fk_children(
+            final_results: list[dict[str, Any]] = []
+            effective_attachments = _collect_effective_attachments(query_info)
+            attachment_mode = len(effective_attachments) > 0
+
+            if not attachment_mode:
+                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
+
+                result = await retrieval_service.search_with_filters(
+                    queries=all_queries,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                )
+
+                search_results = result.get("searchResults", [])
+                virtual_to_record_map = result.get("virtual_to_record_map", {})
+                status_code = result.get("status_code", 500)
+
+                if status_code in [202, 500, 503, 404]:
+                    raise HTTPException(status_code=status_code, detail=result)
+
+                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
+                flattened_results = await get_flattened_results(
+                    search_results,
+                    blob_store,
+                    org_id,
+                    is_multimodal_llm,
+                    virtual_record_id_to_result,
+                    virtual_to_record_map,
+                    graph_provider=graph_provider,
+                )
+                await enrich_virtual_record_id_to_result_with_fk_children(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
                 )
 
-            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+                final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+            else:
+                yield create_sse_event(
+                    "status",
+                    {"status": "processing", "message": "Preparing attachment context..."},
+                )
+                for att in effective_attachments:
+                    vrid = att.get("virtualRecordId")
+                    if not vrid:
+                        continue
+                    record = await blob_store.get_record_from_storage(
+                        virtual_record_id=vrid,
+                        org_id=org_id,
+                    )
+                    if not record:
+                        continue
+                    record["id"] = att.get("recordId", "")
+                    record["record_name"] = att.get("recordName", "")
+                    record["record_type"] = "FILE"
+                    record["version"] = 1
+                    record["origin"] = "UPLOAD"
+                    record["connector_name"] = "KB"
+                    record["connector_id"] = f"knowledgeBase_{org_id}"
+                    record["mime_type"] = att.get("mimeType", "application/pdf")
+                    record["weburl"] = ""
+                    record["preview_renderable"] = True
+                    record["hide_weburl"] = False
+                    record["context_metadata"] = (
+                        f"Record ID: {att.get('recordId', '')}\n"
+                        f"Record Name: {att.get('recordName', '')}\n"
+                        f"Mime Type: {att.get('mimeType', 'application/pdf')}"
+                    )
+                    record["frontend_url"] = ""
+                    record["virtual_record_id"] = vrid
+                    virtual_record_id_to_result[vrid] = record
 
             send_user_info = request.query_params.get("sendUserInfo", True)
             user_data = await _build_llm_user_context_string(
@@ -491,6 +603,74 @@ async def _generate_internal_search_stream(
                     blob_store=blob_store,
                 ))
 
+            deferred_fetch_tool = None
+            defer_tool_until_called_name = None
+            if attachment_mode:
+                @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
+                async def search_internal_knowledge(
+                    query: str,
+                    reason: str = "Retrieve internal records",
+                ) -> dict[str, Any]:
+                    """Search the internal knowledge base for relevant records matching the query."""
+                    del reason
+                    temp_virtual_map: dict[str, Any] = {}
+                    records: list[dict[str, Any]] = [
+                        r for r in virtual_record_id_to_result.values() if r
+                    ]
+
+                    try:
+                        retrieval_result = await retrieval_service.search_with_filters(
+                            queries=[query],
+                            org_id=org_id,
+                            user_id=user_id,
+                            limit=query_info.limit,
+                            filter_groups=query_info.filters,
+                        )
+                        status_code = retrieval_result.get("status_code", 500)
+                        if status_code not in [202, 500, 503, 404]:
+                            search_results = retrieval_result.get("searchResults", [])
+                            virtual_to_record_map = retrieval_result.get("virtual_to_record_map", {})
+                            flattened_results = await get_flattened_results(
+                                search_results,
+                                blob_store,
+                                org_id,
+                                is_multimodal_llm,
+                                temp_virtual_map,
+                                virtual_to_record_map,
+                                graph_provider=graph_provider,
+                            )
+                            if flattened_results:
+                                await enrich_virtual_record_id_to_result_with_fk_children(
+                                    temp_virtual_map, blob_store, org_id, graph_provider, flattened_results
+                                )
+                            virtual_record_id_to_result.update(temp_virtual_map)
+                            records.extend([r for r in temp_virtual_map.values() if r])
+                    except Exception:
+                        pass
+
+                    deduped: dict[str, dict[str, Any]] = {}
+                    for rec in records:
+                        vrid = rec.get("virtual_record_id")
+                        if vrid:
+                            deduped[vrid] = rec
+                    max_attachment_tokens = int((context_length or DEFAULT_CONTEXT_LENGTH) * ATTACHMENT_CONTEXT_RATIO)
+                    selected_records: list[dict[str, Any]] = []
+                    used_tokens = 0
+                    for rec in deduped.values():
+                        rec_tokens = _estimate_record_tokens(rec)
+                        if selected_records and used_tokens + rec_tokens > max_attachment_tokens:
+                            continue
+                        selected_records.append(rec)
+                        used_tokens += rec_tokens
+                    return {
+                        "ok": True,
+                        "result_type": "records",
+                        "records": selected_records,
+                        "record_count": len(selected_records),
+                    }
+
+                tools.append(search_internal_knowledge)
+
 
             messages, ref_mapper = _build_chat_llm_messages(
                 query_info,
@@ -504,7 +684,11 @@ async def _generate_internal_search_stream(
             )
 
             fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
-            tools.append(fetch_tool)
+            if not attachment_mode:
+                tools.append(fetch_tool)
+            else:
+                deferred_fetch_tool = fetch_tool
+                defer_tool_until_called_name = "search_internal_knowledge"
             tool_runtime_kwargs = {
                 "blob_store": blob_store,
                 "graph_provider": graph_provider,
@@ -550,6 +734,8 @@ async def _generate_internal_search_stream(
                 ref_mapper=ref_mapper,
                 max_hops=2,
                 conversation_id=query_info.conversationId,
+                defer_tool_until_called_name=defer_tool_until_called_name,
+                deferred_tool=deferred_fetch_tool,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:
@@ -674,6 +860,223 @@ async def _generate_web_search_stream(
     except Exception as e:
         logger.error(f"Error in web search stream: {str(e)}", exc_info=True)
         yield create_sse_event("error", {"error": str(e)})
+
+
+def _attachment_extension(file_name: str, mime_type: str) -> str:
+    suffix = Path(file_name).suffix.strip().lower()
+    if suffix:
+        return suffix.lstrip(".")
+    if mime_type.lower() == "application/pdf":
+        return "pdf"
+    return "bin"
+
+
+def _collect_effective_attachments(query_info: ChatQuery) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    for att in query_info.attachments or []:
+        if not isinstance(att, dict):
+            continue
+        key = str(att.get("recordId") or att.get("virtualRecordId") or "").strip()
+        if key:
+            merged[key] = att
+
+    for conv in query_info.previousConversations or []:
+        if conv.get("role") != "user_query":
+            continue
+        for att in conv.get("attachments") or []:
+            if not isinstance(att, dict):
+                continue
+            key = str(att.get("recordId") or att.get("virtualRecordId") or "").strip()
+            if key and key not in merged:
+                merged[key] = att
+
+    return list(merged.values())
+
+
+def _estimate_record_tokens(record: dict[str, Any]) -> int:
+    block_containers = record.get("block_containers", {}) if isinstance(record, dict) else {}
+    blocks = block_containers.get("blocks", []) if isinstance(block_containers, dict) else []
+    char_count = 0
+    for block in blocks:
+        data = block.get("data") if isinstance(block, dict) else None
+        if isinstance(data, dict):
+            if isinstance(data.get("uri"), str):
+                char_count += len(data.get("uri", ""))
+        elif isinstance(data, str):
+            char_count += len(data)
+        elif data is not None:
+            char_count += len(str(data))
+    # Heuristic fallback (~4 chars/token)
+    return max(1, char_count // 4) if char_count > 0 else 1
+
+
+@router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def upload_chat_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        payload = AttachmentUploadRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid attachment upload payload: {str(e)}")
+
+    user = request.state.user or {}
+    org_id = user.get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context for attachment upload")
+
+    if not payload.attachments:
+        raise HTTPException(status_code=400, detail="No attachments provided")
+
+    now = int(uuid4().int % 10_000_000_000_000)
+    uploaded_refs: list[dict[str, Any]] = []
+    record_docs: list[dict[str, Any]] = []
+    file_docs: list[dict[str, Any]] = []
+    parsed_blocks_by_record: dict[str, BlocksContainer] = {}
+    ocr_image_pages_used = 0
+    dedupe_helper = EventProcessor(
+        logger=logger,
+        processor=None,
+        graph_provider=graph_provider,
+        config_service=config_service,
+    )
+
+    for item in payload.attachments:
+        if item.mimeType.lower() != "application/pdf":
+            raise HTTPException(status_code=400, detail=f"Only PDF attachments are supported: {item.fileName}")
+        if item.size <= 0:
+            raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
+
+        record_id = str(uuid4())
+        virtual_record_id = str(uuid4())
+        extension = _attachment_extension(item.fileName, item.mimeType)
+
+        try:
+            pdf_binary = base64.b64decode(item.contentBase64, validate=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid base64 content for attachment: {item.fileName}")
+
+        record_doc = {
+            "_key": record_id,
+            "id": record_id,
+            "orgId": org_id,
+            "recordName": item.fileName,
+            "externalRecordId": record_id,
+            "recordType": "FILE",
+            "origin": "UPLOAD",
+            "connectorId": f"knowledgeBase_{org_id}",
+            "connectorName": "KB",
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+            "sourceCreatedAtTimestamp": now,
+            "sourceLastModifiedTimestamp": now,
+            "isDeleted": False,
+            "isArchived": False,
+            "indexingStatus": "QUEUED",
+            "extractionStatus": "NOT_STARTED",
+            "version": 1,
+            "mimeType": item.mimeType,
+            "sizeInBytes": item.size,
+            "virtualRecordId": virtual_record_id,
+        }
+
+        dedupe_handled = await dedupe_helper._check_duplicate_by_md5(pdf_binary, record_doc)
+        if not dedupe_handled:
+            try:
+                needs_ocr = _pdf_has_any_ocr_page(pdf_binary)
+                if needs_ocr:
+                    page_count = _pdf_page_count(pdf_binary)
+                    if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"OCR attachment page cap exceeded. "
+                                f"Maximum allowed combined OCR pages is {OCR_IMAGE_PAGE_CAP}."
+                            ),
+                        )
+                    block_containers = _build_pdf_image_blocks(pdf_binary)
+                    ocr_image_pages_used += page_count
+                else:
+                    processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
+                    parsed_data = await processor.parse_document(item.fileName, pdf_binary)
+                    block_containers = await processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                parsed_blocks_by_record[record_id] = block_containers
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+        else:
+            needs_ocr = False
+        record_doc["isVLMOcrProcessed"] = needs_ocr
+        file_doc = {
+            "_key": record_id,
+            "id": record_id,
+            "orgId": org_id,
+            "name": item.fileName,
+            "isFile": True,
+            "extension": extension,
+            "mimeType": item.mimeType,
+            "sizeInBytes": item.size,
+        }
+        record_docs.append(record_doc)
+        file_docs.append(file_doc)
+        uploaded_refs.append(
+            {
+                "recordId": record_id,
+                "recordName": item.fileName,
+                "mimeType": item.mimeType,
+                "extension": extension,
+                "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
+                "ocrMode": "image_direct" if needs_ocr else "pymupdf",
+                "deduplicated": dedupe_handled,
+            }
+        )
+
+    await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
+    await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
+
+    container: QueryAppContainer = request.app.container
+    service_logger = container.logger()
+    graphdb = GraphDBTransformer(graph_provider=graph_provider, logger=service_logger)
+    blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
+
+    class _NoopVectorStore:
+        async def apply(self, ctx: TransformContext) -> bool:
+            return True
+
+    sink_orchestrator = SinkOrchestrator(
+        graphdb=graphdb,
+        blob_storage=blob_storage,
+        vector_store=_NoopVectorStore(),
+        graph_provider=graph_provider,
+        logger=service_logger,
+    )
+
+    for record_doc in record_docs:
+        record_id = record_doc.get("_key") or record_doc.get("id")
+        block_containers = parsed_blocks_by_record.get(record_id)
+        if block_containers is None:
+            continue
+
+        record = convert_record_dict_to_record(record_doc)
+        record.block_containers = block_containers
+        record.virtual_record_id = record_doc.get("virtualRecordId")
+        ctx = TransformContext(
+            record=record,
+            settings={"sink_only": True, "skip_vector_store": True},
+        )
+        await sink_orchestrator.apply(ctx)
+
+    return {
+        "conversationId": payload.conversationId,
+        "attachments": uploaded_refs,
+    }
 
 
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])

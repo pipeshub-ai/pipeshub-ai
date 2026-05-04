@@ -19,7 +19,16 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import { KnowledgeBaseApi } from '@/knowledge-base/api';
+import type {
+  ConfidenceLevel,
+  ModelInfo,
+  StatusMessage,
+  ResponseTab,
+  ChatArtifact,
+  AppliedFilters as AppliedFiltersData,
+  ChatAttachmentRef,
+} from '../../types';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
@@ -71,6 +80,8 @@ interface ChatResponseProps {
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
   collections?: Array<{ id: string; name: string }>;
+  /** Files attached to this user query */
+  attachments?: ChatAttachmentRef[];
   appliedFilters?: AppliedFiltersData;
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
@@ -102,6 +113,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   isStreaming = false,
   modelInfo,
   collections,
+  attachments,
   appliedFilters,
   messageId,
   isLastMessage = false,
@@ -131,7 +143,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const prevCRRef = useRef<Record<string, unknown>>({});
   const currentCRVals: Record<string, unknown> = {
     question, answer, citationMaps, citationCallbacks, confidence,
-    isStreaming, modelInfo, collections, appliedFilters, messageId,
+    isStreaming, modelInfo, collections, attachments, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
     streamingCitationMaps, createdAt,
   };
@@ -157,6 +169,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   const activeExpandedMessageId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.activeExpandedMessageId ?? null : null
   );
+  const setPreviewFile = useChatStore((s) => s.setPreviewFile);
+  const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const updateSlot = useChatStore((s) => s.updateSlot);
   const activeSlotId = useChatStore((s) => s.activeSlotId);
 
@@ -383,6 +397,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   const displayedQuestion = isQuestionExpanded || !isQuestionLong
     ? question
     : question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…';
+  const hasAppliedFilters = !!appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0);
+  const hasAttachments = !!attachments && attachments.length > 0;
 
   const handleEditQuery = useCallback(() => {
     if (!messageId || isStreaming) return;
@@ -392,6 +408,72 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming]);
 
+  const handleAttachmentPreview = useCallback(
+    async (attachment: ChatAttachmentRef) => {
+      const attachmentName = attachment.recordName || attachment.recordId;
+      setPreviewFile({
+        id: attachment.recordId,
+        name: attachmentName,
+        url: '',
+        type: attachment.mimeType || attachment.extension || '',
+        isLoading: true,
+      });
+      setPreviewMode('sidebar');
+
+      try {
+        const streamAsPdf =
+          isPresentationFile(attachment.mimeType, attachmentName) ||
+          isLegacyWordDocFile(attachment.mimeType, attachmentName);
+        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
+        const [recordDetails, blob] = await Promise.all([
+          KnowledgeBaseApi.getRecordDetails(attachment.recordId),
+          KnowledgeBaseApi.streamRecord(attachment.recordId, streamOptions),
+        ]);
+
+        const recordMime =
+          recordDetails.record.mimeType || attachment.mimeType || attachment.extension || '';
+        const resolvedType = resolvePreviewMimeAfterStream(
+          recordMime,
+          attachmentName,
+          blob,
+          !!streamOptions,
+        );
+        const fr = recordDetails.record.fileRecord;
+        const isDocx = isDocxFile(
+          recordDetails.record.mimeType || attachment.mimeType,
+          attachmentName,
+          recordDetails.record.recordName,
+          attachment.extension,
+          fr?.extension,
+        );
+        const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
+
+        setPreviewFile({
+          id: attachment.recordId,
+          name: attachmentName,
+          url: objectUrl,
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
+          size: recordDetails.record.sizeInBytes,
+          isLoading: false,
+          recordDetails,
+          webUrl: recordDetails.record.webUrl ?? undefined,
+          previewRenderable: recordDetails.record.previewRenderable,
+        });
+      } catch (error) {
+        setPreviewFile({
+          id: attachment.recordId,
+          name: attachmentName,
+          url: '',
+          type: attachment.mimeType || attachment.extension || '',
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Failed to load file',
+        });
+      }
+    },
+    [setPreviewFile, setPreviewMode]
+  );
+
   const shell = (
     <Box style={{ width: '100%' }}>
       {/* Question Header with hover edit icon */}
@@ -399,7 +481,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         onMouseEnter={() => setIsQuestionHovered(true)}
         onMouseLeave={() => setIsQuestionHovered(false)}
         style={{
-          marginBottom: (collections && collections.length > 0) || (appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0)) ? 'var(--space-3)' : 'var(--space-4)',
+          marginBottom: (collections && collections.length > 0) || hasAppliedFilters || hasAttachments ? 'var(--space-3)' : 'var(--space-4)',
         }}
       >
         <Flex align="start" gap="2">
@@ -466,6 +548,56 @@ export const ChatResponse = React.memo(function ChatResponse({
             />
           </Button>
         )}
+        {hasAttachments && (
+          <Box style={{ marginTop: 'var(--space-2)' }}>
+            <Flex align="center" gap="1" style={{ marginBottom: 'var(--space-1)' }}>
+              <MaterialIcon
+                name="attach_file"
+                size={ICON_SIZES.SM}
+                color="var(--slate-10)"
+              />
+              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                {attachments.length} {attachments.length === 1 ? 'attachment' : 'attachments'}
+              </Text>
+            </Flex>
+            <Flex wrap="wrap" gap="2">
+              {attachments.map((attachment, index) => (
+                <button
+                  key={`${attachment.recordId}-${attachment.virtualRecordId ?? index}`}
+                  type="button"
+                  onClick={() => {
+                    void handleAttachmentPreview(attachment);
+                  }}
+                  style={{
+                    border: '1px solid var(--slate-6)',
+                    borderRadius: 'var(--radius-3)',
+                    backgroundColor: 'var(--slate-2)',
+                    padding: 'var(--space-1) var(--space-2)',
+                    maxWidth: '100%',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                  title={`Preview ${attachment.recordName || attachment.recordId}`}
+                >
+                  <Text
+                    size="1"
+                    style={{
+                      color: 'var(--slate-11)',
+                      display: 'block',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      maxWidth: '20rem',
+                    }}
+                    title={attachment.recordName || attachment.recordId}
+                  >
+                    {attachment.recordName || attachment.recordId}
+                  </Text>
+                </button>
+              ))}
+            </Flex>
+          </Box>
+        )}
         {createdAt && (
           <Text
             size="1"
@@ -481,7 +613,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       </Box>
 
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
-      {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
+      {hasAppliedFilters && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
           <AppliedFilters appliedFilters={appliedFilters} />
         </Box>

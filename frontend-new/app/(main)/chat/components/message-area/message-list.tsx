@@ -10,7 +10,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, ChatArtifact } from '../../types';
+import type { AppliedFilters, ChatArtifact, ChatAttachmentRef } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -51,6 +51,7 @@ interface MessagePair {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
+  attachments?: ChatAttachmentRef[];
   appliedFilters?: AppliedFilters;
   /** ISO timestamp of when the user sent this query */
   createdAt?: string;
@@ -230,10 +231,12 @@ export function MessageList() {
         // appliedFilters from the preceding user message metadata
         const userMsgCustom = prevMsg?.metadata?.custom as {
           collections?: Array<{ id: string; name: string }>;
+          attachments?: ChatAttachmentRef[];
           appliedFilters?: AppliedFilters;
           createdAt?: string;
         } | undefined;
         const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
+        const userMessageAttachments = userMsgCustom?.attachments as ChatAttachmentRef[] | undefined;
         const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
         const userCreatedAt = userMsgCustom?.createdAt;
 
@@ -254,6 +257,7 @@ export function MessageList() {
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
+          attachments: userMessageAttachments,
           appliedFilters: userMessageAppliedFilters,
           createdAt: userCreatedAt,
         });
@@ -900,6 +904,7 @@ export function MessageList() {
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
                   collections={pair.collections}
+                  attachments={pair.attachments}
                   appliedFilters={pair.appliedFilters}
                   messageId={pair.messageId}
                   isLastMessage={isLast}

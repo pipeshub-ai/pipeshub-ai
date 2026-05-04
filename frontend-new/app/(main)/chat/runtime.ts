@@ -17,6 +17,7 @@ import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import {
   buildAssistantApiFilters,
   buildStreamRequestModeFields,
+  type ChatAttachmentRef,
   type AppliedFilterNode,
   type AppliedFilters,
   type ChatCollectionAttachment,
@@ -75,6 +76,31 @@ function readKbCollectionsFromMessage(
   return out.length > 0 ? out : undefined;
 }
 
+function readAttachmentsFromMessage(
+  message: ThreadMessageLike
+): ChatAttachmentRef[] | undefined {
+  const raw = message.metadata?.custom?.attachments;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: ChatAttachmentRef[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const recordId = (item as { recordId?: unknown }).recordId;
+    if (typeof recordId !== 'string' || recordId.trim().length === 0) continue;
+    const recordName = (item as { recordName?: unknown }).recordName;
+    const mimeType = (item as { mimeType?: unknown }).mimeType;
+    const extension = (item as { extension?: unknown }).extension;
+    const virtualRecordId = (item as { virtualRecordId?: unknown }).virtualRecordId;
+    out.push({
+      recordId,
+      ...(typeof recordName === 'string' ? { recordName } : {}),
+      ...(typeof mimeType === 'string' ? { mimeType } : {}),
+      ...(typeof extension === 'string' ? { extension } : {}),
+      ...(typeof virtualRecordId === 'string' ? { virtualRecordId } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /**
  * Transform backend conversation messages into assistant-ui thread format.
  *
@@ -109,11 +135,17 @@ export function loadHistoricalMessages(
         ? {
             custom: {
               appliedFilters: msg.appliedFilters,
+              ...(msg.attachments && msg.attachments.length > 0
+                ? { attachments: msg.attachments }
+                : {}),
               createdAt: msg.createdAt,
             },
           }
         : {
           custom: {
+            ...(msg.attachments && msg.attachments.length > 0
+              ? { attachments: msg.attachments }
+              : {}),
             createdAt: msg.createdAt,
           },
         },
@@ -153,6 +185,7 @@ export function buildExternalStoreConfig(
 
       const query = extractTextContent(message.content);
       if (!query.trim()) return;
+      const messageAttachments = readAttachmentsFromMessage(message);
 
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
@@ -283,6 +316,9 @@ export function buildExternalStoreConfig(
         currentTime: getClientCurrentTime(),
         filters: resolvedFilters,
         ...(appliedFilters ? { appliedFilters } : {}),
+        ...(messageAttachments && messageAttachments.length > 0
+          ? { attachments: messageAttachments }
+          : {}),
         conversationId: currentSlot.convId || undefined,
         ...(effectiveAgentId
           ? {

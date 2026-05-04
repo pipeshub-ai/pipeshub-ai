@@ -370,6 +370,59 @@ const hydrateScopedRequestAsUser = async (
     }
   };
 
+export const uploadChatAttachments =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const files = (req.files as Express.Multer.File[]) || [];
+      if (!Array.isArray(files) || files.length === 0) {
+        throw new BadRequestError('At least one PDF file is required');
+      }
+
+      const invalidFile = files.find(
+        (file) => (file.mimetype || '').toLowerCase() !== 'application/pdf',
+      );
+      if (invalidFile) {
+        throw new BadRequestError(`Unsupported attachment type: ${invalidFile.originalname}`);
+      }
+
+      const conversationIdRaw = req.body?.conversationId;
+      const conversationId =
+        typeof conversationIdRaw === 'string' && conversationIdRaw.trim().length > 0
+          ? conversationIdRaw.trim()
+          : null;
+
+      const aiPayload = {
+        conversationId,
+        attachments: files.map((file) => ({
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          contentBase64: file.buffer.toString('base64'),
+        })),
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/attachments/upload`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: aiPayload,
+      };
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiServiceCommand.execute();
+      const statusCode = aiResponse?.statusCode || 500;
+      const responseData = aiResponse?.data || {};
+
+      res.status(statusCode).json(responseData);
+    } catch (error: any) {
+      next(handleBackendError(error, 'Upload Chat Attachments'));
+    }
+  };
+
 export const streamChat =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
@@ -399,7 +452,11 @@ export const streamChat =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        req.body.query,
+        req.body.appliedFilters,
+        req.body.attachments,
+      );
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -453,6 +510,7 @@ export const streamChat =
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -868,7 +926,11 @@ export const createConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        req.body.query,
+        req.body.appliedFilters,
+        req.body.attachments,
+      );
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -898,6 +960,7 @@ export const createConversation =
           previousConversations: req.body.previousConversations || [],
           recordIds: req.body.recordIds || [],
           filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
@@ -1186,7 +1249,11 @@ export const addMessage =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+        const userQueryMessage = buildUserQueryMessage(
+          req.body.query,
+          req.body.appliedFilters,
+          req.body.attachments,
+        );
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -1218,6 +1285,7 @@ export const addMessage =
             query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
+            attachments: req.body.attachments || [],
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
@@ -1466,7 +1534,11 @@ export const addMessageStream =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
+        buildUserQueryMessage(
+          req.body.query,
+          req.body.appliedFilters,
+          req.body.attachments,
+        ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -1541,6 +1613,7 @@ export const addMessageStream =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -2782,6 +2855,7 @@ async function regenerateAnswersInternal(
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
+      attachments: req.body.attachments || [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
@@ -5148,7 +5222,11 @@ export const unshareAgent =
 
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        req.body.query,
+        req.body.appliedFilters,
+        req.body.attachments,
+      );
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5206,6 +5284,7 @@ export const unshareAgent =
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -5541,7 +5620,11 @@ export const createAgentConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+      const userQueryMessage = buildUserQueryMessage(
+        req.body.query,
+        req.body.appliedFilters,
+        req.body.attachments,
+      );
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5572,6 +5655,7 @@ export const createAgentConversation =
           previousConversations: req.body.previousConversations || [],
           recordIds: req.body.recordIds || [],
           filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
@@ -5811,7 +5895,11 @@ export const createAgentConversation =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
+        const userQueryMessage = buildUserQueryMessage(
+          req.body.query,
+          req.body.appliedFilters,
+          req.body.attachments,
+        );
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -5853,6 +5941,7 @@ export const createAgentConversation =
           query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
+            attachments: req.body.attachments || [],
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
@@ -6126,7 +6215,11 @@ export const addMessageStreamToAgentConversation =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
+        buildUserQueryMessage(
+          req.body.query,
+          req.body.appliedFilters,
+          req.body.attachments,
+        ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -6202,6 +6295,7 @@ export const addMessageStreamToAgentConversation =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,

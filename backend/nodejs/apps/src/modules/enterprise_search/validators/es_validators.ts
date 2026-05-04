@@ -27,6 +27,14 @@ const appliedFiltersSchema = z
   })
   .optional();
 
+const attachmentRefSchema = z.object({
+  recordId: z.string().min(1, { message: 'Attachment recordId is required' }),
+  recordName: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  extension: z.string().min(1).optional(),
+  virtualRecordId: z.string().min(1).optional(),
+});
+
 export const enterpriseSearchCreateSchema = z.object({
   body: z.object({
     query: z
@@ -83,6 +91,7 @@ export const enterpriseSearchCreateSchema = z.object({
     tools: z
       .array(z.string().min(1))
       .optional(),
+    attachments: z.array(attachmentRefSchema).optional(),
   }),
 });
 
@@ -171,6 +180,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     tools: z
       .array(z.string().min(1))
       .optional(),
+    attachments: z.array(attachmentRefSchema).optional(),
   }),
 });
 
