@@ -7455,7 +7455,6 @@ async def _build_tool_results_context(
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"R1-0\", \"R2-3\"], "
             "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
             "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
