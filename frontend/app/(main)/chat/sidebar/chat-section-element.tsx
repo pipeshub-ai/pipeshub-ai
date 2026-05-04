@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
@@ -24,6 +24,25 @@ function TypingTitle({ title }: { title: string }) {
     <span className="title-typing-animation">
       {title}
     </span>
+  );
+}
+
+/** Title text with a streaming spinner — shared between ChatSectionElement and GeneratingTitleItem. */
+function StreamingTitleLabel({ title }: { title: string }) {
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <span
+        style={{
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {title}
+      </span>
+      <Spinner size={12} color="var(--accent-11)" />
+    </Flex>
   );
 }
 
@@ -55,6 +74,18 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const renameInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const urlConversationId = searchParams?.get('conversationId') ?? null;
+
+  const isStreamingSelector = useCallback(
+    (s: ReturnType<typeof useChatStore.getState>) => {
+      for (const slot of Object.values(s.slots)) {
+        if (slot.convId === conversation.id && slot.isStreaming) return true;
+      }
+      return false;
+    },
+    [conversation.id],
+  );
+  const isConversationStreaming = useChatStore(isStreamingSelector);
 
   const newlyResolvedIds = useChatStore((s) => s.newlyResolvedIds);
   const clearNewlyResolvedId = useChatStore((s) => s.clearNewlyResolvedId);
@@ -129,8 +160,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setDeleteDialogOpen(false);
-      const urlConvId = searchParams.get('conversationId');
-      if (urlConvId === conversation.id) {
+      if (urlConversationId === conversation.id) {
         const store = useChatStore.getState();
         const found = agentId
           ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
@@ -160,8 +190,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setArchiveDialogOpen(false);
-      const urlConvId = searchParams.get('conversationId');
-      if (urlConvId === conversation.id) {
+      if (urlConversationId === conversation.id) {
         const store = useChatStore.getState();
         const found = agentId
           ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
@@ -220,10 +249,17 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
 
   const conversationHref = buildChatHref({ agentId, conversationId: conversation.id });
 
+  const streamingLabel = isConversationStreaming
+    ? <StreamingTitleLabel title={conversation.title} />
+    : null;
+
   return (
     <>
       <SidebarItem
-        label={isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title}
+        label={
+          streamingLabel
+            ?? (isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title)
+        }
         isActive={isActive}
         href={conversationHref}
         onClick={onClick}
@@ -232,7 +268,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={
-          conversation.isOwner === true ? (
+          !isConversationStreaming && conversation.isOwner === true ? (
             <ChatItemMenu
               isParentHovered={isHovered}
               onOpenChange={setMenuOpen}
@@ -267,9 +303,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
 }
 
 /**
- * "Generating Title…" shimmer item shown when a new chat is being streamed.
- * Uses a gradient sweep animation that moves left-to-right across the text,
- * matching the Figma design (node 2245:22924).
+ * Sidebar item shown while a new chat is being streamed.
+ *
+ * Shows the user's query text as a preliminary title (truncated) with a
+ * small spinning indicator at the end — matching ChatGPT's UX pattern
+ * of immediately showing what you asked while the response generates.
+ *
+ * Falls back to a "Generating Title…" shimmer when no query text is available.
  *
  * Clickable — switches to the streaming temp slot so the user can
  * return to a new chat that's still generating in the background.
@@ -278,19 +318,16 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
   const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const currentConversationId = searchParams.get('conversationId');
+  const currentConversationId = searchParams?.get('conversationId') ?? null;
   const activeSlotId = useChatStore((s) => s.activeSlotId);
   const slotConvId = useChatStore((s) => s.slots[slotId]?.convId ?? null);
-  /**
-   * Match other sidebar rows: highlight from the URL when we know the real id
-   * (server sends it in the SSE `connected` event). Before that, use the
-   * active slot so a temp new chat without a URL id still looks selected.
-   */
+  const pendingTitle = useChatStore((s) => s.pendingConversations[slotId]?.title ?? null);
+
   const isActive = slotConvId
     ? currentConversationId === slotConvId
     : activeSlotId === slotId;
 
-  const rawAgent = searchParams.get('agentId');
+  const rawAgent = searchParams?.get('agentId') ?? null;
   const agentId = rawAgent?.trim() ? rawAgent : null;
   const href =
     slotConvId != null && slotConvId !== ''
@@ -303,6 +340,19 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
       router.push(agentId ? buildChatHref({ agentId }) : '/chat/');
     }
   };
+
+  if (pendingTitle) {
+    return (
+      <SidebarItem
+        isActive={isActive}
+        href={href}
+        onClick={handleClick}
+        label={<StreamingTitleLabel title={pendingTitle} />}
+        textColor="var(--slate-12)"
+        fontWeight={500}
+      />
+    );
+  }
 
   return (
     <SidebarItem

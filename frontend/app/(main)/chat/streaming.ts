@@ -309,6 +309,29 @@ export async function streamMessageForSlot(
               .getState()
               .resolveSlotConvId(slotId, earlyId, { keepTemp: true });
             debugLog.flush('connected-conv-id', { slotId, convId: earlyId });
+
+            // Fetch the conversation title from the backend — the conversation
+            // row is already created at this point with a generated title.
+            // Non-blocking: if the fetch fails or the pending entry is already
+            // resolved by onComplete before this returns, the update is a no-op
+            // (updatePendingConversationTitle checks existence).
+            const titleFetch = request.agentId
+              ? AgentsApi.fetchAgentConversation(request.agentId, earlyId)
+                  .then((res) => res.conversation?.title)
+              : ChatApi.fetchConversation(earlyId)
+                  .then((res) => res.conversation?.title);
+
+            titleFetch
+              .then((title) => {
+                if (title) {
+                  useChatStore
+                    .getState()
+                    .updatePendingConversationTitle(slotId, title);
+                }
+              })
+              .catch(() => {
+                // Non-critical — sidebar will show shimmer until complete event
+              });
           }
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));

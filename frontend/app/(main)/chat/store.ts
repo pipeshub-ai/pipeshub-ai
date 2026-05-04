@@ -83,7 +83,7 @@ export interface ChatPreviewFile {
 export interface PendingConversation {
   /** The slotId that owns this pending entry — used for sidebar click-to-switch */
   slotId: string;
-  /** Null while generating; filled from SSE complete event */
+  /** Null while generating; filled from backend when conversationId arrives or from SSE complete */
   title: string | null;
   /** True while the SSE stream is in progress and title hasn't arrived */
   isGenerating: boolean;
@@ -357,6 +357,7 @@ interface ChatState {
   setUniversalAgentToolsError: (error: string | null) => void;
 
   addPendingConversation: (slotId: string) => void;
+  updatePendingConversationTitle: (slotId: string, title: string) => void;
   clearNewlyResolvedId: (conversationId: string) => void;
   resolvePendingConversation: (
     slotId: string,
@@ -914,6 +915,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       },
     })),
+
+  updatePendingConversationTitle: (slotId, title) =>
+    set((state) => {
+      const existing = state.pendingConversations[slotId];
+      if (!existing) return state;
+      return {
+        pendingConversations: {
+          ...state.pendingConversations,
+          [slotId]: { ...existing, title },
+        },
+      };
+    }),
 
   resolvePendingConversation: (slotId, conversation, options) =>
     set((state) => {

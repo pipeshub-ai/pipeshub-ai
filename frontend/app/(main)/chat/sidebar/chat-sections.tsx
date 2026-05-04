@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -34,7 +34,7 @@ export const ChatSections = React.memo(function ChatSections({
   onOpenMoreChats: (sectionType: 'shared' | 'your') => void;
 }) {
   const searchParams = useSearchParams();
-  const currentConversationId = searchParams.get('conversationId');
+  const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
   const conversations = useChatStore((s) => s.conversations);
@@ -42,6 +42,7 @@ export const ChatSections = React.memo(function ChatSections({
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
+  const slots = useChatStore((s) => s.slots);
   const pagination = useChatStore((s) => s.pagination);
   const sharedPagination = useChatStore((s) => s.sharedPagination);
 
@@ -50,7 +51,7 @@ export const ChatSections = React.memo(function ChatSections({
   const prevChatSectionsRef = React.useRef<Record<string, unknown>>({});
   const currentSectionsVals: Record<string, unknown> = {
     currentConversationId, conversations, sharedConversations,
-    isConversationsLoading, conversationsError, pendingConversations, pagination, sharedPagination,
+    isConversationsLoading, conversationsError, pendingConversations, slots, pagination, sharedPagination,
   };
   const sectionsReasons: string[] = [];
   for (const [k, v] of Object.entries(currentSectionsVals)) {
@@ -95,6 +96,18 @@ export const ChatSections = React.memo(function ChatSections({
   const yourTimeGroups = groupConversationsByTime(visibleYour);
   const yourNonEmptyGroups = getNonEmptyGroups(yourTimeGroups);
 
+  const activePendingConversations = useMemo(() => {
+    const convIds = new Set(conversations.map((c) => c.id));
+    return Object.values(pendingConversations).filter((p) => {
+      if (!p.isGenerating) return false;
+      const slot = slots[p.slotId];
+      if (!slot) return false;
+      if (slot.threadAgentId) return false;
+      if (slot.convId && convIds.has(slot.convId)) return false;
+      return true;
+    });
+  }, [pendingConversations, slots, conversations]);
+
   return (
     <Flex
       direction="column"
@@ -130,7 +143,7 @@ export const ChatSections = React.memo(function ChatSections({
         isScrollable
         hasMore={hasMoreYour}
         onMore={() => onOpenMoreChats('your')}
-        pendingConversations={Object.values(pendingConversations).filter(p => p.isGenerating)}
+        pendingConversations={activePendingConversations}
       />
     </Flex>
   );
