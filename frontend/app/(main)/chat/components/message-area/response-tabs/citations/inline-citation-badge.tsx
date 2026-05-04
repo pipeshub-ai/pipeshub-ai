@@ -47,6 +47,7 @@ export function InlineCitationBadge({
         as="span"
         align="center"
         justify="center"
+        wrap="wrap"
         style={{
           display: 'inline-flex',
           backgroundColor: 'var(--slate-a3)',
@@ -57,7 +58,8 @@ export function InlineCitationBadge({
           marginLeft: 'var(--space-1)',
           marginRight: '2px',
           minWidth: '18px',
-          height: 'var(--space-5)', /* was: 20px, delta: +4px */
+          minHeight: 'var(--space-5)', /* was: 20px, delta: +4px */
+          rowGap: '2px',
         }}
       >
         <Text
@@ -77,6 +79,7 @@ export function InlineCitationBadge({
       as="span"
       align="center"
       gap="1"
+      wrap="wrap"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -89,7 +92,9 @@ export function InlineCitationBadge({
         marginLeft: 'var(--space-1)',
         marginRight: '2px',
         transition: 'all 0.15s ease',
-        height: 'var(--space-5)', /* was: 20px, delta: +4px */
+        minHeight: 'var(--space-5)', /* was: 20px, delta: +4px */
+        rowGap: '2px',
+        columnGap: 'var(--space-1)',
       }}
     >
       <ConnectorIcon type={connector} size={14} />
@@ -100,9 +105,12 @@ export function InlineCitationBadge({
         weight="medium"
         style={{
           color: 'var(--accent-11)',
-          lineHeight: 1,
+          lineHeight: 1.25,
           fontSize: 'var(--font-size-1)', /* was: 11px, delta: +1px */
-          whiteSpace: 'nowrap',
+          maxWidth: 'min(240px, 100%)',
+          minWidth: 0,
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
         }}
       >
         {truncatedName}

@@ -43,6 +43,7 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
       as="span"
       align="center"
       gap="1"
+      wrap="wrap"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -55,8 +56,9 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
         marginLeft: '4px',
         marginRight: '2px',
         transition: 'all 0.15s ease',
-        height: '20px',
-        gap: '4px',
+        minHeight: 'var(--space-5)', /* was: 20px, delta: +4px */
+        rowGap: '2px',
+        columnGap: 'var(--space-1)',
       }}
     >
       <ConnectorIcon type={connector} size={14} />
@@ -81,6 +83,7 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
         as="span"
         align="center"
         gap="1"
+        wrap="wrap"
         style={{
           display: 'inline-flex',
           gap: '3px',
