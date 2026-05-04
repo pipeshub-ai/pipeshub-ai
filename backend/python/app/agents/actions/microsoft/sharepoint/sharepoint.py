@@ -1160,10 +1160,16 @@ class SharePoint:
                     )
                 })
 
-            # 3. Pre-download size cap.
-            if file_size is not None and file_size > _MAX_FILE_CONTENT_BYTES:
+            # 3. Pre-download size cap. If Graph omits `size` (rare, but possible
+            #    for URL-typed items or in-progress uploads), treat that the same
+            #    as oversize — refusing to read prevents an unbounded download.
+            if file_size is None or file_size > _MAX_FILE_CONTENT_BYTES:
                 return False, json.dumps({
-                    "error": f"File is too large to be processed (>{_MAX_FILE_CONTENT_BYTES // (1024 * 1024)} MB)",
+                    "error": (
+                        f"File is too large to be processed "
+                        f"(>{_MAX_FILE_CONTENT_BYTES // (1024 * 1024)} MB) "
+                        f"or its size could not be determined"
+                    ),
                     "size_bytes": file_size,
                     "name": file_name,
                 })

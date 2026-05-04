@@ -51,11 +51,21 @@ from msgraph.generated.sites.sites_request_builder import (  # type: ignore
 from app.sources.client.microsoft.microsoft import MSGraphClient
 
 
-# SharePoint-specific response wrapper
+# SharePoint-specific response wrapper.
+#
+# `data` is a union (matches Zoom's pattern):
+#   - dict           — for JSON-shaped Graph SDK responses (the common case)
+#   - list           — for OData collections returned at the top level
+#   - bytes          — for binary downloads (e.g. get_drive_item_content)
+#   - None           — when the call has no body (errors, no-content responses)
+#
+_SharePointResponseData = dict[str, Any] | list[Any] | bytes
+
+
 class SharePointResponse:
     """Standardized SharePoint API response wrapper."""
     success: bool
-    data: Optional[dict[str, Any]] = None
+    data: Optional[_SharePointResponseData] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
@@ -63,7 +73,7 @@ class SharePointResponse:
         self,
         *,
         success: bool,
-        data: Optional[dict[str, Any]] = None,
+        data: Optional[_SharePointResponseData] = None,
         error: Optional[str] = None,
         message: Optional[str] = None,
     ) -> None:
