@@ -20,6 +20,7 @@ Test cases:
   TC-MOVE-001   — Move detection (change page parent)
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -50,6 +51,12 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     assert_confluence_pages_match_graph_records,
     count_confluence_space_pages_v1_search,
     get_confluence_page_version_number_v1,
+    wait_until_confluence_condition,
+    check_page_in_v1_search_bool,
+    check_version_equals_bool,
+    check_page_title_bool,
+    check_ancestors_contain_bool,
+    check_multiple_pages_in_search_bool,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
@@ -397,12 +404,12 @@ class TestConfluenceIncrementalSync:
         page_data = resp.json()
         page_id = str(page_data["id"])
         
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_in_v1_space_content_search(
-            confluence_datasource,
-            space_key,
-            page_id,
-            context="TC-CF-024 after create (before connector resync)",
+        # Wait for page to be visible in Confluence v1 search
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_page_in_v1_search_bool(
+                confluence_datasource, space_key, page_id
+            ),
+            description=f"TC-CF-024: page {page_id} visible in v1 content/search",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -478,12 +485,13 @@ class TestConfluenceIncrementalSync:
             }
         )
         
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_version_number_v1(
-            confluence_datasource,
-            str(page_id),
-            old_version + 1,
-            context="TC-CF-026 after update (before connector resync)",
+        expected_version = old_version + 1
+        # Wait for version to update in Confluence v1 API
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_version_equals_bool(
+                confluence_datasource, str(page_id), expected_version
+            ),
+            description=f"TC-CF-026: page {page_id} version == {expected_version}",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -603,7 +611,14 @@ class TestConfluenceReindex:
         version_before = record_before.external_revision_id
         record_key = record_before.id
         
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        # Wait for current version to be stable in Confluence v1 API
+        if version_before is not None:
+            await wait_until_confluence_condition(
+                check_fn=lambda: check_version_equals_bool(
+                    confluence_datasource, str(page_id), int(version_before)
+                ),
+                description=f"TC-CF-046: page {page_id} version stable at {version_before}",
+            )
         v1_before = await get_confluence_page_version_number_v1(
             confluence_datasource, str(page_id)
         )
@@ -618,7 +633,9 @@ class TestConfluenceReindex:
         assert result.get("success") or result.get("status") == "success", (
             f"Reindex failed: {result}"
         )
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        # Reindex is synchronous from API perspective for unchanged pages
+        # Short wait only for any async propagation
+        await asyncio.sleep(30)
         
         v1_after = await get_confluence_page_version_number_v1(
             confluence_datasource, str(page_id)
@@ -693,18 +710,19 @@ class TestConfluenceReindex:
 
         expected_v1_version = page_data["version"]["number"] + 1
 
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_version_number_v1(
-            confluence_datasource,
-            str(page_id),
-            expected_v1_version,
-            context="TC-CF-047 after update wait (before reindex)",
+        # Wait for version to update in Confluence v1 API
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_version_equals_bool(
+                confluence_datasource, str(page_id), expected_v1_version
+            ),
+            description=f"TC-CF-047: page {page_id} version == {expected_v1_version}",
         )
         v1_version_after_update = expected_v1_version
         result = pipeshub_client.reindex_record(record_key)
         assert result.get("success") or result.get("status") == "success"
         # Reindex HTTP returns after publishing sync-events; graph updates asynchronously.
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        # Wait for graph to reflect reindex (not Confluence API wait)
+        await asyncio.sleep(30)
 
         v1_version_now = await get_confluence_page_version_number_v1(
             confluence_datasource, str(page_id)
@@ -874,25 +892,22 @@ class TestConfluenceConnector:
         )
         new_page_2 = resp_2.json()
 
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        page_id_1 = str(new_page_1["id"])
+        page_id_2 = str(new_page_2["id"])
+        
+        # Wait for both pages to be visible in Confluence v1 search
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_multiple_pages_in_search_bool(
+                confluence_datasource, space_key, [page_id_1, page_id_2]
+            ),
+            description=f"TC-INCR-001: both new pages in v1 search for {space_key}",
+        )
         api_after_create = await count_confluence_space_pages_v1_search(
             confluence_datasource, space_key
         )
         assert api_after_create == api_before + 2, (
             f"Confluence v1 page count should increase by 2; before={api_before}, "
             f"after_create={api_after_create}"
-        )
-        await assert_confluence_page_in_v1_space_content_search(
-            confluence_datasource,
-            space_key,
-            str(new_page_1["id"]),
-            context="TC-INCR-001 alpha page (before connector resync)",
-        )
-        await assert_confluence_page_in_v1_space_content_search(
-            confluence_datasource,
-            space_key,
-            str(new_page_2["id"]),
-            context="TC-INCR-001 beta page (before connector resync)",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -958,12 +973,13 @@ class TestConfluenceConnector:
             }
         )
 
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_version_number_v1(
-            confluence_datasource,
-            str(page_id),
-            page_data["version"]["number"] + 1,
-            context="TC-UPDATE-001 after update (before connector resync)",
+        expected_version = page_data["version"]["number"] + 1
+        # Wait for version to update in Confluence v1 API
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_version_equals_bool(
+                confluence_datasource, str(page_id), expected_version
+            ),
+            description=f"TC-UPDATE-001: page {page_id} version == {expected_version}",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -1003,12 +1019,12 @@ class TestConfluenceConnector:
             }
         )
         
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_title_v1(
-            confluence_datasource,
-            str(page_id),
-            new_title,
-            context="TC-RENAME-001 after rename (before connector resync)",
+        # Wait for title to update in Confluence v1 API
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_page_title_bool(
+                confluence_datasource, str(page_id), new_title
+            ),
+            description=f"TC-RENAME-001: page {page_id} title == '{new_title}'",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -1058,13 +1074,13 @@ class TestConfluenceConnector:
         )
         parent_page = parent_resp.json()
 
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
         parent_id_str = str(parent_page["id"])
-        await assert_confluence_page_in_v1_space_content_search(
-            confluence_datasource,
-            confluence_connector["space_key"],
-            parent_id_str,
-            context="TC-MOVE-001 parent page (before connector resync)",
+        # Wait for parent page to be visible in Confluence v1 search
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_page_in_v1_search_bool(
+                confluence_datasource, confluence_connector["space_key"], parent_id_str
+            ),
+            description=f"TC-MOVE-001: parent page {parent_id_str} in v1 search",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -1083,12 +1099,12 @@ class TestConfluenceConnector:
 
         await confluence_datasource.move_page(page_id, str(parent_page["id"]))
 
-        pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
-        await assert_confluence_page_v1_ancestors_contain_id(
-            confluence_datasource,
-            str(page_id),
-            parent_id_str,
-            context="TC-MOVE-001 after move (before connector resync)",
+        # Wait for move to reflect in Confluence v1 API (ancestors)
+        await wait_until_confluence_condition(
+            check_fn=lambda: check_ancestors_contain_bool(
+                confluence_datasource, str(page_id), parent_id_str
+            ),
+            description=f"TC-MOVE-001: page {page_id} ancestors contain {parent_id_str}",
         )
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)

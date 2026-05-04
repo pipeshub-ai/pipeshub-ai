@@ -22,6 +22,8 @@ from helper.graph_provider import (
 from connectors.confluence.constants import CONFLUENCE_TEST_SETTLE_WAIT_SEC
 from connectors.confluence.confluence_v1_test_utils import (  # type: ignore[import-not-found]
     assert_confluence_pages_match_graph_records,
+    wait_until_confluence_condition,
+    check_page_count_in_space_bool,
 )
 from helper.graph_provider_utils import (  # type: ignore[import-not-found]
     wait_for_sync_completion,
@@ -168,7 +170,18 @@ async def confluence_connector(
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
 
-    pipeshub_client.wait(CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+    # Wait for pages to be visible in Confluence v1 search API.
+    # Confluence creates a default space page on new space; plus our InitTestPage* uploads.
+    expected_v1_page_count = page_count + 1
+    await wait_until_confluence_condition(
+        check_fn=lambda: check_page_count_in_space_bool(
+            confluence_datasource, space_key, expected_v1_page_count
+        ),
+        description=(
+            f"SETUP: {expected_v1_page_count} pages visible in v1 search for space {space_key} "
+            f"({page_count} uploaded + 1 default space page)"
+        ),
+    )
 
     pipeshub_client.toggle_sync(connector_id, enable=True)
     

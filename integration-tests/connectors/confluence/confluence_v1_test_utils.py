@@ -8,11 +8,21 @@ distinguish API issues from graph/sync issues. Lives next to
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
-from app.sources.external.confluence.confluence import ConfluenceDataSource  # type: ignore[import-not-found]
+from app.sources.external.confluence.confluence import (
+    ConfluenceDataSource,  # type: ignore[import-not-found]
+)
+from connectors.confluence.constants import (
+    CONFLUENCE_TEST_SETTLE_WAIT_SEC,  # type: ignore[import-not-found]
+)
+from helper.graph_provider_utils import (
+    async_poll_until,  # type: ignore[import-not-found]
+)
 
 if TYPE_CHECKING:
     from helper.graph_provider import GraphProviderProtocol
@@ -222,3 +232,194 @@ async def assert_confluence_page_v1_ancestors_contain_id(
             f"{context}: Confluence v1 ancestors for page_id={page_id!r} do not include id={aid!r}; "
             f"ancestor ids={sorted(ids)}"
         )
+
+
+# ========== Polling Helpers for Intelligent Wait ==========
+
+
+async def wait_until_confluence_condition(
+    check_fn: Callable[[], Awaitable[bool]],
+    *,
+    timeout: int = CONFLUENCE_TEST_SETTLE_WAIT_SEC,
+    poll_interval: int = 30,
+    description: str = "Confluence API condition",
+) -> None:
+    """
+    Poll until check_fn returns True or timeout is reached.
+    
+    Specifically for Confluence API checks with 30s polling interval.
+    Uses async_poll_until from graph_provider_utils under the hood.
+    
+    Args:
+        check_fn: Async callable that returns True when condition is met
+        timeout: Maximum time to wait in seconds (default: CONFLUENCE_TEST_SETTLE_WAIT_SEC)
+        poll_interval: Seconds between checks (default: 30)
+        description: Human-readable description for error messages
+    
+    Raises:
+        TimeoutError: If condition not met within timeout
+    """
+    deadline = time.time() + timeout
+    attempt = 0
+    
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            if await check_fn():
+                logger.info(
+                    "✅ %s (attempt %d, %.1fs elapsed)",
+                    description, attempt, timeout - (deadline - time.time())
+                )
+                return
+        except Exception as e:
+            logger.debug(
+                "⏳ Check failed for %s (attempt %d): %s",
+                description, attempt, e
+            )
+        
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        
+        sleep_time = min(poll_interval, remaining)
+        logger.info(
+            "⏳ Waiting for %s (attempt %d, %.0fs remaining, sleeping %ds)...",
+            description, attempt, remaining, sleep_time
+        )
+        await asyncio.sleep(sleep_time)
+    
+    raise TimeoutError(
+        f"Timed out waiting for {description} after {timeout}s ({attempt} attempts)"
+    )
+
+
+async def check_page_in_v1_search_bool(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    page_id: str,
+) -> bool:
+    """
+    Check if page is in v1 content/search results (non-assertion version).
+    
+    Returns True if page found, False otherwise (including API errors).
+    """
+    try:
+        resp = await datasource.get_pages_v1(
+            space_key=space_key,
+            page_ids=[page_id],
+            page_ids_operator="in",
+            limit=25,
+        )
+        if resp.status != 200:
+            return False
+        
+        results = resp.json().get("results") or []
+        found_ids = {str(item.get("id")) for item in results if item.get("id") is not None}
+        return page_id in found_ids
+    except Exception:
+        return False
+
+
+async def check_version_equals_bool(
+    datasource: ConfluenceDataSource,
+    page_id: str,
+    expected_version: int,
+) -> bool:
+    """
+    Check if page version.number equals expected (non-assertion version).
+    
+    Returns True if version matches, False otherwise (including API errors).
+    """
+    try:
+        actual_version = await get_confluence_page_version_number_v1(datasource, str(page_id))
+        return actual_version == expected_version
+    except Exception:
+        return False
+
+
+async def check_page_title_bool(
+    datasource: ConfluenceDataSource,
+    page_id: str,
+    expected_title: str,
+) -> bool:
+    """
+    Check if page title equals expected (non-assertion version).
+    
+    Returns True if title matches, False otherwise (including API errors).
+    """
+    try:
+        resp = await datasource.get_page_content_v1(str(page_id), expand="version,space")
+        if resp.status != 200:
+            return False
+        
+        data = resp.json()
+        title = data.get("title")
+        return title == expected_title
+    except Exception:
+        return False
+
+
+async def check_ancestors_contain_bool(
+    datasource: ConfluenceDataSource,
+    page_id: str,
+    ancestor_content_id: str,
+) -> bool:
+    """
+    Check if page ancestors contain specific ancestor ID (non-assertion version).
+    
+    Returns True if ancestor found, False otherwise (including API errors).
+    """
+    try:
+        resp = await datasource.get_page_content_v1(
+            str(page_id),
+            expand="version,space,ancestors",
+        )
+        if resp.status != 200:
+            return False
+        
+        data = resp.json()
+        ancestors = data.get("ancestors") or []
+        if not isinstance(ancestors, list):
+            return False
+        
+        ids = {str(a.get("id")) for a in ancestors if isinstance(a, dict) and a.get("id") is not None}
+        return str(ancestor_content_id) in ids
+    except Exception:
+        return False
+
+
+async def check_page_count_in_space_bool(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    expected_count: int,
+) -> bool:
+    """
+    Check if page count in space equals expected (non-assertion version).
+    
+    Returns True if count matches, False otherwise (including API errors).
+    """
+    try:
+        actual_count = await count_confluence_space_pages_v1_search(datasource, space_key)
+        return actual_count == expected_count
+    except Exception:
+        return False
+
+
+async def check_multiple_pages_in_search_bool(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    page_ids: list[str],
+) -> bool:
+    """
+    Check if all specified page IDs are in v1 content/search (non-assertion version).
+    
+    Returns True if all pages found, False otherwise (including API errors).
+    """
+    try:
+        for page_id in page_ids:
+            if not await check_page_in_v1_search_bool(datasource, space_key, page_id):
+                return False
+        return True
+    except Exception:
+        return False
+
