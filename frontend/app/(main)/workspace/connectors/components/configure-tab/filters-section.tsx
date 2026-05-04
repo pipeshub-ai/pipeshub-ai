@@ -446,24 +446,15 @@ function ConnectorFilterMultiSelect({
         const search = searchRef.current.trim() || undefined;
         const prevCursorForAppend = append ? cursorRef.current : undefined;
 
-        const params =
-          !append
-            ? {
-                page: 1,
-                limit: INITIAL_LIMIT,
-                ...(search ? { search } : {}),
-              }
+        const params = {
+          limit: append ? PAGE_LIMIT : INITIAL_LIMIT,
+          ...(search ? { search } : {}),
+          ...(!append
+            ? { page: 1 }
             : prevCursorForAppend
-              ? {
-                  limit: PAGE_LIMIT,
-                  cursor: prevCursorForAppend,
-                  ...(search ? { search } : {}),
-                }
-              : {
-                  page: pageRef.current + 1,
-                  limit: PAGE_LIMIT,
-                  ...(search ? { search } : {}),
-                };
+              ? { cursor: prevCursorForAppend }
+              : { page: pageRef.current + 1 }),
+        };
 
         const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
 
