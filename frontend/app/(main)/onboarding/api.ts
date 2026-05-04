@@ -164,7 +164,9 @@ export async function getStorageConfig(): Promise<StorageConfigResponse> {
 /**
  * POST /api/v1/configurationManager/storageConfig
  */
-export async function saveStorageConfig(form: StorageFormData): Promise<void> {
+export async function saveStorageConfig(
+  form: StorageFormData
+): Promise<{ message?: string }> {
   const body: Record<string, unknown> = { storageType: form.providerType };
 
   if (form.providerType === 's3') {
@@ -184,7 +186,11 @@ export async function saveStorageConfig(form: StorageFormData): Promise<void> {
     if (form.baseUrl) body.baseUrl = form.baseUrl;
   }
 
-  await apiClient.post('/api/v1/configurationManager/storageConfig', body);
+  const { data } = await apiClient.post<{ message?: string }>(
+    '/api/v1/configurationManager/storageConfig',
+    body
+  );
+  return data ?? {};
 }
 
 // ===============================
