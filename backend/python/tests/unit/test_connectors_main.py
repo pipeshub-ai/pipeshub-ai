@@ -24,7 +24,6 @@ def _make_container():
     mock_config_service.close = AsyncMock()
     container.config_service.return_value = mock_config_service
     container.data_store = AsyncMock()
-    container.arango_service = AsyncMock()
     return container
 
 
@@ -641,7 +640,6 @@ class TestLifespan:
         gp = _make_graph_provider()
         ds = _make_data_store(gp)
         mock_container.data_store = AsyncMock(return_value=ds)
-        mock_container.arango_service = AsyncMock(return_value=MagicMock())
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -711,7 +709,8 @@ class TestLifespan:
             }),
         ):
             async with lifespan(mock_app):
-                assert mock_app.state.arango_service is None
+                assert mock_app.container is mock_container
+                assert mock_app.state.connector_registry is mock_registry
 
     async def test_startup_service_init_failure_continues(self):
         """Startup service init failure does not prevent startup."""

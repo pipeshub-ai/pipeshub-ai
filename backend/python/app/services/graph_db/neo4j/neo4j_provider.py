@@ -7020,7 +7020,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
                 return None
 
-            # Build comprehensive access query matching BaseArangoService
+            # Build comprehensive access query
             # Check all access paths: direct, group, record group, nested record groups, org, KB, anyone
             access_query = """
             MATCH (u:User {id: $user_key})
@@ -9634,7 +9634,7 @@ class Neo4jProvider(IGraphDBProvider):
         - KB root upload (parent_folder_id=None)
         - Folder upload (parent_folder_id=folder_id)
 
-        This method follows the same structure as BaseArangoService:
+        This method follows the same structure as ArangoHTTPProvider:
         1. Validate user permissions and target location
         2. Analyze folder structure relative to upload target
         3. Execute upload in single transaction
