@@ -111,6 +111,8 @@ export class OIDCProviderController {
       userinfo_endpoint: `${baseUrl}/userinfo`,
       revocation_endpoint: `${baseUrl}/revoke`,
       introspection_endpoint: `${baseUrl}/introspect`,
+      // RFC 7591 — discoverable dynamic client registration endpoint.
+      registration_endpoint: `${baseUrl}/register`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
@@ -121,9 +123,11 @@ export class OIDCProviderController {
         'client_credentials',
         'refresh_token',
       ],
+      // 'none' enables PKCE-only public clients (Cursor / Claude / Inspector).
       token_endpoint_auth_methods_supported: [
         'client_secret_basic',
         'client_secret_post',
+        'none',
       ],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: [

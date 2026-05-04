@@ -9,7 +9,10 @@ import {
   OAuthApp,
   IOAuthApp,
   OAuthAppStatus,
+  OAuthAppRegisteredVia,
   OAuthGrantType,
+  OAuthApplicationType,
+  OAuthTokenEndpointAuthMethod,
 } from '../schema/oauth.app.schema'
 import {
   InvalidClientError,
@@ -24,7 +27,42 @@ import {
   ListAppsQuery,
   PaginatedResponse,
 } from '../types/oauth.types'
-import { ALLOWED_CUSTOM_REDIRECT_URIS } from '../constants/constants'
+import {
+  ALLOWED_CUSTOM_REDIRECT_URIS,
+  ALLOWED_NATIVE_URI_SCHEMES,
+} from '../constants/constants'
+
+/**
+ * Input for createDcrApp — fewer constraints than the admin path.
+ * No createdBy / orgId at registration time; populated later at first /authorize.
+ */
+export interface CreateDcrAppInput {
+  name: string
+  redirectUris: string[]
+  allowedGrantTypes: OAuthGrantType[]
+  allowedScopes: string[]
+  isConfidential: boolean
+  tokenEndpointAuthMethod: OAuthTokenEndpointAuthMethod
+  responseTypes?: string[]
+  homepageUrl?: string
+  logoUrl?: string
+  privacyPolicyUrl?: string
+  termsOfServiceUrl?: string
+  contacts?: string[]
+  softwareId?: string
+  softwareVersion?: string
+  applicationType?: OAuthApplicationType
+  clientProfile?: string
+  /** sha256 hex of the registration_access_token (RFC 7592). */
+  registrationAccessTokenHash?: string
+}
+
+/** Result of createDcrApp — the persisted document plus the freshly-generated plaintext secret (if confidential). */
+export interface CreateDcrAppResult {
+  app: IOAuthApp
+  /** Undefined for public clients (token_endpoint_auth_method = 'none'). */
+  clientSecret?: string
+}
 
 const CLIENT_SECRET_LENGTH = 32
 
@@ -301,7 +339,13 @@ export class OAuthAppService {
   }
 
   /**
-   * Regenerate client secret
+   * Regenerate client secret.
+   *
+   * Refuses DCR-registered apps: those clients are typically public (PKCE-only)
+   * and have no admin owner. RFC 7592 §2.2 doesn't define secret rotation as
+   * part of metadata update — clients that lose their secret are expected to
+   * re-register a new client. Even for the rare confidential DCR app, secret
+   * rotation needs a different surface than the admin endpoint.
    */
   async regenerateSecret(
     appId: string,
@@ -315,6 +359,17 @@ export class OAuthAppService {
 
     if (!app) {
       throw new NotFoundError('OAuth app not found')
+    }
+
+    if (app.registeredVia === OAuthAppRegisteredVia.DCR) {
+      throw new BadRequestError(
+        'Cannot regenerate secret for a dynamically registered (DCR) client',
+      )
+    }
+    if (!app.isConfidential) {
+      throw new BadRequestError(
+        'Cannot regenerate secret for a public client (token_endpoint_auth_method = "none")',
+      )
     }
 
     const clientSecret = this.generateClientSecret()
@@ -455,23 +510,31 @@ export class OAuthAppService {
   private validateRedirectUris(uris: string[]): void {
     for (const uri of uris) {
       if (ALLOWED_CUSTOM_REDIRECT_URIS.includes(uri)) {
-        continue;
+        continue
       }
       try {
         const parsed = new URL(uri)
-        if (
-          parsed.protocol !== 'https:' &&
-          parsed.hostname !== 'localhost' &&
-          parsed.hostname !== '127.0.0.1'
-        ) {
-          throw new InvalidRedirectUriError(
-            `Redirect URI must use HTTPS (except localhost): ${uri}`,
-          )
-        }
-        // Disallow fragments
+        // Disallow fragments before any other check (RFC 6749 §3.1.2).
         if (parsed.hash) {
           throw new InvalidRedirectUriError(
             `Redirect URI must not contain a fragment: ${uri}`,
+          )
+        }
+        // RFC 8252: native apps may use a private-use URI scheme they own.
+        if (ALLOWED_NATIVE_URI_SCHEMES.includes(parsed.protocol)) {
+          continue
+        }
+        // RFC 8252 §7.3: native apps may use http://localhost or http://127.0.0.1
+        // with arbitrary port (loopback redirect).
+        if (
+          parsed.protocol === 'http:' &&
+          (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]')
+        ) {
+          continue
+        }
+        if (parsed.protocol !== 'https:') {
+          throw new InvalidRedirectUriError(
+            `Redirect URI must use HTTPS, loopback, or a native scheme: ${uri}`,
           )
         }
       } catch (error) {
@@ -481,6 +544,11 @@ export class OAuthAppService {
     }
   }
 
+  /** Public wrapper for use by the DCR service. Same logic, no admin context. */
+  validateRedirectUrisPublic(uris: string[]): void {
+    this.validateRedirectUris(uris)
+  }
+
   private validateGrantTypes(grantTypes: string[]): void {
     const validGrantTypes = Object.values(OAuthGrantType)
     for (const grantType of grantTypes) {
@@ -488,6 +556,84 @@ export class OAuthAppService {
         throw new BadRequestError(`Invalid grant type: ${grantType}`)
       }
     }
+  }
+
+  /** Public wrapper for use by the DCR service. */
+  validateGrantTypesPublic(grantTypes: string[]): void {
+    this.validateGrantTypes(grantTypes)
+  }
+
+  /**
+   * Decrypt the stored client_secret (plaintext) for this app. Used by the
+   * DCR pickup-code response and by /token for confidential clients. Returns
+   * empty string for public clients.
+   */
+  decryptClientSecret(app: IOAuthApp): string {
+    if (!app.clientSecretEncrypted) return ''
+    return this.encryptionService.decrypt(app.clientSecretEncrypted)
+  }
+
+  /**
+   * Create a new OAuth app via Dynamic Client Registration (RFC 7591).
+   *
+   * Differs from {@link createApp} in two important ways:
+   *   1. No `createdBy` / `orgId` — DCR clients have no owning user/org at
+   *      registration time. They get adopted by the first user who completes
+   *      `/authorize` against them (handled in the authorize controller).
+   *   2. No role-based scope ceiling — scopes have already been filtered by
+   *      the caller (oauth.dcr.service) against the public scope set.
+   *
+   * Returns the persisted document plus the freshly-generated plaintext
+   * secret. The plaintext is the only chance the registrant has to capture
+   * it; the controller embeds it in the RFC 7591 response.
+   */
+  async createDcrApp(input: CreateDcrAppInput): Promise<CreateDcrAppResult> {
+    this.validateGrantTypes(input.allowedGrantTypes)
+    this.validateRedirectUris(input.redirectUris)
+
+    const clientId = uuidv4()
+    let clientSecret: string | undefined
+    let clientSecretEncrypted = ''
+    if (input.isConfidential) {
+      clientSecret = this.generateClientSecret()
+      clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
+    }
+
+    const app = await OAuthApp.create({
+      clientId,
+      clientSecretEncrypted,
+      name: input.name,
+      redirectUris: input.redirectUris,
+      allowedGrantTypes: input.allowedGrantTypes,
+      allowedScopes: input.allowedScopes,
+      logoUrl: input.logoUrl,
+      homepageUrl: input.homepageUrl,
+      privacyPolicyUrl: input.privacyPolicyUrl,
+      termsOfServiceUrl: input.termsOfServiceUrl,
+      isConfidential: input.isConfidential,
+      // RFC 7591 §2: server may set defaults. Use 1h access / 30d refresh.
+      accessTokenLifetime: 3600,
+      refreshTokenLifetime: 2592000,
+      registeredVia: OAuthAppRegisteredVia.DCR,
+      clientProfile: input.clientProfile,
+      registrationAccessTokenHash: input.registrationAccessTokenHash,
+      tokenEndpointAuthMethod: input.tokenEndpointAuthMethod,
+      responseTypes: input.responseTypes,
+      contacts: input.contacts,
+      softwareId: input.softwareId,
+      softwareVersion: input.softwareVersion,
+      applicationType: input.applicationType,
+    })
+
+    this.logger.info('OAuth app dynamically registered', {
+      appId: (app._id as Types.ObjectId).toString(),
+      clientId,
+      name: input.name,
+      registeredVia: 'dcr',
+      isConfidential: input.isConfidential,
+    })
+
+    return { app, clientSecret }
   }
 
   private toAppResponse(app: IOAuthApp): OAuthAppResponse {
@@ -508,6 +654,8 @@ export class OAuthAppService {
       isConfidential: app.isConfidential,
       accessTokenLifetime: app.accessTokenLifetime,
       refreshTokenLifetime: app.refreshTokenLifetime,
+      registeredVia: app.registeredVia,
+      lastAuthorizedAt: app.lastAuthorizedAt,
       createdAt: app.createdAt,
       updatedAt: app.updatedAt,
     }

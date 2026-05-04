@@ -9,12 +9,15 @@ import { ConfigService } from '../../tokens_manager/services/cm.service'
 import { JwtConfig, getJwtConfig } from '../../../libs/utils/jwtConfig'
 import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
+import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
+import { OAuthDcrController } from '../controller/oauth.dcr.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
+import { OAuthRegistrationTokenMiddleware } from '../middlewares/oauth.registration_token.middleware'
 
 const loggerConfig = {
   service: 'OAuth Provider',
@@ -173,6 +176,30 @@ export class OAuthProviderContainer {
             appConfig,
           )
         })
+
+      // ----- DCR (RFC 7591 / RFC 7592) -----
+      const oauthDcrService = new OAuthDcrService(
+        logger,
+        oauthAppService,
+        oauthTokenService,
+        scopeValidatorService,
+        appConfig,
+      )
+      container
+        .bind<OAuthDcrService>('OAuthDcrService')
+        .toConstantValue(oauthDcrService)
+
+      const oauthRegistrationTokenMiddleware =
+        new OAuthRegistrationTokenMiddleware(oauthTokenService)
+      container
+        .bind<OAuthRegistrationTokenMiddleware>(
+          'OAuthRegistrationTokenMiddleware',
+        )
+        .toConstantValue(oauthRegistrationTokenMiddleware)
+
+      container
+        .bind<OAuthDcrController>('OAuthDcrController')
+        .toDynamicValue(() => new OAuthDcrController(logger, oauthDcrService))
 
       this.logger.info('OAuth Provider services initialized successfully')
     } catch (error) {

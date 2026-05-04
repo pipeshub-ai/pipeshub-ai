@@ -1,10 +1,12 @@
 import { injectable, inject } from 'inversify'
 import { Request, Response, NextFunction } from 'express'
+import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
+import { OAuthAppRegisteredVia } from '../schema/oauth.app.schema'
 import {
   InvalidGrantError,
   InvalidClientError,
@@ -208,6 +210,31 @@ export class OAuthProviderController {
         requestedScopes,
         app.allowedScopes,
       )
+
+      // Adopt DCR-registered apps to the first authorizing user. Each MCP
+      // client install does its own DCR (1 client_id ≈ 1 user), so we treat
+      // the first /authorize as ownership establishment. The existing
+      // GET /api/v1/oauth-clients (filtered by createdBy) then surfaces it as
+      // a "connected app" the user can revoke via DELETE on the same route.
+      let didAdopt = false
+      if (
+        app.registeredVia === OAuthAppRegisteredVia.DCR &&
+        !app.createdBy
+      ) {
+        app.createdBy = new Types.ObjectId(user.userId)
+        app.orgId = new Types.ObjectId(user.orgId)
+        didAdopt = true
+      }
+      // Bump for the cleanup job, regardless of adoption.
+      app.lastAuthorizedAt = new Date()
+      await app.save()
+      if (didAdopt) {
+        this.logger.info('DCR client adopted by first authorizing user', {
+          clientId: client_id,
+          userId: user.userId,
+          orgId: user.orgId,
+        })
+      }
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(
@@ -506,6 +533,15 @@ export class OAuthProviderController {
 
     let fullName: string | undefined
     let accountType: string | undefined
+
+    // client_credentials requires the app to be owned by an org. DCR-registered
+    // apps don't have an orgId until first /authorize, but client_credentials
+    // is blocked at DCR registration anyway — reaching here is a misconfig.
+    if (!app.orgId) {
+      throw new InvalidClientError(
+        'client_credentials grant requires a registered owning org',
+      )
+    }
 
     if (app.createdBy) {
       const user = await Users.findOne({
