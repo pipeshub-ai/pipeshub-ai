@@ -141,17 +141,21 @@ echo "Loading app image into kind nodes..."
 # budget and fail with "disk quota exceeded". Point TMPDIR at disk-backed storage.
 KIND_LOAD_TMPDIR="${HOME}/.cache/pipeshub-kind"
 mkdir -p "${KIND_LOAD_TMPDIR}"
-if ! TMPDIR="${KIND_LOAD_TMPDIR}" kind load docker-image "${APP_IMAGE}" --name "${CLUSTER_NAME}"; then
-  echo "Warning: failed to preload image into kind nodes."
+set +e
+TMPDIR="${KIND_LOAD_TMPDIR}" kind load docker-image "${APP_IMAGE}" --name "${CLUSTER_NAME}"
+KIND_LOAD_RC=$?
+set -e
+if [[ "${KIND_LOAD_RC}" -ne 0 ]]; then
+  echo "Warning: failed to preload image into kind nodes (exit ${KIND_LOAD_RC})."
   echo "Falling back to pulling image directly from registry in cluster."
   IMAGE_PULL_POLICY="Always"
 fi
-rm -rf "${KIND_LOAD_TMPDIR}"
+rm -rf "${KIND_LOAD_TMPDIR}" || true
 echo ""
 
 kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}" >/dev/null
 
-EXISTING_STATUS="$(helm status "${RELEASE_NAME}" -n "${NAMESPACE}" 2>/dev/null | awk -F': ' '/^STATUS:/{print $2}')"
+EXISTING_STATUS="$(helm status "${RELEASE_NAME}" -n "${NAMESPACE}" 2>/dev/null | awk -F': ' '/^STATUS:/{print $2}' || true)"
 if [[ "${EXISTING_STATUS}" == pending-* ]] || [[ "${EXISTING_STATUS}" == uninstalling ]]; then
   echo "Found stuck Helm release in status '${EXISTING_STATUS}', cleaning it up..."
   helm uninstall "${RELEASE_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 || true
@@ -207,7 +211,6 @@ HELM_BASE_ARGS=(
 
 echo "Deploying infrastructure first (app replicas = 0)..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \
-  --wait \
   --timeout 30m \
   "${HELM_BASE_ARGS[@]}" \
   --set replicaCount=0
